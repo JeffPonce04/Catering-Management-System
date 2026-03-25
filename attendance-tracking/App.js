@@ -17,7 +17,7 @@ import {
   BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { NavigationContainer, useFocusEffect } from '@react-navigation/native';
+import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
@@ -439,6 +439,27 @@ const DashboardScreen = ({ route, navigation }) => {
           <Ionicons name="chevron-forward-outline" size={20} color="#3B82F6" />
         </TouchableOpacity>
 
+        <TouchableOpacity 
+          style={styles.logoutButton}
+          onPress={() => {
+            Alert.alert(
+              'Logout',
+              'Are you sure you want to logout?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                { 
+                  text: 'Logout', 
+                  onPress: () => navigation.replace('Login'),
+                  style: 'destructive'
+                },
+              ]
+            );
+          }}
+        >
+          <Ionicons name="log-out-outline" size={24} color="#EF4444" />
+          <Text style={styles.logoutButtonText}>Logout</Text>
+        </TouchableOpacity>
+
         <View style={styles.infoCard}>
           <Ionicons name="information-circle-outline" size={24} color="#3B82F6" />
           <Text style={styles.infoText}>
@@ -707,20 +728,28 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, navigation }) 
   );
 };
 
-// History Screen
+// History Screen with Improved Month/Year Selection
 const HistoryScreen = ({ route }) => {
   const [records, setRecords] = useState([]);
   const [filterType, setFilterType] = useState('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
-  const [selectedMonth, setSelectedMonth] = useState(moment().format('YYYY-MM'));
+  const [selectedYear, setSelectedYear] = useState(moment().year());
+  const [selectedMonth, setSelectedMonth] = useState(moment().month());
   const [showExportModal, setShowExportModal] = useState(false);
 
   const employeeId = route.params?.employeeId;
 
+  // Generate years (current year and 2 years back)
+  const years = [selectedYear - 2, selectedYear - 1, selectedYear];
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
   useEffect(() => {
     loadRecords();
-  }, [filterType, selectedMonth, searchQuery]);
+  }, [filterType, selectedYear, selectedMonth, searchQuery]);
 
   const loadRecords = async () => {
     setLoading(true);
@@ -737,7 +766,9 @@ const HistoryScreen = ({ route }) => {
           parsedRecords = parsedRecords.filter(r => r.type === filterType);
         }
         
-        parsedRecords = parsedRecords.filter(r => r.date.startsWith(selectedMonth));
+        // Filter by selected year and month
+        const selectedYearMonth = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}`;
+        parsedRecords = parsedRecords.filter(r => r.date.startsWith(selectedYearMonth));
         
         if (searchQuery) {
           parsedRecords = parsedRecords.filter(r => 
@@ -824,15 +855,11 @@ const HistoryScreen = ({ route }) => {
     </Animatable.View>
   );
 
-  const months = [];
-  for (let i = 0; i < 6; i++) {
-    months.push(moment().subtract(i, 'months').format('YYYY-MM'));
-  }
-
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#F3F4F6" />
       
+      {/* Search Bar */}
       <View style={styles.searchContainer}>
         <Ionicons name="search-outline" size={20} color="#9CA3AF" style={styles.searchIcon} />
         <TextInput
@@ -849,20 +876,43 @@ const HistoryScreen = ({ route }) => {
         )}
       </View>
       
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.monthContainer}>
-        {months.map((month) => (
-          <TouchableOpacity
-            key={month}
-            style={[styles.monthButton, selectedMonth === month && styles.activeMonthButton]}
-            onPress={() => setSelectedMonth(month)}
-          >
-            <Text style={[styles.monthText, selectedMonth === month && styles.activeMonthText]}>
-              {moment(month).format('MMM YYYY')}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      {/* Year Selector */}
+      <View style={styles.selectorContainer}>
+        <Text style={styles.selectorLabel}>Select Year:</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {years.map((year) => (
+            <TouchableOpacity
+              key={year}
+              style={[styles.yearButton, selectedYear === year && styles.activeYearButton]}
+              onPress={() => setSelectedYear(year)}
+            >
+              <Text style={[styles.yearText, selectedYear === year && styles.activeYearText]}>
+                {year}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
       
+      {/* Month Selector */}
+      <View style={styles.selectorContainer}>
+        <Text style={styles.selectorLabel}>Select Month:</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {months.map((month, index) => (
+            <TouchableOpacity
+              key={index}
+              style={[styles.monthButton, selectedMonth === index && styles.activeMonthButton]}
+              onPress={() => setSelectedMonth(index)}
+            >
+              <Text style={[styles.monthText, selectedMonth === index && styles.activeMonthText]}>
+                {month}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+      
+      {/* Filter and Actions */}
       <View style={styles.historyHeader}>
         <View style={styles.filterContainer}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -921,13 +971,14 @@ const HistoryScreen = ({ route }) => {
               <Ionicons name="document-text-outline" size={80} color="#E5E7EB" />
               <Text style={styles.emptyTitle}>No Records Found</Text>
               <Text style={styles.emptySubtitle}>
-                Take your first attendance by tapping Time In or Time Out
+                No attendance records found for {months[selectedMonth]} {selectedYear}
               </Text>
             </View>
           }
         />
       )}
       
+      {/* Export Modal */}
       <Modal
         visible={showExportModal}
         transparent={true}
@@ -1036,7 +1087,7 @@ export default function App() {
   );
 }
 
-// Styles
+// Complete Styles
 const styles = StyleSheet.create({
   // Login Styles
   loginContainer: {
@@ -1173,6 +1224,63 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#9CA3AF',
   },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 20,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  statusCompleted: {
+    backgroundColor: '#10B981',
+  },
+  statusCheckedIn: {
+    backgroundColor: '#F59E0B',
+  },
+  statusAbsent: {
+    backgroundColor: '#EF4444',
+  },
+  statusText: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  statsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 20,
+    marginBottom: 20,
+  },
+  statCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 15,
+    alignItems: 'center',
+    flex: 1,
+    marginHorizontal: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  statNumber: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#3B82F6',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 4,
+  },
   attendanceButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1210,6 +1318,9 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 8,
   },
+  disabledButton: {
+    opacity: 0.5,
+  },
   historyButton: {
     backgroundColor: '#ffffff',
     marginHorizontal: 20,
@@ -1225,6 +1336,24 @@ const styles = StyleSheet.create({
     color: '#3B82F6',
     fontWeight: '500',
     flex: 1,
+    marginLeft: 12,
+  },
+  logoutButton: {
+    backgroundColor: '#ffffff',
+    marginHorizontal: 20,
+    padding: 16,
+    borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  logoutButtonText: {
+    fontSize: 16,
+    color: '#EF4444',
+    fontWeight: '500',
     marginLeft: 12,
   },
   infoCard: {
@@ -1312,6 +1441,12 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     marginTop: 12,
     fontSize: 16,
+  },
+  cameraContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   permissionText: {
     color: '#6B7280',
@@ -1466,6 +1601,71 @@ const styles = StyleSheet.create({
     padding: 8,
     marginLeft: 4,
   },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    margin: 16,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#1F2937',
+  },
+  selectorContainer: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  selectorLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginBottom: 8,
+    fontWeight: '500',
+  },
+  yearButton: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    marginRight: 10,
+  },
+  activeYearButton: {
+    backgroundColor: '#3B82F6',
+  },
+  yearText: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  activeYearText: {
+    color: '#ffffff',
+  },
+  monthButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    marginRight: 8,
+  },
+  activeMonthButton: {
+    backgroundColor: '#3B82F6',
+  },
+  monthText: {
+    fontSize: 12,
+    color: '#6B7280',
+    fontWeight: '500',
+  },
+  activeMonthText: {
+    color: '#ffffff',
+  },
   historyList: {
     padding: 16,
   },
@@ -1544,12 +1744,6 @@ const styles = StyleSheet.create({
   },
   loadingContainer: {
     flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cameraContainer: {
-    flex: 1,
-    backgroundColor: '#000',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1636,106 +1830,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#6B7280',
     lineHeight: 20,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#F3F4F6',
-    borderRadius: 20,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
-  },
-  statusCompleted: {
-    backgroundColor: '#10B981',
-  },
-  statusCheckedIn: {
-    backgroundColor: '#F59E0B',
-  },
-  statusAbsent: {
-    backgroundColor: '#EF4444',
-  },
-  statusText: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    marginBottom: 20,
-  },
-  statCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 15,
-    alignItems: 'center',
-    flex: 1,
-    marginHorizontal: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  statNumber: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#3B82F6',
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#6B7280',
-    marginTop: 4,
-  },
-  disabledButton: {
-    opacity: 0.5,
-  },
-  searchContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ffffff',
-    margin: 16,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
-  },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 14,
-    color: '#1F2937',
-  },
-  monthContainer: {
-    paddingHorizontal: 16,
-    marginBottom: 12,
-  },
-  monthButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#F3F4F6',
-    marginRight: 8,
-  },
-  activeMonthButton: {
-    backgroundColor: '#3B82F6',
-  },
-  monthText: {
-    fontSize: 12,
-    color: '#6B7280',
-  },
-  activeMonthText: {
-    color: '#ffffff',
   },
   modalButtons: {
     flexDirection: 'row',
