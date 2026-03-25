@@ -1,0 +1,28 @@
+.pos-container {
+  display: grid;
+  grid-template-columns: 260px 520px 360px;
+  height: 100vh;
+  background: #c78957;
+}
+
+.left-section {
+  display: flex;
+  flex-direction: column;
+  background: #dca676;
+  padding: 10px;
+}
+
+.middle-section {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  background: #e8c9a1;
+}
+
+.right-section {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px;
+  background: #f9e5c5;
+}

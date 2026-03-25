@@ -1,0 +1,34 @@
+:root {
+  /* Dark Mode - Perfect Black Theme */
+  --bg-primary: #000000;
+  --bg-secondary: #0a0a0a;
+  --bg-tertiary: #111111;
+  --bg-hover: #1a1a1a;
+  --text-primary: #ffffff;
+  --text-secondary: #f1f5f9;
+  --text-tertiary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border-color: #1f1f1f;
+  --border-light: #262626;
+  --border-medium: #333333;
+  --accent-primary: #3b82f6;
+  --accent-secondary: #2563eb;
+  --accent-light: #1e3a8a;
+  --accent-soft: #111827;
+  --success: #10b981;
+  --success-light: #064e3b;
+  --warning: #f59e0b;
+  --warning-light: #78350f;
+  --danger: #ef4444;
+  --danger-light: #7f1d1d;
+  --chart-1: #3b82f6;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.7);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.8);
+  --shadow-lg: 0 10px 15px rgba(0,0,0,0.9);
+  --shadow-xl: 0 20px 25px rgba(0,0,0,0.95);
+}
+
+
+
