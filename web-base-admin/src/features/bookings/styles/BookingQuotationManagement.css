@@ -1,0 +1,9 @@
+
+/* Stable table heights for pagination/footer consistency */
+.bqm-table .ant-table-container,
+.bqm-table .ant-table-body {
+    min-height: 420px;
+}
+.bqm-table .ant-table-placeholder .ant-table-cell {
+    height: 420px;
+}

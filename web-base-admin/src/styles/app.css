@@ -1,0 +1,268 @@
+
+/* App.css */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+}
+
+.app-layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Navigation container is now fixed width via its own CSS */
+.navigation-container {
+  flex-shrink: 0;
+  height: 100vh;
+  position: relative;
+  z-index: 100;
+}
+
+/* Main content area - adjusts automatically with sidebar */
+.main-content {
+  flex: 1;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background-color: #f8fafc;
+  transition: all 0.3s ease;
+}
+
+/* Dark mode support */
+.dark-mode .main-content {
+  background-color: #0a0a0a;
+}
+
+/* Scrollbar styling for main content */
+.main-content::-webkit-scrollbar {
+  width: 10px;
+}
+
+.main-content::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+.main-content::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 5px;
+}
+
+.main-content::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+.dark-mode .main-content::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.dark-mode .main-content::-webkit-scrollbar-thumb {
+  background: #444;
+}
+
+.dark-mode .main-content::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .app-layout {
+    flex-direction: column;
+  }
+  
+  .navigation-container {
+    width: 100% !important;
+    height: auto;
+    min-height: 60px;
+  }
+  
+  .main-content {
+    height: calc(100vh - 60px);
+  }
+}
+
+/* Loading states */
+.loading-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  width: 100vw;
+  background-color: #f8fafc;
+}
+
+.dark-mode .loading-container {
+  background-color: #0a0a0a;
+}
+
+/* Animation for page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(20px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 300ms, transform 300ms;
+}
+
+.page-exit {
+  opacity: 1;
+}
+
+.page-exit-active {
+  opacity: 0;
+  transition: opacity 300ms;
+}
+
+
+
+
+/* =========================================================
+   GLOBAL THEME SYSTEM - applies to every page/tab
+   ========================================================= */
+body.light-mode {
+  --app-bg: #f6f8fc;
+  --app-bg-soft: #eef4ff;
+  --app-surface: rgba(255, 255, 255, 0.94);
+  --app-surface-solid: #ffffff;
+  --app-surface-elevated: #ffffff;
+  --app-border: rgba(148, 163, 184, 0.22);
+  --app-text: #0f172a;
+  --app-text-muted: #64748b;
+  --app-primary: #2563eb;
+  --app-primary-soft: rgba(37, 99, 235, 0.1);
+  --app-success: #10b981;
+  --app-warning: #f59e0b;
+  --app-danger: #ef4444;
+  --app-shadow: 0 16px 48px rgba(15, 23, 42, 0.08);
+  --app-shadow-soft: 0 10px 28px rgba(15, 23, 42, 0.06);
+}
+
+body.dark-mode {
+  --app-bg: #070b16;
+  --app-bg-soft: #0d1324;
+  --app-surface: rgba(15, 23, 42, 0.88);
+  --app-surface-solid: #0f172a;
+  --app-surface-elevated: #111c33;
+  --app-border: rgba(148, 163, 184, 0.16);
+  --app-text: #e5edf9;
+  --app-text-muted: #94a3b8;
+  --app-primary: #60a5fa;
+  --app-primary-soft: rgba(96, 165, 250, 0.14);
+  --app-success: #34d399;
+  --app-warning: #fbbf24;
+  --app-danger: #fb7185;
+  --app-shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+  --app-shadow-soft: 0 12px 34px rgba(0, 0, 0, 0.3);
+}
+
+body.light-mode,
+body.dark-mode {
+  color: var(--app-text);
+  background:
+    radial-gradient(circle at top left, var(--app-primary-soft), transparent 32rem),
+    linear-gradient(135deg, var(--app-bg), var(--app-bg-soft));
+}
+
+body.light-mode .main-content,
+body.dark-mode .main-content,
+body.light-mode .loading-container,
+body.dark-mode .loading-container {
+  background:
+    radial-gradient(circle at top left, var(--app-primary-soft), transparent 34rem),
+    linear-gradient(135deg, var(--app-bg), var(--app-bg-soft)) !important;
+  color: var(--app-text);
+}
+
+body.dark-mode .ant-layout,
+body.dark-mode .ant-card,
+body.dark-mode .ant-modal-content,
+body.dark-mode .ant-drawer-content,
+body.dark-mode .ant-table,
+body.dark-mode .ant-list,
+body.dark-mode .ant-tabs-content-holder,
+body.dark-mode .ant-dropdown-menu {
+  background: var(--app-surface-solid) !important;
+  color: var(--app-text) !important;
+  border-color: var(--app-border) !important;
+}
+
+body.dark-mode .ant-card,
+body.dark-mode .ant-modal-content,
+body.dark-mode .ant-drawer-content,
+body.dark-mode .ant-dropdown-menu {
+  box-shadow: var(--app-shadow-soft) !important;
+}
+
+body.dark-mode .ant-table-thead > tr > th,
+body.dark-mode .ant-table-tbody > tr > td,
+body.dark-mode .ant-table-cell,
+body.dark-mode .ant-tabs-tab,
+body.dark-mode .ant-typography,
+body.dark-mode .ant-statistic-title,
+body.dark-mode .ant-statistic-content,
+body.dark-mode .ant-list-item,
+body.dark-mode .ant-empty-description {
+  color: var(--app-text) !important;
+  border-color: var(--app-border) !important;
+}
+
+body.dark-mode .ant-typography-secondary,
+body.dark-mode .ant-statistic-title,
+body.dark-mode .ant-card-meta-description {
+  color: var(--app-text-muted) !important;
+}
+
+body.dark-mode .ant-table-thead > tr > th,
+body.dark-mode .ant-table-tbody > tr:hover > td {
+  background: var(--app-surface-elevated) !important;
+}
+
+body.dark-mode .ant-input,
+body.dark-mode .ant-input-number,
+body.dark-mode .ant-select-selector,
+body.dark-mode .ant-picker,
+body.dark-mode .ant-btn-default,
+body.dark-mode .ant-pagination-item,
+body.dark-mode .ant-pagination-prev button,
+body.dark-mode .ant-pagination-next button {
+  background: var(--app-surface-elevated) !important;
+  border-color: var(--app-border) !important;
+  color: var(--app-text) !important;
+}
+
+body.dark-mode .ant-input::placeholder,
+body.dark-mode .ant-picker-input > input::placeholder {
+  color: var(--app-text-muted) !important;
+}
+
+body.dark-mode .ant-tabs-tab-active .ant-tabs-tab-btn,
+body.dark-mode .ant-tabs-tab:hover,
+body.dark-mode .ant-btn-link,
+body.dark-mode a {
+  color: var(--app-primary) !important;
+}
+
+body.light-mode .ant-card,
+body.light-mode .ant-modal-content,
+body.light-mode .ant-drawer-content {
+  border-color: var(--app-border) !important;
+  box-shadow: var(--app-shadow-soft);
+}
