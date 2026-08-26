@@ -1,4 +1,4 @@
-// src/components/Staff/Staff_Payroll_Formal.jsx - COMPLETE FIXED VERSION
+// src/components/Staff/Staff_Payroll_Formal.jsx - ENHANCED PROFESSIONAL VERSION
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -18,7 +18,8 @@ import {
   TagOutlined, TrophyOutlined, MenuOutlined, FilterOutlined,
   LoadingOutlined, InfoCircleOutlined, SafetyOutlined,
   ClockCircleOutlined as ClockIcon, UserSwitchOutlined,
-  BankOutlined, SecurityScanOutlined
+  BankOutlined, SecurityScanOutlined, DashboardOutlined,
+  PieChartOutlined, ArrowUpOutlined, ArrowDownOutlined,
 } from '@ant-design/icons';
 import { payrollAPI, employeeAPI, departmentAPI, payslipAPI, attendanceAPI } from '../../../services/api';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -145,8 +146,8 @@ const EMPLOYEE_TYPES = {
 // DEDUCTION SCHEDULE
 // ============================================================
 const DEDUCTION_SCHEDULE = {
-  FIRST_CUTOFF: 'first',    // 1st-15th: SSS
-  SECOND_CUTOFF: 'second',  // 16th-end: PhilHealth + Pag-IBIG
+  FIRST_CUTOFF: 'first',
+  SECOND_CUTOFF: 'second',
 };
 
 // ============================================================
@@ -537,7 +538,7 @@ const Staff_Payroll_Formal = () => {
   }, []);
 
   // ========================================================
-  // HELPER FUNCTIONS - FIXED WITH PROPER DATE HANDLING
+  // HELPER FUNCTIONS
   // ========================================================
   const getCutoffDates = useCallback((year, month, cutoff) => {
     const startDate = new Date(year, month, 1);
@@ -557,7 +558,6 @@ const Staff_Payroll_Formal = () => {
       shortLabel = '2nd Cutoff';
     }
 
-    // Ensure dates are valid
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
       const now = new Date();
       start = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -576,9 +576,6 @@ const Staff_Payroll_Formal = () => {
     };
   }, []);
 
-  // ========================================================
-  // CURRENT CUTOFF WITH FALLBACK
-  // ========================================================
   const currentCutoff = useMemo(() => {
     try {
       return getCutoffDates(selectedYear, selectedMonth, cutoffType);
@@ -598,9 +595,6 @@ const Staff_Payroll_Formal = () => {
 
   const periodLabel = currentCutoff.label || 'Current Period';
 
-  // ========================================================
-  // DEDUCTION SCHEDULE INFO
-  // ========================================================
   const getDeductionScheduleInfo = useCallback(() => {
     if (cutoffType === 'first') {
       return {
@@ -619,9 +613,6 @@ const Staff_Payroll_Formal = () => {
 
   const deductionScheduleInfo = getDeductionScheduleInfo();
 
-  // ========================================================
-  // DETERMINE EMPLOYEE TYPE FOR DEDUCTIONS
-  // ========================================================
   const getEmployeeType = (employee) => {
     const position = safeString(employee?.position?.title || employee?.position_name || '').toLowerCase();
     const employmentType = safeString(employee?.employment_type || employee?.employee_type || '').toLowerCase();
@@ -639,47 +630,7 @@ const Staff_Payroll_Formal = () => {
   };
 
   // ========================================================
-  // DEDUCTION CALCULATION
-  // ========================================================
-  const calculateDeductions = (employee, grossPay, cutoffType) => {
-    const employeeType = getEmployeeType(employee);
-    
-    // On-call employees: No automatic deductions
-    if (employeeType === EMPLOYEE_TYPES.ON_CALL) {
-      return { sss: 0, philhealth: 0, pagibig: 0, total: 0 };
-    }
-    
-    // Regular employees: Automatic deductions based on cutoff schedule
-    let sss = 0, philhealth = 0, pagibig = 0;
-    
-    // SSS: Deducted on 1st cutoff (1-15)
-    if (cutoffType === 'first') {
-      sss = Math.min(200, grossPay * 0.045);
-    }
-    
-    // PhilHealth: Deducted on 2nd cutoff (16-end)
-    if (cutoffType === 'second') {
-      philhealth = Math.min(150, grossPay * 0.025);
-      pagibig = Math.min(100, grossPay * 0.02);
-    }
-    
-    // Contract and Part-time: Partial deductions
-    if (employeeType === EMPLOYEE_TYPES.CONTRACT || employeeType === EMPLOYEE_TYPES.PART_TIME) {
-      sss = sss * 0.5;
-      philhealth = philhealth * 0.5;
-      pagibig = pagibig * 0.5;
-    }
-    
-    return {
-      sss: Math.round(sss * 100) / 100,
-      philhealth: Math.round(philhealth * 100) / 100,
-      pagibig: Math.round(pagibig * 100) / 100,
-      total: Math.round((sss + philhealth + pagibig) * 100) / 100
-    };
-  };
-
-  // ========================================================
-  // FIXED: REACT QUERY PARAMS WITH PROPER DATES
+  // REACT QUERY PARAMS
   // ========================================================
   const payrollParams = useMemo(() => {
     const startDate = currentCutoff.startDate;
@@ -753,7 +704,6 @@ const Staff_Payroll_Formal = () => {
   const { data: departmentsRes } = useDepartmentsList();
   const { data: attendanceRes, refetch: refetchAttendance } = useAttendanceForPayroll(attendanceParams);
 
-  // Extract data
   const payrollData = safeArray(payrollDataRes);
   const payrollMeta = getPagination(payrollDataRes);
   const totalPages = payrollMeta?.last_page || 1;
@@ -772,7 +722,6 @@ const Staff_Payroll_Formal = () => {
   const departments = safeArray(departmentsRes);
   const attendanceData = safeArray(attendanceRes);
 
-  // Filter and paginate data
   const filteredData = useMemo(() => {
     if (!Array.isArray(payrollData)) return [];
     return payrollData.filter(item => {
@@ -816,7 +765,7 @@ const Staff_Payroll_Formal = () => {
   }, [selectableEligibleEmployees, selectedEmployeesForPayroll]);
 
   // ========================================================
-  // FIXED: HANDLERS WITH PROPER REQUIRED FIELDS
+  // HANDLERS
   // ========================================================
   const handleViewPayroll = useCallback((item) => {
     setSelectedEmployee(item);
@@ -1047,7 +996,7 @@ const Staff_Payroll_Formal = () => {
   }), [canFinalizePayroll, handleViewPayroll, handleViewAttendance, handleGeneratePayslip, handlePreviewPayslip, handleEditDeductions, handleApprovePayroll, handleMarkAsPaid, handleDeletePayroll]);
 
   // ========================================================
-  // FIXED: PROCESS PAYROLL WITH REQUIRED FIELDS
+  // PROCESS PAYROLL
   // ========================================================
   const handleProcessPayroll = useCallback(async () => {
     if (selectedEmployeesForPayroll.length === 0) {
@@ -1111,7 +1060,7 @@ const Staff_Payroll_Formal = () => {
   ]);
 
   // ========================================================
-  // FIXED: PREVIEW PAYROLL WITH REQUIRED FIELDS
+  // PREVIEW PAYROLL
   // ========================================================
   const handlePreviewPayroll = useCallback(async () => {
     if (selectedEmployeesForPayroll.length === 0) {
@@ -1157,7 +1106,7 @@ const Staff_Payroll_Formal = () => {
   }, [selectedEmployeesForPayroll, currentCutoff, cutoffType, previewPayrollMutation]);
 
   // ========================================================
-  // FIXED: EXPORT WITH PROPER DATES
+  // EXPORT
   // ========================================================
   const handleExport = useCallback(async () => {
     try {
@@ -1389,7 +1338,6 @@ const Staff_Payroll_Formal = () => {
     }
   }, [selectedPayrollIds, paginatedData]);
 
-  // Update selectAllEmployees when selection changes
   useEffect(() => {
     setSelectAllEmployees(isAllSelected);
   }, [isAllSelected]);
@@ -1684,7 +1632,7 @@ const Staff_Payroll_Formal = () => {
       <ConfigProvider theme={{ algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}>
         <div className={containerClass}>
           {/* ============================================================
-              HEADER
+              HEADER - Professional & Clean
           ============================================================ */}
           <div className={headerClass}>
             <div className="prf-header-left">
@@ -1701,7 +1649,7 @@ const Staff_Payroll_Formal = () => {
                 <CalendarOutlined />
                 <span>{dayjs().format('dddd, MMMM DD, YYYY')}</span>
               </div>
-              <Divider type="vertical" />
+              <Divider type="vertical" style={{ height: 28 }} />
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
                 Refresh
               </Button>
@@ -1719,20 +1667,7 @@ const Staff_Payroll_Formal = () => {
           </div>
 
           {/* ============================================================
-              DEDUCTION SCHEDULE ALERT
-          ============================================================ */}
-          <Alert
-            message={`${deductionScheduleInfo.label} - ${deductionScheduleInfo.deductions.join(' + ')} Deductions`}
-            description={deductionScheduleInfo.description}
-            type="info"
-            showIcon
-            icon={<InfoCircleOutlined />}
-            className="prf-deduction-alert"
-            style={{ marginBottom: 16 }}
-          />
-
-          {/* ============================================================
-              KPI CARDS
+              KPI CARDS - Professional Stats
           ============================================================ */}
           {statistics && (
             <div className="prf-kpi-grid">
@@ -1768,7 +1703,7 @@ const Staff_Payroll_Formal = () => {
           )}
 
           {/* ============================================================
-              MAIN CARD
+              MAIN CARD - Clean & Organized
           ============================================================ */}
           <Card className={mainCardClass} variant="borderless">
             <Tabs
@@ -1778,10 +1713,10 @@ const Staff_Payroll_Formal = () => {
               items={[
                 {
                   key: 'active',
-                  label: <span><DollarOutlined /> Active Payroll</span>,
+                  label: <span><DollarOutlined /> Active Payroll ({filteredData.length})</span>,
                   children: (
                     <>
-                      {/* Period Navigator */}
+                      {/* Period Navigator - Clean & Professional */}
                       <div className="prf-period-nav">
                         <div className="prf-period-left">
                           <div className="prf-cutoff-selector">
@@ -1818,7 +1753,7 @@ const Staff_Payroll_Formal = () => {
                         </div>
                       </div>
 
-                      {/* Filters */}
+                      {/* Filters - Clean & Organized */}
                       <div className={filtersClass}>
                         <div className="prf-filter-group">
                           <FilterOutlined />
@@ -1859,7 +1794,7 @@ const Staff_Payroll_Formal = () => {
                         </div>
                       </div>
 
-                      {/* Bulk Actions Bar */}
+                      {/* Bulk Actions Bar - Professional */}
                       {selectedPayrollIds.length > 0 && (
                         <div className="prf-bulk-actions-bar">
                           <span><ThunderboltOutlined /> {selectedPayrollIds.length} record(s) selected</span>
@@ -1898,7 +1833,7 @@ const Staff_Payroll_Formal = () => {
                         </div>
                       )}
 
-                      {/* Table */}
+                      {/* Table - Professional & Clean */}
                       <Spin spinning={isLoading} indicator={<LoadingOutlined spin />}>
                         <Table
                           columns={payrollColumns}
@@ -1927,7 +1862,7 @@ const Staff_Payroll_Formal = () => {
                 },
                 {
                   key: 'history',
-                  label: <span><HistoryOutlined /> History Archive</span>,
+                  label: <span><HistoryOutlined /> History Archive ({payrollHistory.length})</span>,
                   children: (
                     <div className="prf-tab-content">
                       <Alert
@@ -1938,7 +1873,6 @@ const Staff_Payroll_Formal = () => {
                         className="prf-info-alert"
                       />
                       
-                      {/* History Stats */}
                       {historyStatistics && (
                         <div className="prf-history-stats">
                           <Row gutter={16}>
@@ -2003,13 +1937,16 @@ const Staff_Payroll_Formal = () => {
           </Card>
 
           {/* ============================================================
-              EMPLOYEE SELECTION MODAL
+              All Modals - Clean & Professional
+              (Keeping all existing modals with enhanced styling)
           ============================================================ */}
+
+          {/* EMPLOYEE SELECTION MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
                 <div className="prf-modal-title-icon"><PlusOutlined /></div>
-                <div className="prf-modal-title-text">Select Employees</div>
+                <div className="prf-modal-title-text">Select Employees for Payroll</div>
                 <div className="prf-modal-badge">{periodLabel}</div>
               </div>
             }
@@ -2040,14 +1977,7 @@ const Staff_Payroll_Formal = () => {
             }
           >
             <div className="prf-modal-clean-content">
-              <Alert
-                message={`${deductionScheduleInfo.label} - ${deductionScheduleInfo.deductions.join(' + ')} Deductions Applied`}
-                description={deductionScheduleInfo.description}
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-              />
-              
+              {/* Eligibility Summary */}
               {eligibilitySummary && (
                 <Row gutter={16} style={{ marginBottom: 16 }}>
                   <Col span={8}>
@@ -2181,9 +2111,7 @@ const Staff_Payroll_Formal = () => {
             </div>
           </Modal>
 
-          {/* ============================================================
-              PREVIEW MODAL
-          ============================================================ */}
+          {/* PREVIEW MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2296,9 +2224,7 @@ const Staff_Payroll_Formal = () => {
             )}
           </Modal>
 
-          {/* ============================================================
-              ATTENDANCE MODAL
-          ============================================================ */}
+          {/* ATTENDANCE MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2319,7 +2245,6 @@ const Staff_Payroll_Formal = () => {
                   type="primary" 
                   icon={<FileExcelOutlined />} 
                   onClick={() => {
-                    // Export attendance data
                     const csv = ['Date,Time In,Time Out,Regular Hours,Overtime Hours,Status'];
                     attendanceRecords.forEach(record => {
                       csv.push(`${record.date || record.attendance_date},${record.time_in || 'N/A'},${record.time_out || 'N/A'},${record.regular_hours || 0},${record.overtime_hours || 0},${record.status || 'Present'}`);
@@ -2439,9 +2364,7 @@ const Staff_Payroll_Formal = () => {
             </div>
           </Modal>
 
-          {/* ============================================================
-              PAYROLL DETAILS MODAL
-          ============================================================ */}
+          {/* PAYROLL DETAILS MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2539,9 +2462,7 @@ const Staff_Payroll_Formal = () => {
             )}
           </Modal>
 
-          {/* ============================================================
-              HISTORY DETAILS MODAL
-          ============================================================ */}
+          {/* HISTORY DETAILS MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2622,9 +2543,7 @@ const Staff_Payroll_Formal = () => {
             )}
           </Modal>
 
-          {/* ============================================================
-              EDIT DEDUCTIONS MODAL
-          ============================================================ */}
+          {/* EDIT DEDUCTIONS MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2819,9 +2738,7 @@ const Staff_Payroll_Formal = () => {
             )}
           </Modal>
 
-          {/* ============================================================
-              BULK DEDUCTION MODAL
-          ============================================================ */}
+          {/* BULK DEDUCTION MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -2929,9 +2846,7 @@ const Staff_Payroll_Formal = () => {
             </div>
           </Modal>
 
-          {/* ============================================================
-              PAYSLIP MODAL
-          ============================================================ */}
+          {/* PAYSLIP MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">
@@ -3112,9 +3027,7 @@ const Staff_Payroll_Formal = () => {
             )}
           </Modal>
 
-          {/* ============================================================
-              PAYSLIP PREVIEW MODAL
-          ============================================================ */}
+          {/* PAYSLIP PREVIEW MODAL */}
           <Modal
             title={
               <div className="prf-modal-header-clean">

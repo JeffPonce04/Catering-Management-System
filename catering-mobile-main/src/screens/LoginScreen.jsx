@@ -23,7 +23,7 @@ import {
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 
-const { width } = Dimensions.get('window');
+const { width, height } = Dimensions.get('window');
 
 // Safe haptic feedback function
 const safeHaptic = (style = 'light') => {
@@ -35,7 +35,6 @@ const safeHaptic = (style = 'light') => {
       Haptics.impactAsync(impactStyle).catch(() => {});
     }
   } catch (error) {
-    // Silently fail if haptics not available
     console.log('Haptic feedback not available');
   }
 };
@@ -75,6 +74,10 @@ const LoginScreen = ({ navigation }) => {
   const [agreeTerms, setAgreeTerms] = useState(false);
   const [isRegistering, setIsRegistering] = useState(false);
 
+  // Admin selection modal state
+  const [adminModalVisible, setAdminModalVisible] = useState(false);
+  const [adminGreeting, setAdminGreeting] = useState('');
+
   const emailInputRef = useRef(null);
   const passwordInputRef = useRef(null);
 
@@ -105,18 +108,11 @@ const LoginScreen = ({ navigation }) => {
       
       if (result.success) {
         const greeting = `Hello, ${result.user?.full_name || email}!`;
+        setAdminGreeting(greeting);
 
         if (canOpenAttendance(result)) {
-          Alert.alert(
-            'Welcome Admin!',
-            `${greeting}
-
-Where do you want to continue?`,
-            [
-              { text: 'Customer Page', onPress: openMainApp },
-              { text: 'Attendance Tracking', onPress: openAttendanceTracking },
-            ]
-          );
+          setAdminModalVisible(true);
+          safeHaptic('medium');
         } else {
           Alert.alert(
             'Welcome Back!', 
@@ -138,7 +134,6 @@ Where do you want to continue?`,
   const handleRegister = async () => {
     Keyboard.dismiss();
     
-    // Validation
     if (!regFirstName.trim()) {
       Alert.alert('Error', 'Please enter your first name');
       return;
@@ -327,7 +322,127 @@ Where do you want to continue?`,
           </ScrollView>
         </LinearGradient>
 
-        {/* Register Modal - same as before */}
+        {/* Admin Navigation Modal - Mobile Optimized */}
+        <Modal 
+          animationType="fade" 
+          transparent={true} 
+          visible={adminModalVisible} 
+          onRequestClose={() => setAdminModalVisible(false)}
+        >
+          <TouchableWithoutFeedback onPress={() => setAdminModalVisible(false)}>
+            <View style={styles.adminModalOverlay}>
+              <TouchableWithoutFeedback onPress={() => {}}>
+                <View style={styles.adminModalContainer}>
+                  {/* Header with gradient */}
+                  <LinearGradient
+                    colors={['#ff6b9d', '#ff8fb1', '#ff9bb3']}
+                    style={styles.adminModalHeader}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                  >
+                    <View style={styles.adminHeaderContent}>
+                      <View style={styles.adminAvatarContainer}>
+                        <LinearGradient
+                          colors={['#ffffff', '#fff0f5']}
+                          style={styles.adminAvatar}
+                        >
+                          <Feather name="user" size={28} color="#ff6b9d" />
+                        </LinearGradient>
+                      </View>
+                      <Text style={styles.adminGreeting} numberOfLines={1}>{adminGreeting}</Text>
+                      <View style={styles.adminBadge}>
+                        <Feather name="shield" size={12} color="#ff6b9d" />
+                        <Text style={styles.adminBadgeText}>Administrator</Text>
+                      </View>
+                    </View>
+                  </LinearGradient>
+
+                  <View style={styles.adminModalBody}>
+                    <Text style={styles.adminModalTitle}>Choose Your Destination</Text>
+                    <Text style={styles.adminModalSubtitle}>
+                      Where would you like to go today?
+                    </Text>
+
+                    <View style={styles.adminOptionsContainer}>
+                      {/* Customer Page Option */}
+                      <TouchableOpacity 
+                        style={styles.adminOptionCard}
+                        onPress={() => {
+                          setAdminModalVisible(false);
+                          openMainApp();
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <LinearGradient
+                          colors={['#ff6b9d', '#ff8fb1']}
+                          style={styles.adminOptionGradient}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                        >
+                          <View style={styles.adminOptionContent}>
+                            <View style={styles.adminOptionIconContainer}>
+                              <Feather name="users" size={22} color="#fff" />
+                            </View>
+                            <View style={styles.adminOptionTextContainer}>
+                              <Text style={styles.adminOptionTitle}>Customer Page</Text>
+                              <Text style={styles.adminOptionDescription}>
+                                Browse products, place orders, and manage your cart
+                              </Text>
+                            </View>
+                            <View style={styles.adminOptionArrow}>
+                              <Feather name="chevron-right" size={18} color="#fff" />
+                            </View>
+                          </View>
+                        </LinearGradient>
+                      </TouchableOpacity>
+
+                      {/* Attendance Tracking Option */}
+                      <TouchableOpacity 
+                        style={styles.adminOptionCard}
+                        onPress={() => {
+                          setAdminModalVisible(false);
+                          openAttendanceTracking();
+                        }}
+                        activeOpacity={0.8}
+                      >
+                        <LinearGradient
+                          colors={['#6C63FF', '#8B83FF']}
+                          style={styles.adminOptionGradient}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                        >
+                          <View style={styles.adminOptionContent}>
+                            <View style={styles.adminOptionIconContainer}>
+                              <Feather name="clock" size={22} color="#fff" />
+                            </View>
+                            <View style={styles.adminOptionTextContainer}>
+                              <Text style={styles.adminOptionTitle}>Attendance Tracking</Text>
+                              <Text style={styles.adminOptionDescription}>
+                                Monitor attendance, manage timesheets, and track employee hours
+                              </Text>
+                            </View>
+                            <View style={styles.adminOptionArrow}>
+                              <Feather name="chevron-right" size={18} color="#fff" />
+                            </View>
+                          </View>
+                        </LinearGradient>
+                      </TouchableOpacity>
+                    </View>
+
+                    <TouchableOpacity 
+                      style={styles.adminCancelButton}
+                      onPress={() => setAdminModalVisible(false)}
+                    >
+                      <Text style={styles.adminCancelText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </TouchableWithoutFeedback>
+            </View>
+          </TouchableWithoutFeedback>
+        </Modal>
+
+        {/* Register Modal */}
         <Modal 
           animationType="slide" 
           transparent={true} 
@@ -575,6 +690,157 @@ const styles = StyleSheet.create({
   },
   registerText: { fontSize: 13, color: '#8a8a8e' },
   registerLink: { fontSize: 13, color: '#ff6b9d', fontWeight: '700' },
+  
+  // Admin Modal Styles - Mobile Optimized
+  adminModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  adminModalContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 28,
+    width: width - 32,
+    maxWidth: 420,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 30,
+    elevation: 20,
+  },
+  adminModalHeader: {
+    paddingTop: 28,
+    paddingBottom: 24,
+    paddingHorizontal: 20,
+  },
+  adminHeaderContent: {
+    alignItems: 'center',
+  },
+  adminAvatarContainer: {
+    marginBottom: 10,
+  },
+  adminAvatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.3)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  adminGreeting: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 4,
+    textAlign: 'center',
+    maxWidth: '100%',
+  },
+  adminBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 10,
+    gap: 4,
+  },
+  adminBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
+  adminModalBody: {
+    padding: 20,
+    paddingTop: 16,
+  },
+  adminModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#2d2d2d',
+    textAlign: 'center',
+    marginBottom: 2,
+  },
+  adminModalSubtitle: {
+    fontSize: 12,
+    color: '#8a8a8e',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  adminOptionsContainer: {
+    gap: 12,
+  },
+  adminOptionCard: {
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  adminOptionGradient: {
+    padding: 14,
+  },
+  adminOptionContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  adminOptionIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  adminOptionTextContainer: {
+    flex: 1,
+  },
+  adminOptionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 1,
+  },
+  adminOptionDescription: {
+    fontSize: 10,
+    color: 'rgba(255, 255, 255, 0.85)',
+    lineHeight: 13,
+  },
+  adminOptionArrow: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 4,
+  },
+  adminCancelButton: {
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  adminCancelText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#8a8a8e',
+  },
   
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalScrollContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 20 },
