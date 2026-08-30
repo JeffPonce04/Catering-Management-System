@@ -1,4 +1,4 @@
-// src/screens/CalendarScreen.jsx - COMPLETE WITH BACKEND INTEGRATION
+// src/screens/CalendarScreen.jsx - UPDATED WITH VERTICAL FORM-STYLE INSIGHTS
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as Haptics from 'expo-haptics';
@@ -17,6 +17,7 @@ import {
   TouchableOpacity,
   Vibration,
   View,
+  RefreshControl,
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
 import { bookingService } from '../services/bookingService';
@@ -26,9 +27,9 @@ const { width, height } = Dimensions.get('window');
 const CalendarScreen = ({ navigation }) => {
   const { isGuest, user } = useAuth();
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [animateMonth, setAnimateMonth] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [bookedDates, setBookedDates] = useState([]);
   const [fullyBookedDates, setFullyBookedDates] = useState([]);
   const [unavailableDates, setUnavailableDates] = useState([]);
@@ -49,30 +50,27 @@ const CalendarScreen = ({ navigation }) => {
   const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   // Load calendar data
-  const loadCalendarData = useCallback(async () => {
+  const loadCalendarData = useCallback(async (showLoading = true) => {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       console.log('🔄 Loading calendar data...');
       
-      // Get event types
-      const eventTypesResponse = await bookingService.getEventTypes();
+      const [eventTypesResponse, calendarResponse, availabilityResponse] = await Promise.all([
+        bookingService.getEventTypes(),
+        bookingService.getCalendarEvents(),
+        bookingService.getCalendarAvailability()
+      ]);
+      
       if (eventTypesResponse.success) {
         const types = eventTypesResponse.data?.data || eventTypesResponse.data || [];
         setEventTypes(types);
       }
       
-      // ✅ Get calendar events (bookings)
-      const response = await bookingService.getCalendarEvents();
-      
-      if (response.success) {
-        const calendarEvents = response.data?.data || response.data || [];
-        console.log(`✅ Loaded ${calendarEvents.length} calendar events`);
-        
-        // Extract booked dates
+      if (calendarResponse.success) {
+        const calendarEvents = calendarResponse.data?.data || calendarResponse.data || [];
         const booked = calendarEvents.map(event => event.start || event.event_date);
         setBookedDates(booked);
         
-        // Format events for display
         const formattedEvents = calendarEvents.map(event => ({
           date: event.start || event.event_date,
           title: event.title || event.event_type_name || 'Event',
@@ -85,16 +83,8 @@ const CalendarScreen = ({ navigation }) => {
         setEvents(formattedEvents);
       }
       
-      // ✅ GET AVAILABILITY DATA from backend
-      const availabilityResponse = await bookingService.getCalendarAvailability();
-      console.log('📦 Availability response:', availabilityResponse);
-      
       if (availabilityResponse.success) {
         const availData = availabilityResponse.data?.data || availabilityResponse.data || [];
-        console.log(`✅ Loaded ${availData.length} availability records`);
-        
-        // Process availability data
-        const bookedDatesList = [];
         const fullyBookedList = [];
         const unavailableList = [];
         const limitedSlotsList = [];
@@ -118,29 +108,22 @@ const CalendarScreen = ({ navigation }) => {
           } else if (status === 'available' && maxBookings !== null && maxBookings > 0) {
             limitedSlotsList.push(date);
           }
-          
-          // Also add to booked dates if fully booked or has events
-          if (status === 'fully_booked' || status === 'unavailable') {
-            bookedDatesList.push(date);
-          }
         });
         
         setFullyBookedDates(fullyBookedList);
         setUnavailableDates(unavailableList);
         setLimitedSlotsDates(limitedSlotsList);
         setAvailabilityData(availMap);
-        
-        console.log(`📊 Fully Booked: ${fullyBookedList.length}, Unavailable: ${unavailableList.length}, Limited Slots: ${limitedSlotsList.length}`);
       }
       
     } catch (error) {
       console.error('Error loading calendar data:', error);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
-  // Load data on focus
   useFocusEffect(
     useCallback(() => {
       if (!isGuest) {
@@ -151,7 +134,6 @@ const CalendarScreen = ({ navigation }) => {
     }, [isGuest, loadCalendarData])
   );
 
-  // Animation on mount
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -189,31 +171,26 @@ const CalendarScreen = ({ navigation }) => {
     return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   };
 
-  // ✅ Check if date is booked (has events)
   const isBooked = (year, month, day) => {
     const dateKey = formatDateKey(year, month, day);
     return bookedDates.some(date => date && date.startsWith(dateKey));
   };
 
-  // ✅ Check if date is fully booked (from availability settings)
   const isFullyBooked = (year, month, day) => {
     const dateKey = formatDateKey(year, month, day);
     return fullyBookedDates.some(date => date && date.startsWith(dateKey));
   };
 
-  // ✅ Check if date is unavailable (from availability settings)
   const isUnavailable = (year, month, day) => {
     const dateKey = formatDateKey(year, month, day);
     return unavailableDates.some(date => date && date.startsWith(dateKey));
   };
 
-  // ✅ Check if date has limited slots
   const hasLimitedSlots = (year, month, day) => {
     const dateKey = formatDateKey(year, month, day);
     return limitedSlotsDates.some(date => date && date.startsWith(dateKey));
   };
 
-  // ✅ Get availability status for a date
   const getDateAvailability = (year, month, day) => {
     const dateKey = formatDateKey(year, month, day);
     return availabilityData[dateKey] || null;
@@ -238,42 +215,33 @@ const CalendarScreen = ({ navigation }) => {
     return events.some(e => e.date && e.date.startsWith(dateKey));
   };
 
-  const getEventForDate = (year, month, day) => {
-    const dateKey = formatDateKey(year, month, day);
-    return events.filter(e => e.date && e.date.startsWith(dateKey));
-  };
-
   const goToPreviousMonth = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Vibration.vibrate(5);
-    setAnimateMonth(true);
     setCurrentDate(new Date(getYear(), getMonth() - 1, 1));
-    setTimeout(() => setAnimateMonth(false), 300);
   };
 
   const goToNextMonth = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Vibration.vibrate(5);
-    setAnimateMonth(true);
     setCurrentDate(new Date(getYear(), getMonth() + 1, 1));
-    setTimeout(() => setAnimateMonth(false), 300);
   };
 
   const goToToday = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Vibration.vibrate(10);
     setCurrentDate(new Date());
     setSelectedDate(new Date());
   };
 
   const handleDateSelect = (year, month, day) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    Vibration.vibrate(5);
     const selected = new Date(year, month, day);
     setSelectedDate(selected);
   };
 
-  // Build calendar days
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadCalendarData(false);
+  };
+
   const buildCalendarDays = () => {
     const year = getYear();
     const month = getMonth();
@@ -281,7 +249,6 @@ const CalendarScreen = ({ navigation }) => {
     const firstDay = getFirstDayOfMonth(year, month);
     const calendarDays = [];
 
-    // Add empty cells for days before month starts
     for (let i = 0; i < firstDay; i++) {
       calendarDays.push({
         type: 'empty',
@@ -289,7 +256,6 @@ const CalendarScreen = ({ navigation }) => {
       });
     }
 
-    // Add days of the month
     for (let day = 1; day <= daysInMonth; day++) {
       const booked = isBooked(year, month, day);
       const fullyBooked = isFullyBooked(year, month, day);
@@ -314,7 +280,6 @@ const CalendarScreen = ({ navigation }) => {
         year: year,
         month: month,
         availability: availability,
-        // Determine display status
         displayStatus: fullyBooked ? 'fully_booked' : 
                        unavailable ? 'unavailable' : 
                        booked ? 'booked' : 
@@ -335,17 +300,10 @@ const CalendarScreen = ({ navigation }) => {
     let fullyBookedCount = 0;
 
     for (let day = 1; day <= daysInMonth; day++) {
-      if (isBooked(year, month, day)) {
-        bookedCount++;
-      } else {
-        availableCount++;
-      }
-      if (hasEvent(year, month, day)) {
-        eventCount++;
-      }
-      if (isFullyBooked(year, month, day)) {
-        fullyBookedCount++;
-      }
+      if (isBooked(year, month, day)) bookedCount++;
+      else availableCount++;
+      if (hasEvent(year, month, day)) eventCount++;
+      if (isFullyBooked(year, month, day)) fullyBookedCount++;
     }
 
     return { bookedCount, availableCount, eventCount, fullyBookedCount };
@@ -373,106 +331,137 @@ const CalendarScreen = ({ navigation }) => {
     const dayEvents = events.filter(e => e.date && e.date.startsWith(dateKey));
     const availability = getDateAvailability(year, month, day);
 
-    // Show availability status
     let statusMessage = null;
+    let statusColor = '';
+    let statusBgColor = '';
+    let statusIcon = '';
+    
     if (availability) {
       if (availability.status === 'fully_booked') {
-        statusMessage = '📅 Fully Booked - No more slots available';
+        statusMessage = 'Fully Booked - No more slots available';
+        statusColor = '#C62828';
+        statusBgColor = '#FFEBEE';
+        statusIcon = 'lock';
       } else if (availability.status === 'unavailable') {
-        statusMessage = '🚫 Unavailable - Date is blocked';
+        statusMessage = 'Unavailable - Date is blocked';
+        statusColor = '#E65100';
+        statusBgColor = '#FFF3E0';
+        statusIcon = 'alert-circle';
       } else if (availability.status === 'available' && availability.max_bookings) {
-        statusMessage = `✅ ${availability.max_bookings} slots available`;
+        statusMessage = `${availability.max_bookings} slots available`;
+        statusColor = '#2E7D32';
+        statusBgColor = '#E8F5E9';
+        statusIcon = 'check-circle';
       }
-    }
-
-    if (dayEvents.length === 0 && !statusMessage) {
-      return (
-        <View style={styles.noEventsCard}>
-          <MaterialCommunityIcons name="calendar-blank" size={40} color="#C6C6C8" />
-          <Text style={styles.noEventsText}>No events on this day</Text>
-          <Text style={styles.noEventsSubtext}>Plan something special!</Text>
-        </View>
-      );
     }
 
     return (
       <View style={styles.eventsCard}>
-        <Text style={styles.eventsTitle}>
-          {selectedDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
-        </Text>
+        <View style={styles.eventsCardHeader}>
+          <Text style={styles.eventsCardTitle}>
+            {selectedDate.toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              month: 'long', 
+              day: 'numeric', 
+              year: 'numeric' 
+            })}
+          </Text>
+          <View style={styles.eventsCountBadge}>
+            <Text style={styles.eventsCountText}>{dayEvents.length}</Text>
+          </View>
+        </View>
         
         {statusMessage && (
-          <View style={[styles.statusMessage, { 
-            backgroundColor: availability?.status === 'fully_booked' ? '#FFEBEE' : 
-                            availability?.status === 'unavailable' ? '#FFF3E0' : '#E8F5E9'
-          }]}>
-            <Text style={[styles.statusMessageText, {
-              color: availability?.status === 'fully_booked' ? '#C62828' : 
-                     availability?.status === 'unavailable' ? '#E65100' : '#2E7D32'
-            }]}>
+          <View style={[styles.statusMessage, { backgroundColor: statusBgColor }]}>
+            <MaterialCommunityIcons 
+              name={statusIcon} 
+              size={16} 
+              color={statusColor} 
+            />
+            <Text style={[styles.statusMessageText, { color: statusColor }]}>
               {statusMessage}
             </Text>
           </View>
         )}
         
-        {dayEvents.map((event, index) => (
+        {dayEvents.length === 0 && !statusMessage ? (
+          <View style={styles.noEventsContainer}>
+            <MaterialCommunityIcons name="calendar-blank" size={48} color="#E0E0E0" />
+            <Text style={styles.noEventsTitle}>No Events</Text>
+            <Text style={styles.noEventsSubtext}>This day is available for booking</Text>
+          </View>
+        ) : (
+          dayEvents.map((event, index) => (
+            <TouchableOpacity 
+              key={event.id || index}
+              style={[styles.eventItem, { borderLeftColor: getEventTypeColor(event.type) }]}
+              activeOpacity={0.7}
+              onPress={() => {
+                if (event.id) {
+                  navigation.navigate('OrderDetail', { bookingId: event.id });
+                }
+              }}
+            >
+              <View style={styles.eventItemLeft}>
+                <View style={[styles.eventIcon, { backgroundColor: getEventTypeColor(event.type) + '20' }]}>
+                  <MaterialCommunityIcons 
+                    name={getEventTypeIcon(event.type)} 
+                    size={20} 
+                    color={getEventTypeColor(event.type)} 
+                  />
+                </View>
+                <View style={styles.eventDetails}>
+                  <Text style={styles.eventTitle} numberOfLines={1}>{event.title}</Text>
+                  <View style={styles.eventMeta}>
+                    <MaterialCommunityIcons name="clock-outline" size={12} color="#8A8A8E" />
+                    <Text style={styles.eventMetaText}>{event.time}</Text>
+                    {event.venue && (
+                      <>
+                        <MaterialCommunityIcons name="map-marker-outline" size={12} color="#8A8A8E" />
+                        <Text style={styles.eventMetaText}>{event.venue}</Text>
+                      </>
+                    )}
+                  </View>
+                </View>
+              </View>
+              <View style={[styles.eventStatusBadge, { backgroundColor: getEventTypeColor(event.type) + '20' }]}>
+                <Text style={[styles.eventStatusText, { color: getEventTypeColor(event.type) }]}>
+                  {event.status || 'Booked'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          ))
+        )}
+        
+        {dayEvents.length > 0 && (
           <TouchableOpacity 
-            key={event.id || index}
-            style={[styles.eventItem, { borderLeftColor: getEventTypeColor(event.type) }]}
-            activeOpacity={0.7}
-            onPress={() => {
-              if (event.id) {
-                navigation.navigate('OrderDetail', { bookingId: event.id });
-              }
-            }}
+            style={styles.viewAllButton}
+            onPress={() => navigation.navigate('Bookings')}
           >
-            <View style={styles.eventItemLeft}>
-              <View style={[styles.eventIcon, { backgroundColor: getEventTypeColor(event.type) + '15' }]}>
-                <MaterialCommunityIcons 
-                  name={getEventTypeIcon(event.type)} 
-                  size={20} 
-                  color={getEventTypeColor(event.type)} 
-                />
-              </View>
-              <View>
-                <Text style={styles.eventTitle}>{event.title}</Text>
-                <Text style={styles.eventTime}>{event.time} • {event.venue || 'TBD'}</Text>
-              </View>
-            </View>
-            <View style={[styles.eventTypeBadge, { backgroundColor: getEventTypeColor(event.type) + '15' }]}>
-              <Text style={[styles.eventTypeText, { color: getEventTypeColor(event.type) }]}>
-                {event.status || 'Booked'}
-              </Text>
-            </View>
+            <Text style={styles.viewAllText}>View All Events</Text>
+            <Feather name="chevron-right" size={16} color="#FF6B9D" />
           </TouchableOpacity>
-        ))}
+        )}
       </View>
     );
   };
 
   const calendarDays = buildCalendarDays();
 
-  // If guest, show login prompt
+  // Guest mode
   if (isGuest) {
     return (
       <View style={styles.container}>
         <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
         <LinearGradient
-          colors={['#FFFFFF', '#FFF8FA', '#FFF0F5', '#FFE8EE']}
+          colors={['#FFFFFF', '#FFF8FA', '#FFF0F5']}
           style={styles.gradient}
         >
-          <View style={styles.header}>
-            <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-              <Feather name="arrow-left" size={22} color="#FF6B9D" />
-            </TouchableOpacity>
-            <Text style={styles.headerTitle}>Calendar</Text>
-            <View style={{ width: 40 }} />
-          </View>
           <View style={styles.guestContainer}>
-            <MaterialCommunityIcons name="calendar-lock" size={60} color="#C6C6C8" />
-            <Text style={styles.guestTitle}>Login to View Calendar</Text>
+            <MaterialCommunityIcons name="calendar-lock" size={64} color="#D1D1D6" />
+            <Text style={styles.guestTitle}>Access Calendar</Text>
             <Text style={styles.guestText}>
-              Please login to view your event calendar and schedule.
+              Sign in to view your event calendar, manage bookings, and stay organized.
             </Text>
             <TouchableOpacity 
               style={styles.guestLoginButton}
@@ -481,6 +470,8 @@ const CalendarScreen = ({ navigation }) => {
               <LinearGradient
                 colors={['#FF6B9D', '#FF8FB1']}
                 style={styles.guestLoginGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
               >
                 <Text style={styles.guestLoginText}>Sign In</Text>
               </LinearGradient>
@@ -493,9 +484,9 @@ const CalendarScreen = ({ navigation }) => {
 
   if (loading) {
     return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+      <View style={[styles.container, styles.centered]}>
         <ActivityIndicator size="large" color="#FF6B9D" />
-        <Text style={{ marginTop: 16, color: '#8E8E93' }}>Loading calendar...</Text>
+        <Text style={styles.loadingText}>Loading your calendar...</Text>
       </View>
     );
   }
@@ -504,47 +495,49 @@ const CalendarScreen = ({ navigation }) => {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
       <LinearGradient
-        colors={['#FFFFFF', '#FFF8FA', '#FFF0F5', '#FFE8EE']}
+        colors={['#FFFFFF', '#FFF8FA']}
         style={styles.gradient}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
       >
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity 
-            onPress={() => navigation.goBack()} 
-            style={styles.backButton}
-            activeOpacity={0.7}
-          >
-            <Feather name="arrow-left" size={22} color="#FF6B9D" />
-          </TouchableOpacity>
-          
-          <View style={styles.headerCenter}>
+          <View style={styles.headerLeft}>
             <Text style={styles.headerTitle}>Calendar</Text>
-            <View style={styles.headerBadge}>
-              <Text style={styles.headerBadgeText}>{getYear()}</Text>
+            <View style={styles.yearBadge}>
+              <Text style={styles.yearBadgeText}>{getYear()}</Text>
             </View>
           </View>
           
-          <TouchableOpacity 
-            onPress={goToToday} 
-            style={styles.todayButton}
-            activeOpacity={0.7}
-          >
-            <LinearGradient
-              colors={['#FF6B9D', '#FF8FB1']}
-              style={styles.todayGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
+          <View style={styles.headerRight}>
+            <TouchableOpacity 
+              onPress={goToToday} 
+              style={styles.todayButton}
+              activeOpacity={0.7}
             >
-              <Text style={styles.todayButtonText}>Today</Text>
-            </LinearGradient>
-          </TouchableOpacity>
+              <LinearGradient
+                colors={['#FF6B9D', '#FF8FB1']}
+                style={styles.todayGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                <Text style={styles.todayButtonText}>Today</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView 
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor="#FF6B9D"
+              colors={['#FF6B9D']}
+            />
+          }
         >
           {/* Month Navigation */}
           <Animated.View 
@@ -561,7 +554,7 @@ const CalendarScreen = ({ navigation }) => {
               style={styles.navButton}
               activeOpacity={0.7}
             >
-              <MaterialCommunityIcons name="chevron-left" size={28} color="#FF6B9D" />
+              <MaterialCommunityIcons name="chevron-left" size={24} color="#FF6B9D" />
             </TouchableOpacity>
 
             <View style={styles.monthYearContainer}>
@@ -574,65 +567,85 @@ const CalendarScreen = ({ navigation }) => {
               style={styles.navButton}
               activeOpacity={0.7}
             >
-              <MaterialCommunityIcons name="chevron-right" size={28} color="#FF6B9D" />
+              <MaterialCommunityIcons name="chevron-right" size={24} color="#FF6B9D" />
             </TouchableOpacity>
           </Animated.View>
 
-          {/* Stats Summary */}
+          {/* Stats / Insights - VERTICAL FORM STYLE */}
           <Animated.View 
             style={[
-              styles.statsCard,
+              styles.insightsCard,
               {
                 opacity: fadeAnim,
                 transform: [{ translateY: slideAnim }],
               }
             ]}
           >
-            <View style={styles.statItem}>
-              <LinearGradient
-                colors={['#E8F5E9', '#C8E6C9']}
-                style={styles.statIconGradient}
-              >
-                <MaterialCommunityIcons name="calendar-check" size={22} color="#4CAF50" />
-              </LinearGradient>
-              <View>
-                <Text style={styles.statNumber}>{stats.availableCount - stats.fullyBookedCount}</Text>
-                <Text style={styles.statLabel}>Available</Text>
+            <View style={styles.insightsHeader}>
+              <MaterialCommunityIcons name="chart-bar" size={18} color="#FF6B9D" />
+              <Text style={styles.insightsTitle}>Month Overview</Text>
+            </View>
+
+            {/* Available Days */}
+            <View style={styles.insightRow}>
+              <View style={styles.insightIconWrapper}>
+                <View style={[styles.insightIcon, styles.insightIconAvailable]}>
+                  <MaterialCommunityIcons name="calendar-check" size={18} color="#4CAF50" />
+                </View>
+              </View>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightLabel}>Available Days</Text>
+                <Text style={styles.insightValue}>{stats.availableCount - stats.fullyBookedCount} days</Text>
               </View>
             </View>
 
-            <View style={styles.statDivider} />
+            <View style={styles.insightDivider} />
 
-            <View style={styles.statItem}>
-              <LinearGradient
-                colors={['#FFEBEE', '#FFCDD2']}
-                style={styles.statIconGradient}
-              >
-                <MaterialCommunityIcons name="calendar-remove" size={22} color="#FF4444" />
-              </LinearGradient>
-              <View>
-                <Text style={styles.statNumber}>{stats.fullyBookedCount + stats.bookedCount}</Text>
-                <Text style={styles.statLabel}>Booked / Full</Text>
+            {/* Booked Days */}
+            <View style={styles.insightRow}>
+              <View style={styles.insightIconWrapper}>
+                <View style={[styles.insightIcon, styles.insightIconBooked]}>
+                  <MaterialCommunityIcons name="calendar-remove" size={18} color="#FF6B6B" />
+                </View>
+              </View>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightLabel}>Booked Days</Text>
+                <Text style={styles.insightValue}>{stats.fullyBookedCount + stats.bookedCount} days</Text>
               </View>
             </View>
 
-            <View style={styles.statDivider} />
+            <View style={styles.insightDivider} />
 
-            <View style={styles.statItem}>
-              <LinearGradient
-                colors={['#FFF3E0', '#FFE0B2']}
-                style={styles.statIconGradient}
-              >
-                <MaterialCommunityIcons name="calendar-star" size={22} color="#FF9800" />
-              </LinearGradient>
-              <View>
-                <Text style={styles.statNumber}>{stats.eventCount}</Text>
-                <Text style={styles.statLabel}>Events</Text>
+            {/* Total Events */}
+            <View style={styles.insightRow}>
+              <View style={styles.insightIconWrapper}>
+                <View style={[styles.insightIcon, styles.insightIconEvents]}>
+                  <MaterialCommunityIcons name="calendar-star" size={18} color="#FF9800" />
+                </View>
+              </View>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightLabel}>Total Events</Text>
+                <Text style={styles.insightValue}>{stats.eventCount} events</Text>
+              </View>
+            </View>
+
+            <View style={styles.insightDivider} />
+
+            {/* Fully Booked */}
+            <View style={styles.insightRow}>
+              <View style={styles.insightIconWrapper}>
+                <View style={[styles.insightIcon, styles.insightIconFull]}>
+                  <MaterialCommunityIcons name="lock" size={18} color="#C62828" />
+                </View>
+              </View>
+              <View style={styles.insightContent}>
+                <Text style={styles.insightLabel}>Fully Booked</Text>
+                <Text style={[styles.insightValue, { color: '#C62828' }]}>{stats.fullyBookedCount} days</Text>
               </View>
             </View>
           </Animated.View>
 
-          {/* Calendar Card */}
+          {/* Calendar Grid */}
           <Animated.View 
             style={[
               styles.calendarCard,
@@ -642,7 +655,6 @@ const CalendarScreen = ({ navigation }) => {
               }
             ]}
           >
-            {/* Weekday Headers */}
             <View style={styles.weekRow}>
               {weekDays.map((day, index) => (
                 <Text
@@ -657,61 +669,63 @@ const CalendarScreen = ({ navigation }) => {
               ))}
             </View>
 
-            {/* Calendar Days Grid */}
             <View style={styles.calendarGrid}>
               {calendarDays.map((item) => {
                 if (item.type === 'empty') {
                   return <View key={item.key} style={styles.calendarDay} />;
                 }
                 
-                // Determine day styles based on status
-                let dayStyle = styles.availableDay;
-                let textStyle = styles.dayText;
-                let showIndicator = null;
-                
-                if (item.fullyBooked) {
-                  dayStyle = styles.fullyBookedDay;
-                  textStyle = styles.fullyBookedText;
-                  showIndicator = (
-                    <View style={styles.fullyBookedIndicator}>
-                      <MaterialCommunityIcons name="lock" size={10} color="#FFF" />
-                    </View>
-                  );
-                } else if (item.unavailable) {
-                  dayStyle = styles.unavailableDay;
-                  textStyle = styles.unavailableText;
-                  showIndicator = (
-                    <View style={styles.unavailableIndicator}>
-                      <MaterialCommunityIcons name="close" size={10} color="#FFF" />
-                    </View>
-                  );
-                } else if (item.booked) {
-                  dayStyle = styles.bookedDay;
-                  textStyle = styles.bookedText;
-                } else if (item.limitedSlots) {
-                  dayStyle = styles.limitedSlotsDay;
-                  textStyle = styles.dayText;
-                  showIndicator = (
-                    <View style={styles.limitedSlotsIndicator}>
-                      <Text style={styles.limitedSlotsText}>Limited</Text>
-                    </View>
-                  );
-                }
+                let dayStyle = [styles.calendarDay];
+                let textStyle = [styles.dayText];
+                let statusIndicator = null;
                 
                 if (item.today) {
-                  dayStyle = styles.todayDay;
-                  textStyle = styles.todayText;
+                  dayStyle.push(styles.todayDay);
+                  textStyle.push(styles.todayText);
                 }
                 
                 if (item.selected) {
-                  dayStyle = styles.selectedDay;
-                  textStyle = styles.selectedText;
+                  dayStyle.push(styles.selectedDay);
+                  textStyle.push(styles.selectedText);
+                }
+                
+                if (item.fullyBooked && !item.selected) {
+                  dayStyle.push(styles.fullyBookedDay);
+                  textStyle.push(styles.fullyBookedText);
+                } else if (item.unavailable && !item.selected) {
+                  dayStyle.push(styles.unavailableDay);
+                  textStyle.push(styles.unavailableText);
+                } else if (item.booked && !item.selected && !item.today) {
+                  dayStyle.push(styles.bookedDay);
+                  textStyle.push(styles.bookedText);
+                } else if (item.limitedSlots && !item.selected && !item.today) {
+                  dayStyle.push(styles.limitedSlotsDay);
+                }
+
+                if (item.fullyBooked) {
+                  statusIndicator = (
+                    <View style={styles.statusIndicatorFull}>
+                      <MaterialCommunityIcons name="lock" size={8} color="#FFF" />
+                    </View>
+                  );
+                } else if (item.unavailable) {
+                  statusIndicator = (
+                    <View style={styles.statusIndicatorUnavailable}>
+                      <MaterialCommunityIcons name="close" size={8} color="#FFF" />
+                    </View>
+                  );
+                } else if (item.limitedSlots) {
+                  statusIndicator = (
+                    <View style={styles.statusIndicatorLimited}>
+                      <Text style={styles.statusIndicatorText}>L</Text>
+                    </View>
+                  );
                 }
 
                 return (
                   <TouchableOpacity
                     key={item.key}
-                    style={[styles.calendarDay, dayStyle]}
+                    style={dayStyle}
                     onPress={() => handleDateSelect(item.year, item.month, item.day)}
                     activeOpacity={0.7}
                     disabled={item.unavailable}
@@ -719,66 +733,41 @@ const CalendarScreen = ({ navigation }) => {
                     <Text style={textStyle}>
                       {item.day}
                     </Text>
-                    
-                    {showIndicator}
-                    
-                    {item.hasEvent && !item.fullyBooked && !item.unavailable && (
+                    {statusIndicator}
+                    {item.hasEvent && !item.fullyBooked && !item.unavailable && !item.today && (
                       <View style={styles.eventDot} />
                     )}
                   </TouchableOpacity>
                 );
               })}
             </View>
-          </Animated.View>
 
-          {/* Events for Selected Date */}
-          {renderEventsForSelectedDate()}
-
-          {/* Legend */}
-          <Animated.View 
-            style={[
-              styles.legendCard,
-              {
-                opacity: fadeAnim,
-                transform: [{ translateY: slideAnim }],
-              }
-            ]}
-          >
-            <View style={styles.legendHeader}>
-              <Text style={styles.legendTitle}>Legend</Text>
-              <View style={styles.legendDivider} />
-            </View>
-            <View style={styles.legendItems}>
+            <View style={styles.legendContainer}>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, styles.legendDotAvailable]} />
-                <Text style={styles.legendText}>Available</Text>
+                <Text style={styles.legendText}>Free</Text>
               </View>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, styles.legendDotBooked]} />
                 <Text style={styles.legendText}>Booked</Text>
               </View>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, styles.legendDotFullyBooked]} />
-                <Text style={styles.legendText}>Fully Booked</Text>
+                <View style={[styles.legendDot, styles.legendDotFull]} />
+                <Text style={styles.legendText}>Full</Text>
               </View>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, styles.legendDotUnavailable]} />
-                <Text style={styles.legendText}>Unavailable</Text>
+                <Text style={styles.legendText}>Closed</Text>
               </View>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, styles.legendDotLimited]} />
-                <Text style={styles.legendText}>Limited Slots</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, styles.legendDotToday]} />
-                <Text style={styles.legendText}>Today</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, styles.legendDotEvent]} />
-                <Text style={styles.legendText}>Has Event</Text>
+                <Text style={styles.legendText}>Limited</Text>
               </View>
             </View>
           </Animated.View>
+
+          {/* Events for Selected Date */}
+          {renderEventsForSelectedDate()}
 
           {/* Quick Actions */}
           <Animated.View 
@@ -809,13 +798,10 @@ const CalendarScreen = ({ navigation }) => {
             <TouchableOpacity 
               style={styles.quickActionButton}
               activeOpacity={0.7}
-              onPress={() => {
-                loadCalendarData();
-                Alert.alert('Refreshed', 'Calendar data has been refreshed');
-              }}
+              onPress={onRefresh}
             >
               <LinearGradient
-                colors={['#4CAF50', '#66BB6A']}
+                colors={['#6C63FF', '#7B73FF']}
                 style={styles.quickActionGradient}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
@@ -825,6 +811,8 @@ const CalendarScreen = ({ navigation }) => {
               </LinearGradient>
             </TouchableOpacity>
           </Animated.View>
+
+          <View style={styles.bottomSpacer} />
         </ScrollView>
       </LinearGradient>
     </View>
@@ -834,58 +822,63 @@ const CalendarScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: '#FFFFFF',
   },
   gradient: {
     flex: 1,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 14,
+    color: '#8E8E93',
+    fontWeight: '500',
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingTop: Platform.OS === 'ios' ? 50 : 20,
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     paddingBottom: 16,
   },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFF0F5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  headerCenter: {
+  headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '700',
     color: '#1C1C1E',
+    letterSpacing: -0.5,
   },
-  headerBadge: {
-    backgroundColor: '#FFF0F5',
+  yearBadge: {
+    backgroundColor: '#F0F0F5',
     paddingHorizontal: 10,
     paddingVertical: 3,
     borderRadius: 12,
   },
-  headerBadgeText: {
+  yearBadgeText: {
     fontSize: 10,
     fontWeight: '600',
-    color: '#FF6B9D',
+    color: '#8E8E93',
+    letterSpacing: 0.5,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   todayButton: {
     borderRadius: 20,
     overflow: 'hidden',
     shadowColor: '#FF6B9D',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 4,
   },
@@ -898,30 +891,33 @@ const styles = StyleSheet.create({
   todayButtonText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#FFF',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingBottom: 100,
+    paddingHorizontal: 20,
+    paddingBottom: 40,
   },
   navigationCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    padding: 16,
+    borderRadius: 16,
+    padding: 14,
     marginBottom: 16,
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#F0F0F5',
   },
   navButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#FFF0F5',
     justifyContent: 'center',
     alignItems: 'center',
@@ -930,65 +926,102 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   monthText: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: '#1C1C1E',
+    letterSpacing: -0.3,
   },
   yearText: {
-    fontSize: 14,
-    color: '#8A8A8E',
-    marginTop: 2,
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 1,
+    fontWeight: '500',
   },
-  statsCard: {
-    flexDirection: 'row',
+  
+  // ===== INSIGHTS - VERTICAL FORM STYLE =====
+  insightsCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 16,
     marginBottom: 16,
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#F0F0F5',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  statItem: {
-    flex: 1,
+  insightsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
+    marginBottom: 14,
   },
-  statIconGradient: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  insightsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  insightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  insightIconWrapper: {
+    width: 40,
+    alignItems: 'center',
+  },
+  insightIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  statNumber: {
-    fontSize: 18,
-    fontWeight: '800',
+  insightIconAvailable: {
+    backgroundColor: '#E8F5E9',
+  },
+  insightIconBooked: {
+    backgroundColor: '#FFEBEE',
+  },
+  insightIconEvents: {
+    backgroundColor: '#FFF3E0',
+  },
+  insightIconFull: {
+    backgroundColor: '#FFEBEE',
+  },
+  insightContent: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  insightLabel: {
+    fontSize: 14,
+    fontWeight: '500',
     color: '#1C1C1E',
   },
-  statLabel: {
-    fontSize: 10,
-    color: '#8A8A8E',
-    marginTop: 1,
+  insightValue: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
   },
-  statDivider: {
-    width: 1,
-    height: 40,
-    backgroundColor: '#F0F0F0',
+  insightDivider: {
+    height: 1,
+    backgroundColor: '#F0F0F5',
   },
+
   calendarCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 24,
+    borderRadius: 16,
     padding: 16,
     marginBottom: 16,
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#F0F0F5',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   weekRow: {
     flexDirection: 'row',
@@ -997,10 +1030,11 @@ const styles = StyleSheet.create({
   weekdayText: {
     flex: 1,
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    color: '#8A8A8E',
+    color: '#8E8E93',
     letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   weekendText: {
     color: '#FF6B9D',
@@ -1014,132 +1048,214 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    borderRadius: 25,
+    borderRadius: 24,
     position: 'relative',
-  },
-  availableDay: {
-    backgroundColor: 'transparent',
-  },
-  bookedDay: {
-    backgroundColor: '#FFF3E0',
-  },
-  fullyBookedDay: {
-    backgroundColor: '#FFEBEE',
-  },
-  unavailableDay: {
-    backgroundColor: '#F5F5F5',
-  },
-  limitedSlotsDay: {
-    backgroundColor: '#E8F5E9',
-  },
-  todayDay: {
-    backgroundColor: '#FF6B9D',
-  },
-  selectedDay: {
-    borderWidth: 2,
-    borderColor: '#FF6B9D',
-    backgroundColor: '#FFF0F5',
   },
   dayText: {
     fontSize: 14,
     fontWeight: '500',
     color: '#1C1C1E',
   },
-  bookedText: {
-    color: '#E65100',
-  },
-  fullyBookedText: {
-    color: '#C62828',
-  },
-  unavailableText: {
-    color: '#757575',
+  todayDay: {
+    backgroundColor: '#FF6B9D',
   },
   todayText: {
     color: '#FFFFFF',
     fontWeight: '700',
   },
+  selectedDay: {
+    backgroundColor: '#FFF0F5',
+    borderWidth: 2,
+    borderColor: '#FF6B9D',
+  },
   selectedText: {
     color: '#FF6B9D',
     fontWeight: '700',
   },
-  bookedIndicator: {
-    position: 'absolute',
-    bottom: 4,
-    right: 4,
+  bookedDay: {
+    backgroundColor: '#FFF3E0',
   },
-  fullyBookedIndicator: {
+  bookedText: {
+    color: '#E65100',
+    fontWeight: '600',
+  },
+  fullyBookedDay: {
+    backgroundColor: '#FFEBEE',
+  },
+  fullyBookedText: {
+    color: '#C62828',
+    fontWeight: '600',
+  },
+  unavailableDay: {
+    backgroundColor: '#F5F5F5',
+  },
+  unavailableText: {
+    color: '#9E9E9E',
+  },
+  limitedSlotsDay: {
+    backgroundColor: '#E8F5E9',
+  },
+  statusIndicatorFull: {
     position: 'absolute',
     top: 2,
     right: 2,
     backgroundColor: '#C62828',
     borderRadius: 8,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    width: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  unavailableIndicator: {
+  statusIndicatorUnavailable: {
     position: 'absolute',
     top: 2,
     right: 2,
-    backgroundColor: '#757575',
+    backgroundColor: '#9E9E9E',
     borderRadius: 8,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    width: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  limitedSlotsIndicator: {
+  statusIndicatorLimited: {
     position: 'absolute',
-    bottom: 2,
+    top: 2,
     right: 2,
     backgroundColor: '#2E7D32',
-    borderRadius: 4,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
+    borderRadius: 8,
+    width: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  limitedSlotsText: {
-    fontSize: 6,
-    color: '#FFFFFF',
+  statusIndicatorText: {
+    fontSize: 8,
     fontWeight: '700',
+    color: '#FFFFFF',
   },
   eventDot: {
     position: 'absolute',
     bottom: 4,
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
     backgroundColor: '#FF6B9D',
+  },
+  legendContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F5',
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  legendDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  legendDotAvailable: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#4CAF50',
+  },
+  legendDotBooked: {
+    backgroundColor: '#FFF3E0',
+    borderColor: '#FF9800',
+  },
+  legendDotFull: {
+    backgroundColor: '#FFEBEE',
+    borderColor: '#C62828',
+  },
+  legendDotUnavailable: {
+    backgroundColor: '#F5F5F5',
+    borderColor: '#9E9E9E',
+  },
+  legendDotLimited: {
+    backgroundColor: '#E8F5E9',
+    borderColor: '#2E7D32',
+  },
+  legendText: {
+    fontSize: 10,
+    color: '#8E8E93',
+    fontWeight: '500',
   },
   eventsCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 16,
     marginBottom: 16,
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
+    borderWidth: 1,
+    borderColor: '#F0F0F5',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
-  eventsTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1C1C1E',
+  eventsCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 12,
   },
+  eventsCardTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  eventsCountBadge: {
+    backgroundColor: '#F0F0F5',
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  eventsCountText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#8E8E93',
+  },
   statusMessage: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 10,
     marginBottom: 12,
   },
   statusMessageText: {
     fontSize: 12,
     fontWeight: '500',
-    textAlign: 'center',
+  },
+  noEventsContainer: {
+    alignItems: 'center',
+    paddingVertical: 24,
+  },
+  noEventsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+    marginTop: 12,
+  },
+  noEventsSubtext: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 4,
   },
   eventItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 12,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     backgroundColor: '#F8F9FA',
     borderRadius: 12,
     marginBottom: 8,
@@ -1149,6 +1265,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
   },
   eventIcon: {
     width: 40,
@@ -1157,128 +1274,47 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  eventDetails: {
+    flex: 1,
+  },
   eventTitle: {
     fontSize: 14,
     fontWeight: '600',
     color: '#1C1C1E',
   },
-  eventTime: {
-    fontSize: 11,
-    color: '#8A8A8E',
+  eventMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginTop: 2,
   },
-  eventTypeBadge: {
+  eventMetaText: {
+    fontSize: 11,
+    color: '#8E8E93',
+  },
+  eventStatusBadge: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
   },
-  eventTypeText: {
+  eventStatusText: {
     fontSize: 10,
     fontWeight: '600',
   },
-  noEventsCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 30,
-    marginBottom: 16,
+  viewAllButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  noEventsText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1C1C1E',
-    marginTop: 12,
-  },
-  noEventsSubtext: {
-    fontSize: 12,
-    color: '#8A8A8E',
+    justifyContent: 'center',
+    gap: 4,
+    paddingTop: 12,
     marginTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F5',
   },
-  legendCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    marginBottom: 16,
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 4,
-  },
-  legendHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-    gap: 12,
-  },
-  legendTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
-  legendDivider: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#F0F0F0',
-  },
-  legendItems: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  legendDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-  },
-  legendDotAvailable: {
-    borderWidth: 1,
-    borderColor: '#4CAF50',
-    backgroundColor: '#E8F5E9',
-  },
-  legendDotBooked: {
-    borderWidth: 1,
-    borderColor: '#FF9800',
-    backgroundColor: '#FFF3E0',
-  },
-  legendDotFullyBooked: {
-    borderWidth: 1,
-    borderColor: '#C62828',
-    backgroundColor: '#FFEBEE',
-  },
-  legendDotUnavailable: {
-    borderWidth: 1,
-    borderColor: '#757575',
-    backgroundColor: '#F5F5F5',
-  },
-  legendDotLimited: {
-    borderWidth: 1,
-    borderColor: '#2E7D32',
-    backgroundColor: '#E8F5E9',
-  },
-  legendDotToday: {
-    borderWidth: 1,
-    borderColor: '#FF6B9D',
-    backgroundColor: '#FF6B9D',
-  },
-  legendDotEvent: {
-    borderWidth: 1,
-    borderColor: '#FF6B9D',
-    backgroundColor: '#FF6B9D',
-  },
-  legendText: {
-    fontSize: 11,
-    color: '#6B6B6E',
+  viewAllText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FF6B9D',
   },
   quickActions: {
     flexDirection: 'row',
@@ -1287,11 +1323,11 @@ const styles = StyleSheet.create({
   },
   quickActionButton: {
     flex: 1,
-    borderRadius: 16,
+    borderRadius: 12,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.08,
     shadowRadius: 4,
     elevation: 2,
   },
@@ -1306,8 +1342,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: '#FFFFFF',
+    letterSpacing: 0.3,
   },
-  // Guest mode styles
+  bottomSpacer: {
+    height: 20,
+  },
   guestContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1315,17 +1354,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
   },
   guestTitle: {
-    fontSize: 20,
+    fontSize: 22,
     fontWeight: '700',
     color: '#1C1C1E',
-    marginTop: 16,
+    marginTop: 20,
     marginBottom: 8,
   },
   guestText: {
     fontSize: 14,
     color: '#8E8E93',
     textAlign: 'center',
-    marginBottom: 24,
+    lineHeight: 22,
+    marginBottom: 28,
   },
   guestLoginButton: {
     borderRadius: 25,
@@ -1333,13 +1373,14 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   guestLoginGradient: {
-    paddingVertical: 14,
+    paddingVertical: 16,
     alignItems: 'center',
   },
   guestLoginText: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
+    letterSpacing: 0.5,
   },
 });
 

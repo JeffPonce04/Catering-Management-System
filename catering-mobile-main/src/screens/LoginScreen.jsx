@@ -442,7 +442,7 @@ const LoginScreen = ({ navigation }) => {
           </TouchableWithoutFeedback>
         </Modal>
 
-        {/* Register Modal */}
+        {/* Register Modal - Compact Design */}
         <Modal 
           animationType="slide" 
           transparent={true} 
@@ -451,54 +451,65 @@ const LoginScreen = ({ navigation }) => {
         >
           <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
             <View style={styles.modalOverlay}>
-              <ScrollView 
-                contentContainerStyle={styles.modalScrollContent} 
-                showsVerticalScrollIndicator={false}
-                keyboardShouldPersistTaps="handled"
+              <KeyboardAvoidingView 
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                style={styles.modalKeyboardView}
               >
                 <View style={styles.modalContent}>
-                  <LinearGradient colors={['#ff6b9d', '#ff8fb1']} style={styles.modalHeader} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                  <LinearGradient 
+                    colors={['#ff6b9d', '#ff8fb1']} 
+                    style={styles.modalHeader} 
+                    start={{ x: 0, y: 0 }} 
+                    end={{ x: 1, y: 0 }}
+                  >
                     <Text style={styles.modalHeaderTitle}>Create Account</Text>
-                    <TouchableOpacity onPress={() => setRegisterModalVisible(false)}>
+                    <TouchableOpacity 
+                      onPress={() => setRegisterModalVisible(false)}
+                      style={styles.modalCloseButton}
+                    >
                       <Feather name="x" size={24} color="#FFF" />
                     </TouchableOpacity>
                   </LinearGradient>
                   
-                  <View style={styles.modalBody}>
-                    <Text style={styles.modalSubtitle}>Join us today</Text>
+                  <ScrollView 
+                    contentContainerStyle={styles.modalBody}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"x1
+                  >
+                    <Text style={styles.modalSubtitle}>Sign up to Get Started</Text>
                     
-                    <View style={styles.modalInputGroup}>
-                      <Text style={styles.modalLabel}>First Name</Text>
-                      <View style={styles.modalInputContainer}>
-                        <Feather name="user" size={18} color="#ff6b9d" />
-                        <TextInput 
-                          style={styles.modalInput} 
-                          placeholder="Enter first name" 
-                          placeholderTextColor="#b0b0b0" 
-                          value={regFirstName} 
-                          onChangeText={setRegFirstName}
-                        />
+                    <View style={styles.modalRow}>
+                      <View style={[styles.modalInputGroup, styles.modalInputHalf]}>
+                        <Text style={styles.modalLabel}>First Name</Text>
+                        <View style={styles.modalInputContainer}>
+                          <TextInput 
+                            style={styles.modalInput} 
+                            placeholder="First name" 
+                            placeholderTextColor="#b0b0b0" 
+                            value={regFirstName} 
+                            onChangeText={setRegFirstName}
+                          />
+                        </View>
                       </View>
-                    </View>
-                    
-                    <View style={styles.modalInputGroup}>
-                      <Text style={styles.modalLabel}>Last Name</Text>
-                      <View style={styles.modalInputContainer}>
-                        <Feather name="user" size={18} color="#ff6b9d" />
-                        <TextInput 
-                          style={styles.modalInput} 
-                          placeholder="Enter last name" 
-                          placeholderTextColor="#b0b0b0" 
-                          value={regLastName} 
-                          onChangeText={setRegLastName}
-                        />
+                      
+                      <View style={[styles.modalInputGroup, styles.modalInputHalf]}>
+                        <Text style={styles.modalLabel}>Last Name</Text>
+                        <View style={styles.modalInputContainer}>
+                          <TextInput 
+                            style={styles.modalInput} 
+                            placeholder="Last name" 
+                            placeholderTextColor="#b0b0b0" 
+                            value={regLastName} 
+                            onChangeText={setRegLastName}
+                          />
+                        </View>
                       </View>
                     </View>
                     
                     <View style={styles.modalInputGroup}>
                       <Text style={styles.modalLabel}>Email Address</Text>
                       <View style={styles.modalInputContainer}>
-                        <Feather name="mail" size={18} color="#ff6b9d" />
+                        <Feather name="mail" size={16} color="#ff6b9d" />
                         <TextInput 
                           style={styles.modalInput} 
                           placeholder="Enter email address" 
@@ -512,9 +523,9 @@ const LoginScreen = ({ navigation }) => {
                     </View>
                     
                     <View style={styles.modalInputGroup}>
-                      <Text style={styles.modalLabel}>Phone Number (Optional)</Text>
+                      <Text style={styles.modalLabel}>Phone Number <Text style={styles.optionalText}>(Optional)</Text></Text>
                       <View style={styles.modalInputContainer}>
-                        <Feather name="phone" size={18} color="#ff6b9d" />
+                        <Feather name="phone" size={16} color="#ff6b9d" />
                         <TextInput 
                           style={styles.modalInput} 
                           placeholder="Enter phone number" 
@@ -526,43 +537,43 @@ const LoginScreen = ({ navigation }) => {
                       </View>
                     </View>
                     
-                    <View style={styles.modalInputGroup}>
-                      <Text style={styles.modalLabel}>Password</Text>
-                      <View style={styles.modalInputContainer}>
-                        <Feather name="lock" size={18} color="#ff6b9d" />
-                        <TextInput 
-                          style={[styles.modalInput, { flex: 1 }]} 
-                          placeholder="Enter password (min. 8 chars)" 
-                          placeholderTextColor="#b0b0b0" 
-                          value={regPassword} 
-                          onChangeText={setRegPassword} 
-                          secureTextEntry={!showRegPassword}
-                        />
-                        <TouchableOpacity onPress={() => setShowRegPassword(!showRegPassword)}>
-                          <Feather name={showRegPassword ? 'eye-off' : 'eye'} size={18} color="#ff6b9d" />
-                        </TouchableOpacity>
+                    <View style={styles.modalRow}>
+                      <View style={[styles.modalInputGroup, styles.modalInputHalf]}>
+                        <Text style={styles.modalLabel}>Password</Text>
+                        <View style={styles.modalInputContainer}>
+                          <TextInput 
+                            style={[styles.modalInput, { flex: 1 }]} 
+                            placeholder="Min 8 chars" 
+                            placeholderTextColor="#b0b0b0" 
+                            value={regPassword} 
+                            onChangeText={setRegPassword} 
+                            secureTextEntry={!showRegPassword}
+                          />
+                          <TouchableOpacity onPress={() => setShowRegPassword(!showRegPassword)}>
+                            <Feather name={showRegPassword ? 'eye-off' : 'eye'} size={16} color="#ff6b9d" />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                      
+                      <View style={[styles.modalInputGroup, styles.modalInputHalf]}>
+                        <Text style={styles.modalLabel}>Confirm</Text>
+                        <View style={styles.modalInputContainer}>
+                          <TextInput 
+                            style={[styles.modalInput, { flex: 1 }]} 
+                            placeholder="Confirm" 
+                            placeholderTextColor="#b0b0b0" 
+                            value={regConfirmPassword} 
+                            onChangeText={setRegConfirmPassword} 
+                            secureTextEntry={!showRegConfirmPassword}
+                          />
+                          <TouchableOpacity onPress={() => setShowRegConfirmPassword(!showRegConfirmPassword)}>
+                            <Feather name={showRegConfirmPassword ? 'eye-off' : 'eye'} size={16} color="#ff6b9d" />
+                          </TouchableOpacity>
+                        </View>
                       </View>
                     </View>
                     
-                    <View style={styles.modalInputGroup}>
-                      <Text style={styles.modalLabel}>Confirm Password</Text>
-                      <View style={styles.modalInputContainer}>
-                        <Feather name="lock" size={18} color="#ff6b9d" />
-                        <TextInput 
-                          style={[styles.modalInput, { flex: 1 }]} 
-                          placeholder="Confirm your password" 
-                          placeholderTextColor="#b0b0b0" 
-                          value={regConfirmPassword} 
-                          onChangeText={setRegConfirmPassword} 
-                          secureTextEntry={!showRegConfirmPassword}
-                        />
-                        <TouchableOpacity onPress={() => setShowRegConfirmPassword(!showRegConfirmPassword)}>
-                          <Feather name={showRegConfirmPassword ? 'eye-off' : 'eye'} size={18} color="#ff6b9d" />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                    
-                    <TouchableOpacity style={styles.termsContainer} onPress={() => setAgreeTerms(!agreeTerms)}>
+                    <TouchableOpacity style={styles.termsContainer} onPress={() => setAgreeTerms(!agreeTerms)} activeOpacity={0.7}>
                       <View style={[styles.termsCheckbox, agreeTerms && styles.termsCheckboxChecked]}>
                         {agreeTerms && <Feather name="check" size={10} color="#fff" />}
                       </View>
@@ -575,6 +586,7 @@ const LoginScreen = ({ navigation }) => {
                       style={styles.modalRegisterButton} 
                       onPress={handleRegister} 
                       disabled={isRegistering}
+                      activeOpacity={0.8}
                     >
                       <LinearGradient colors={['#ff6b9d', '#ff8fb1']} style={styles.modalRegisterGradient}>
                         {isRegistering ? (
@@ -591,9 +603,9 @@ const LoginScreen = ({ navigation }) => {
                         <Text style={styles.modalFooterLink}>Sign In</Text>
                       </TouchableOpacity>
                     </View>
-                  </View>
+                  </ScrollView>
                 </View>
-              </ScrollView>
+              </KeyboardAvoidingView>
             </View>
           </TouchableWithoutFeedback>
         </Modal>
@@ -842,44 +854,100 @@ const styles = StyleSheet.create({
     color: '#8a8a8e',
   },
   
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalScrollContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 20 },
+  // Register Modal - Compact Design
+  modalOverlay: { 
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.5)', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  modalKeyboardView: {
+    width: '100%',
+    alignItems: 'center',
+  },
   modalContent: { 
     backgroundColor: '#fff', 
     borderRadius: 32, 
     width: width - 32, 
+    maxHeight: height * 0.88,
     overflow: 'hidden', 
     shadowColor: '#000', 
     shadowOffset: { width: 0, height: 10 }, 
     shadowOpacity: 0.2, 
     shadowRadius: 20, 
-    elevation: 15 
+    elevation: 15,
   },
   modalHeader: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
     alignItems: 'center', 
-    paddingHorizontal: 24, 
-    paddingVertical: 18 
+    paddingHorizontal: 20, 
+    paddingVertical: 16,
   },
-  modalHeaderTitle: { fontSize: 20, fontWeight: '700', color: '#FFF' },
-  modalBody: { padding: 24 },
-  modalSubtitle: { fontSize: 14, color: '#8a8a8e', textAlign: 'center', marginBottom: 20 },
-  modalInputGroup: { marginBottom: 14 },
-  modalLabel: { fontSize: 12, fontWeight: '600', color: '#5a5a5e', marginBottom: 4 },
+  modalHeaderTitle: { 
+    fontSize: 18, 
+    fontWeight: '700', 
+    color: '#FFF' 
+  },
+  modalCloseButton: {
+    padding: 4,
+  },
+  modalBody: { 
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    paddingBottom: 20,
+  },
+  modalSubtitle: { 
+    fontSize: 13, 
+    color: '#8a8a8e', 
+    textAlign: 'center', 
+    marginBottom: 14,
+  },
+  modalRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalInputGroup: { 
+    marginBottom: 10,
+  },
+  modalInputHalf: {
+    flex: 1,
+  },
+  modalLabel: { 
+    fontSize: 12, 
+    fontWeight: '600', 
+    color: '#5a5a5e', 
+    marginBottom: 4,
+  },
+  optionalText: { 
+    fontSize: 11, 
+    color: '#b0b0b0', 
+    fontWeight: '400' 
+  },
   modalInputContainer: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    backgroundColor: '#f8f8f8', 
-    borderRadius: 14, 
-    borderWidth: 1, 
+    backgroundColor: '#f8f8fa', 
+    borderRadius: 12, 
+    borderWidth: 1.5, 
     borderColor: '#f0f0f0', 
-    paddingHorizontal: 14, 
-    height: 48,
-    gap: 10,
+    paddingHorizontal: 12, 
+    height: 42,
+    gap: 8,
   },
-  modalInput: { flex: 1, fontSize: 14, color: '#2d2d2d' },
-  termsContainer: { flexDirection: 'row', alignItems: 'center', marginBottom: 20, gap: 10 },
+  modalInput: { 
+    flex: 1, 
+    fontSize: 13, 
+    color: '#1a1a1a',
+    paddingVertical: 6,
+  },
+  termsContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    marginBottom: 12, 
+    gap: 8,
+    marginTop: 2,
+  },
   termsCheckbox: { 
     width: 20, 
     height: 20, 
@@ -890,15 +958,49 @@ const styles = StyleSheet.create({
     alignItems: 'center', 
     backgroundColor: '#fff' 
   },
-  termsCheckboxChecked: { backgroundColor: '#ff6b9d', borderColor: '#ff6b9d' },
-  termsText: { flex: 1, fontSize: 12, color: '#6b6b6e' },
-  termsLink: { color: '#ff6b9d', fontWeight: '600' },
-  modalRegisterButton: { borderRadius: 25, overflow: 'hidden', marginBottom: 16 },
-  modalRegisterGradient: { height: 50, justifyContent: 'center', alignItems: 'center' },
-  modalRegisterText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  modalFooter: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  modalFooterText: { fontSize: 13, color: '#8a8a8e' },
-  modalFooterLink: { fontSize: 13, color: '#ff6b9d', fontWeight: '700' },
+  termsCheckboxChecked: { 
+    backgroundColor: '#ff6b9d', 
+    borderColor: '#ff6b9d' 
+  },
+  termsText: { 
+    flex: 1, 
+    fontSize: 11, 
+    color: '#6b6b6e', 
+    lineHeight: 14,
+  },
+  termsLink: { 
+    color: '#ff6b9d', 
+    fontWeight: '600' 
+  },
+  modalRegisterButton: { 
+    borderRadius: 25, 
+    overflow: 'hidden', 
+    marginBottom: 12,
+  },
+  modalRegisterGradient: { 
+    height: 46, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  modalRegisterText: { 
+    color: '#fff', 
+    fontSize: 15, 
+    fontWeight: '700' 
+  },
+  modalFooter: { 
+    flexDirection: 'row', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  modalFooterText: { 
+    fontSize: 12, 
+    color: '#8a8a8e' 
+  },
+  modalFooterLink: { 
+    fontSize: 12, 
+    color: '#ff6b9d', 
+    fontWeight: '700' 
+  },
 });
 
 export default LoginScreen;
