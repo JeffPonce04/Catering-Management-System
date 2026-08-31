@@ -9319,3 +9319,7 @@
 #46 C:/Users/USER/OneDrive/Desktop/Capstone-Project2k2627/backend/vendor/laravel/framework/src/Illuminate/Foundation/resources/server.php(23): require_once('C://Users//USER//O...')
 #47 {main}
 "} 
+[2026-08-30 06:21:35] local.INFO: Image stored at: menu-items/L3Plk5gK2lBDI1UcLh59BBNx65fqd9xA3Z6S8h8q.jpg  
+[2026-08-30 06:21:35] local.INFO: Full URL: http://localhost:8000/storage/menu-items/L3Plk5gK2lBDI1UcLh59BBNx65fqd9xA3Z6S8h8q.jpg  
+[2026-08-31 03:29:25] local.INFO: Image stored at: menu-items/6r6eJ6YrDgR0sxTzotVXFkYi4jS2mwEwT0tVm9qb.jpg  
+[2026-08-31 03:29:25] local.INFO: Full URL: http://localhost:8000/storage/menu-items/6r6eJ6YrDgR0sxTzotVXFkYi4jS2mwEwT0tVm9qb.jpg  

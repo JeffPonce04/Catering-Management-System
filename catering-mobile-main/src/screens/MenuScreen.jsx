@@ -29,12 +29,13 @@ import { packageService } from '../services/packageService';
 import { promotionService } from '../services/promotionService';
 import { getRandomBannerImage, getThemedBannerImage } from '../utils/imageHelper';
 
-const { width } = Dimensions.get('window');
+// Safe width with fallback
+const SCREEN_WIDTH = Dimensions.get('window')?.width || 375;
 
 const MenuScreen = ({ navigation }) => {
   const { colors } = useTheme();
-  const { addToCart, cartItems, getItemQuantity } = useCart();
   const { isGuest } = useAuth();
+  const { addToCart, getItemQuantity, cartItems, removeFromCart, updateQuantity } = useCart();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -51,9 +52,30 @@ const MenuScreen = ({ navigation }) => {
   const [favorites, setFavorites] = useState([]);
   const [viewMode, setViewMode] = useState('grid');
   
+  // Detail modals
+  const [selectedMenuItem, setSelectedMenuItem] = useState(null);
+  const [selectedPackage, setSelectedPackage] = useState(null);
+  const [packageItems, setPackageItems] = useState([]);
+  const [loadingPackageItems, setLoadingPackageItems] = useState(false);
+  
+  // Custom alert modal
+  const [alertVisible, setAlertVisible] = useState(false);
+  const [alertConfig, setAlertConfig] = useState({
+    title: '',
+    message: '',
+    icon: null,
+    confirmText: 'OK',
+    cancelText: 'Cancel',
+    onConfirm: null,
+    onCancel: null,
+    type: 'info' // 'info', 'success', 'warning', 'error'
+  });
+  
   const scrollY = useRef(new Animated.Value(0)).current;
   const searchInputRef = useRef(null);
-  const scaleValue = useRef(new Animated.Value(1)).current;
+  const categoryScrollRef = useRef(null);
+  const [categoryScrollOffset, setCategoryScrollOffset] = useState(0);
+  const [categoryContentWidth, setCategoryContentWidth] = useState(0);
 
   // Load data
   useEffect(() => {
@@ -183,41 +205,6 @@ const MenuScreen = ({ navigation }) => {
     return <View style={styles.starsRow}>{stars}</View>;
   };
 
-  const handleAddToCart = (item) => {
-    if (isGuest) {
-      Alert.alert(
-        'Guest Mode',
-        'Please login to add items to your cart',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Login', onPress: () => navigation.navigate('Login') }
-        ]
-      );
-      return;
-    }
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    addToCart({
-      id: item.menu_item_id || item.id,
-      name: item.name,
-      price: item.price,
-      image: item.image_url || item.image,
-    }, 1);
-    
-    Animated.sequence([
-      Animated.timing(scaleValue, {
-        toValue: 0.9,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.spring(scaleValue, {
-        toValue: 1,
-        friction: 3,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  };
-
   const handleImageError = (itemId) => {
     setImageErrors(prev => ({ ...prev, [itemId]: true }));
   };
@@ -231,24 +218,216 @@ const MenuScreen = ({ navigation }) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const getCartCount = (itemId) => {
-    return getItemQuantity(itemId);
+  // Open menu item detail modal
+  const openMenuItemDetail = (item) => {
+    setSelectedMenuItem(item);
   };
 
-  // Grid View Menu Item
+  // Close menu item detail modal
+  const closeMenuItemDetail = () => {
+    setSelectedMenuItem(null);
+  };
+
+  // Open package detail modal
+  const openPackageDetail = async (pkg) => {
+    setSelectedPackage(pkg);
+    setLoadingPackageItems(true);
+    
+    try {
+      // Fetch package items from the backend
+      const packageId = pkg.package_id || pkg.id;
+      const result = await packageService.getPackageItems(packageId);
+      
+      if (result.success) {
+        setPackageItems(result.data || []);
+        console.log(`✅ Loaded ${result.data?.length || 0} items for package ${packageId}`);
+      } else {
+        console.warn('⚠️ No items found for package:', packageId);
+        setPackageItems([]);
+      }
+    } catch (error) {
+      console.error('❌ Error loading package items:', error);
+      setPackageItems([]);
+    } finally {
+      setLoadingPackageItems(false);
+    }
+  };
+
+  // Close package detail modal
+  const closePackageDetail = () => {
+    setSelectedPackage(null);
+    setPackageItems([]);
+  };
+
+  // Custom Alert Modal
+  const showCustomAlert = (config) => {
+    setAlertConfig({
+      ...config,
+      onConfirm: config.onConfirm || null,
+      onCancel: config.onCancel || null,
+    });
+    setAlertVisible(true);
+  };
+
+  const closeAlert = () => {
+    setAlertVisible(false);
+    setAlertConfig({
+      title: '',
+      message: '',
+      icon: null,
+      confirmText: 'OK',
+      cancelText: 'Cancel',
+      onConfirm: null,
+      onCancel: null,
+      type: 'info'
+    });
+  };
+
+  const handleAlertConfirm = () => {
+    if (alertConfig.onConfirm) {
+      alertConfig.onConfirm();
+    }
+    closeAlert();
+  };
+
+  const handleAlertCancel = () => {
+    if (alertConfig.onCancel) {
+      alertConfig.onCancel();
+    }
+    closeAlert();
+  };
+
+  // Get icon for alert type
+  const getAlertIcon = (type) => {
+    switch(type) {
+      case 'success':
+        return <Ionicons name="checkmark-circle" size={56} color="#4CAF50" />;
+      case 'warning':
+        return <Ionicons name="warning" size={56} color="#FF9800" />;
+      case 'error':
+        return <Ionicons name="close-circle" size={56} color="#F44336" />;
+      default:
+        return <Ionicons name="information-circle" size={56} color="#2196F3" />;
+    }
+  };
+
+  // Get colors for alert type
+  const getAlertColors = (type) => {
+    switch(type) {
+      case 'success':
+        return { main: '#4CAF50', light: '#E8F5E9' };
+      case 'warning':
+        return { main: '#FF9800', light: '#FFF3E0' };
+      case 'error':
+        return { main: '#F44336', light: '#FFEBEE' };
+      default:
+        return { main: '#2196F3', light: '#E3F2FD' };
+    }
+  };
+
+  // Add to cart function with validation using custom modal
+  const handleAddToCart = (item, fromModal = false) => {
+    if (isGuest) {
+      showCustomAlert({
+        title: 'Guest Mode',
+        message: 'Please login to add items to your cart',
+        icon: 'lock',
+        confirmText: 'Login',
+        cancelText: 'Cancel',
+        type: 'warning',
+        onConfirm: () => navigation.navigate('Login')
+      });
+      return;
+    }
+    
+    const itemId = item.menu_item_id || item.id;
+    const currentQuantity = getItemQuantity(itemId);
+    
+    // Check if item already exists in cart
+    if (currentQuantity > 0) {
+      showCustomAlert({
+        title: 'Item Already in Cart',
+        message: `${item.name} is already in your cart (${currentQuantity} item${currentQuantity > 1 ? 's' : ''}). Would you like to add another?`,
+        icon: 'cart',
+        confirmText: 'Add Another',
+        cancelText: 'Cancel',
+        type: 'warning',
+        onConfirm: () => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          addToCart({
+            id: itemId,
+            name: item.name,
+            price: item.price,
+            image: item.image_url || item.image,
+          }, 1);
+          showCustomAlert({
+            title: 'Added to Cart',
+            message: `${item.name} has been added to your cart.`,
+            icon: 'checkmark',
+            confirmText: 'OK',
+            type: 'success'
+          });
+        }
+      });
+      return;
+    }
+    
+    // Add new item
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    addToCart({
+      id: itemId,
+      name: item.name,
+      price: item.price,
+      image: item.image_url || item.image,
+    }, 1);
+    
+    showCustomAlert({
+      title: 'Added to Cart',
+      message: `${item.name} has been added to your cart.`,
+      icon: 'checkmark',
+      confirmText: 'Continue Shopping',
+      type: 'success'
+    });
+  };
+
+  // Remove from cart
+  const handleRemoveFromCart = (itemId, itemName) => {
+    showCustomAlert({
+      title: 'Remove from Cart',
+      message: `Are you sure you want to remove ${itemName} from your cart?`,
+      icon: 'trash',
+      confirmText: 'Remove',
+      cancelText: 'Cancel',
+      type: 'warning',
+      onConfirm: () => {
+        removeFromCart(itemId);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        showCustomAlert({
+          title: 'Removed',
+          message: `${itemName} has been removed from your cart.`,
+          icon: 'checkmark',
+          confirmText: 'OK',
+          type: 'success'
+        });
+      }
+    });
+  };
+
+  // Grid View Menu Item with cart button outside modal
   const GridMenuItem = ({ item }) => {
     const imageUrl = imageErrors[item.id] 
       ? getRandomBannerImage()
       : (item.image_url || item.image || getRandomBannerImage());
     
     const isFavorite = favorites.includes(item.menu_item_id || item.id);
-    const cartCount = getCartCount(item.menu_item_id || item.id);
+    const cartQuantity = getItemQuantity(item.menu_item_id || item.id);
+    const itemId = item.menu_item_id || item.id;
 
     return (
       <TouchableOpacity 
         activeOpacity={0.9}
         style={[styles.gridCard, { backgroundColor: colors.card }]}
-        onPress={() => navigation.navigate('MenuItemDetail', { id: item.menu_item_id || item.id })}
+        onPress={() => openMenuItemDetail(item)}
       >
         <View style={styles.gridImageContainer}>
           <Image source={{ uri: imageUrl }} style={styles.gridImage} />
@@ -265,15 +444,30 @@ const MenuScreen = ({ navigation }) => {
               </Text>
             </View>
           )}
+          {/* Heart button */}
           <TouchableOpacity 
             style={styles.gridFavoriteButton}
-            onPress={() => toggleFavorite(item.menu_item_id || item.id)}
+            onPress={() => toggleFavorite(itemId)}
           >
             <Ionicons 
               name={isFavorite ? 'heart' : 'heart-outline'} 
               size={18} 
               color={isFavorite ? '#FF6B9D' : '#fff'} 
             />
+          </TouchableOpacity>
+          {/* Cart button outside modal */}
+          <TouchableOpacity 
+            style={[styles.gridCartButton, cartQuantity > 0 && styles.gridCartButtonActive]}
+            onPress={() => handleAddToCart(item)}
+          >
+            {cartQuantity > 0 ? (
+              <View style={styles.gridCartQuantity}>
+                <Feather name="shopping-bag" size={14} color="#fff" />
+                <Text style={styles.gridCartQuantityText}>{cartQuantity}</Text>
+              </View>
+            ) : (
+              <Feather name="shopping-bag" size={16} color="#fff" />
+            )}
           </TouchableOpacity>
         </View>
         
@@ -294,36 +488,27 @@ const MenuScreen = ({ navigation }) => {
                 <Text style={styles.gridPrice}>₱{item.price}</Text>
               )}
             </View>
-            <TouchableOpacity
-              style={[styles.gridAddButton, cartCount > 0 && styles.gridAddButtonActive]}
-              onPress={() => handleAddToCart(item)}
-            >
-              {cartCount > 0 ? (
-                <Text style={styles.gridAddButtonText}>{cartCount}</Text>
-              ) : (
-                <Feather name="plus" size={16} color="#fff" />
-              )}
-            </TouchableOpacity>
           </View>
         </View>
       </TouchableOpacity>
     );
   };
 
-  // List View Menu Item
+  // List View Menu Item with cart button outside modal
   const ListMenuItem = ({ item }) => {
     const imageUrl = imageErrors[item.id] 
       ? getRandomBannerImage()
       : (item.image_url || item.image || getRandomBannerImage());
     
     const isFavorite = favorites.includes(item.menu_item_id || item.id);
-    const cartCount = getCartCount(item.menu_item_id || item.id);
+    const cartQuantity = getItemQuantity(item.menu_item_id || item.id);
+    const itemId = item.menu_item_id || item.id;
 
     return (
       <TouchableOpacity 
         activeOpacity={0.9}
         style={[styles.listCard, { backgroundColor: colors.card }]}
-        onPress={() => navigation.navigate('MenuItemDetail', { id: item.menu_item_id || item.id })}
+        onPress={() => openMenuItemDetail(item)}
       >
         <View style={styles.listImageContainer}>
           <Image source={{ uri: imageUrl }} style={styles.listImage} />
@@ -333,12 +518,26 @@ const MenuScreen = ({ navigation }) => {
               <Text style={styles.listPopularText}>Popular</Text>
             </View>
           )}
+          {/* Cart button outside modal - List view */}
+          <TouchableOpacity 
+            style={[styles.listCartButton, cartQuantity > 0 && styles.listCartButtonActive]}
+            onPress={() => handleAddToCart(item)}
+          >
+            {cartQuantity > 0 ? (
+              <View style={styles.listCartQuantity}>
+                <Feather name="shopping-bag" size={12} color="#fff" />
+                <Text style={styles.listCartQuantityText}>{cartQuantity}</Text>
+              </View>
+            ) : (
+              <Feather name="shopping-bag" size={14} color="#fff" />
+            )}
+          </TouchableOpacity>
         </View>
         
         <View style={styles.listInfo}>
           <View style={styles.listHeader}>
             <Text style={[styles.listName, { color: colors.text }]} numberOfLines={1}>{item.name}</Text>
-            <TouchableOpacity onPress={() => toggleFavorite(item.menu_item_id || item.id)}>
+            <TouchableOpacity onPress={() => toggleFavorite(itemId)}>
               <Ionicons 
                 name={isFavorite ? 'heart' : 'heart-outline'} 
                 size={20} 
@@ -372,19 +571,6 @@ const MenuScreen = ({ navigation }) => {
                 <Text style={styles.listPrice}>₱{item.price}</Text>
               )}
             </View>
-            <TouchableOpacity
-              style={[styles.listAddButton, cartCount > 0 && styles.listAddButtonActive]}
-              onPress={() => handleAddToCart(item)}
-            >
-              {cartCount > 0 ? (
-                <Text style={styles.listAddButtonText}>{cartCount}</Text>
-              ) : (
-                <>
-                  <Feather name="plus" size={14} color="#fff" />
-                  <Text style={styles.listAddButtonText}>Add</Text>
-                </>
-              )}
-            </TouchableOpacity>
           </View>
         </View>
       </TouchableOpacity>
@@ -399,7 +585,7 @@ const MenuScreen = ({ navigation }) => {
       <TouchableOpacity 
         activeOpacity={0.9}
         style={[styles.packageCard, { backgroundColor: colors.card }]}
-        onPress={() => navigation.navigate('PackageDetail', { packageId: item.package_id || item.id })}
+        onPress={() => openPackageDetail(item)}
       >
         <Image source={{ uri: imageUrl }} style={styles.packageImage} />
         <LinearGradient
@@ -446,12 +632,12 @@ const MenuScreen = ({ navigation }) => {
     );
   };
 
+  // Category Item with improved design
   const CategoryItem = ({ item, isSelected, onPress }) => (
     <TouchableOpacity
       style={[
         styles.categoryItem,
         isSelected && styles.categoryItemActive,
-        { backgroundColor: isSelected ? '#FF6B9D' : 'transparent' }
       ]}
       onPress={onPress}
       activeOpacity={0.7}
@@ -464,10 +650,11 @@ const MenuScreen = ({ navigation }) => {
       >
         {typeof item.name === 'string' ? item.name : item.name?.name || 'Category'}
       </Text>
+      {isSelected && <View style={styles.categoryActiveIndicator} />}
     </TouchableOpacity>
   );
 
-  // Tab Item
+  // Enhanced Tab Item - WITHOUT pink underline
   const TabItem = ({ label, value, isSelected, onPress }) => (
     <TouchableOpacity
       style={[
@@ -483,150 +670,532 @@ const MenuScreen = ({ navigation }) => {
       ]}>
         {label}
       </Text>
-      {isSelected && <View style={styles.tabIndicator} />}
     </TouchableOpacity>
   );
 
-  const HeaderComponent = () => (
-    <View style={styles.headerContainer}>
-      <View style={styles.heroSection}>
-        <View>
-          <Text style={styles.heroTitle}>Our Menu</Text>
-          <Text style={styles.heroSubtitle}>Discover our signature dishes</Text>
-        </View>
-        <TouchableOpacity 
-          style={styles.cartIconButton}
-          onPress={() => {
-            if (isGuest) {
-              Alert.alert(
-                'Guest Mode',
-                'Please login to view your cart',
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { text: 'Login', onPress: () => navigation.navigate('Login') }
-                ]
-              );
-            } else {
-              navigation.navigate('Cart');
-            }
-          }}
-        >
-          <LinearGradient
-            colors={['#FF6B9D', '#FF8FB1']}
-            style={styles.cartIconGradient}
-          >
-            <Feather name="shopping-bag" size={22} color="#fff" />
-            {cartItems.length > 0 && (
-              <View style={styles.cartIconBadge}>
-                <Text style={styles.cartIconBadgeText}>{cartItems.length}</Text>
-              </View>
-            )}
-          </LinearGradient>
-        </TouchableOpacity>
-      </View>
+  const HeaderComponent = () => {
+    // Calculate if categories can scroll (safe check)
+    const canScrollLeft = categoryScrollOffset > 10;
+    const canScrollRight = categoryContentWidth > 0 && categoryScrollOffset < categoryContentWidth - SCREEN_WIDTH + 40;
 
-      <View style={[styles.searchContainer, { backgroundColor: colors.card }]}>
-        <Feather name="search" size={20} color="#B0B0B0" />
-        <TextInput
-          ref={searchInputRef}
-          style={[styles.searchInput, { color: colors.text }]}
-          placeholder="Search..."
-          placeholderTextColor="#B0B0B0"
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-        {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchQuery('')}>
-            <Feather name="x" size={20} color="#B0B0B0" />
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity onPress={() => setShowFilters(true)}>
-          <Feather name="sliders" size={20} color="#FF6B9D" />
-        </TouchableOpacity>
-      </View>
-
-      {/* Tabs */}
-      <View style={styles.tabsContainer}>
-        <TabItem
-          label="Menu"
-          value="menu"
-          isSelected={selectedTab === 'menu'}
-          onPress={() => setSelectedTab('menu')}
-        />
-        <TabItem
-          label="Packages"
-          value="packages"
-          isSelected={selectedTab === 'packages'}
-          onPress={() => setSelectedTab('packages')}
-        />
-        <TabItem
-          label="Promotions"
-          value="promotions"
-          isSelected={selectedTab === 'promotions'}
-          onPress={() => setSelectedTab('promotions')}
-        />
-      </View>
-
-      {/* Categories - Only show for Menu tab */}
-      {selectedTab === 'menu' && categories.length > 0 && (
-        <View style={styles.categoriesWrapper}>
-          <FlatList
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            data={categories}
-            keyExtractor={(item, index) => {
-              const rawId = item.category_id || item.id;
-              return `category-${rawId && typeof rawId !== 'object' ? rawId : index}`;
-            }}
-            contentContainerStyle={styles.categoriesList}
-            renderItem={({ item, index }) => {
-              const rawId = item.category_id || item.id;
-              const categoryId = rawId && typeof rawId !== 'object' ? rawId : (index === 0 ? 'all' : `category-${index}`);
-              return (
-                <CategoryItem
-                  item={item}
-                  isSelected={selectedCategory === categoryId}
-                  onPress={() => setSelectedCategory(categoryId)}
-                />
-              );
-            }}
-          />
-        </View>
-      )}
-
-      {selectedTab === 'menu' && filteredMenuItems.length > 0 && (
-        <View style={styles.resultInfo}>
-          <Text style={styles.resultCount}>{filteredMenuItems.length} items found</Text>
-          <View style={styles.viewToggle}>
-            <TouchableOpacity
-              style={[styles.viewToggleButton, viewMode === 'grid' && styles.viewToggleActive]}
-              onPress={() => setViewMode('grid')}
-            >
-              <Feather name="grid" size={16} color={viewMode === 'grid' ? '#FF6B9D' : '#B0B0B0'} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.viewToggleButton, viewMode === 'list' && styles.viewToggleActive]}
-              onPress={() => setViewMode('list')}
-            >
-              <Feather name="list" size={16} color={viewMode === 'list' ? '#FF6B9D' : '#B0B0B0'} />
-            </TouchableOpacity>
+    return (
+      <View style={styles.headerContainer}>
+        <View style={styles.heroSection}>
+          <View>
+            <Text style={styles.heroTitle}>Our Menu</Text>
+            <Text style={styles.heroSubtitle}>Discover our signature dishes</Text>
           </View>
         </View>
-      )}
 
-      {(selectedTab === 'packages' && filteredPackages.length > 0) && (
-        <View style={styles.resultInfo}>
-          <Text style={styles.resultCount}>{filteredPackages.length} packages found</Text>
+        <View style={[styles.searchContainer, { backgroundColor: colors.card }]}>
+          <Feather name="search" size={20} color="#B0B0B0" />
+          <TextInput
+            ref={searchInputRef}
+            style={[styles.searchInput, { color: colors.text }]}
+            placeholder="Search..."
+            placeholderTextColor="#B0B0B0"
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')}>
+              <Feather name="x" size={20} color="#B0B0B0" />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={() => setShowFilters(true)}>
+            <Feather name="sliders" size={20} color="#FF6B9D" />
+          </TouchableOpacity>
         </View>
-      )}
 
-      {(selectedTab === 'promotions' && filteredPromotions.length > 0) && (
-        <View style={styles.resultInfo}>
-          <Text style={styles.resultCount}>{filteredPromotions.length} promotions found</Text>
+        {/* Enhanced Tabs - WITHOUT pink underline */}
+        <View style={styles.tabsContainer}>
+          <TabItem
+            label="Menu"
+            value="menu"
+            isSelected={selectedTab === 'menu'}
+            onPress={() => setSelectedTab('menu')}
+          />
+          <TabItem
+            label="Packages"
+            value="packages"
+            isSelected={selectedTab === 'packages'}
+            onPress={() => setSelectedTab('packages')}
+          />
+          <TabItem
+            label="Promotions"
+            value="promotions"
+            isSelected={selectedTab === 'promotions'}
+            onPress={() => setSelectedTab('promotions')}
+          />
         </View>
-      )}
-    </View>
-  );
+
+        {/* Categories with scroll indicators */}
+        {selectedTab === 'menu' && categories.length > 0 && (
+          <View style={styles.categoriesWrapper}>
+            <View style={styles.categoriesContainer}>
+              {/* Left scroll indicator */}
+              {canScrollLeft && (
+                <View style={[styles.scrollIndicator, styles.scrollIndicatorLeft]}>
+                  <LinearGradient
+                    colors={['rgba(255,255,255,0.9)', 'rgba(255,255,255,0)']}
+                    style={styles.scrollIndicatorGradient}
+                  >
+                    <Feather name="chevron-left" size={16} color="#FF6B9D" />
+                  </LinearGradient>
+                </View>
+              )}
+              
+              <FlatList
+                ref={categoryScrollRef}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                data={categories}
+                keyExtractor={(item, index) => {
+                  const rawId = item.category_id || item.id;
+                  return `category-${rawId && typeof rawId !== 'object' ? rawId : index}`;
+                }}
+                contentContainerStyle={styles.categoriesList}
+                renderItem={({ item, index }) => {
+                  const rawId = item.category_id || item.id;
+                  const categoryId = rawId && typeof rawId !== 'object' ? rawId : (index === 0 ? 'all' : `category-${index}`);
+                  return (
+                    <CategoryItem
+                      item={item}
+                      isSelected={selectedCategory === categoryId}
+                      onPress={() => setSelectedCategory(categoryId)}
+                    />
+                  );
+                }}
+                onScroll={(event) => {
+                  const offsetX = event.nativeEvent.contentOffset.x;
+                  setCategoryScrollOffset(offsetX);
+                }}
+                onContentSizeChange={(contentWidth) => {
+                  setCategoryContentWidth(contentWidth);
+                }}
+                scrollEventThrottle={16}
+              />
+              
+              {/* Right scroll indicator */}
+              {canScrollRight && (
+                <View style={[styles.scrollIndicator, styles.scrollIndicatorRight]}>
+                  <LinearGradient
+                    colors={['rgba(255,255,255,0)', 'rgba(255,255,255,0.9)']}
+                    style={styles.scrollIndicatorGradient}
+                  >
+                    <Feather name="chevron-right" size={16} color="#FF6B9D" />
+                  </LinearGradient>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {selectedTab === 'menu' && filteredMenuItems.length > 0 && (
+          <View style={styles.resultInfo}>
+            <Text style={styles.resultCount}>{filteredMenuItems.length} items found</Text>
+            <View style={styles.viewToggle}>
+              <TouchableOpacity
+                style={[styles.viewToggleButton, viewMode === 'grid' && styles.viewToggleActive]}
+                onPress={() => setViewMode('grid')}
+              >
+                <Feather name="grid" size={16} color={viewMode === 'grid' ? '#FF6B9D' : '#B0B0B0'} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.viewToggleButton, viewMode === 'list' && styles.viewToggleActive]}
+                onPress={() => setViewMode('list')}
+              >
+                <Feather name="list" size={16} color={viewMode === 'list' ? '#FF6B9D' : '#B0B0B0'} />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {(selectedTab === 'packages' && filteredPackages.length > 0) && (
+          <View style={styles.resultInfo}>
+            <Text style={styles.resultCount}>{filteredPackages.length} packages found</Text>
+          </View>
+        )}
+
+        {(selectedTab === 'promotions' && filteredPromotions.length > 0) && (
+          <View style={styles.resultInfo}>
+            <Text style={styles.resultCount}>{filteredPromotions.length} promotions found</Text>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  // Custom Alert Modal Component
+  const CustomAlertModal = () => {
+    const colors = getAlertColors(alertConfig.type);
+    
+    return (
+      <Modal
+        visible={alertVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAlert}
+      >
+        <View style={styles.alertOverlay}>
+          <View style={[styles.alertContainer, { backgroundColor: '#fff' }]}>
+            {/* Icon */}
+            <View style={[styles.alertIconContainer, { backgroundColor: colors.light }]}>
+              {alertConfig.icon === 'checkmark' ? (
+                <Ionicons name="checkmark-circle" size={56} color={colors.main} />
+              ) : alertConfig.icon === 'warning' ? (
+                <Ionicons name="warning" size={56} color={colors.main} />
+              ) : alertConfig.icon === 'error' ? (
+                <Ionicons name="close-circle" size={56} color={colors.main} />
+              ) : alertConfig.icon === 'lock' ? (
+                <Ionicons name="lock-closed" size={56} color={colors.main} />
+              ) : alertConfig.icon === 'cart' ? (
+                <Ionicons name="cart" size={56} color={colors.main} />
+              ) : alertConfig.icon === 'trash' ? (
+                <Ionicons name="trash" size={56} color={colors.main} />
+              ) : (
+                <Ionicons name="information-circle" size={56} color={colors.main} />
+              )}
+            </View>
+
+            {/* Title */}
+            <Text style={[styles.alertTitle, { color: '#333' }]}>
+              {alertConfig.title}
+            </Text>
+
+            {/* Message */}
+            <Text style={[styles.alertMessage, { color: '#666' }]}>
+              {alertConfig.message}
+            </Text>
+
+            {/* Buttons */}
+            <View style={styles.alertButtons}>
+              {alertConfig.cancelText && (
+                <TouchableOpacity
+                  style={[styles.alertButton, styles.alertCancelButton]}
+                  onPress={handleAlertCancel}
+                >
+                  <Text style={[styles.alertButtonText, { color: '#666' }]}>
+                    {alertConfig.cancelText}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.alertButton, styles.alertConfirmButton, { backgroundColor: colors.main }]}
+                onPress={handleAlertConfirm}
+              >
+                <Text style={[styles.alertButtonText, { color: '#fff' }]}>
+                  {alertConfig.confirmText}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  // Menu Item Detail Modal with Add to Cart inside
+  const MenuItemDetailModal = () => {
+    if (!selectedMenuItem) return null;
+
+    const item = selectedMenuItem;
+    const imageUrl = imageErrors[item.id] 
+      ? getRandomBannerImage()
+      : (item.image_url || item.image || getRandomBannerImage());
+
+    // Format dietary information
+    const dietaryInfo = item.dietary_info || item.dietary_information || item.dietary;
+    const allergyInfo = item.allergy_info || item.allergy_information || item.allergies || item.food_allergy;
+    
+    // Get pax info from description or other fields
+    const paxInfo = item.good_for || item.pax_info || '';
+    const cartQuantity = getItemQuantity(item.menu_item_id || item.id);
+
+    return (
+      <Modal
+        visible={!!selectedMenuItem}
+        transparent
+        animationType="slide"
+        onRequestClose={closeMenuItemDetail}
+      >
+        <View style={styles.detailModalOverlay}>
+          <View style={[styles.detailModalContent, { backgroundColor: colors.background }]}>
+            {/* Close button */}
+            <TouchableOpacity style={styles.detailCloseButton} onPress={closeMenuItemDetail}>
+              <Ionicons name="close" size={24} color="#333" />
+            </TouchableOpacity>
+
+            <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+              {/* Image */}
+              <View style={styles.detailImageContainer}>
+                <Image source={{ uri: imageUrl }} style={styles.detailImage} />
+                {item.is_popular && (
+                  <View style={styles.detailPopularBadge}>
+                    <MaterialCommunityIcons name="fire" size={14} color="#FF6B9D" />
+                    <Text style={styles.detailPopularText}>Popular</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Content */}
+              <View style={styles.detailContent}>
+                <Text style={[styles.detailName, { color: colors.text }]}>{item.name}</Text>
+                <Text style={[styles.detailPrice, { color: '#FF6B9D' }]}>
+                  ₱{item.discounted_price || item.price}
+                </Text>
+                {item.discounted_price && (
+                  <Text style={styles.detailOriginalPrice}>₱{item.price}</Text>
+                )}
+
+                {/* Description */}
+                <View style={styles.detailSection}>
+                  <Text style={[styles.detailSectionTitle, { color: colors.text }]}>Description</Text>
+                  <Text style={[styles.detailDescription, { color: colors.textSecondary }]}>
+                    {item.description || 'No description available.'}
+                  </Text>
+                  {paxInfo && (
+                    <Text style={[styles.detailPaxInfo, { color: '#FF6B9D' }]}>
+                      {paxInfo}
+                    </Text>
+                  )}
+                </View>
+
+                {/* Dietary Information */}
+                <View style={styles.detailSection}>
+                  <Text style={[styles.detailSectionTitle, { color: colors.text }]}>Dietary</Text>
+                  {dietaryInfo ? (
+                    <View style={styles.detailDietaryContainer}>
+                      {typeof dietaryInfo === 'string' ? (
+                        <View style={styles.detailDietaryTag}>
+                          <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
+                          <Text style={styles.detailDietaryText}>{dietaryInfo}</Text>
+                        </View>
+                      ) : Array.isArray(dietaryInfo) ? (
+                        dietaryInfo.map((diet, index) => (
+                          <View key={index} style={styles.detailDietaryTag}>
+                            <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
+                            <Text style={styles.detailDietaryText}>{diet}</Text>
+                          </View>
+                        ))
+                      ) : (
+                        <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                          Not specified
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                      Not specified
+                    </Text>
+                  )}
+                </View>
+
+                {/* Food Allergy Information */}
+                <View style={styles.detailSection}>
+                  <Text style={[styles.detailSectionTitle, { color: colors.text }]}>Food Allergy</Text>
+                  {allergyInfo ? (
+                    <View style={styles.detailAllergyContainer}>
+                      {typeof allergyInfo === 'string' ? (
+                        <View style={styles.detailAllergyTag}>
+                          <Ionicons name="warning" size={16} color="#FF4444" />
+                          <Text style={styles.detailAllergyText}>{allergyInfo}</Text>
+                        </View>
+                      ) : Array.isArray(allergyInfo) ? (
+                        allergyInfo.map((allergy, index) => (
+                          <View key={index} style={styles.detailAllergyTag}>
+                            <Ionicons name="warning" size={16} color="#FF4444" />
+                            <Text style={styles.detailAllergyText}>{allergy}</Text>
+                          </View>
+                        ))
+                      ) : (
+                        <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                          No information available
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                      No information available
+                    </Text>
+                  )}
+                </View>
+
+                {/* Add to Cart Button inside Modal */}
+                <View style={styles.detailAddToCartWrapper}>
+                  {cartQuantity > 0 && (
+                    <View style={styles.detailCartQuantityInfo}>
+                      <Ionicons name="cart" size={20} color="#4CAF50" />
+                      <Text style={styles.detailCartQuantityText}>
+                        {cartQuantity} in cart
+                      </Text>
+                      <TouchableOpacity 
+                        onPress={() => handleRemoveFromCart(item.menu_item_id || item.id, item.name)}
+                        style={styles.detailRemoveButton}
+                      >
+                        <Ionicons name="close-circle" size={20} color="#F44336" />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                  
+                  <TouchableOpacity
+                    style={[
+                      styles.detailAddToCartButton,
+                      cartQuantity > 0 && styles.detailAddToCartButtonActive
+                    ]}
+                    onPress={() => handleAddToCart(item, true)}
+                    activeOpacity={0.8}
+                  >
+                    <LinearGradient
+                      colors={cartQuantity > 0 ? ['#4CAF50', '#66BB6A'] : ['#FF6B9D', '#FF8FB1']}
+                      style={styles.detailAddToCartGradient}
+                    >
+                      <Feather name={cartQuantity > 0 ? "check" : "shopping-bag"} size={20} color="#fff" />
+                      <Text style={styles.detailAddToCartText}>
+                        {cartQuantity > 0 ? 'Add Another' : 'Add to Cart'}
+                      </Text>
+                      <Text style={styles.detailAddToCartPrice}>₱{item.discounted_price || item.price}</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+
+  // Package Detail Modal
+  const PackageDetailModal = () => {
+    if (!selectedPackage) return null;
+
+    const pkg = selectedPackage;
+
+    return (
+      <Modal
+        visible={!!selectedPackage}
+        transparent
+        animationType="slide"
+        onRequestClose={closePackageDetail}
+      >
+        <View style={styles.detailModalOverlay}>
+          <View style={[styles.detailModalContent, { backgroundColor: colors.background }]}>
+            {/* Close button */}
+            <TouchableOpacity style={styles.detailCloseButton} onPress={closePackageDetail}>
+              <Ionicons name="close" size={24} color="#333" />
+            </TouchableOpacity>
+
+            <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+              {/* Package Header */}
+              <View style={styles.packageDetailHeader}>
+                <Image 
+                  source={{ uri: getThemedBannerImage(pkg.name) }} 
+                  style={styles.packageDetailImage}
+                />
+                <LinearGradient
+                  colors={['transparent', 'rgba(0,0,0,0.6)']}
+                  style={styles.packageDetailOverlay}
+                >
+                  <Text style={styles.packageDetailName}>{pkg.name}</Text>
+                  <Text style={styles.packageDetailPrice}>₱{pkg.base_price_per_pax || 0}/pax</Text>
+                  <Text style={styles.packageDetailPax}>
+                    {pkg.min_pax || 0} - {pkg.max_pax || 0} persons
+                  </Text>
+                </LinearGradient>
+              </View>
+
+              <View style={styles.detailContent}>
+                {/* Description */}
+                <View style={styles.detailSection}>
+                  <Text style={[styles.detailSectionTitle, { color: colors.text }]}>Description</Text>
+                  <Text style={[styles.detailDescription, { color: colors.textSecondary }]}>
+                    {pkg.description || 'No description available.'}
+                  </Text>
+                  {/* Pax info for package */}
+                  {(pkg.min_pax || pkg.max_pax) && (
+                    <Text style={[styles.detailPaxInfo, { color: '#FF6B9D' }]}>
+                      Good for {pkg.min_pax || 0} - {pkg.max_pax || 0} persons
+                    </Text>
+                  )}
+                </View>
+
+                {/* Included Menu Items */}
+                <View style={styles.detailSection}>
+                  <Text style={[styles.detailSectionTitle, { color: colors.text }]}>
+                    Included Menu Items
+                  </Text>
+                  
+                  {loadingPackageItems ? (
+                    <View style={styles.packageItemsLoader}>
+                      <ActivityIndicator size="small" color="#FF6B9D" />
+                      <Text style={[styles.packageItemsLoaderText, { color: colors.textSecondary }]}>
+                        Loading items...
+                      </Text>
+                    </View>
+                  ) : packageItems.length > 0 ? (
+                    <View style={styles.packageItemsList}>
+                      {packageItems.map((item, index) => {
+                        const menuItem = item.menu_item || item;
+                        const itemId = menuItem.menu_item_id || menuItem.id;
+                        const imageUrl = imageErrors[itemId] 
+                          ? getRandomBannerImage()
+                          : (menuItem.image_url || menuItem.image || getRandomBannerImage());
+                        
+                        const dietaryInfo = menuItem.dietary_info || menuItem.dietary_information || menuItem.dietary;
+                        const allergyInfo = menuItem.allergy_info || menuItem.allergy_information || menuItem.allergies || menuItem.food_allergy;
+
+                        return (
+                          <View key={index} style={[styles.packageMenuItem, { borderBottomColor: colors.border || '#eee' }]}>
+                            <View style={styles.packageMenuItemHeader}>
+                              <Image source={{ uri: imageUrl }} style={styles.packageMenuItemImage} />
+                              <View style={styles.packageMenuItemInfo}>
+                                <Text style={[styles.packageMenuItemName, { color: colors.text }]}>
+                                  {menuItem.name || 'Menu Item'}
+                                </Text>
+                                <Text style={[styles.packageMenuItemPrice, { color: '#FF6B9D' }]}>
+                                  ₱{menuItem.discounted_price || menuItem.price || 0}
+                                </Text>
+                              </View>
+                            </View>
+                            
+                            {menuItem.description && (
+                              <Text style={[styles.packageMenuItemDescription, { color: colors.textSecondary }]}>
+                                {menuItem.description}
+                              </Text>
+                            )}
+                            
+                            <View style={styles.packageMenuItemTags}>
+                              <View style={styles.packageMenuItemTag}>
+                                <Ionicons name="restaurant-outline" size={12} color="#B0B0B0" />
+                                <Text style={styles.packageMenuItemTagText}>
+                                  Dietary: {dietaryInfo || 'Not specified'}
+                                </Text>
+                              </View>
+                              <View style={[styles.packageMenuItemTag, styles.packageMenuItemAllergyTag]}>
+                                <Ionicons name="warning-outline" size={12} color="#FF6B9D" />
+                                <Text style={[styles.packageMenuItemTagText, styles.packageMenuItemAllergyText]}>
+                                  Allergy: {allergyInfo || 'No information'}
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  ) : (
+                    <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                      No items included in this package.
+                    </Text>
+                  )}
+                </View>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
 
   // Filter Modal
   const FilterModal = () => (
@@ -784,7 +1353,11 @@ const MenuScreen = ({ navigation }) => {
         {renderContent()}
       </Animated.View>
 
+      {/* Modals */}
+      <MenuItemDetailModal />
+      <PackageDetailModal />
       <FilterModal />
+      <CustomAlertModal />
     </View>
   );
 };
@@ -803,34 +1376,6 @@ const styles = StyleSheet.create({
   heroTitle: { fontSize: 32, fontWeight: '800', color: '#FF6B9D', letterSpacing: -0.5 },
   heroSubtitle: { fontSize: 14, color: '#8A8A8E', fontWeight: '500', marginTop: 2 },
   
-  cartIconButton: { position: 'relative' },
-  cartIconGradient: { 
-    width: 48, 
-    height: 48, 
-    borderRadius: 24, 
-    justifyContent: 'center', 
-    alignItems: 'center',
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  cartIconBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    backgroundColor: '#FF4444',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  cartIconBadgeText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
-  
   searchContainer: { 
     flexDirection: 'row', 
     alignItems: 'center', 
@@ -847,46 +1392,54 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 15, paddingVertical: 4 },
   
-  // Tabs Styles
+  // Enhanced Tabs Styles - WITHOUT pink underline
   tabsContainer: {
     flexDirection: 'row',
     marginBottom: 16,
-    gap: 4,
+    backgroundColor: '#F5F5F5',
+    borderRadius: 12,
+    padding: 4,
   },
   tabItem: {
     flex: 1,
     paddingVertical: 10,
     alignItems: 'center',
+    borderRadius: 10,
     position: 'relative',
   },
   tabItemActive: {
-    backgroundColor: 'transparent',
+    backgroundColor: '#FFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
   tabLabel: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
   },
-  tabIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    width: 24,
-    height: 3,
-    borderRadius: 1.5,
-    backgroundColor: '#FF6B9D',
-  },
   
-  // Categories Styles - Text Only
+  // Categories Styles with Scroll Indicators
   categoriesWrapper: { marginBottom: 16 },
-  categoriesList: { gap: 8, paddingRight: 16 },
+  categoriesContainer: { 
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoriesList: { 
+    gap: 8, 
+    paddingHorizontal: 16,
+  },
   categoryItem: { 
-    paddingHorizontal: 20, 
+    paddingHorizontal: 18, 
     paddingVertical: 8, 
     borderRadius: 20, 
-    borderWidth: 1,
-    borderColor: '#E0E0E0',
+    backgroundColor: '#F5F5F5',
+    position: 'relative',
   },
   categoryItemActive: { 
-    borderWidth: 0,
+    backgroundColor: '#FF6B9D',
     shadowColor: '#FF6B9D',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
@@ -894,6 +1447,38 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   categoryName: { fontSize: 13, fontWeight: '600' },
+  categoryActiveIndicator: {
+    position: 'absolute',
+    bottom: -4,
+    left: '25%',
+    right: '25%',
+    height: 3,
+    backgroundColor: '#FF6B9D',
+    borderRadius: 1.5,
+  },
+  
+  // Scroll Indicators
+  scrollIndicator: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  scrollIndicatorLeft: {
+    left: 0,
+  },
+  scrollIndicatorRight: {
+    right: 0,
+  },
+  scrollIndicatorGradient: {
+    width: 32,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   
   resultInfo: { 
     flexDirection: 'row', 
@@ -954,7 +1539,7 @@ const styles = StyleSheet.create({
   gridDiscountText: { color: '#FFF', fontSize: 8, fontWeight: 'bold' },
   gridFavoriteButton: {
     position: 'absolute',
-    bottom: 8,
+    top: 8,
     right: 8,
     width: 32,
     height: 32,
@@ -962,6 +1547,36 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  gridCartButton: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#FF6B9D',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#FF6B9D',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  gridCartButtonActive: {
+    backgroundColor: '#4CAF50',
+    shadowColor: '#4CAF50',
+  },
+  gridCartQuantity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  gridCartQuantityText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
   },
   gridInfo: { padding: 10 },
   gridName: { fontSize: 14, fontWeight: '600', marginBottom: 4 },
@@ -971,21 +1586,6 @@ const styles = StyleSheet.create({
   gridPrice: { fontSize: 16, fontWeight: '700', color: '#FF6B9D' },
   gridPriceContainer: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   gridOriginalPrice: { fontSize: 12, textDecorationLine: 'line-through', color: '#B0B0B0' },
-  gridAddButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#FF6B9D',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#FF6B9D',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  gridAddButtonActive: { backgroundColor: '#4CAF50' },
-  gridAddButtonText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   
   // List View Styles
   listCard: { 
@@ -1013,6 +1613,36 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   listPopularText: { fontSize: 8, fontWeight: '700', color: '#FF6B9D' },
+  listCartButton: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FF6B9D',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#FF6B9D',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  listCartButtonActive: {
+    backgroundColor: '#4CAF50',
+    shadowColor: '#4CAF50',
+  },
+  listCartQuantity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  listCartQuantityText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
   listInfo: { flex: 1, marginLeft: 12 },
   listHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   listName: { fontSize: 16, fontWeight: '600', flex: 1 },
@@ -1024,17 +1654,6 @@ const styles = StyleSheet.create({
   listPrice: { fontSize: 18, fontWeight: '700', color: '#FF6B9D' },
   listPriceContainer: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   listOriginalPrice: { fontSize: 14, textDecorationLine: 'line-through', color: '#B0B0B0' },
-  listAddButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FF6B9D',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 12,
-    gap: 4,
-  },
-  listAddButtonActive: { backgroundColor: '#4CAF50' },
-  listAddButtonText: { color: '#FFF', fontSize: 12, fontWeight: '600' },
   
   // Package Styles
   packagesList: { paddingHorizontal: 16, paddingBottom: 20 },
@@ -1095,6 +1714,358 @@ const styles = StyleSheet.create({
   emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   emptyTitle: { fontSize: 18, fontWeight: '600', marginTop: 12, marginBottom: 4 },
   emptyText: { fontSize: 14, textAlign: 'center' },
+  
+  // Detail Modal Styles
+  detailModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  detailModalContent: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingTop: 16,
+    maxHeight: '90%',
+  },
+  detailCloseButton: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    zIndex: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  detailImageContainer: {
+    position: 'relative',
+    height: 220,
+    marginHorizontal: -4,
+  },
+  detailImage: {
+    width: '100%',
+    height: '100%',
+  },
+  detailPopularBadge: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    flexDirection: 'row',
+    backgroundColor: '#FFF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    gap: 4,
+    alignItems: 'center',
+  },
+  detailPopularText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FF6B9D',
+  },
+  detailContent: {
+    padding: 20,
+  },
+  detailName: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  detailPrice: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  detailOriginalPrice: {
+    fontSize: 16,
+    textDecorationLine: 'line-through',
+    color: '#B0B0B0',
+    marginBottom: 8,
+  },
+  detailSection: {
+    marginTop: 16,
+  },
+  detailSectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  detailDescription: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  detailPaxInfo: {
+    fontSize: 14,
+    fontWeight: '500',
+    marginTop: 4,
+  },
+  detailDietaryContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  detailDietaryTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E8F5E9',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 6,
+  },
+  detailDietaryText: {
+    fontSize: 13,
+    color: '#2E7D32',
+    fontWeight: '500',
+  },
+  detailAllergyContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  detailAllergyTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFEBEE',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 6,
+  },
+  detailAllergyText: {
+    fontSize: 13,
+    color: '#C62828',
+    fontWeight: '500',
+  },
+  detailFallback: {
+    fontSize: 14,
+    fontStyle: 'italic',
+  },
+
+  // Add to Cart inside Modal
+  detailAddToCartWrapper: {
+    marginTop: 20,
+    marginBottom: 10,
+  },
+  detailCartQuantityInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    marginBottom: 8,
+    backgroundColor: '#E8F5E9',
+    borderRadius: 10,
+  },
+  detailCartQuantityText: {
+    fontSize: 14,
+    color: '#2E7D32',
+    fontWeight: '500',
+  },
+  detailRemoveButton: {
+    padding: 4,
+  },
+  detailAddToCartButton: {
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  detailAddToCartButtonActive: {
+    shadowColor: '#4CAF50',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  detailAddToCartGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  detailAddToCartText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  detailAddToCartPrice: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '600',
+    opacity: 0.9,
+  },
+
+  // Custom Alert Modal Styles
+  alertOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  alertContainer: {
+    width: SCREEN_WIDTH - 48,
+    maxWidth: 340,
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  alertIconContainer: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  alertTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  alertMessage: {
+    fontSize: 15,
+    textAlign: 'center',
+    lineHeight: 22,
+    marginBottom: 20,
+  },
+  alertButtons: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  alertButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alertCancelButton: {
+    backgroundColor: '#F5F5F5',
+  },
+  alertConfirmButton: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  alertButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+
+  // Package Detail Styles
+  packageDetailHeader: {
+    position: 'relative',
+    height: 200,
+  },
+  packageDetailImage: {
+    width: '100%',
+    height: '100%',
+  },
+  packageDetailOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 20,
+  },
+  packageDetailName: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#fff',
+  },
+  packageDetailPrice: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#FF6B9D',
+  },
+  packageDetailPax: {
+    fontSize: 14,
+    color: '#fff',
+    opacity: 0.8,
+  },
+  packageItemsLoader: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  packageItemsLoaderText: {
+    marginTop: 8,
+    fontSize: 14,
+  },
+  packageItemsList: {
+    gap: 12,
+  },
+  packageMenuItem: {
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  packageMenuItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  packageMenuItemImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+  },
+  packageMenuItemInfo: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  packageMenuItemName: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  packageMenuItemPrice: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  packageMenuItemDescription: {
+    fontSize: 13,
+    marginBottom: 6,
+    lineHeight: 18,
+  },
+  packageMenuItemTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  packageMenuItemTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F5F5F5',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  packageMenuItemAllergyTag: {
+    backgroundColor: '#FFF0F0',
+  },
+  packageMenuItemTagText: {
+    fontSize: 11,
+    color: '#666',
+  },
+  packageMenuItemAllergyText: {
+    color: '#C62828',
+  },
   
   // Modal Styles
   modalOverlay: {

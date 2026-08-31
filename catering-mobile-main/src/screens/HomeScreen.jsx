@@ -19,7 +19,6 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
-import { useCart } from '../contexts/CartContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { categoryService } from '../services/categoryService';
 import { menuService } from '../services/menuService';
@@ -85,7 +84,6 @@ const CUSTOMER_COMMENTS = [
 
 const HomeScreen = ({ navigation }) => {
   const { colors } = useTheme();
-  const { addToCart, getCartCount } = useCart();
   const { isGuest, isAuthenticated } = useAuth();
   
   const [loading, setLoading] = useState(true);
@@ -102,10 +100,13 @@ const HomeScreen = ({ navigation }) => {
   const [featuredItems, setFeaturedItems] = useState([]);
   const [customerComments, setCustomerComments] = useState([]);
   
+  // Category scroll state
+  const [categoryScrollOffset, setCategoryScrollOffset] = useState(0);
+  const [categoryContentWidth, setCategoryContentWidth] = useState(0);
+  const categoryScrollRef = useRef(null);
+  
   const bannerFlatListRef = useRef(null);
   const scrollY = useRef(new Animated.Value(0)).current;
-
-  const cartCount = getCartCount();
 
   // Load all data
   const loadData = async () => {
@@ -242,29 +243,6 @@ const HomeScreen = ({ navigation }) => {
     return () => clearInterval(interval);
   }, [activeBanner, bannerItems.length]);
 
-  const handleAddToCart = (item) => {
-    if (isGuest) {
-      Alert.alert(
-        'Guest Mode',
-        'Please login to add items to your cart',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Login', onPress: () => navigation.navigate('Login') }
-        ]
-      );
-      return;
-    }
-    
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    addToCart({
-      id: item.menu_item_id || item.id,
-      name: item.name,
-      price: item.discounted_price || item.price,
-      image: item.image_url || item.image,
-    }, 1);
-    Alert.alert('Added to Cart', `${item.name || 'Item'} added to your cart`);
-  };
-
   const handleImageError = (itemId) => {
     setImageErrors(prev => ({ ...prev, [itemId]: true }));
   };
@@ -389,10 +367,6 @@ const HomeScreen = ({ navigation }) => {
               Save {Math.round((1 - discountedPrice / originalPrice) * 100)}%
             </Text>
           </View>
-          <TouchableOpacity style={styles.promoMenuAddButton} onPress={() => handleAddToCart(item)}>
-            <Feather name="plus" size={12} color="#fff" />
-            <Text style={styles.promoMenuAddButtonText}>Add</Text>
-          </TouchableOpacity>
         </View>
       </TouchableOpacity>
     );
@@ -482,7 +456,11 @@ const HomeScreen = ({ navigation }) => {
       : (item.image_url || item.image || getRandomBannerImage());
     
     return (
-      <View key={`menu-${item.menu_item_id || item.id}`} style={[styles.menuCard, { backgroundColor: colors.card }]}>
+      <TouchableOpacity
+        key={`menu-${item.menu_item_id || item.id}`}
+        style={[styles.menuCard, { backgroundColor: colors.card }]}
+        onPress={() => navigation.navigate('MenuItemDetail', { itemId: item.menu_item_id || item.id })}
+      >
         <View style={styles.menuImageContainer}>
           <Image 
             source={{ uri: imageUrl }} 
@@ -514,12 +492,8 @@ const HomeScreen = ({ navigation }) => {
               {renderStars(item.rating || 4.5, 12)}
             </View>
           </View>
-          <TouchableOpacity style={styles.addButton} onPress={() => handleAddToCart(item)}>
-            <Feather name="plus" size={14} color="#fff" />
-            <Text style={styles.addButtonText}>Add</Text>
-          </TouchableOpacity>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -532,6 +506,10 @@ const HomeScreen = ({ navigation }) => {
       </View>
     );
   }
+
+  // Calculate if categories can scroll
+  const canScrollLeft = categoryScrollOffset > 10;
+  const canScrollRight = categoryContentWidth > 0 && categoryScrollOffset < categoryContentWidth - width + 40;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -569,7 +547,7 @@ const HomeScreen = ({ navigation }) => {
           </View>
         )}
 
-        {/* WELCOME SECTION */}
+        {/* WELCOME SECTION - Cart removed */}
         <View style={styles.welcomeSection}>
           <View>
             <Text style={[styles.welcomeText, { color: colors.text }]}>
@@ -579,32 +557,6 @@ const HomeScreen = ({ navigation }) => {
               {isGuest ? 'Login to order and save your favorites' : 'What would you like to eat today?'}
             </Text>
           </View>
-          <TouchableOpacity 
-            style={styles.cartButton}
-            onPress={() => {
-              if (isGuest) {
-                Alert.alert(
-                  'Guest Mode',
-                  'Please login to view your cart',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Login', onPress: () => navigation.navigate('Login') }
-                  ]
-                );
-              } else {
-                navigation.navigate('Cart');
-              }
-            }}
-          >
-            <View style={styles.cartBadge}>
-              <Feather name="shopping-bag" size={22} color="#fff" />
-              {cartCount > 0 && (
-                <View style={styles.cartCount}>
-                  <Text style={styles.cartCountText}>{cartCount}</Text>
-                </View>
-              )}
-            </View>
-          </TouchableOpacity>
         </View>
 
         {/* SEARCH BAR */}
@@ -624,42 +576,77 @@ const HomeScreen = ({ navigation }) => {
           )}
         </View>
 
-        {/* CATEGORIES */}
+        {/* CATEGORIES WITH SCROLL INDICATORS */}
         {categories.length > 0 && (
           <View style={styles.categoriesSection}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.categoriesList}
-            >
-              {categories.map((item, index) => {
-                const rawCategoryId = item.category_id || item.id;
-                const categoryId = rawCategoryId && typeof rawCategoryId !== 'object' ? rawCategoryId : `category-${index}`;
-                const isSelected = selectedCategory === categoryId;
-                
-                return (
-                  <TouchableOpacity 
-                    key={`cat-${categoryId}`}
-                    style={[
-                      styles.categoryItem,
-                      isSelected && styles.categoryItemActive,
-                      { 
-                        backgroundColor: isSelected ? colors.primary : 'transparent',
-                        borderColor: isSelected ? colors.primary : '#e0e0e0',
-                      }
-                    ]} 
-                    onPress={() => setSelectedCategory(categoryId)}
+            <View style={styles.categoriesContainer}>
+              {/* Left scroll indicator */}
+              {canScrollLeft && (
+                <View style={[styles.scrollIndicator, styles.scrollIndicatorLeft]}>
+                  <LinearGradient
+                    colors={['rgba(255,255,255,0.9)', 'rgba(255,255,255,0)']}
+                    style={styles.scrollIndicatorGradient}
                   >
-                    <Text style={[
-                      styles.categoryName,
-                      { color: isSelected ? '#fff' : colors.textSecondary }
-                    ]}>
-                      {typeof item.name === 'string' ? item.name : item.name?.name || 'Category'}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+                    <Feather name="chevron-left" size={16} color="#FF6B9D" />
+                  </LinearGradient>
+                </View>
+              )}
+
+              <ScrollView
+                ref={categoryScrollRef}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.categoriesList}
+                onScroll={(event) => {
+                  const offsetX = event.nativeEvent.contentOffset.x;
+                  setCategoryScrollOffset(offsetX);
+                }}
+                onContentSizeChange={(contentWidth) => {
+                  setCategoryContentWidth(contentWidth);
+                }}
+                scrollEventThrottle={16}
+              >
+                {categories.map((item, index) => {
+                  const rawCategoryId = item.category_id || item.id;
+                  const categoryId = rawCategoryId && typeof rawCategoryId !== 'object' ? rawCategoryId : `category-${index}`;
+                  const isSelected = selectedCategory === categoryId;
+                  
+                  return (
+                    <TouchableOpacity 
+                      key={`cat-${categoryId}`}
+                      style={[
+                        styles.categoryItem,
+                        isSelected && styles.categoryItemActive,
+                        { 
+                          backgroundColor: isSelected ? colors.primary : 'transparent',
+                          borderColor: isSelected ? colors.primary : '#e0e0e0',
+                        }
+                      ]} 
+                      onPress={() => setSelectedCategory(categoryId)}
+                    >
+                      <Text style={[
+                        styles.categoryName,
+                        { color: isSelected ? '#fff' : colors.textSecondary }
+                      ]}>
+                        {typeof item.name === 'string' ? item.name : item.name?.name || 'Category'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              {/* Right scroll indicator */}
+              {canScrollRight && (
+                <View style={[styles.scrollIndicator, styles.scrollIndicatorRight]}>
+                  <LinearGradient
+                    colors={['rgba(255,255,255,0)', 'rgba(255,255,255,0.9)']}
+                    style={styles.scrollIndicatorGradient}
+                  >
+                    <Feather name="chevron-right" size={16} color="#FF6B9D" />
+                  </LinearGradient>
+                </View>
+              )}
+            </View>
           </View>
         )}
 
@@ -833,7 +820,7 @@ const styles = StyleSheet.create({
   bannerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ddd' },
   bannerDotActive: { width: 28, backgroundColor: '#ff6b9d' },
   
-  // Welcome Section
+  // Welcome Section - Cart removed
   welcomeSection: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
@@ -843,34 +830,6 @@ const styles = StyleSheet.create({
   },
   welcomeText: { fontSize: 24, fontWeight: '700' },
   welcomeSubtext: { fontSize: 14, marginTop: 2, opacity: 0.7 },
-  cartButton: { 
-    width: 50, 
-    height: 50, 
-    borderRadius: 25, 
-    backgroundColor: '#ff6b9d',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#ff6b9d',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 5,
-  },
-  cartBadge: { position: 'relative' },
-  cartCount: { 
-    position: 'absolute', 
-    top: -8, 
-    right: -10, 
-    backgroundColor: '#ff4444', 
-    width: 20, 
-    height: 20, 
-    borderRadius: 10,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#fff',
-  },
-  cartCountText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
   
   // Search Styles
   searchContainer: { 
@@ -889,8 +848,14 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, fontSize: 15, marginLeft: 10 },
   
-  // Categories Styles
+  // Categories Styles with Scroll Indicators
   categoriesSection: { marginBottom: 24 },
+  categoriesContainer: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
   categoriesList: { paddingHorizontal: 16, gap: 8 },
   categoryItem: { 
     paddingHorizontal: 20, 
@@ -907,6 +872,29 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   categoryName: { fontSize: 14, fontWeight: '600' },
+  
+  // Scroll Indicators
+  scrollIndicator: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  scrollIndicatorLeft: {
+    left: 0,
+  },
+  scrollIndicatorRight: {
+    right: 0,
+  },
+  scrollIndicatorGradient: {
+    width: 32,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   
   // Promo Menu Section
   promoMenuSection: { marginBottom: 24, paddingHorizontal: 20 },
@@ -941,17 +929,6 @@ const styles = StyleSheet.create({
   promoMenuDiscountedPrice: { fontSize: 15, fontWeight: 'bold', color: '#ff4444' },
   promoMenuMeta: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 },
   promoMenuSaveText: { fontSize: 9, opacity: 0.6 },
-  promoMenuAddButton: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#ff6b9d', 
-    paddingHorizontal: 10, 
-    paddingVertical: 4, 
-    borderRadius: 12, 
-    gap: 3,
-    alignSelf: 'flex-start',
-  },
-  promoMenuAddButtonText: { fontSize: 10, fontWeight: '600', color: '#fff' },
   sectionBadge: {
     backgroundColor: '#ff4444',
     paddingHorizontal: 8,
@@ -1117,22 +1094,6 @@ const styles = StyleSheet.create({
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 11 },
   starsRow: { flexDirection: 'row', gap: 2 },
-  addButton: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#ff6b9d', 
-    paddingHorizontal: 14, 
-    paddingVertical: 6, 
-    borderRadius: 16, 
-    gap: 4,
-    alignSelf: 'flex-start',
-    shadowColor: '#ff6b9d',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  addButtonText: { fontSize: 12, fontWeight: '600', color: '#fff' },
   
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   emptyStateText: { fontSize: 16, marginTop: 12, fontWeight: '500' },
