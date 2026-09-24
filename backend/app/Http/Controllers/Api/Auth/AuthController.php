@@ -18,15 +18,17 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
-    /**
-     * Login for customers, employees, and admin users
-     * Supports both web and mobile clients
-     */
+    private const ATTEMPTS_PER_CYCLE = 5;
+    private const FIRST_LOCKOUT_MINUTES  = 10;
+    private const SECOND_LOCKOUT_MINUTES = 60;
+
+    // ============================================================
+    // LOGIN
+    // ============================================================
     public function login(Request $request)
     {
         $validator = validator($request->all(), [
@@ -36,7 +38,7 @@ class AuthController extends Controller
             'user_id' => 'nullable|string',
             'emailOrUsername' => 'nullable|string',
             'password' => 'required|string',
-            'role' => 'nullable|string|in:customer,employee,admin,cashier,head-chef,staff-manager,inventory-manager',
+            'role' => 'nullable|string',
             'otp_code' => 'nullable|string|size:6',
             'require_otp' => 'nullable|boolean',
         ]);
@@ -45,22 +47,25 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $identifier = $request->input('emailOrUsername') 
-            ?? $request->input('email') 
-            ?? $request->input('username') 
-            ?? $request->input('userId') 
+        $identifier = $request->input('emailOrUsername')
+            ?? $request->input('email')
+            ?? $request->input('username')
+            ?? $request->input('userId')
             ?? $request->input('user_id');
 
         if (empty($identifier)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Email or username is required'
+                'message' => 'Email or username is required',
+                'error_code' => 'MISSING_IDENTIFIER',
             ], 422);
         }
+
+        $identifier = trim($identifier);
 
         $user = User::with(['person', 'roles', 'customer', 'employee'])
             ->where('username', $identifier)
@@ -69,73 +74,115 @@ class AuthController extends Controller
             })
             ->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
-            $this->recordFailedLogin($identifier, $request);
+        if ($user && $user->isLoginLocked()) {
+            $secondsLeft = $user->lockoutSecondsRemaining();
             return response()->json([
                 'success' => false,
-                'message' => 'Invalid credentials'
+                'message' => 'Too many failed login attempts. Please try again in '
+                    . ceil($secondsLeft / 60) . ' minute(s).',
+                'error_code' => 'ACCOUNT_LOCKED',
+                'locked_until' => $user->locked_until->toIso8601String(),
+                'seconds_left' => $secondsLeft,
+                'attempts_used' => $user->failed_login_attempts,
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+                'lock_level' => $user->lock_level,
+                'lockout_minutes' => $user->lock_level >= 2
+                    ? self::SECOND_LOCKOUT_MINUTES
+                    : self::FIRST_LOCKOUT_MINUTES,
+            ], 429);
+        }
+
+        if (!$user) {
+            $this->recordFailedLogin($identifier, $request);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Email or Username. Please check and try again.',
+                'error_code' => 'INVALID_EMAIL',
+                'field' => 'username',
             ], 401);
+        }
+
+        if (!Hash::check($request->password, $user->password)) {
+            $this->recordFailedLogin($identifier, $request);
+            $info = $user->registerFailedLogin($request->ip());
+
+            if ($info['locked']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $info['lock_level'] >= 2
+                        ? 'Too many failed login attempts. Your account is locked for 1 hour.'
+                        : 'Too many failed login attempts. Your account is locked for 10 minutes.',
+                    'error_code' => 'ACCOUNT_LOCKED',
+                    'locked_until' => $info['locked_until'],
+                    'seconds_left' => $info['seconds_left'],
+                    'attempts_used' => $info['attempts'],
+                    'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+                    'lock_level' => $info['lock_level'],
+                    'lockout_minutes' => $info['lockout_minutes'],
+                ], 429);
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Password. '
+                    . $info['attempts_left'] . ' attempt(s) left before lockout.',
+                'error_code' => 'INVALID_PASSWORD',
+                'field' => 'password',
+                'attempts_left' => $info['attempts_left'],
+                'attempts_used' => $info['attempts'],
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            ], 401);
+        }
+
+        // ============================================================
+        // BANNED CHECK
+        // ============================================================
+        if (($user->is_banned ?? false) === true) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your account has been banned. Please contact support.',
+                'error_code' => 'ACCOUNT_BANNED',
+            ], 403);
         }
 
         if (!$user->is_active) {
             return response()->json([
                 'success' => false,
-                'message' => 'Account is inactive. Please contact support.'
+                'message' => 'Account is inactive. Please contact support.',
+                'error_code' => 'ACCOUNT_INACTIVE',
             ], 403);
         }
 
         $requestedRole = $request->input('role');
         $userRole = $this->primaryRole($user);
         $isAdmin = in_array($userRole, ['admin', 'super-admin'], true);
-        $isCashier = $userRole === 'cashier';
         $role = $requestedRole ?: $userRole;
 
-        // Skip role-specific checks for admin users
         if (!$isAdmin) {
             if ($role === 'customer' && !$user->customer) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No customer account found for this user'
+                    'message' => 'No customer account found for this user',
+                    'error_code' => 'ROLE_MISMATCH',
                 ], 401);
             }
 
             if ($role === 'employee' && !$user->employee) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No employee account found for this user'
+                    'message' => 'No employee account found for this user',
+                    'error_code' => 'ROLE_MISMATCH',
                 ], 401);
-            }
-
-            if ($role === 'cashier' && !$isCashier) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized - Cashier access required'
-                ], 403);
-            }
-
-            if (in_array($role, ['head-chef', 'staff-manager', 'inventory-manager'], true)
-                && $role !== $userRole) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized - Assigned role does not match the requested access'
-                ], 403);
-            }
-
-            if ($role === 'admin' && !$isAdmin) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized - Admin access required'
-                ], 403);
             }
         }
 
         if ($request->boolean('require_otp')) {
             $otpResult = $this->verifyOrSendLoginOtp($user, (string) $request->input('otp_code', ''));
-
-            if ($otpResult !== true) {
-                return $otpResult;
-            }
+            if ($otpResult !== true) return $otpResult;
         }
+
+        $user->clearFailedLogins();
 
         $token = $user->createToken('auth_token')->plainTextToken;
         $user->update(['last_login_at' => now()]);
@@ -149,9 +196,9 @@ class AuthController extends Controller
         ], 'Login successful');
     }
 
-    /**
-     * Admin login - dedicated endpoint for admin users
-     */
+    // ============================================================
+    // ADMIN LOGIN
+    // ============================================================
     public function adminLogin(Request $request)
     {
         $validator = validator($request->all(), [
@@ -167,52 +214,96 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $identifier = $request->input('emailOrUsername') 
-            ?? $request->input('email') 
-            ?? $request->input('username') 
-            ?? $request->input('userId') 
+        $identifier = $request->input('emailOrUsername')
+            ?? $request->input('email')
+            ?? $request->input('username')
+            ?? $request->input('userId')
             ?? $request->input('user_id');
+        $identifier = trim((string) $identifier);
 
-        if (empty($identifier)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Email or username is required'
-            ], 422);
-        }
-
-        $user = User::with(['person', 'roles', 'customer', 'employee'])
+        $user = User::with(['person', 'roles'])
             ->where('username', $identifier)
-            ->orWhereHas('person', function ($query) use ($identifier) {
-                $query->where('email', $identifier);
-            })
+            ->orWhereHas('person', fn($q) => $q->where('email', $identifier))
             ->first();
 
-        if (!$user || !Hash::check($request->password, $user->password)) {
-            $this->recordFailedLogin($identifier, $request);
+        if ($user && $user->isLoginLocked()) {
+            $secondsLeft = $user->lockoutSecondsRemaining();
             return response()->json([
                 'success' => false,
-                'message' => 'Invalid credentials'
+                'message' => 'Too many failed login attempts. Please try again in '
+                    . ceil($secondsLeft / 60) . ' minute(s).',
+                'error_code' => 'ACCOUNT_LOCKED',
+                'locked_until' => $user->locked_until->toIso8601String(),
+                'seconds_left' => $secondsLeft,
+                'lock_level' => $user->lock_level,
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            ], 429);
+        }
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Email or Username.',
+                'error_code' => 'INVALID_EMAIL',
             ], 401);
+        }
+
+        if (!Hash::check($request->password, $user->password)) {
+            $info = $user->registerFailedLogin($request->ip());
+            if ($info['locked']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $info['lock_level'] >= 2
+                        ? 'Too many failed attempts. Locked for 1 hour.'
+                        : 'Too many failed attempts. Locked for 10 minutes.',
+                    'error_code' => 'ACCOUNT_LOCKED',
+                    'locked_until' => $info['locked_until'],
+                    'seconds_left' => $info['seconds_left'],
+                    'lock_level' => $info['lock_level'],
+                    'lockout_minutes' => $info['lockout_minutes'],
+                ], 429);
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Password. ' . $info['attempts_left'] . ' attempt(s) left.',
+                'error_code' => 'INVALID_PASSWORD',
+                'attempts_left' => $info['attempts_left'],
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            ], 401);
+        }
+
+        // ============================================================
+        // BANNED CHECK
+        // ============================================================
+        if (($user->is_banned ?? false) === true) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your account has been banned. Please contact support.',
+                'error_code' => 'ACCOUNT_BANNED',
+            ], 403);
         }
 
         if (!$user->is_active) {
             return response()->json([
                 'success' => false,
-                'message' => 'Account is inactive. Please contact support.'
+                'message' => 'Account is inactive. Please contact support.',
+                'error_code' => 'ACCOUNT_INACTIVE',
             ], 403);
         }
 
-        // Check if user has admin role
-        if (!$user->roles->contains(fn ($role) => in_array($role->slug, ['admin', 'super-admin'], true))) {
+        if (!$user->roles->contains(fn($role) => in_array($role->slug, ['admin', 'super-admin'], true))) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthorized - Admin access required'
+                'message' => 'Unauthorized - Admin access required',
+                'error_code' => 'ROLE_MISMATCH',
             ], 403);
         }
+
+        $user->clearFailedLogins();
 
         $token = $user->createToken('admin-token')->plainTextToken;
         $user->update(['last_login_at' => now()]);
@@ -226,9 +317,9 @@ class AuthController extends Controller
         ], 'Admin login successful');
     }
 
-    /**
-     * Employee login
-     */
+    // ============================================================
+    // EMPLOYEE LOGIN (Attendance Tracking / Mobile)
+    // ============================================================
     public function employeeLogin(Request $request)
     {
         $validator = validator($request->all(), [
@@ -245,50 +336,116 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
-        $identifier = $request->input('employee_code') 
+        $identifier = $request->input('employee_code')
             ?? $request->input('emailOrUsername')
             ?? $request->input('email')
-            ?? $request->input('username') 
-            ?? $request->input('userId') 
+            ?? $request->input('username')
+            ?? $request->input('userId')
             ?? $request->input('user_id');
+        $identifier = trim((string) $identifier);
 
-        if (empty($identifier)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Employee code, email, or username is required'
-            ], 422);
-        }
-
-        // Try to find by employee code first
         $employee = Employee::with(['user.person', 'user.roles', 'person', 'department', 'position'])
             ->where('employee_code', $identifier)
             ->first();
 
-        // If not found by employee code, try by username or email
         if (!$employee) {
             $employee = Employee::with(['user.person', 'user.roles', 'person', 'department', 'position'])
                 ->whereHas('user', function ($query) use ($identifier) {
                     $query->where('username', $identifier)
-                        ->orWhereHas('person', function ($q) use ($identifier) {
-                            $q->where('email', $identifier);
-                        });
+                        ->orWhereHas('person', fn($q) => $q->where('email', $identifier));
                 })
                 ->first();
         }
 
         $user = $employee?->user;
 
-        if (!$employee || !$user || !$user->is_active || !Hash::check($request->password, $user->password)) {
-            $this->recordFailedLogin($identifier, $request);
+        if ($user && $user->isLoginLocked()) {
+            $secondsLeft = $user->lockoutSecondsRemaining();
             return response()->json([
                 'success' => false,
-                'message' => 'Invalid employee credentials'
+                'message' => 'Too many failed login attempts. Please try again in '
+                    . ceil($secondsLeft / 60) . ' minute(s).',
+                'error_code' => 'ACCOUNT_LOCKED',
+                'locked_until' => $user->locked_until->toIso8601String(),
+                'seconds_left' => $secondsLeft,
+                'lock_level' => $user->lock_level,
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            ], 429);
+        }
+
+        if (!$employee || !$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Employee Code, Email, or Username.',
+                'error_code' => 'INVALID_EMAIL',
             ], 401);
         }
+
+        if (!Hash::check($request->password, $user->password)) {
+            $info = $user->registerFailedLogin($request->ip());
+            if ($info['locked']) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $info['lock_level'] >= 2
+                        ? 'Too many failed attempts. Locked for 1 hour.'
+                        : 'Too many failed attempts. Locked for 10 minutes.',
+                    'error_code' => 'ACCOUNT_LOCKED',
+                    'locked_until' => $info['locked_until'],
+                    'seconds_left' => $info['seconds_left'],
+                    'lock_level' => $info['lock_level'],
+                    'lockout_minutes' => $info['lockout_minutes'],
+                ], 429);
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Incorrect Password. ' . $info['attempts_left'] . ' attempt(s) left.',
+                'error_code' => 'INVALID_PASSWORD',
+                'attempts_left' => $info['attempts_left'],
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            ], 401);
+        }
+
+        // ============================================================
+        // BANNED CHECK
+        // ============================================================
+        if (($user->is_banned ?? false) === true) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your account has been banned. Please contact support.',
+                'error_code' => 'ACCOUNT_BANNED',
+            ], 403);
+        }
+
+        // ============================================================
+        // ⭐ #2 — INACTIVE / TERMINATED EMPLOYEE CHECK
+        // Employees whose status is "inactive" or "terminated" cannot log in,
+        // even if their linked user account still exists.
+        // ============================================================
+        $status = strtolower((string) $employee->status) ?: 'active';
+        $allowedEmployeeStatuses = ['active', 'on_leave', 'onleave', 'on-leave'];
+        if (!in_array($status, $allowedEmployeeStatuses, true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your employee account is ' . $employee->status
+                    . '. Please contact an administrator.',
+                'error_code' => 'ACCOUNT_INACTIVE',
+                'employee_status' => $employee->status,
+            ], 403);
+        }
+
+        if (!$user->is_active) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Account is inactive. Please contact your administrator.',
+                'error_code' => 'ACCOUNT_INACTIVE',
+            ], 403);
+        }
+
+        $user->clearFailedLogins();
 
         $user->update(['last_login_at' => now()]);
         $this->recordLogin($user, $request);
@@ -302,16 +459,84 @@ class AuthController extends Controller
         ], 'Employee login successful');
     }
 
-    /**
-     * Register new customer
-     */
+    // ============================================================
+    // PUBLIC: CHECK LOCKOUT STATUS
+    // ============================================================
+    public function loginStatus(Request $request)
+    {
+        $validator = validator($request->all(), [
+            'identifier' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $identifier = trim($request->input('identifier'));
+
+        $user = User::where('username', $identifier)
+            ->orWhereHas('person', fn($q) => $q->where('email', $identifier))
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'success' => true,
+                'locked' => false,
+                'attempts_used' => 0,
+                'attempts_left' => self::ATTEMPTS_PER_CYCLE,
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+                'lock_level' => 0,
+            ]);
+        }
+
+        if ($user->isLoginLocked()) {
+            return response()->json([
+                'success' => false,
+                'locked' => true,
+                'message' => 'Account locked. Please wait.',
+                'error_code' => 'ACCOUNT_LOCKED',
+                'locked_until' => $user->locked_until->toIso8601String(),
+                'seconds_left' => $user->lockoutSecondsRemaining(),
+                'attempts_used' => $user->failed_login_attempts,
+                'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+                'lock_level' => $user->lock_level,
+            ], 200);
+        }
+
+        return response()->json([
+            'success' => true,
+            'locked' => false,
+            'attempts_used' => $user->failed_login_attempts ?? 0,
+            'attempts_left' => max(0, self::ATTEMPTS_PER_CYCLE - ($user->failed_login_attempts ?? 0)),
+            'max_attempts' => self::ATTEMPTS_PER_CYCLE,
+            'lock_level' => $user->lock_level ?? 0,
+        ]);
+    }
+
+    // ============================================================
+    // REGISTER CUSTOMER
+    // ============================================================
     public function registerCustomer(Request $request)
     {
         $validator = validator($request->all(), [
             'first_name' => 'required|string|max:80',
             'last_name' => 'required|string|max:80',
+            'username' => 'required|string|min:3|max:50|regex:/^[a-zA-Z0-9_]+$/|unique:users,username',
             'email' => 'required|email|max:120|unique:persons,email',
-            'password' => 'required|string|min:8|confirmed',
+            'password' => [
+                'required',
+                'string',
+                'min:8',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[^A-Za-z0-9]/',
+                'confirmed',
+            ],
             'phone' => 'nullable|string|max:30',
             'address' => 'nullable|string',
         ]);
@@ -320,7 +545,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -328,7 +553,7 @@ class AuthController extends Controller
             $person = Person::create([
                 'first_name' => $request->first_name,
                 'last_name' => $request->last_name,
-                'email' => $request->email,
+                'email' => strtolower(trim($request->email)),
                 'phone' => $request->phone ?? null,
                 'address_line_1' => $request->address ?? null,
                 'country' => 'Philippines',
@@ -336,15 +561,13 @@ class AuthController extends Controller
 
             $user = User::create([
                 'person_id' => $person->person_id,
-                'username' => $request->email,
+                'username' => strtolower(trim($request->username)),
                 'password' => Hash::make($request->password),
                 'is_active' => true,
             ]);
 
             $role = Role::where('slug', 'customer')->first();
-            if ($role) {
-                $user->roles()->sync([$role->role_id]);
-            }
+            if ($role) $user->roles()->sync([$role->role_id]);
 
             $customer = Customer::create([
                 'person_id' => $person->person_id,
@@ -364,9 +587,450 @@ class AuthController extends Controller
         });
     }
 
-    /**
-     * Send customer registration OTP to email/Gmail.
-     */
+    // ============================================================
+    // FORGOT PASSWORD — STEP 1
+    // ============================================================
+    public function forgotPassword(Request $request)
+    {
+        $validator = validator($request->all(), [
+            'user_id' => 'required|string',
+            'email' => 'required|email|max:120',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $identifier = trim((string) $request->input('user_id'));
+        $providedEmail = strtolower(trim((string) $request->input('email')));
+
+        $user = User::with(['person'])
+            ->where('username', $identifier)
+            ->orWhereHas('person', fn($q) => $q->where('email', $identifier))
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User account not found.',
+                'errors' => ['user_id' => ['No account found with this Username or Email.']],
+            ], 404);
+        }
+
+        $registeredEmail = strtolower(trim((string) ($user->person?->email ?? $user->username)));
+
+        if (!$registeredEmail || !filter_var($registeredEmail, FILTER_VALIDATE_EMAIL)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This account has no valid registered email.',
+                'errors' => ['email' => ['No valid registered email found.']],
+            ], 422);
+        }
+
+        if ($providedEmail !== $registeredEmail) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The email you entered does not match our records.',
+                'errors' => ['email' => ['Email does not match the registered email.']],
+            ], 422);
+        }
+
+        $otp = (string) random_int(100000, 999999);
+        Cache::put('password-reset-otp:' . $user->user_id, Hash::make($otp), now()->addMinutes(10));
+
+        try {
+            $this->sendOtpEmail($registeredEmail, $otp, 'Dear Ba\'bs Catering Password Reset OTP');
+        } catch (\Throwable $e) {
+            Log::error('Forgot password OTP send failed: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send OTP email. Please try again later.',
+                'errors' => ['email' => ['Email sending failed.']],
+            ], 500);
+        }
+
+        $payload = [
+            'user_id' => $user->username,
+            'email' => $registeredEmail,
+            'expires_in_minutes' => 10,
+        ];
+        if (app()->environment(['local', 'development', 'testing'])) {
+            $payload['debug_otp'] = $otp;
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password reset OTP sent to your registered email.',
+            'data' => $payload,
+        ], 200);
+    }
+
+    // ============================================================
+    // FORGOT PASSWORD — STEP 2
+    // ============================================================
+    public function verifyResetOtp(Request $request)
+    {
+        $validator = validator($request->all(), [
+            'user_id' => 'required|string',
+            'otp_code' => 'required|string|size:6',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $identifier = $request->user_id;
+
+        $user = User::where('username', $identifier)
+            ->orWhereHas('person', fn($q) => $q->where('email', $identifier))
+            ->first();
+
+        $cachedOtp = Cache::get('password-reset-otp:' . $user?->user_id);
+
+        if (!$user || !$cachedOtp || !Hash::check($request->otp_code, $cachedOtp)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid or expired OTP. Please request a new code.',
+                'errors' => ['otp_code' => ['Invalid or expired OTP code.']],
+            ], 422);
+        }
+
+        Cache::forget('password-reset-otp:' . $user->user_id);
+
+        $resetToken = Str::random(64);
+        Cache::put('password-reset-token:' . $user->user_id, $resetToken, now()->addHours(24));
+
+        return response()->json([
+            'success' => true,
+            'message' => 'OTP verified successfully.',
+            'data' => [
+                'reset_token' => $resetToken,
+                'expires_in_hours' => 24,
+            ],
+        ], 200);
+    }
+
+    public function resendResetOtp(Request $request)
+    {
+        return $this->forgotPassword($request);
+    }
+
+    // ============================================================
+    // FORGOT PASSWORD — STEP 3
+    // ============================================================
+    public function resetPassword(Request $request)
+    {
+        $validator = validator($request->all(), [
+            'user_id' => 'required|string',
+            'new_password' => [
+                'required',
+                'string',
+                'min:8',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[^A-Za-z0-9]/',
+            ],
+            'password_confirmation' => 'required|same:new_password',
+            'reset_token' => 'required|string',
+        ], [
+            'new_password.min' => 'Password must be at least 8 characters.',
+            'new_password.regex' => 'Password must include uppercase, lowercase, number, and special character.',
+            'password_confirmation.same' => 'Passwords do not match.',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $identifier = $request->user_id;
+
+        $user = User::where('username', $identifier)
+            ->orWhereHas('person', fn($q) => $q->where('email', $identifier))
+            ->first();
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User not found.',
+                'errors' => ['user_id' => ['User not found.']],
+            ], 404);
+        }
+
+        $cachedToken = Cache::get('password-reset-token:' . $user->user_id);
+
+        if (!$cachedToken || $cachedToken !== $request->reset_token) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid or expired password reset token. Please start over.',
+                'errors' => ['reset_token' => ['Invalid or expired token.']],
+            ], 422);
+        }
+
+        $user->update(['password' => Hash::make($request->new_password)]);
+
+        Cache::forget('password-reset-otp:' . $user->user_id);
+        Cache::forget('password-reset-token:' . $user->user_id);
+
+        if (method_exists($user, 'clearFailedLogins')) {
+            $user->clearFailedLogins();
+        }
+
+        // Revoke all existing sessions after password reset
+        $user->tokens()->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Password reset successfully. You can now log in with your new password.',
+        ], 200);
+    }
+
+    // ============================================================
+    // USER, PROFILE, CHANGE PASSWORD, LOGOUT
+    // ============================================================
+    public function user(Request $request)
+    {
+        $user = $request->user()->load(['person', 'roles', 'customer', 'employee']);
+        return $this->ok(['user' => $this->payload($user)]);
+    }
+
+    public function profile(Request $request)
+    {
+        return $this->user($request);
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $user = $request->user()->load('person');
+        $person = $user->person;
+
+        if (!$person) return $this->fail('Person record not found', 404);
+
+        $validated = $request->validate([
+            'full_name' => ['nullable', 'string', 'max:160'],
+            'first_name' => ['nullable', 'string', 'max:80'],
+            'last_name' => ['nullable', 'string', 'max:80'],
+            'email' => ['nullable', 'email', 'max:120', 'unique:persons,email,' . $person->person_id . ',person_id'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'phone_number' => ['nullable', 'string', 'max:30'],
+            'bio' => ['nullable', 'string', 'max:1000'],
+            'address' => ['nullable', 'string'],
+            'address_line_1' => ['nullable', 'string'],
+            'city' => ['nullable', 'string', 'max:80'],
+            'province' => ['nullable', 'string', 'max:80'],
+        ]);
+
+        $personData = [];
+
+        if ($request->filled('full_name')) {
+            $parts = explode(' ', trim($request->full_name), 2);
+            $personData['first_name'] = $parts[0] ?? $person->first_name;
+            $personData['last_name'] = $parts[1] ?? $person->last_name;
+        }
+        if ($request->filled('first_name')) $personData['first_name'] = $request->first_name;
+        if ($request->filled('last_name')) $personData['last_name'] = $request->last_name;
+        if ($request->filled('email')) $personData['email'] = $request->email;
+        if ($request->filled('phone')) $personData['phone'] = $request->phone;
+        if ($request->filled('phone_number')) $personData['phone'] = $request->phone_number;
+        if ($request->filled('address')) $personData['address_line_1'] = $request->address;
+        if ($request->filled('address_line_1')) $personData['address_line_1'] = $request->address_line_1;
+        if ($request->filled('city')) $personData['city'] = $request->city;
+        if ($request->filled('province')) $personData['province'] = $request->province;
+
+        if (!empty($personData)) $person->update($personData);
+
+        if (array_key_exists('bio', $validated)) {
+            Setting::setValue('user_profile', 'user_' . $user->user_id . '_bio', $validated['bio'] ?? '', 'string');
+        }
+
+        return $this->user($request);
+    }
+
+    // ============================================================
+    // ⭐ SELF-PROFILE UPDATE (for mobile app / employee self-service)
+    // Only updates the caller's OWN person fields. Cannot touch
+    // department, position, salary, status, or role.
+    // ============================================================
+    public function updateSelfProfile(Request $request)
+    {
+        $user = $request->user()->load(['person', 'employee']);
+
+        if (! $user->person) {
+            return $this->fail('Person record not found', 404);
+        }
+
+        $person = $user->person;
+
+             // ⭐ Use Laravel's Rule::unique builder so the "except" clause is
+        //    guaranteed to reference the right primary key regardless of
+        //    whether Person uses `person_id` or `id` as its key.
+        $personKeyName = $person->getKeyName();      // e.g. 'person_id'
+        $personKeyValue = $person->getKey();         // e.g. 45
+
+        $validated = $request->validate([
+            'first_name'    => ['nullable', 'string', 'max:80'],
+            'last_name'     => ['nullable', 'string', 'max:80'],
+            'middle_name'   => ['nullable', 'string', 'max:80'],
+            'suffix'        => ['nullable', 'string', 'max:20'],
+            'email'         => [
+                'nullable',
+                'email',
+                'max:120',
+                \Illuminate\Validation\Rule::unique('persons', 'email')->ignore($personKeyValue, $personKeyName),
+            ],
+            'phone'         => ['nullable', 'string', 'max:30'],
+            'address'       => ['nullable', 'string'],
+            'address_line_1' => ['nullable', 'string'],
+            'address_line_2' => ['nullable', 'string'],
+            'city'          => ['nullable', 'string', 'max:80'],
+            'province'      => ['nullable', 'string', 'max:80'],
+            'postal_code'   => ['nullable', 'string', 'max:20'],
+            'country'       => ['nullable', 'string', 'max:80'],
+            'gender'        => ['nullable', 'string', 'max:30'],
+            'birth_date'    => ['nullable', 'date'],
+        ]);
+
+        $personData = [];
+
+        if (array_key_exists('first_name', $validated))      $personData['first_name'] = $validated['first_name'];
+        if (array_key_exists('last_name', $validated))       $personData['last_name'] = $validated['last_name'];
+        if (array_key_exists('middle_name', $validated))     $personData['middle_name'] = $validated['middle_name'];
+        if (array_key_exists('suffix', $validated))          $personData['suffix'] = $validated['suffix'];
+        if (array_key_exists('email', $validated))           $personData['email'] = strtolower(trim((string) $validated['email']));
+        if (array_key_exists('phone', $validated))           $personData['phone'] = $validated['phone'];
+        if (array_key_exists('address', $validated))         $personData['address_line_1'] = $validated['address'];
+        if (array_key_exists('address_line_1', $validated))  $personData['address_line_1'] = $validated['address_line_1'];
+        if (array_key_exists('address_line_2', $validated))  $personData['address_line_2'] = $validated['address_line_2'];
+        if (array_key_exists('city', $validated))            $personData['city'] = $validated['city'];
+        if (array_key_exists('province', $validated))        $personData['province'] = $validated['province'];
+        if (array_key_exists('postal_code', $validated))     $personData['postal_code'] = $validated['postal_code'];
+        if (array_key_exists('country', $validated))         $personData['country'] = $validated['country'];
+        if (array_key_exists('gender', $validated)) {
+            $gender = $validated['gender'];
+            $personData['gender'] = ($gender === 'prefer_not_to_say' || $gender === '') ? null : $gender;
+        }
+        if (array_key_exists('birth_date', $validated))      $personData['birth_date'] = $validated['birth_date'];
+
+        if (! empty($personData)) {
+            $person->update($personData);
+        }
+
+        // Keep the linked user's username in sync when email changes.
+        if (
+            array_key_exists('email', $personData) &&
+            $personData['email'] &&
+            $user->username !== $personData['email']
+        ) {
+            $user->update(['username' => $personData['email']]);
+        }
+
+        $user->refresh()->load(['person', 'roles', 'customer', 'employee']);
+
+        return $this->ok([
+            'user' => $this->payload($user),
+            'employee' => $user->employee,
+        ], 'Profile updated successfully');
+    }
+
+    public function updateProfilePhoto(Request $request)
+    {
+        $user = $request->user();
+        $person = $user->person;
+        if (!$person) return $this->fail('Person record not found', 404);
+
+        $request->validate(['profile_photo' => 'required|image|max:2048']);
+
+        $path = $request->file('profile_photo')->store('profile-photos', 'public');
+        $person->update(['profile_photo' => $path]);
+
+        return $this->ok([
+            'user' => $this->payload($user->fresh(['person', 'roles', 'customer', 'employee'])),
+        ], 'Profile photo updated successfully');
+    }
+
+    public function changePassword(Request $request)
+    {
+        $validator = validator($request->all(), [
+            'current_password' => 'required|string',
+            'password' => [
+                'required',
+                'string',
+                'min:8',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[^A-Za-z0-9]/',
+                'confirmed',
+            ],
+            'password_confirmation' => 'required|same:password',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $user = $request->user();
+
+        if (!Hash::check($request->current_password, $user->password)) {
+            return $this->fail('Current password is incorrect', 422);
+        }
+
+        $user->update(['password' => Hash::make($request->password)]);
+
+        // Revoke all sessions except the current one
+        $currentTokenId = $user->currentAccessToken()?->id;
+        if ($currentTokenId) {
+            $user->tokens()->where('id', '!=', $currentTokenId)->delete();
+        }
+
+        return $this->ok(null, 'Password changed successfully');
+    }
+
+    public function removeProfilePhoto(Request $request)
+    {
+        $user = $request->user();
+        $person = $user->person;
+
+        if ($person && $person->profile_photo) {
+            if (file_exists(public_path('storage/' . $person->profile_photo))) {
+                unlink(public_path('storage/' . $person->profile_photo));
+            }
+            $person->update(['profile_photo' => null]);
+        }
+
+        return $this->ok(null, 'Profile photo removed');
+    }
+
+    public function logout(Request $request)
+    {
+        if ($request->user()) {
+            AuditLog::log('user_logout', 'auth', $request->user()->user_id, null, [
+                'email' => $request->user()->person?->email ?? $request->user()->username,
+            ]);
+        }
+        $request->user()->currentAccessToken()?->delete();
+        return $this->ok(null, 'Logged out successfully');
+    }
+
+    // ============================================================
+    // EMAIL OTP
+    // ============================================================
     public function requestRegistrationOtp(Request $request)
     {
         $validator = validator($request->all(), [
@@ -377,7 +1041,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -392,13 +1056,17 @@ class AuthController extends Controller
             'email' => $email,
         ], now()->addMinutes(10));
 
-        $this->sendOtpEmail($email, $otp, 'Dear Ba\'bs Catering Registration OTP');
+        try {
+            $this->sendOtpEmail($email, $otp, 'Dear Ba\'bs Catering Registration OTP');
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send OTP email. Please try again later.',
+                'errors' => ['email' => ['Email sending failed.']],
+            ], 500);
+        }
 
-        $payload = [
-            'email' => $email,
-            'expires_in_minutes' => 10,
-        ];
-
+        $payload = ['email' => $email, 'expires_in_minutes' => 10];
         if (app()->environment(['local', 'development', 'testing'])) {
             $payload['debug_otp'] = $otp;
         }
@@ -406,9 +1074,6 @@ class AuthController extends Controller
         return $this->ok($payload, 'Registration OTP sent to email');
     }
 
-    /**
-     * Verify registration OTP before account creation.
-     */
     public function verifyRegistrationOtp(Request $request)
     {
         $validator = validator($request->all(), [
@@ -420,7 +1085,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -428,9 +1093,7 @@ class AuthController extends Controller
         $cacheKey = 'registration-otp:' . sha1($email);
         $record = Cache::get($cacheKey);
 
-        if (!$record) {
-            return $this->fail('Invalid or expired OTP', 422);
-        }
+        if (!$record) return $this->fail('Invalid or expired OTP', 422);
 
         $attempts = (int) ($record['attempts'] ?? 0) + 1;
         if ($attempts > 5) {
@@ -451,16 +1114,22 @@ class AuthController extends Controller
         return $this->ok(['email' => $email, 'verified' => true], 'Email OTP verified');
     }
 
-    /**
-     * Register a customer only after email OTP verification.
-     */
     public function registerCustomerWithOtp(Request $request)
     {
         $validator = validator($request->all(), [
             'first_name' => 'required|string|max:80',
             'last_name' => 'required|string|max:80',
             'email' => 'required|email|max:120|unique:persons,email',
-            'password' => 'required|string|min:8|confirmed',
+            'password' => [
+                'required',
+                'string',
+                'min:8',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[^A-Za-z0-9]/',
+                'confirmed',
+            ],
             'phone' => 'nullable|string|max:30',
             'address' => 'nullable|string',
             'otp_code' => 'required|string|size:6',
@@ -470,7 +1139,7 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
@@ -501,9 +1170,7 @@ class AuthController extends Controller
             ]);
 
             $role = Role::where('slug', 'customer')->first();
-            if ($role) {
-                $user->roles()->sync([$role->role_id]);
-            }
+            if ($role) $user->roles()->sync([$role->role_id]);
 
             $customer = Customer::create([
                 'person_id' => $person->person_id,
@@ -525,15 +1192,10 @@ class AuthController extends Controller
         });
     }
 
-    /**
-     * Send OTP for the currently authenticated user's email verification flow.
-     */
     public function sendEmailOtp(Request $request)
     {
         $user = $request->user()?->loadMissing('person');
-        if (!$user) {
-            return $this->fail('Unauthenticated', 401);
-        }
+        if (!$user) return $this->fail('Unauthenticated', 401);
 
         $email = strtolower(trim($request->input('email') ?: ($user->person?->email ?? $user->username)));
         if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -550,13 +1212,17 @@ class AuthController extends Controller
             'user_id' => $user->user_id,
         ], now()->addMinutes(10));
 
-        $this->sendOtpEmail($email, $otp, 'Dear Ba\'bs Catering Email Verification OTP');
+        try {
+            $this->sendOtpEmail($email, $otp, 'Dear Ba\'bs Catering Email Verification OTP');
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to send OTP email. Please try again later.',
+                'errors' => ['email' => ['Email sending failed.']],
+            ], 500);
+        }
 
-        $payload = [
-            'email' => $email,
-            'expires_in_minutes' => 10,
-        ];
-
+        $payload = ['email' => $email, 'expires_in_minutes' => 10];
         if (app()->environment(['local', 'development', 'testing'])) {
             $payload['debug_otp'] = $otp;
         }
@@ -564,9 +1230,6 @@ class AuthController extends Controller
         return $this->ok($payload, 'Email OTP sent');
     }
 
-    /**
-     * Verify the current user's email OTP.
-     */
     public function verifyEmailOtp(Request $request)
     {
         $validator = validator($request->all(), [
@@ -578,22 +1241,18 @@ class AuthController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $validator->errors()
+                'errors' => $validator->errors(),
             ], 422);
         }
 
         $user = $request->user()?->loadMissing('person');
-        if (!$user) {
-            return $this->fail('Unauthenticated', 401);
-        }
+        if (!$user) return $this->fail('Unauthenticated', 401);
 
         $email = strtolower(trim($request->input('email') ?: ($user->person?->email ?? $user->username)));
         $cacheKey = 'email-otp:' . sha1($user->user_id . '|' . $email);
         $record = Cache::get($cacheKey);
 
-        if (!$record) {
-            return $this->fail('Invalid or expired OTP', 422);
-        }
+        if (!$record) return $this->fail('Invalid or expired OTP', 422);
 
         $attempts = (int) ($record['attempts'] ?? 0) + 1;
         if ($attempts > 5) {
@@ -617,432 +1276,41 @@ class AuthController extends Controller
         ], 'Email OTP verified');
     }
 
-    /**
-     * Forgot password - validates that the email belongs to the selected account.
-     * If the email does not match, no OTP is created and no OTP modal should open.
-     */
-    public function forgotPassword(Request $request)
-    {
-        $validator = validator($request->all(), [
-            'user_id' => 'required|string',
-            'email' => 'required|email|max:120',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $identifier = trim((string) $request->input('user_id'));
-        $providedEmail = strtolower(trim((string) $request->input('email')));
-
-        $user = User::with(['person'])
-            ->where('username', $identifier)
-            ->orWhereHas('person', function ($query) use ($identifier) {
-                $query->where('email', $identifier);
-            })
-            ->first();
-
-        if (!$user) {
-            return response()->json([
-                'success' => false,
-                'message' => 'User account not found. Please check your Username or Email.',
-                'errors' => [
-                    'user_id' => ['No account found with this Username or Email.']
-                ]
-            ], 404);
-        }
-
-        $registeredEmail = strtolower(trim((string) ($user->person?->email ?? $user->username)));
-
-        if (!$registeredEmail || !filter_var($registeredEmail, FILTER_VALIDATE_EMAIL)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This account has no valid registered email. Please contact administrator.',
-                'errors' => [
-                    'email' => ['No valid registered email found for this account.']
-                ]
-            ], 422);
-        }
-
-        if ($providedEmail !== $registeredEmail) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Your email not match email registed',
-                'errors' => [
-                    'email' => ['Your email not match email registed']
-                ]
-            ], 422);
-        }
-
-        $otp = (string) random_int(100000, 999999);
-        Cache::put('password-reset-otp:' . $user->user_id, Hash::make($otp), now()->addMinutes(10));
-
-        $this->sendOtpEmail($registeredEmail, $otp, 'Dear Ba\'bs Catering Password Reset OTP');
-
-        $payload = [
-            'user_id' => $user->username,
-            'email' => $registeredEmail,
-            'expires_in_minutes' => 10,
-        ];
-
-        if (app()->environment(['local', 'development', 'testing'])) {
-            $payload['debug_otp'] = $otp;
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Password reset OTP sent to your registered email.',
-            'data' => $payload
-        ], 200);
-    }
-
-    /**
-     * Verify OTP
-     */
-    public function verifyResetOtp(Request $request)
-    {
-        $validator = validator($request->all(), [
-            'user_id' => 'required|string',
-            'otp_code' => 'required|string|size:6',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $identifier = $request->user_id;
-
-        $user = User::where('username', $identifier)
-            ->orWhereHas('person', function ($query) use ($identifier) {
-                $query->where('email', $identifier);
-            })
-            ->first();
-
-        $cachedOtp = Cache::get('password-reset-otp:' . $user?->user_id);
-
-        if (!$user || !$cachedOtp || !Hash::check($request->otp_code, $cachedOtp)) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid or expired OTP. Please request a new code.',
-                'errors' => [
-                    'otp_code' => ['Invalid or expired OTP code.']
-                ]
-            ], 422);
-        }
-
-        $resetToken = Str::random(64);
-        Cache::put('password-reset-token:' . $user->user_id, $resetToken, now()->addMinutes(15));
-
-        return response()->json([
-            'success' => true,
-            'message' => 'OTP verified successfully.',
-            'data' => ['reset_token' => $resetToken]
-        ], 200);
-    }
-
-    /**
-     * Resend OTP
-     */
-    public function resendResetOtp(Request $request)
-    {
-        return $this->forgotPassword($request);
-    }
-
-    /**
-     * Reset password
-     */
-    public function resetPassword(Request $request)
-    {
-        $validator = validator($request->all(), [
-            'user_id' => 'required|string',
-            'new_password' => 'required|string|min:8',
-            'password_confirmation' => 'required|same:new_password',
-            'reset_token' => 'required|string',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $identifier = $request->user_id;
-
-        $user = User::where('username', $identifier)
-            ->orWhereHas('person', function ($query) use ($identifier) {
-                $query->where('email', $identifier);
-            })
-            ->first();
-
-        if (!$user || Cache::get('password-reset-token:' . $user->user_id) !== $request->reset_token) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid or expired password reset token.',
-                'errors' => [
-                    'reset_token' => ['Invalid or expired token.']
-                ]
-            ], 422);
-        }
-
-        $user->update(['password' => Hash::make($request->new_password)]);
-        
-        Cache::forget('password-reset-otp:' . $user->user_id);
-        Cache::forget('password-reset-token:' . $user->user_id);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Password reset successfully. You can now login with your new password.'
-        ], 200);
-    }
-
-    /**
-     * Get current user
-     */
-    public function user(Request $request)
-    {
-        $user = $request->user()->load(['person', 'roles', 'customer', 'employee']);
-        return $this->ok(['user' => $this->payload($user)]);
-    }
-
-    /**
-     * Get profile
-     */
-    public function profile(Request $request)
-    {
-        return $this->user($request);
-    }
-
-    /**
-     * Update profile
-     */
-    public function updateProfile(Request $request)
-    {
-        $user = $request->user()->load('person');
-        $person = $user->person;
-
-        if (!$person) {
-            return $this->fail('Person record not found', 404);
-        }
-
-        $validated = $request->validate([
-            'full_name' => ['nullable', 'string', 'max:160'],
-            'first_name' => ['nullable', 'string', 'max:80'],
-            'last_name' => ['nullable', 'string', 'max:80'],
-            'email' => ['nullable', 'email', 'max:120', 'unique:persons,email,' . $person->person_id . ',person_id'],
-            'phone' => ['nullable', 'string', 'max:30'],
-            'phone_number' => ['nullable', 'string', 'max:30'],
-            'bio' => ['nullable', 'string', 'max:1000'],
-            'address' => ['nullable', 'string'],
-            'address_line_1' => ['nullable', 'string'],
-            'city' => ['nullable', 'string', 'max:80'],
-            'province' => ['nullable', 'string', 'max:80'],
-        ]);
-
-        $personData = [];
-
-        if ($request->filled('full_name')) {
-            $parts = explode(' ', trim($request->full_name), 2);
-            $personData['first_name'] = $parts[0] ?? $person->first_name;
-            $personData['last_name'] = $parts[1] ?? $person->last_name;
-        }
-
-        if ($request->filled('first_name')) {
-            $personData['first_name'] = $request->first_name;
-        }
-
-        if ($request->filled('last_name')) {
-            $personData['last_name'] = $request->last_name;
-        }
-
-        if ($request->filled('email')) {
-            $personData['email'] = $request->email;
-        }
-
-        if ($request->filled('phone')) {
-            $personData['phone'] = $request->phone;
-        }
-
-        if ($request->filled('phone_number')) {
-            $personData['phone'] = $request->phone_number;
-        }
-
-        if ($request->filled('address')) {
-            $personData['address_line_1'] = $request->address;
-        }
-
-        if ($request->filled('address_line_1')) {
-            $personData['address_line_1'] = $request->address_line_1;
-        }
-
-        if ($request->filled('city')) {
-            $personData['city'] = $request->city;
-        }
-
-        if ($request->filled('province')) {
-            $personData['province'] = $request->province;
-        }
-
-        if (!empty($personData)) {
-            $person->update($personData);
-        }
-
-        if (array_key_exists('bio', $validated)) {
-            Setting::setValue('user_profile', 'user_' . $user->user_id . '_bio', $validated['bio'] ?? '', 'string');
-        }
-
-        return $this->user($request);
-    }
-
-    /**
-     * Update profile photo
-     */
-    public function updateProfilePhoto(Request $request)
-    {
-        $user = $request->user();
-        $person = $user->person;
-
-        if (!$person) {
-            return $this->fail('Person record not found', 404);
-        }
-
-        $request->validate([
-            'profile_photo' => 'required|image|max:2048',
-        ]);
-
-        $path = $request->file('profile_photo')->store('profile-photos', 'public');
-        $person->update(['profile_photo' => $path]);
-
-        return $this->ok([
-            'user' => $this->payload($user->fresh(['person', 'roles', 'customer', 'employee'])),
-        ], 'Profile photo updated successfully');
-    }
-
-    /**
-     * Change password
-     */
-    public function changePassword(Request $request)
-    {
-        $validator = validator($request->all(), [
-            'current_password' => 'required|string',
-            'password' => 'required|string|min:8|confirmed',
-            'password_confirmation' => 'required|same:password',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $validator->errors()
-            ], 422);
-        }
-
-        $user = $request->user();
-
-        if (!Hash::check($request->current_password, $user->password)) {
-            return $this->fail('Current password is incorrect', 422);
-        }
-
-        $user->update(['password' => Hash::make($request->password)]);
-
-        return $this->ok(null, 'Password changed successfully');
-    }
-
-    /**
-     * Remove profile photo
-     */
-    public function removeProfilePhoto(Request $request)
-    {
-        $user = $request->user();
-        $person = $user->person;
-
-        if ($person && $person->profile_photo) {
-            if (file_exists(public_path('storage/' . $person->profile_photo))) {
-                unlink(public_path('storage/' . $person->profile_photo));
-            }
-            $person->update(['profile_photo' => null]);
-        }
-
-        return $this->ok(null, 'Profile photo removed');
-    }
-
-    /**
-     * Logout
-     */
-    public function logout(Request $request)
-    {
-        if ($request->user()) {
-            AuditLog::log('user_logout', 'auth', $request->user()->user_id, null, [
-                'email' => $request->user()->person?->email ?? $request->user()->username,
-            ]);
-        }
-        $request->user()->currentAccessToken()?->delete();
-        return $this->ok(null, 'Logged out successfully');
-    }
-
-    /**
-     * ============================================================
-     * 🔐 OTP EMAIL SENDING - WORKS WITH ANY EMAIL PROVIDER
-     * ============================================================
-     */
+    // ============================================================
+    // PRIVATE HELPERS
+    // ============================================================
     private function sendOtpEmail(string $email, string $otp, string $subject = 'Your OTP Code'): void
     {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new \InvalidArgumentException('Invalid email format: ' . $email);
+        }
+
+        $name = 'User';
+        $user = User::whereHas('person', fn($q) => $q->where('email', $email))->first();
+        if ($user && $user->person) $name = $user->person->first_name ?: 'User';
+
         try {
-            // Validate email format
-            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                Log::error('Invalid email format: ' . $email);
-                return;
-            }
-
-            // Get user name if available for personalization
-            $name = 'User';
-            $user = User::whereHas('person', function ($query) use ($email) {
-                $query->where('email', $email);
-            })->first();
-            
-            if ($user && $user->person) {
-                $name = $user->person->first_name ?: 'User';
-            }
-
-            // Send using the HTML email template
             Mail::to($email)->send(new OTPMail($otp, $name, $subject));
-            
-            Log::info('OTP email sent successfully to: ' . $email, [
-                'subject' => $subject,
-            ]);
-            
-        } catch (\Exception $e) {
+            Log::info('OTP email sent successfully to: ' . $email, ['subject' => $subject]);
+        } catch (\Throwable $e) {
             Log::error('Failed to send OTP email to ' . $email . ': ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
-            
-            // Fallback: Try using raw mail if HTML template fails
             try {
-                Mail::raw("Your OTP code is {$otp}. This code expires in 10 minutes. If you did not request this code, please ignore this email.", function ($message) use ($email, $subject) {
-                    $message->to($email)->subject($subject);
-                });
+                Mail::raw(
+                    "Your OTP code is {$otp}. This code expires in 10 minutes. If you did not request this code, please ignore this email.",
+                    function ($message) use ($email, $subject) {
+                        $message->to($email)->subject($subject);
+                    }
+                );
                 Log::info('OTP email sent via fallback raw method to: ' . $email);
-            } catch (\Exception $fallbackError) {
+            } catch (\Throwable $fallbackError) {
                 Log::error('Fallback OTP email also failed: ' . $fallbackError->getMessage());
-                // Don't re-throw - we don't want to break the flow
+                throw $fallbackError;
             }
         }
     }
 
-    /**
-     * ============================================================
-     * LOGIN OTP VERIFICATION - PRESERVED
-     * ============================================================
-     */
     private function verifyOrSendLoginOtp(User $user, string $otpCode)
     {
         $cacheKey = 'login-otp:' . $user->user_id;
@@ -1052,14 +1320,13 @@ class AuthController extends Controller
             if (!$cachedOtp || !Hash::check($otpCode, $cachedOtp)) {
                 return $this->fail('Invalid or expired login OTP', 422);
             }
-
             Cache::forget($cacheKey);
             return true;
         }
 
         $otp = (string) random_int(100000, 999999);
         Cache::put($cacheKey, Hash::make($otp), now()->addMinutes(10));
-        
+
         $email = $user->person?->email ?? $user->username;
         $this->sendOtpEmail($email, $otp, 'Dear Ba\'bs Catering Login OTP');
 
@@ -1069,7 +1336,6 @@ class AuthController extends Controller
             'email' => $email,
             'expires_in_minutes' => 10,
         ];
-
         if (app()->environment(['local', 'development', 'testing'])) {
             $payload['debug_otp'] = $otp;
         }
@@ -1083,40 +1349,20 @@ class AuthController extends Controller
 
     private function primaryRole(User $user): string
     {
-        $slugs = $user->roles->pluck('slug')->map(fn ($slug) => strtolower((string) $slug))->all();
+        $slugs = $user->roles->pluck('slug')->map(fn($slug) => strtolower((string) $slug))->all();
 
-        if (array_intersect($slugs, ['super-admin', 'super_admin', 'superadmin'])) {
-            return 'super-admin';
-        }
-
-        if (array_intersect($slugs, ['admin', 'administrator', 'owner'])) {
-            return 'admin';
-        }
-
-        if (in_array('cashier', $slugs, true) || in_array('finance-staff', $slugs, true)) {
-            return 'cashier';
-        }
-
-        if (in_array('head-chef', $slugs, true) || in_array('head_chef', $slugs, true)) {
-            return 'head-chef';
-        }
-
-        if (in_array('staff-manager', $slugs, true) || in_array('staff_manager', $slugs, true)) {
-            return 'staff-manager';
-        }
-
-        if (in_array('inventory-manager', $slugs, true) || in_array('inventory_manager', $slugs, true)) {
-            return 'inventory-manager';
-        }
+        if (array_intersect($slugs, ['super-admin', 'super_admin', 'superadmin'])) return 'super-admin';
+        if (array_intersect($slugs, ['admin', 'administrator', 'owner'])) return 'admin';
+        if (in_array('cashier', $slugs, true) || in_array('finance-staff', $slugs, true)) return 'cashier';
+        if (in_array('head-chef', $slugs, true) || in_array('head_chef', $slugs, true)) return 'head-chef';
+        if (in_array('staff-manager', $slugs, true) || in_array('staff_manager', $slugs, true)) return 'staff-manager';
+        if (in_array('inventory-manager', $slugs, true) || in_array('inventory_manager', $slugs, true)) return 'inventory-manager';
 
         $employee = $user->employee;
         if ($employee) {
             $employee->loadMissing('position');
             $positionTitle = strtolower((string) ($employee->position?->title ?? $employee->position?->name ?? ''));
-            if (str_contains($positionTitle, 'cashier')) {
-                return 'cashier';
-            }
-
+            if (str_contains($positionTitle, 'cashier')) return 'cashier';
             return 'employee';
         }
 
@@ -1132,7 +1378,7 @@ class AuthController extends Controller
             ]);
             Cache::forget('failed_login_' . md5(($user->person?->email ?? $user->username) . '|' . $request->ip()));
         } catch (\Throwable $e) {
-            // Audit log should never block login.
+            // Silent
         }
     }
 
@@ -1143,40 +1389,24 @@ class AuthController extends Controller
                 'identifier' => $identifier,
                 'ip_address' => $request->ip(),
             ]);
-
-            $cacheKey = 'failed_login_' . md5($identifier . '|' . $request->ip());
-            $attempts = (int) Cache::get($cacheKey, 0) + 1;
-            Cache::put($cacheKey, $attempts, now()->addMinutes(30));
-
-            if ($attempts >= 3) {
-                app(NotificationService::class)->failedLoginAttempt($identifier, $request->ip(), $attempts);
-                AuditLog::log('multiple_failed_login_attempts', 'security', null, null, [
-                    'identifier' => $identifier,
-                    'ip_address' => $request->ip(),
-                    'attempts' => $attempts,
-                ]);
-            }
         } catch (\Throwable $e) {
-            // Failed-login monitoring should never block the response.
+            // Silent
         }
     }
 
-    /**
-     * Format user payload
-     */
     private function payload(User $user): array
     {
         $person = $user->person;
-        
+
         $customerId = null;
         if ($user->customer) {
             $id = (int) $user->customer->customer_id;
             $customerId = str_pad($id, 4, '0', STR_PAD_LEFT);
         }
-        
+
         $primaryRole = $this->primaryRole($user);
         $bio = Setting::getValue('user_profile', 'user_' . $user->user_id . '_bio', '');
-        
+
         return [
             'id' => $user->user_id,
             'user_id' => $user->user_id,
@@ -1194,6 +1424,7 @@ class AuthController extends Controller
             'roles' => $user->roles->pluck('slug')->toArray(),
             'is_verified' => (bool) $user->email_verified_at,
             'is_active' => (bool) $user->is_active,
+            'is_banned' => (bool) ($user->is_banned ?? false),
             'profile_photo' => $person->profile_photo ?? null,
             'profile_photo_url' => $person->profile_photo_url ?? null,
             'customer_id' => $customerId,

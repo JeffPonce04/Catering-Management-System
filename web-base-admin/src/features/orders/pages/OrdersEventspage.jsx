@@ -1,5 +1,8 @@
 // src/components/UnifiedOrderEventsManagement.jsx
 // COMPLETE VERSION - All features fully functional with all fixes
+// + Enhanced Booking Profitability Modal (white-blue theme)
+// + Per-Menu Ingredient Cost Breakdown (expandable)
+// System-wide Profitability Analytics live in the Reports Center module.
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
@@ -86,6 +89,15 @@ import {
     ForkOutlined,
     CrownOutlined,
     DownOutlined,
+    EyeInvisibleOutlined,
+    RiseOutlined,
+    PieChartOutlined,
+    BarChartOutlined,
+    CalculatorOutlined,
+    LineChartOutlined,
+    BankOutlined,
+    CreditCardOutlined,
+    ReconciliationOutlined,
 } from '@ant-design/icons';
 
 import { MdEventNote } from "react-icons/md";
@@ -155,6 +167,7 @@ const { RangePicker } = DatePicker;
 // CONSTANTS
 // ============================================================
 const MEAL_STATUS_OPTIONS = ['pending', 'preparing', 'ready_for_delivery', 'dispatched', 'delivered', 'serving', 'served', 'completed', 'cancelled'];
+const EVENT_IN_PROGRESS_HIDDEN_KEY = 'ue_event_in_progress_hidden';
 
 // ============================================================
 // HELPER FUNCTIONS
@@ -397,6 +410,650 @@ const getEventTypeName = (eventTypeId, eventTypes) => {
 };
 
 // ============================================================
+// ENHANCED BOOKING PROFITABILITY MODAL — White / Blue theme
+// + Per-Menu Ingredient Cost Breakdown (expandable)
+// ============================================================
+const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
+    const { message: msg } = App.useApp();
+    const [loading, setLoading] = useState(false);
+
+    const [bookingProfitability, setBookingProfitability] = useState(null);
+    const [expandedMenuKeys, setExpandedMenuKeys] = useState([]);
+
+    const loadBookingProfitability = useCallback(async () => {
+        if (!bookingId) return;
+        setLoading(true);
+        try {
+            const response = await api.get(`/bookings/${bookingId}/profitability`);
+            setBookingProfitability(normalizeApiResponse(response));
+            setExpandedMenuKeys([]);
+        } catch (error) {
+            msg.error(error.response?.data?.message || 'Failed to load profitability');
+        } finally {
+            setLoading(false);
+        }
+    }, [bookingId, msg]);
+
+    useEffect(() => {
+        if (!visible) return;
+        loadBookingProfitability();
+    }, [visible, bookingId, loadBookingProfitability]);
+
+    const handleRefresh = () => {
+        loadBookingProfitability();
+        msg.success('Data refreshed');
+    };
+
+    const handleExport = () => {
+        if (!bookingProfitability) return;
+        const d = bookingProfitability;
+        const rows = [
+            ['Revenue', ''],
+            ['Food Revenue', safeNumber(d.food_revenue)],
+            ['Service Fee', safeNumber(d.service_fee)],
+            ['Delivery Fee', safeNumber(d.delivery_fee)],
+            ['Extras', safeNumber(d.extras_revenue)],
+            ['Discount', -safeNumber(d.discount_amount)],
+            ['TOTAL REVENUE', safeNumber(d.total_revenue)],
+            ['', ''],
+            ['Cost', ''],
+            ['Ingredient Cost', safeNumber(d.ingredient_cost)],
+            ['Labor Cost', safeNumber(d.labor_cost)],
+            ['Delivery Cost', safeNumber(d.delivery_cost)],
+            ['Equipment Cost', safeNumber(d.equipment_cost)],
+            ['Other Expenses', safeNumber(d.other_cost)],
+            ['TOTAL COST', safeNumber(d.total_cost)],
+            ['', ''],
+            ['Profitability', ''],
+            ['Profit', safeNumber(d.profit)],
+            ['Profit Margin %', safeNumber(d.profit_margin)],
+            ['Food Cost %', safeNumber(d.food_cost_percentage)],
+            ['', ''],
+            ['Payment', ''],
+            ['Paid', safeNumber(d.paid_amount)],
+            ['Balance', safeNumber(d.balance)],
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Booking Profitability');
+        XLSX.writeFile(wb, `Booking_Profitability_${d.booking?.booking_no || bookingId}_${dayjs().format('YYYY-MM-DD')}.xlsx`);
+        msg.success('Report exported');
+    };
+
+    // --------------------------------------------------------
+    // Build per-menu ingredient breakdown
+    // --------------------------------------------------------
+    const buildMenuIngredientGroups = (data) => {
+        const menus = safeArray(data.menu_breakdown);
+        const ingredients = safeArray(data.ingredient_breakdown);
+
+        return menus.map((menu) => {
+            const menuId = menu.menu_item_id;
+            const menuName = menu.menu_name || 'Menu';
+            const menuQty = safeNumber(menu.quantity, 1);
+
+            // Try to find ingredient contributions from the flat breakdown's `menu_items` refs
+            const contributions = [];
+            ingredients.forEach((ing) => {
+                const refs = safeArray(ing.menu_items).filter((ref) => {
+                    const refId = ref.menu_item_id ?? ref.id;
+                    const refName = ref.name || ref.menu_name;
+                    if (menuId && refId) return String(refId) === String(menuId);
+                    return refName && String(refName) === String(menuName);
+                });
+
+                refs.forEach((ref) => {
+                    const perPax = safeNumber(ref.per_pax ?? ref.quantity_per_pax);
+                    const servings = safeNumber(ref.quantity ?? menuQty);
+                    const unitCost = safeNumber(ing.unit_cost);
+                    const usedQty = perPax * servings;
+                    const totalCost = usedQty * unitCost;
+
+                    contributions.push({
+                        ingredient_id: ing.ingredient_id,
+                        name: ing.name,
+                        unit: ing.unit,
+                        per_pax: perPax,
+                        quantity_used: usedQty,
+                        unit_cost: unitCost,
+                        total_cost: totalCost,
+                    });
+                });
+            });
+
+            // Fallback: if no contributions found but the backend gave a per-menu cost, show a summary row
+            if (contributions.length === 0 && safeNumber(menu.ingredient_cost) > 0) {
+                contributions.push({
+                    ingredient_id: `menu-cost-${menuId}`,
+                    name: 'Total ingredient cost (aggregated)',
+                    unit: '',
+                    per_pax: 0,
+                    quantity_used: 0,
+                    unit_cost: 0,
+                    total_cost: safeNumber(menu.ingredient_cost),
+                });
+            }
+
+            contributions.sort((a, b) => b.total_cost - a.total_cost);
+            const totalCost = contributions.reduce((sum, c) => sum + safeNumber(c.total_cost), 0);
+
+            return {
+                menu_item_id: menuId,
+                menu_name: menuName,
+                quantity: menuQty,
+                revenue: safeNumber(menu.revenue),
+                profit: safeNumber(menu.profit),
+                margin: safeNumber(menu.profit_margin),
+                ingredients: contributions,
+                total_cost: totalCost,
+            };
+        });
+    };
+
+    // --------------------------------------------------------
+    // RENDER: BOOKING VIEW
+    // --------------------------------------------------------
+    const renderBookingView = () => {
+        if (!bookingProfitability) return <Empty description="No profitability data available" />;
+        const data = bookingProfitability;
+        const booking = data.booking || {};
+        const profit = safeNumber(data.profit);
+        const margin = safeNumber(data.profit_margin);
+        const isPositive = profit >= 0;
+
+        const menuGroups = buildMenuIngredientGroups(data);
+
+        // Expanded row renderer
+        const expandedRowRender = (menuRow) => {
+            const group = menuGroups.find(
+                (g) => String(g.menu_item_id) === String(menuRow.menu_item_id)
+            ) || {
+                menu_name: menuRow.menu_name,
+                ingredients: [],
+                total_cost: safeNumber(menuRow.ingredient_cost),
+            };
+
+            if (group.ingredients.length === 0) {
+                return (
+                    <div className="pb-expanded-empty">
+                        <StockOutlined />
+                        <span>No ingredient breakdown available for this menu.</span>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="pb-expanded-wrap">
+                    <div className="pb-expanded-header">
+                        <div className="pb-expanded-title">
+                            <StockOutlined />
+                            <span>Ingredient Cost Breakdown</span>
+                            <Tag color="blue" style={{ marginLeft: 8 }}>
+                                {group.ingredients.length} ingredient{group.ingredients.length === 1 ? '' : 's'}
+                            </Tag>
+                        </div>
+                        <div className="pb-expanded-subtotal">
+                            <span className="pb-expanded-subtotal-label">Menu Cost</span>
+                            <span className="pb-expanded-subtotal-value">
+                                {formatCurrency(group.total_cost)}
+                            </span>
+                        </div>
+                    </div>
+
+                    <Table
+                        dataSource={group.ingredients.map((ing, i) => ({
+                            ...ing,
+                            key: `${menuRow.menu_item_id}-${ing.ingredient_id}-${i}`,
+                        }))}
+                        size="small"
+                        pagination={false}
+                        className="pb-ingredients-subtable"
+                        columns={[
+                            {
+                                title: 'Ingredient',
+                                dataIndex: 'name',
+                                key: 'name',
+                                render: (v) => <span className="pb-ingredient-name">{v}</span>,
+                            },
+                            {
+                                title: 'Per Pax',
+                                key: 'per_pax',
+                                width: 130,
+                                align: 'right',
+                                render: (_, r) => {
+                                    const perPax = safeNumber(r.per_pax);
+                                    const unit = r.unit || '';
+                                    return perPax > 0
+                                        ? `${perPax.toFixed(4).replace(/\.?0+$/, '')} ${unit}`
+                                        : '—';
+                                },
+                            },
+                            {
+                                title: 'Total Qty',
+                                key: 'qty',
+                                width: 130,
+                                align: 'right',
+                                render: (_, r) => {
+                                    const qty = safeNumber(r.quantity_used);
+                                    const unit = r.unit || '';
+                                    return qty > 0
+                                        ? `${qty.toFixed(2)} ${unit}`
+                                        : '—';
+                                },
+                            },
+                            {
+                                title: 'Unit Cost',
+                                dataIndex: 'unit_cost',
+                                key: 'unit_cost',
+                                width: 110,
+                                align: 'right',
+                                render: (v) => formatCurrency(v),
+                            },
+                            {
+                                title: 'Cost',
+                                dataIndex: 'total_cost',
+                                key: 'total_cost',
+                                width: 120,
+                                align: 'right',
+                                render: (v) => (
+                                    <strong style={{ color: '#1d4ed8' }}>
+                                        {formatCurrency(v)}
+                                    </strong>
+                                ),
+                            },
+                        ]}
+                        summary={() => (
+                            <Table.Summary.Row>
+                                <Table.Summary.Cell colSpan={4}>
+                                    <strong className="pb-subtotal-label">
+                                        Subtotal — {group.menu_name}
+                                    </strong>
+                                </Table.Summary.Cell>
+                                <Table.Summary.Cell align="right">
+                                    <strong className="pb-subtotal-value">
+                                        {formatCurrency(group.total_cost)}
+                                    </strong>
+                                </Table.Summary.Cell>
+                            </Table.Summary.Row>
+                        )}
+                    />
+                </div>
+            );
+        };
+
+        return (
+            <div className="pb-modal-booking">
+                {/* HEADER CARD */}
+                <div className="pb-header-card">
+                    <div className="pb-header-left">
+                        <div className="pb-booking-id-chip">
+                            <FileTextOutlined /> {booking.booking_no || 'N/A'}
+                        </div>
+                        <div className="pb-customer-name">
+                            {booking.customer_name || 'Unknown Customer'}
+                        </div>
+                        <div className="pb-header-meta">
+                            {booking.event_type && (
+                                <span className="pb-meta-chip">
+                                    <CalendarOutlined /> {booking.event_type}
+                                </span>
+                            )}
+                            {booking.event_date && (
+                                <span className="pb-meta-chip">
+                                    <ScheduleOutlined /> {booking.event_date}
+                                </span>
+                            )}
+                            {booking.pax > 0 && (
+                                <span className="pb-meta-chip">
+                                    <TeamOutlined /> {booking.pax} PAX
+                                </span>
+                            )}
+                            {booking.venue && (
+                                <span className="pb-meta-chip">
+                                    <EnvironmentOutlined /> {booking.venue}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                    <div className="pb-header-right">
+                        <div className={`pb-payment-badge ${safeString(data.payment_status).toLowerCase()}`}>
+                            {safeString(data.payment_status).toUpperCase() || 'UNPAID'}
+                        </div>
+                    </div>
+                </div>
+
+                {/* KPI STRIP */}
+                <div className="pb-kpi-grid">
+                    <div className="pb-kpi pb-kpi-revenue">
+                        <div className="pb-kpi-icon"><BankOutlined /></div>
+                        <div className="pb-kpi-body">
+                            <span className="pb-kpi-label">Total Revenue</span>
+                            <span className="pb-kpi-value">{formatCurrency(data.total_revenue)}</span>
+                        </div>
+                    </div>
+                    <div className="pb-kpi pb-kpi-cost">
+                        <div className="pb-kpi-icon"><CalculatorOutlined /></div>
+                        <div className="pb-kpi-body">
+                            <span className="pb-kpi-label">Total Cost</span>
+                            <span className="pb-kpi-value">{formatCurrency(data.total_cost)}</span>
+                        </div>
+                    </div>
+                    <div className={`pb-kpi pb-kpi-profit ${isPositive ? 'positive' : 'negative'}`}>
+                        <div className="pb-kpi-icon">{isPositive ? <RiseOutlined /> : <DollarOutlined />}</div>
+                        <div className="pb-kpi-body">
+                            <span className="pb-kpi-label">Profit</span>
+                            <span className="pb-kpi-value">{formatCurrency(profit)}</span>
+                        </div>
+                    </div>
+                    <div className={`pb-kpi pb-kpi-margin ${isPositive ? 'positive' : 'negative'}`}>
+                        <div className="pb-kpi-icon"><LineChartOutlined /></div>
+                        <div className="pb-kpi-body">
+                            <span className="pb-kpi-label">Profit Margin</span>
+                            <span className="pb-kpi-value">{margin.toFixed(1)}%</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* REVENUE & COST COLUMNS */}
+                <Row gutter={16} className="pb-two-col">
+                    <Col xs={24} md={12}>
+                        <div className="pb-card pb-card-revenue">
+                            <div className="pb-card-header">
+                                <div className="pb-card-title">
+                                    <span className="pb-card-icon blue"><DollarOutlined /></span>
+                                    Revenue
+                                </div>
+                            </div>
+                            <div className="pb-card-body">
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Food Revenue</span>
+                                    <span className="pb-line-value">{formatCurrency(data.food_revenue)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Service Fee</span>
+                                    <span className="pb-line-value">{formatCurrency(data.service_fee)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Delivery Fee</span>
+                                    <span className="pb-line-value">{formatCurrency(data.delivery_fee)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Extras</span>
+                                    <span className="pb-line-value">{formatCurrency(data.extras_revenue)}</span>
+                                </div>
+                                {safeNumber(data.discount_amount) > 0 && (
+                                    <div className="pb-line pb-line-discount">
+                                        <span className="pb-line-label">Discount</span>
+                                        <span className="pb-line-value">-{formatCurrency(data.discount_amount)}</span>
+                                    </div>
+                                )}
+                                <div className="pb-line pb-line-total">
+                                    <span className="pb-line-label">Total Revenue</span>
+                                    <span className="pb-line-value">{formatCurrency(data.total_revenue)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </Col>
+                    <Col xs={24} md={12}>
+                        <div className="pb-card pb-card-cost">
+                            <div className="pb-card-header">
+                                <div className="pb-card-title">
+                                    <span className="pb-card-icon rose"><CalculatorOutlined /></span>
+                                    Cost Breakdown
+                                </div>
+                            </div>
+                            <div className="pb-card-body">
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Ingredient Cost</span>
+                                    <span className="pb-line-value">{formatCurrency(data.ingredient_cost)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Labor Cost</span>
+                                    <span className="pb-line-value">{formatCurrency(data.labor_cost)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Delivery Cost</span>
+                                    <span className="pb-line-value">{formatCurrency(data.delivery_cost)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Equipment Cost</span>
+                                    <span className="pb-line-value">{formatCurrency(data.equipment_cost)}</span>
+                                </div>
+                                <div className="pb-line">
+                                    <span className="pb-line-label">Other Expenses</span>
+                                    <span className="pb-line-value">{formatCurrency(data.other_cost)}</span>
+                                </div>
+                                <div className="pb-line pb-line-total">
+                                    <span className="pb-line-label">Total Cost</span>
+                                    <span className="pb-line-value">{formatCurrency(data.total_cost)}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </Col>
+                </Row>
+
+                {/* PAYMENT CARD */}
+                <div className="pb-card pb-card-payment">
+                    <div className="pb-card-header">
+                        <div className="pb-card-title">
+                            <span className="pb-card-icon green"><WalletOutlined /></span>
+                            Payment Status
+                        </div>
+                        <div className="pb-card-side-stat">
+                            <span className="pb-mini-label">Food Cost %</span>
+                            <span className="pb-mini-value">{safeNumber(data.food_cost_percentage).toFixed(1)}%</span>
+                        </div>
+                    </div>
+                    <div className="pb-payment-grid">
+                        <div className="pb-payment-block">
+                            <div className="pb-payment-label">Paid Amount</div>
+                            <div className="pb-payment-value paid">
+                                {formatCurrency(data.paid_amount)}
+                            </div>
+                        </div>
+                        <div className="pb-payment-block">
+                            <div className="pb-payment-label">Outstanding Balance</div>
+                            <div className={`pb-payment-value ${safeNumber(data.balance) > 0 ? 'due' : 'clear'}`}>
+                                {formatCurrency(data.balance)}
+                            </div>
+                        </div>
+                        <div className="pb-payment-block pb-payment-progress-block">
+                            <div className="pb-payment-label">Payment Progress</div>
+                            <div className="pb-payment-progress">
+                                <Progress
+                                    percent={safeNumber(data.total_revenue) > 0
+                                        ? Math.min(100, Math.round((safeNumber(data.paid_amount) / safeNumber(data.total_revenue)) * 100))
+                                        : 0}
+                                    strokeColor={{ '0%': '#3b82f6', '100%': '#1d4ed8' }}
+                                    trailColor="#e5e7eb"
+                                    showInfo={false}
+                                    size="default"
+                                />
+                                <span className="pb-payment-progress-text">
+                                    {safeNumber(data.total_revenue) > 0
+                                        ? Math.min(100, Math.round((safeNumber(data.paid_amount) / safeNumber(data.total_revenue)) * 100))
+                                        : 0}%
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* MENU BREAKDOWN — EXPANDABLE with Ingredient Cost Breakdown */}
+                {data.menu_breakdown?.length > 0 && (
+                    <div className="pb-card pb-card-menu">
+                        <div className="pb-card-header">
+                            <div className="pb-card-title">
+                                <span className="pb-card-icon indigo"><AppstoreOutlined /></span>
+                                Menu Profitability
+                            </div>
+                            <div className="pb-card-side-stat">
+                                <span className="pb-mini-label" style={{ marginRight: 8 }}>
+                                    Click any row to view its Ingredient Cost Breakdown
+                                </span>
+                                <Tag color="blue">{data.menu_breakdown.length} menu items</Tag>
+                            </div>
+                        </div>
+                        <div className="pb-card-body pb-card-body-table">
+                            <Table
+                                dataSource={data.menu_breakdown}
+                                rowKey={(r) => r.menu_item_id ?? r.menu_name}
+                                size="small"
+                                pagination={false}
+                                className="pb-menu-table"
+                                expandable={{
+                                    expandedRowKeys: expandedMenuKeys,
+                                    onExpandedRowsChange: (keys) => setExpandedMenuKeys(keys),
+                                    expandedRowRender,
+                                    expandRowByClick: true,
+                                    expandIcon: ({ expanded, onExpand, record }) => (
+                                        <button
+                                            type="button"
+                                            className={`pb-expand-btn ${expanded ? 'open' : ''}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                onExpand(record, e);
+                                            }}
+                                            aria-label={expanded ? 'Collapse' : 'Expand'}
+                                        >
+                                            <DownOutlined rotate={expanded ? 180 : 0} />
+                                        </button>
+                                    ),
+                                }}
+                                columns={[
+                                    { title: 'Menu', dataIndex: 'menu_name', key: 'menu_name', render: (v) => <span className="pb-menu-name">{v}</span> },
+                                    { title: 'Qty', dataIndex: 'quantity', key: 'quantity', align: 'center', width: 70 },
+                                    { title: 'Revenue', dataIndex: 'revenue', key: 'revenue', render: (v) => formatCurrency(v), align: 'right' },
+                                    { title: 'Cost', dataIndex: 'ingredient_cost', key: 'cost', render: (v) => formatCurrency(v), align: 'right' },
+                                    { title: 'Profit', dataIndex: 'profit', key: 'profit', render: (v) => (
+                                        <span style={{ color: safeNumber(v) >= 0 ? '#1d4ed8' : '#dc2626', fontWeight: 600 }}>
+                                            {formatCurrency(v)}
+                                        </span>
+                                    ), align: 'right' },
+                                    { title: 'Margin', dataIndex: 'profit_margin', key: 'margin', render: (v) => (
+                                        <span className={`pb-margin-chip ${safeNumber(v) >= 40 ? 'high' : safeNumber(v) >= 20 ? 'medium' : 'low'}`}>
+                                            {safeNumber(v).toFixed(1)}%
+                                        </span>
+                                    ), align: 'center', width: 90 },
+                                ]}
+                            />
+                        </div>
+                    </div>
+                )}
+
+                {/* INGREDIENT BREAKDOWN — Flat view (all ingredients) */}
+                {data.ingredient_breakdown?.length > 0 && (
+                    <div className="pb-card pb-card-ingredients">
+                        <div className="pb-card-header">
+                            <div className="pb-card-title">
+                                <span className="pb-card-icon cyan"><StockOutlined /></span>
+                                All Ingredients Cost Breakdown
+                            </div>
+                            <div className="pb-card-side-stat">
+                                <Tag color="blue">{data.ingredient_breakdown.length} ingredients</Tag>
+                            </div>
+                        </div>
+                        <div className="pb-card-body pb-card-body-table">
+                            <Table
+                                dataSource={data.ingredient_breakdown}
+                                rowKey={(r, i) => r.ingredient_id ?? i}
+                                size="small"
+                                pagination={false}
+                                className="pb-ingredients-table"
+                                columns={[
+                                    { title: 'Ingredient', dataIndex: 'name', key: 'name', render: (v) => <span className="pb-ingredient-name">{v}</span> },
+                                    {
+                                        title: 'Used In',
+                                        key: 'used_in',
+                                        render: (_, r) => {
+                                            const menus = safeArray(r.menu_items);
+                                            if (menus.length === 0) return <Text type="secondary">—</Text>;
+                                            return (
+                                                <Space size={4} wrap>
+                                                    {menus.map((m, i) => (
+                                                        <Tag key={i} color="blue" style={{ margin: 0, fontSize: 11 }}>
+                                                            {m.menu_name || m.name || 'Menu'}
+                                                            <span style={{ opacity: 0.7, marginLeft: 4 }}>
+                                                                ×{safeNumber(m.quantity)}
+                                                            </span>
+                                                        </Tag>
+                                                    ))}
+                                                </Space>
+                                            );
+                                        },
+                                    },
+                                    { title: 'Quantity', key: 'qty', render: (_, r) => `${safeNumber(r.quantity).toFixed(2)} ${r.unit || ''}`, align: 'right', width: 130 },
+                                    { title: 'Unit Cost', dataIndex: 'unit_cost', key: 'unit_cost', render: (v) => formatCurrency(v), align: 'right', width: 110 },
+                                    { title: 'Total Cost', dataIndex: 'total_cost', key: 'total_cost', render: (v) => <strong style={{ color: '#1d4ed8' }}>{formatCurrency(v)}</strong>, align: 'right', width: 130 },
+                                ]}
+                                summary={() => (
+                                    <Table.Summary.Row>
+                                        <Table.Summary.Cell colSpan={4}><strong>Total Ingredient Cost</strong></Table.Summary.Cell>
+                                        <Table.Summary.Cell align="right">
+                                            <strong style={{ color: '#1d4ed8' }}>{formatCurrency(data.ingredient_cost)}</strong>
+                                        </Table.Summary.Cell>
+                                    </Table.Summary.Row>
+                                )}
+                            />
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // --------------------------------------------------------
+    // FOOTER
+    // --------------------------------------------------------
+    const renderFooter = () => (
+        <div className="pb-modal-footer">
+            <Space>
+                <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
+                    Refresh
+                </Button>
+                <Button icon={<ExportOutlined />} onClick={handleExport} disabled={!bookingProfitability}>
+                    Export Excel
+                </Button>
+                <Button type="primary" onClick={onClose}>
+                    Close
+                </Button>
+            </Space>
+        </div>
+    );
+
+    return (
+        <Modal
+            title={
+                <div className="pb-modal-header">
+                    <div className="pb-modal-icon">
+                        <RiseOutlined />
+                    </div>
+                    <div className="pb-modal-title">
+                        <div className="pb-modal-title-main">Booking Profitability</div>
+                        <div className="pb-modal-title-sub">
+                            Revenue, cost, and profit breakdown for this booking
+                        </div>
+                    </div>
+                </div>
+            }
+            open={visible}
+            onCancel={onClose}
+            width={1120}
+            className="pb-modal"
+            footer={renderFooter()}
+            destroyOnHidden
+            maskClosable={false}
+        >
+            <div className="pb-modal-body">
+                <Spin spinning={loading} tip="Loading profitability data...">
+                    {renderBookingView()}
+                </Spin>
+            </div>
+        </Modal>
+    );
+};
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 const UnifiedOrderEventsManagement = () => {
@@ -404,9 +1061,7 @@ const UnifiedOrderEventsManagement = () => {
     const { message } = App.useApp();
     const queryClient = useQueryClient();
 
-    // ========================================================
     // STATE
-    // ========================================================
     const [isDarkMode, setIsDarkMode] = useState(() => {
         const savedTheme = localStorage.getItem('theme');
         if (savedTheme === 'dark') return true;
@@ -421,6 +1076,11 @@ const UnifiedOrderEventsManagement = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
     const [activeTab, setActiveTab] = useState('orders');
+
+    const [eventInProgressHidden, setEventInProgressHidden] = useState(() => {
+        const saved = localStorage.getItem(EVENT_IN_PROGRESS_HIDDEN_KEY);
+        return saved === 'true';
+    });
 
     const [historySearchText, setHistorySearchText] = useState('');
     const [historyFilterStatus, setHistoryFilterStatus] = useState('all');
@@ -483,17 +1143,17 @@ const UnifiedOrderEventsManagement = () => {
     const [paymentForm] = Form.useForm();
     const [editForm] = Form.useForm();
 
-    // Equipment Details Modal State
     const [equipmentDetailsModalVisible, setEquipmentDetailsModalVisible] = useState(false);
     const [equipmentDetailsData, setEquipmentDetailsData] = useState([]);
     const [selectedEquipmentIds, setSelectedEquipmentIds] = useState([]);
 
-    // View Modal - All in One
     const [viewModalData, setViewModalData] = useState(null);
 
-    // ========================================================
-    // API HOOKS - CONNECTED TO BACKEND
-    // ========================================================
+    // BOOKING PROFITABILITY MODAL STATE
+    const [profitabilityModalVisible, setProfitabilityModalVisible] = useState(false);
+    const [profitabilityBookingId, setProfitabilityBookingId] = useState(null);
+
+    // API HOOKS
     const {
         data: activeBookingsData,
         isLoading: activeBookingsLoading,
@@ -561,9 +1221,7 @@ const UnifiedOrderEventsManagement = () => {
     const returnEquipmentMutation = useReturnEquipment();
     const completeEventMutation = useCompleteEvent();
 
-    // ========================================================
     // THEME DETECTION
-    // ========================================================
     useEffect(() => {
         isMounted.current = true;
         const updateTheme = () => {
@@ -575,14 +1233,10 @@ const UnifiedOrderEventsManagement = () => {
         const observer = new MutationObserver(updateTheme);
         observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
         const handleThemeChange = (e) => {
-            if (isMounted.current) {
-                setIsDarkMode(e.detail.isDark);
-            }
+            if (isMounted.current) setIsDarkMode(e.detail.isDark);
         };
         const handleStorageChange = (e) => {
-            if (e.key === 'theme' && isMounted.current) {
-                setIsDarkMode(e.newValue === 'dark');
-            }
+            if (e.key === 'theme' && isMounted.current) setIsDarkMode(e.newValue === 'dark');
         };
         window.addEventListener('themeChange', handleThemeChange);
         window.addEventListener('storage', handleStorageChange);
@@ -594,23 +1248,17 @@ const UnifiedOrderEventsManagement = () => {
         };
     }, []);
 
-    // ========================================================
-    // LOAD STAFF DATA FROM BACKEND
-    // ========================================================
+    // LOAD STAFF
     useEffect(() => {
         const loadStaff = async () => {
             setStaffLoading(true);
             try {
                 const response = await api.get('/employees/active');
                 const staffData = normalizeApiResponse(response);
-                if (isMounted.current) {
-                    setStaffList(Array.isArray(staffData) ? staffData : []);
-                }
+                if (isMounted.current) setStaffList(Array.isArray(staffData) ? staffData : []);
             } catch (error) {
                 console.error('Failed to load staff:', error);
-                if (isMounted.current) {
-                    setStaffList([]);
-                }
+                if (isMounted.current) setStaffList([]);
             } finally {
                 setStaffLoading(false);
             }
@@ -618,25 +1266,15 @@ const UnifiedOrderEventsManagement = () => {
         loadStaff();
     }, []);
 
-    // ========================================================
-    // DATA PROCESSING - CONNECTED TO BACKEND
-    // ========================================================
-    const allBookings = useMemo(
-        () => normalizeBookingCollection(activeBookingsData),
-        [activeBookingsData]
-    );
-
-    const historyBookings = useMemo(
-        () => normalizeBookingCollection(historyBookingsData),
-        [historyBookingsData]
-    );
+    // DATA PROCESSING
+    const allBookings = useMemo(() => normalizeBookingCollection(activeBookingsData), [activeBookingsData]);
+    const historyBookings = useMemo(() => normalizeBookingCollection(historyBookingsData), [historyBookingsData]);
 
     const confirmedBookings = useMemo(() => {
         const activeRows = allBookings.filter((booking) => {
             const status = safeString(booking.booking_status).toLowerCase();
             return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status) && !booking.event_completed;
         });
-
         if (filterStatus === 'all') return activeRows;
         return activeRows.filter((booking) => getBookingDisplayStatus(booking) === filterStatus);
     }, [allBookings, filterStatus]);
@@ -658,6 +1296,16 @@ const UnifiedOrderEventsManagement = () => {
         [historyBookings]
     );
 
+    const getOngoingEvents = useCallback(() => {
+        const today = dayjs().format('YYYY-MM-DD');
+        return allBookings.filter((booking) => {
+            const status = safeString(booking.booking_status).toLowerCase();
+            const eventDate = booking.event_date ? dayjs(booking.event_date).format('YYYY-MM-DD') : null;
+            if (booking.event_done || booking.event_completed || status === 'completed') return false;
+            return status === 'ongoing' || (status === 'confirmed' && eventDate === today);
+        });
+    }, [allBookings]);
+
     const stats = useMemo(() => {
         const combinedBookings = [...allBookings, ...completedBookings];
         const confirmed = allBookings.filter((booking) => {
@@ -668,7 +1316,6 @@ const UnifiedOrderEventsManagement = () => {
         const completed = completedBookings.filter((booking) => String(booking.booking_status || '').toLowerCase() === 'completed' || booking.event_completed).length;
         const totalRevenue = combinedBookings.reduce((sum, booking) => sum + safeNumber(booking.total_amount), 0);
         const outstandingBalance = combinedBookings.reduce((sum, booking) => sum + safeNumber(booking.balance || 0), 0);
-
         return {
             confirmed_bookings: confirmed,
             ongoing,
@@ -678,9 +1325,7 @@ const UnifiedOrderEventsManagement = () => {
         };
     }, [allBookings, ongoingBookings, completedBookings]);
 
-    // ========================================================
-    // EVENT HANDLERS - CONNECTED TO BACKEND
-    // ========================================================
+    // HANDLERS
     const handleRefresh = () => {
         refetchBookings();
         refetchStatistics();
@@ -691,11 +1336,33 @@ const UnifiedOrderEventsManagement = () => {
         message.success('Data refreshed');
     };
 
+    const handleToggleEventInProgressVisibility = useCallback(() => {
+        const newHiddenState = !eventInProgressHidden;
+        setEventInProgressHidden(newHiddenState);
+        localStorage.setItem(EVENT_IN_PROGRESS_HIDDEN_KEY, String(newHiddenState));
+        message.success(newHiddenState ? 'Event In Progress message hidden' : 'Event In Progress message shown');
+    }, [eventInProgressHidden]);
+
     const handleViewDetails = (record) => {
         setSelectedBooking(record);
         setViewModalData(record);
         setViewModalVisible(true);
     };
+
+    const handleViewProfitability = useCallback((record) => {
+        if (!record) {
+            message.warning('No booking selected.');
+            return;
+        }
+        setSelectedBooking(record);
+        setProfitabilityBookingId(record.id || record.booking_id);
+        setProfitabilityModalVisible(true);
+    }, [message]);
+
+    const handleCloseProfitability = useCallback(() => {
+        setProfitabilityModalVisible(false);
+        setProfitabilityBookingId(null);
+    }, []);
 
     const handleEdit = (record) => {
         setSelectedBooking(record);
@@ -768,30 +1435,91 @@ const UnifiedOrderEventsManagement = () => {
 
     const requestOverrideReason = ({ title, warning, onConfirm }) => {
         let reason = '';
+        let reasonErrorEl = null;
+
+        const updateReasonState = () => {
+            if (!reasonErrorEl) return;
+            reasonErrorEl.style.visibility = reason.trim() ? 'hidden' : 'visible';
+        };
+
         Modal.confirm({
-            title,
+            title: null,
+            icon: null,
+            className: 'ue-deposit-modal',
+            width: 540,
+            footer: null,
+            maskClosable: false,
+            centered: true,
             content: (
                 <div>
-                    <Alert type="warning" showIcon message={warning} style={{ marginBottom: 12 }} />
-                    <TextArea
-                        rows={4}
-                        maxLength={1000}
-                        placeholder="Enter the reason for this override"
-                        onChange={(event) => { reason = event.target.value; }}
-                    />
+                    <div className="ue-deposit-header">
+                        <div className="ue-deposit-header-icon danger">
+                            <WarningOutlined />
+                        </div>
+                        <div className="ue-deposit-header-text">
+                            <div className="ue-deposit-title">{title}</div>
+                            <div className="ue-deposit-subtitle">
+                                An override reason must be recorded before continuing.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="ue-deposit-body">
+                        <div className="ue-deposit-notice danger">
+                            <WarningOutlined />
+                            <span>{warning}</span>
+                        </div>
+
+                        <div className="ue-override-textarea">
+                            <TextArea
+                                rows={4}
+                                maxLength={1000}
+                                showCount
+                                autoFocus
+                                placeholder="e.g. Client paid deposit in cash, receipt to follow"
+                                onChange={(event) => {
+                                    reason = event.target.value;
+                                    updateReasonState();
+                                }}
+                            />
+                        </div>
+
+                        <div className="ue-override-hint">
+                            <span
+                                className="ue-override-required"
+                                ref={(el) => { reasonErrorEl = el; }}
+                            >
+                                A reason is required.
+                            </span>
+                        </div>
+                    </div>
+
+                    <div className="ue-deposit-footer">
+                        <Button onClick={() => Modal.destroyAll()}>
+                            Cancel
+                        </Button>
+                        <Button
+                            danger
+                            type="primary"
+                            onClick={async () => {
+                                if (!reason.trim()) {
+                                    if (reasonErrorEl) reasonErrorEl.style.visibility = 'visible';
+                                    message.warning('A reason is required.');
+                                    return;
+                                }
+                                try {
+                                    await onConfirm(reason.trim());
+                                    Modal.destroyAll();
+                                } catch (err) {
+                                    // onConfirm already handles its own errors
+                                }
+                            }}
+                        >
+                            Confirm Override
+                        </Button>
+                    </div>
                 </div>
             ),
-            okText: 'Confirm Override',
-            cancelText: 'Cancel',
-            okButtonProps: { danger: true },
-            maskClosable: false,
-            onOk: async () => {
-                if (!reason.trim()) {
-                    message.warning('A reason is required.');
-                    return Promise.reject(new Error('Reason required'));
-                }
-                return onConfirm(reason.trim());
-            },
         });
     };
 
@@ -861,30 +1589,86 @@ const UnifiedOrderEventsManagement = () => {
 
             if (depositBalance > 0.01) {
                 Modal.confirm({
-                    title: '30% Deposit Required',
-                    content: (
-                        <div>
-                            <p>The required deposit is <strong>{formatCurrency(requiredDeposit)}</strong>.</p>
-                            <p>Paid: <strong>{formatCurrency(totalPaid)}</strong></p>
-                            <p>Deposit balance: <strong style={{ color: '#ef4444' }}>{formatCurrency(depositBalance)}</strong></p>
-                            <Alert
-                                type="warning"
-                                showIcon
-                                message="Starting without the required deposit will be logged with the approver and reason."
-                            />
-                        </div>
-                    ),
-                    okText: 'Start Event Anyway',
-                    cancelText: 'Pay Deposit',
-                    okButtonProps: { danger: true },
+                    title: null,
+                    icon: null,
+                    className: 'ue-deposit-modal',
+                    width: 540,
+                    footer: null,
                     maskClosable: false,
                     keyboard: false,
-                    onCancel: () => openPaymentForBooking(record, depositBalance, 'deposit'),
-                    onOk: () => requestOverrideReason({
-                        title: 'Start Event Without Deposit',
-                        warning: 'This approval will be saved in event history.',
-                        onConfirm: (reason) => submitStartEvent(record, reason, true, options),
-                    }),
+                    centered: true,
+                    content: (
+                        <div>
+                            <div className="ue-deposit-header">
+                                <div className="ue-deposit-header-icon">
+                                    <WarningOutlined />
+                                </div>
+                                <div className="ue-deposit-header-text">
+                                    <div className="ue-deposit-title">30% Deposit Required</div>
+                                    <div className="ue-deposit-subtitle">
+                                        This event is not fully covered by the required deposit.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="ue-deposit-body">
+                                <div className="ue-deposit-summary">
+                                    <div className="ue-deposit-summary-row">
+                                        <span className="ue-deposit-summary-label">Required deposit</span>
+                                        <span className="ue-deposit-summary-value">
+                                            {formatCurrency(requiredDeposit)}
+                                        </span>
+                                    </div>
+                                    <div className="ue-deposit-summary-row">
+                                        <span className="ue-deposit-summary-label">Amount paid</span>
+                                        <span className={`ue-deposit-summary-value ${totalPaid > 0 ? 'paid-ok' : ''}`}>
+                                            {formatCurrency(totalPaid)}
+                                        </span>
+                                    </div>
+                                    <div className="ue-deposit-summary-row">
+                                        <span className="ue-deposit-summary-label">Deposit balance</span>
+                                        <span className="ue-deposit-summary-value balance-due">
+                                            {formatCurrency(depositBalance)}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="ue-deposit-notice">
+                                    <WarningOutlined />
+                                    <span>
+                                        Starting without the required deposit will be logged with the
+                                        approver and reason.
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="ue-deposit-footer">
+                                <Button
+                                    onClick={() => {
+                                        Modal.destroyAll();
+                                        openPaymentForBooking(record, depositBalance, 'deposit');
+                                    }}
+                                >
+                                    Pay Deposit
+                                </Button>
+                                <Button
+                                    danger
+                                    type="primary"
+                                    onClick={() => {
+                                        Modal.destroyAll();
+                                        requestOverrideReason({
+                                            title: 'Start Event Without Deposit',
+                                            warning: 'This approval will be saved in event history.',
+                                            onConfirm: (reason) =>
+                                                submitStartEvent(record, reason, true, options),
+                                        });
+                                    }}
+                                >
+                                    Start Event Anyway
+                                </Button>
+                            </div>
+                        </div>
+                    ),
                 });
                 return;
             }
@@ -969,9 +1753,6 @@ const UnifiedOrderEventsManagement = () => {
 
                     const updatedBooking = {
                         ...record,
-                        // The backend keeps the operational status as "ongoing" and stores
-                        // the Done state in event metadata. The UI derives the visible
-                        // status from event_done so existing backend validation is preserved.
                         booking_status: 'ongoing',
                         event_done: true,
                         event_done_at: new Date().toISOString(),
@@ -1074,9 +1855,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
     // EQUIPMENT DETAILS HANDLER
-    // ========================================================
     const handleViewEquipmentDetails = (record) => {
         setSelectedBooking(record);
         const equipment = safeArray(record.equipment_in_out);
@@ -1086,7 +1865,7 @@ const UnifiedOrderEventsManagement = () => {
     };
 
     const handleSelectEquipment = (id, checked) => {
-        setSelectedEquipmentIds(prev => 
+        setSelectedEquipmentIds(prev =>
             checked ? [...prev, id] : prev.filter(itemId => itemId !== id)
         );
     };
@@ -1240,9 +2019,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // KITCHEN FUNCTIONS WITH PRINT
-    // ========================================================
+    // KITCHEN FUNCTIONS
     const groupKitchenTasksByMeal = (tasks) => {
         const groups = {};
         safeArray(tasks).filter((task) => !task.is_header).forEach((task, index) => {
@@ -1357,9 +2134,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // KITCHEN PRINT FUNCTIONS
-    // ========================================================
+    // KITCHEN PRINT
     const generateKitchenPrintHTML = (booking, groups, title) => {
         const customerName = booking?.customer_name || 'Unknown';
         const eventDate = booking?.event_date || 'N/A';
@@ -1461,121 +2236,39 @@ const UnifiedOrderEventsManagement = () => {
                         color: #1e293b;
                         background: #ffffff;
                     }
-                    .print-container { 
-                        max-width: 1000px; 
-                        margin: 0 auto; 
-                        background: #ffffff;
-                        padding: 20px;
-                    }
-                    .print-header {
-                        text-align: center;
-                        border-bottom: 2px solid #3b82f6;
-                        padding-bottom: 12px;
-                        margin-bottom: 16px;
-                    }
-                    .print-header h1 {
-                        font-size: 24px;
-                        color: #1a7ab5;
-                        margin-bottom: 2px;
-                        font-weight: 700;
-                    }
-                    .print-header .subtitle {
-                        font-size: 12px;
-                        color: #64748b;
-                    }
+                    .print-container { max-width: 1000px; margin: 0 auto; background: #ffffff; padding: 20px; }
+                    .print-header { text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 12px; margin-bottom: 16px; }
+                    .print-header h1 { font-size: 24px; color: #1a7ab5; margin-bottom: 2px; font-weight: 700; }
+                    .print-header .subtitle { font-size: 12px; color: #64748b; }
                     .print-meta {
-                        display: grid;
-                        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-                        gap: 8px;
-                        background: #f8fafc;
-                        padding: 12px 16px;
-                        border-radius: 6px;
-                        margin-bottom: 16px;
-                        border: 1px solid #e2e8f0;
+                        display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                        gap: 8px; background: #f8fafc; padding: 12px 16px; border-radius: 6px;
+                        margin-bottom: 16px; border: 1px solid #e2e8f0;
                     }
-                    .print-meta .meta-item { 
-                        display: flex; 
-                        flex-direction: column; 
-                    }
-                    .print-meta .meta-label {
-                        font-size: 9px;
-                        font-weight: 600;
-                        color: #64748b;
-                        text-transform: uppercase;
-                        letter-spacing: 0.3px;
-                    }
-                    .print-meta .meta-value {
-                        font-size: 13px;
-                        font-weight: 600;
-                        color: #1e293b;
-                        margin-top: 1px;
-                    }
-                    .print-meta .meta-value.booking-code {
-                        color: #3b82f6;
-                        font-family: 'Courier New', monospace;
-                    }
+                    .print-meta .meta-item { display: flex; flex-direction: column; }
+                    .print-meta .meta-label { font-size: 9px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px; }
+                    .print-meta .meta-value { font-size: 13px; font-weight: 600; color: #1e293b; margin-top: 1px; }
+                    .print-meta .meta-value.booking-code { color: #3b82f6; font-family: 'Courier New', monospace; }
                     .meal-group { margin-bottom: 16px; }
                     .meal-group-header {
-                        font-size: 14px;
-                        font-weight: 600;
-                        color: #1e293b;
-                        padding: 6px 10px;
-                        background: #eff6ff;
-                        border-radius: 4px 4px 0 0;
-                        border-bottom: 2px solid #3b82f6;
+                        font-size: 14px; font-weight: 600; color: #1e293b; padding: 6px 10px;
+                        background: #eff6ff; border-radius: 4px 4px 0 0; border-bottom: 2px solid #3b82f6;
                     }
-                    table {
-                        width: 100%;
-                        border-collapse: collapse;
-                        font-size: 12px;
-                    }
+                    table { width: 100%; border-collapse: collapse; font-size: 12px; }
                     thead th {
-                        background: #f1f5f9;
-                        color: #475569;
-                        font-weight: 600;
-                        font-size: 10px;
-                        text-transform: uppercase;
-                        letter-spacing: 0.3px;
-                        padding: 8px 10px;
-                        text-align: left;
-                        border-bottom: 2px solid #cbd5e1;
+                        background: #f1f5f9; color: #475569; font-weight: 600; font-size: 10px;
+                        text-transform: uppercase; letter-spacing: 0.3px; padding: 8px 10px;
+                        text-align: left; border-bottom: 2px solid #cbd5e1;
                     }
-                    tbody td {
-                        padding: 6px 10px;
-                        border-bottom: 1px solid #e2e8f0;
-                        font-size: 12px;
-                    }
+                    tbody td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
                     tbody tr:last-child td { border-bottom: none; }
-                    .empty-state {
-                        text-align: center;
-                        padding: 30px;
-                        color: #94a3b8;
-                    }
-                    .print-footer {
-                        text-align: center;
-                        margin-top: 20px;
-                        padding-top: 12px;
-                        border-top: 1px solid #e2e8f0;
-                        font-size: 10px;
-                        color: #94a3b8;
-                    }
+                    .empty-state { text-align: center; padding: 30px; color: #94a3b8; }
+                    .print-footer { text-align: center; margin-top: 20px; padding-top: 12px; border-top: 1px solid #e2e8f0; font-size: 10px; color: #94a3b8; }
                     @media print {
                         body { padding: 10px; }
-                        thead th {
-                            background: #e2e8f0 !important;
-                            -webkit-print-color-adjust: exact !important;
-                            print-color-adjust: exact !important;
-                        }
-                        .meal-group-header {
-                            background: #eff6ff !important;
-                            -webkit-print-color-adjust: exact !important;
-                            print-color-adjust: exact !important;
-                        }
-                        .print-meta {
-                            background: #f8fafc !important;
-                            -webkit-print-color-adjust: exact !important;
-                            print-color-adjust: exact !important;
-                        }
+                        thead th { background: #e2e8f0 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                        .meal-group-header { background: #eff6ff !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+                        .print-meta { background: #f8fafc !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
                     }
                 </style>
             </head>
@@ -1586,34 +2279,14 @@ const UnifiedOrderEventsManagement = () => {
                         <div class="subtitle">Generated on ${currentDate}</div>
                     </div>
                     <div class="print-meta">
-                        <div class="meta-item">
-                            <span class="meta-label">Booking Code</span>
-                            <span class="meta-value booking-code">${bookingNo}</span>
-                        </div>
-                        <div class="meta-item">
-                            <span class="meta-label">Customer</span>
-                            <span class="meta-value">${customerName}</span>
-                        </div>
-                        <div class="meta-item">
-                            <span class="meta-label">Event Date</span>
-                            <span class="meta-value">${eventDate}</span>
-                        </div>
-                        <div class="meta-item">
-                            <span class="meta-label">Event Time</span>
-                            <span class="meta-value">${eventTime}</span>
-                        </div>
-                        <div class="meta-item">
-                            <span class="meta-label">Venue</span>
-                            <span class="meta-value">${venue}</span>
-                        </div>
-                        <div class="meta-item">
-                            <span class="meta-label">Pax</span>
-                            <span class="meta-value">${pax}</span>
-                        </div>
+                        <div class="meta-item"><span class="meta-label">Booking Code</span><span class="meta-value booking-code">${bookingNo}</span></div>
+                        <div class="meta-item"><span class="meta-label">Customer</span><span class="meta-value">${customerName}</span></div>
+                        <div class="meta-item"><span class="meta-label">Event Date</span><span class="meta-value">${eventDate}</span></div>
+                        <div class="meta-item"><span class="meta-label">Event Time</span><span class="meta-value">${eventTime}</span></div>
+                        <div class="meta-item"><span class="meta-label">Venue</span><span class="meta-value">${venue}</span></div>
+                        <div class="meta-item"><span class="meta-label">Pax</span><span class="meta-value">${pax}</span></div>
                     </div>
-
                     ${tasksHTML}
-
                     <div class="print-footer">
                         <span>This is a system-generated kitchen preparation list.</span>
                         <br />
@@ -1700,7 +2373,7 @@ const UnifiedOrderEventsManagement = () => {
         printWindow.document.write(printContent);
         printWindow.document.close();
         printWindow.focus();
-        
+
         setTimeout(() => {
             printWindow.print();
         }, 500);
@@ -1762,9 +2435,7 @@ const UnifiedOrderEventsManagement = () => {
         return items;
     };
 
-    // ========================================================
-    // DELIVERY FUNCTIONS - CONNECTED TO BACKEND
-    // ========================================================
+    // DELIVERY FUNCTIONS
     const normalizeDeliveryItemsFromBackend = (booking) => {
         const items = safeArray(booking?.delivery_preparation);
         if (items.length === 0) {
@@ -1881,9 +2552,6 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // LOAD EQUIPMENT FROM BACKEND
-    // ========================================================
     const loadAvailableEquipment = async () => {
         setLoadingEquipment(true);
         try {
@@ -2048,9 +2716,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // STAFF, CHECKLIST, AND DELIVERY TRACKING HANDLERS
-    // ========================================================
+    // STAFF / CHECKLIST / DELIVERY TRACKING
     const getEventId = useCallback((record = selectedBooking) => (
         record?.booking_id || record?.id || null
     ), [selectedBooking]);
@@ -2183,7 +2849,6 @@ const UnifiedOrderEventsManagement = () => {
             refetchActiveBookings();
         } catch (error) {
             console.error('Staff assignment error:', error);
-            // useAssignStaff already displays the backend validation message.
         }
     }, [
         assignStaffMutation,
@@ -2395,7 +3060,6 @@ const UnifiedOrderEventsManagement = () => {
             if (editingDelivery) {
                 message.error(error.response?.data?.message || 'Failed to update delivery.');
             }
-            // useAddDelivery displays its own backend error for create requests.
         }
     }, [
         addDeliveryForm,
@@ -2551,9 +3215,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // INGREDIENTS FUNCTIONS - CONNECTED TO BACKEND
-    // ========================================================
+    // INGREDIENTS
     const aggregateMenuItemIngredients = (menuItems, selectedMenuItemIds = []) => {
         const selectedIdSet = new Set(safeArray(selectedMenuItemIds).map((id) => String(id)));
         const selectedMenuItems = safeArray(menuItems).filter((menuItem) => {
@@ -2753,9 +3415,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
-    // GET ACTION MENU ITEMS
-    // ========================================================
+    // ACTION MENU
     const getActionMenuItems = useCallback((record) => {
         const status = String(record.booking_status || '').toLowerCase();
         /** @type {any[]} */
@@ -2801,6 +3461,12 @@ const UnifiedOrderEventsManagement = () => {
                 label: 'Equipment Details',
                 icon: <PlusCircleOutlined />,
                 onClick: () => handleViewEquipmentDetails(record)
+            },
+            {
+                key: 'profitability',
+                label: 'View Profitability',
+                icon: <RiseOutlined style={{ color: '#2563eb' }} />,
+                onClick: () => handleViewProfitability(record)
             },
             { type: 'divider' },
         ];
@@ -2875,13 +3541,12 @@ const UnifiedOrderEventsManagement = () => {
     }, [
         handleCalculateIngredients, handleViewKitchenPrep, handleViewDeliveryPrep,
         handleStaffAssignment, handleViewDeliveryTracking, handleViewChecklist,
-        handleViewEquipmentDetails, handleStartEvent, handleMarkEventDone, handleCompleteEvent,
+        handleViewEquipmentDetails, handleViewProfitability, handleStartEvent,
+        handleMarkEventDone, handleCompleteEvent,
         handleApproveAllEquipment, handleEdit, handleOpenLiveStatus, openPaymentForBooking
     ]);
 
-    // ========================================================
-    // TABLE COLUMNS - WITH STAFF COUNT FIXED
-    // ========================================================
+    // TABLE COLUMNS
     const columns = [
         {
             title: 'BOOKING ID',
@@ -2973,14 +3638,14 @@ const UnifiedOrderEventsManagement = () => {
             render: (_, record) => {
                 const staffCount = safeNumber(record.total_staff_required, safeArray(record.assigned_staff).length);
                 return (
-                    <Badge 
-                        count={staffCount} 
-                        showZero 
-                        style={{ 
+                    <Badge
+                        count={staffCount}
+                        showZero
+                        style={{
                             backgroundColor: staffCount > 0 ? '#3b82f6' : '#94a3b8',
                             fontSize: '11px',
                             fontWeight: 500
-                        }} 
+                        }}
                     />
                 );
             }
@@ -3028,9 +3693,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     ];
 
-    // ========================================================
     // HISTORY COLUMNS
-    // ========================================================
     const historyColumns = [
         {
             title: 'BOOKING ID',
@@ -3128,9 +3791,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     ];
 
-    // ========================================================
     // ONGOING COLUMNS
-    // ========================================================
     const ongoingColumns = [
         {
             title: 'BOOKING ID',
@@ -3189,14 +3850,14 @@ const UnifiedOrderEventsManagement = () => {
             render: (_, record) => {
                 const staffCount = safeArray(record.assigned_staff).length;
                 return (
-                    <Badge 
-                        count={staffCount} 
-                        showZero 
-                        style={{ 
+                    <Badge
+                        count={staffCount}
+                        showZero
+                        style={{
                             backgroundColor: staffCount > 0 ? '#3b82f6' : '#94a3b8',
                             fontSize: '11px',
                             fontWeight: 500
-                        }} 
+                        }}
                     />
                 );
             }
@@ -3231,9 +3892,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     ];
 
-    // ========================================================
-    // PAGINATION RENDER
-    // ========================================================
+    // PAGINATION
     const renderPaginationItem = (_, type, originalElement) => {
         if (type === 'prev') {
             return (
@@ -3252,9 +3911,7 @@ const UnifiedOrderEventsManagement = () => {
         return originalElement;
     };
 
-    // ========================================================
-    // EXPORT FUNCTIONS
-    // ========================================================
+    // EXPORT
     const exportToExcel = (data, filename, columns) => {
         const worksheetData = data.map(row => {
             const exportRow = {};
@@ -3308,9 +3965,7 @@ const UnifiedOrderEventsManagement = () => {
         exportToExcel(completedBookings, 'Event_History_Report', columns);
     };
 
-    // ========================================================
-    // RENDER STATS
-    // ========================================================
+    // STATS
     const renderStats = () => (
         <div className="ue-stats-grid">
             <div className="ue-stat-card">
@@ -3351,342 +4006,54 @@ const UnifiedOrderEventsManagement = () => {
         </div>
     );
 
-    // ========================================================
-    // EQUIPMENT DETAILS MODAL
-    // ========================================================
-    const renderEquipmentDetailsModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><PlusCircleOutlined /></div>
-                    <div className="ue-modal-title">Equipment Details</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={equipmentDetailsModalVisible}
-            onCancel={() => setEquipmentDetailsModalVisible(false)}
-            width={900}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button onClick={() => setEquipmentDetailsModalVisible(false)}>Close</Button>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                {selectedBooking && (
-                    <>
-                        <div className="ue-equipment-header">
-                            <div className="ue-equipment-booking-info">
-                                <div className="ue-equipment-booking-id">
-                                    <span className="ue-id-text">{formatBookingId(selectedBooking.booking_no)}</span>
-                                </div>
-                                <div className="ue-equipment-customer-name">{selectedBooking.customer_name}</div>
-                                <div className="ue-equipment-event-type">{getEventTypeName(selectedBooking.event_type_id, eventTypes)}</div>
-                                <div className="ue-equipment-event-date">{selectedBooking.event_date}</div>
-                            </div>
-                        </div>
-
-                        <div className="ue-equipment-actions">
-                            <Space>
-                                <Checkbox 
-                                    checked={selectedEquipmentIds.length === equipmentDetailsData.length && equipmentDetailsData.length > 0}
-                                    indeterminate={selectedEquipmentIds.length > 0 && selectedEquipmentIds.length < equipmentDetailsData.length}
-                                    onChange={(e) => handleSelectAllEquipment(e.target.checked)}
-                                >
-                                    Approve Selected ({selectedEquipmentIds.length})
-                                </Checkbox>
-                                <Button 
-                                    type="primary" 
-                                    size="small"
-                                    onClick={handleApproveSelectedEquipmentFromDetails}
-                                    disabled={selectedEquipmentIds.length === 0}
-                                >
-                                    Approve Selected
-                                </Button>
-                                <Button 
-                                    type="primary" 
-                                    size="small"
-                                    onClick={handleApproveAllEquipmentFromDetails}
-                                >
-                                    Approve All
-                                </Button>
-                            </Space>
-                        </div>
-
-                        <Table
-                            dataSource={equipmentDetailsData}
-                            rowKey={(record) => record.id}
-                            size="small"
-                            pagination={false}
-                            columns={[
-                                {
-                                    title: '',
-                                    width: 40,
-                                    render: (_, record) => (
-                                        <Checkbox 
-                                            checked={selectedEquipmentIds.includes(record.id)}
-                                            onChange={(e) => handleSelectEquipment(record.id, e.target.checked)}
-                                            disabled={record.is_out_approved || ['checked_out', 'returned'].includes(record.status)}
-                                        />
-                                    )
-                                },
-                                {
-                                    title: 'NAME',
-                                    dataIndex: 'equipment_name',
-                                    render: (v, r) => v || r.equipment?.name || 'N/A'
-                                },
-                                {
-                                    title: 'QUANTITY',
-                                    dataIndex: 'quantity_reserved',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'DAMAGED',
-                                    dataIndex: 'quantity_damaged',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'MISSING',
-                                    dataIndex: 'quantity_missing',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'STATUS',
-                                    dataIndex: 'status',
-                                    align: 'center',
-                                    render: (status) => {
-                                        const config = getStatusConfig(status);
-                                        return (
-                                            <span className="ue-status" style={{ color: config.color, background: config.bg }}>
-                                                {config.text}
-                                            </span>
-                                        );
-                                    }
-                                },
-                                {
-                                    title: 'ACTION',
-                                    key: 'action',
-                                    align: 'center',
-                                    render: (_, record) => {
-                                        const isCheckedOut = record.status === 'checked_out';
-                                        const isReturned = record.status === 'returned';
-                                        if (isReturned) {
-                                            return <Tag color="success">Returned</Tag>;
-                                        }
-                                        if (isCheckedOut) {
-                                            return (
-                                                <Button 
-                                                    size="small" 
-                                                    type="primary"
-                                                    onClick={() => handleReturnEquipmentFromDetails(record)}
-                                                >
-                                                    Check In / Return
-                                                </Button>
-                                            );
-                                        }
-                                        return (
-                                            <Tag color="default">{record.status || 'Pending'}</Tag>
-                                        );
-                                    }
-                                }
-                            ]}
-                        />
-
-                        <div className="ue-equipment-footer">
-                            <div className="ue-equipment-booking-label">
-                                <strong>BOOKING</strong> {formatBookingId(selectedBooking.booking_no)}
-                            </div>
-                            <div className="ue-equipment-date">
-                                {dayjs().format('dddd, MMMM D, YYYY')}
-                            </div>
-                        </div>
-                    </>
-                )}
-            </div>
-        </Modal>
-    );
-
-    // ========================================================
-    // RENDER VIEW DETAILS MODAL - ALL IN ONE, NO SCROLLING
-    // ========================================================
-    const renderViewDetailsModal = () => {
-        if (!viewModalData) return null;
-        const record = viewModalData;
-        
-        return (
-            <Modal
-                title={
-                    <div className="ue-modal-header">
-                        <div className="ue-modal-icon"><EyeOutlined /></div>
-                        <div className="ue-modal-title">Booking Details</div>
-                        <div className="ue-modal-badge">{formatBookingId(record.booking_no)}</div>
-                    </div>
-                }
-                open={viewModalVisible}
-                onCancel={() => setViewModalVisible(false)}
-                width={1100}
-                className="ue-modal-clean"
-                maskClosable={false}
-                footer={
-                    <div className="ue-modal-footer">
-                        <Button onClick={() => setViewModalVisible(false)}>Close</Button>
-                    </div>
-                }
-                destroyOnHidden={true}
-                bodyStyle={{ maxHeight: '70vh', overflow: 'auto' }}
-            >
-                <div className="ue-modal-body" style={{ padding: '16px 0' }}>
-                    {/* Row 1: Customer & Event Info */}
-                    <Row gutter={[16, 16]}>
-                        <Col span={12}>
-                            <div className="ue-info-card">
-                                <div className="ue-info-label"><UserOutlined /> Customer Information</div>
-                                <div className="ue-info-value" style={{ fontWeight: 600 }}>{record.customer_name}</div>
-                                <div style={{ fontSize: 13, color: '#64748b' }}>
-                                    <div><MailOutlined /> {record.customer_email || 'N/A'}</div>
-                                    <div><PhoneOutlined /> {record.customer_phone || 'N/A'}</div>
-                                    <div><HomeOutlined /> {record.customer_address || 'N/A'}</div>
-                                </div>
-                            </div>
-                        </Col>
-                        <Col span={12}>
-                            <div className="ue-info-card">
-                                <div className="ue-info-label"><CalendarOutlined /> Event Information</div>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 16px' }}>
-                                    <div><span style={{ color: '#64748b' }}>Type:</span> <Tag color="blue">{getEventTypeName(record.event_type_id, eventTypes)}</Tag></div>
-                                    {(() => {
-                                        const statusConfig = getStatusConfig(getBookingDisplayStatus(record));
-                                        return (
-                                            <div>
-                                                <span style={{ color: '#64748b' }}>Status:</span>{' '}
-                                                <span className="ue-status" style={{ color: statusConfig.color, background: statusConfig.bg }}>
-                                                    {statusConfig.icon} {statusConfig.text}
-                                                </span>
-                                            </div>
-                                        );
-                                    })()}
-                                    <div><span style={{ color: '#64748b' }}>Date:</span> {record.event_date}</div>
-                                    <div><span style={{ color: '#64748b' }}>Time:</span> {record.event_time}</div>
-                                    <div><span style={{ color: '#64748b' }}>Venue:</span> {record.venue || 'N/A'}</div>
-                                    <div><span style={{ color: '#64748b' }}>Guests:</span> {record.guests_count} PAX</div>
-                                </div>
-                            </div>
-                        </Col>
-                    </Row>
-
-                    {/* Row 2: Payment Summary */}
-                    <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-                        <Col span={24}>
-                            <div className="ue-info-card">
-                                <div className="ue-info-label"><WalletOutlined /> Payment Summary</div>
-                                <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-                                    <div><span style={{ color: '#64748b' }}>Total:</span> <strong>{formatCurrency(record.total_amount)}</strong></div>
-                                    <div><span style={{ color: '#64748b' }}>Paid:</span> <strong style={{ color: '#10b981' }}>{formatCurrency(record.paid_amount || 0)}</strong></div>
-                                    <div><span style={{ color: '#64748b' }}>Balance:</span> <strong style={{ color: (record.balance || 0) > 0 ? '#ef4444' : '#10b981' }}>{formatCurrency(record.balance || 0)}</strong></div>
-                                    <div><span style={{ color: '#64748b' }}>Status:</span> <Tag color={(record.balance || 0) <= 0 ? 'success' : 'warning'}>{(record.balance || 0) <= 0 ? 'Paid' : 'Partial'}</Tag></div>
-                                </div>
-                            </div>
-                        </Col>
-                    </Row>
-
-                    {/* Row 3: Quick Actions - All buttons in one row */}
-                    <Row gutter={[8, 8]} style={{ marginTop: 8 }}>
-                        <Col span={24}>
-                            <div className="ue-info-card" style={{ padding: '8px 12px' }}>
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                    <Button size="small" icon={<StockOutlined />} onClick={() => handleCalculateIngredients(record)}>Calculate Ingredients</Button>
-                                    <Button size="small" icon={<CoffeeOutlined />} onClick={() => handleViewKitchenPrep(record)}>Kitchen</Button>
-                                    <Button size="small" icon={<TruckOutlined />} onClick={() => handleViewDeliveryPrep(record)}>Delivery</Button>
-                                    <Button size="small" icon={<TeamOutlined />} onClick={() => handleStaffAssignment(record)}>Staff</Button>
-                                    <Button size="small" icon={<CarOutlined />} onClick={() => handleViewDeliveryTracking(record)}>Tracking</Button>
-                                    <Button size="small" icon={<CheckSquareOutlined />} onClick={() => handleViewChecklist(record)}>Checklist</Button>
-                                    <Button size="small" icon={<PlusCircleOutlined />} onClick={() => handleViewEquipmentDetails(record)}>Equipment</Button>
-                                    <Button size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)}>Edit</Button>
-                                    <Button size="small" icon={<PlayCircleOutlined />} onClick={() => handleStartEvent(record)}>Start</Button>
-                                    <Button size="small" danger icon={<FlagOutlined />} onClick={() => handleCompleteEvent(record)}>Complete</Button>
-                                </div>
-                            </div>
-                        </Col>
-                    </Row>
-
-                    {/* Row 4: Orders/Meals Summary */}
-                    <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-                        <Col span={24}>
-                            <div className="ue-info-card">
-                                <div className="ue-info-label"><ForkOutlined /> Orders Summary ({safeArray(record.meal_services).length} meals)</div>
-                                <div style={{ maxHeight: '120px', overflow: 'auto' }}>
-                                    {safeArray(record.meal_services).slice(0, 5).map((meal, idx) => (
-                                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '2px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}>
-                                            <span><Tag color="blue" size="small">{meal.meal_type}</Tag> {meal.menu_name || meal.menuItem?.name || 'Meal'}</span>
-                                            <span>{meal.pax || 0} PAX</span>
-                                        </div>
-                                    ))}
-                                    {safeArray(record.meal_services).length > 5 && (
-                                        <div style={{ color: '#64748b', fontSize: 12, padding: '4px 0' }}>
-                                            + {safeArray(record.meal_services).length - 5} more meals
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        </Col>
-                    </Row>
-
-                    {/* Row 5: Staff Summary */}
-                    <Row gutter={[16, 16]} style={{ marginTop: 8 }}>
-                        <Col span={24}>
-                            <div className="ue-info-card">
-                                <div className="ue-info-label"><TeamOutlined /> Staff Assigned ({safeArray(record.assigned_staff).length})</div>
-                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                    {safeArray(record.assigned_staff).slice(0, 6).map((staff, idx) => (
-                                        <Tag key={idx} color={staff.status === 'confirmed' ? 'green' : 'orange'}>
-                                            {staff.name || 'Staff'} {staff.role ? `(${staff.role})` : ''}
-                                        </Tag>
-                                    ))}
-                                    {safeArray(record.assigned_staff).length > 6 && (
-                                        <Tag>+{safeArray(record.assigned_staff).length - 6} more</Tag>
-                                    )}
-                                    {safeArray(record.assigned_staff).length === 0 && (
-                                        <span style={{ color: '#94a3b8', fontSize: 13 }}>No staff assigned</span>
-                                    )}
-                                </div>
-                            </div>
-                        </Col>
-                    </Row>
-                </div>
-            </Modal>
-        );
-    };
-
-    // ========================================================
-    // RENDER ONGOING EVENT WARNING
-    // ========================================================
+    // ONGOING WARNING
     const renderOngoingWarning = () => {
-        const today = dayjs().format('YYYY-MM-DD');
-        const ongoingEvents = allBookings.filter((booking) => {
-            const status = safeString(booking.booking_status).toLowerCase();
-            const eventDate = booking.event_date ? dayjs(booking.event_date).format('YYYY-MM-DD') : null;
+        if (eventInProgressHidden) {
+            return (
+                <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    <Button
+                        size="small"
+                        icon={<EyeOutlined />}
+                        onClick={handleToggleEventInProgressVisibility}
+                    >
+                        Show Event In Progress Message
+                    </Button>
+                </div>
+            );
+        }
 
-            if (booking.event_done || booking.event_completed || status === 'completed') {
-                return false;
-            }
+        const ongoingEvents = getOngoingEvents();
 
-            return status === 'ongoing' || (status === 'confirmed' && eventDate === today);
-        });
-
-        if (ongoingEvents.length === 0) return null;
+        if (ongoingEvents.length === 0) {
+            return (
+                <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
+                    <Button
+                        size="small"
+                        icon={<EyeInvisibleOutlined />}
+                        onClick={handleToggleEventInProgressVisibility}
+                    >
+                        Hide Event In Progress Message
+                    </Button>
+                </div>
+            );
+        }
 
         return (
             <Alert
                 message={
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <WarningOutlined style={{ color: '#f59e0b' }} />
-                        <span style={{ fontWeight: 600 }}>Event In Progress</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <WarningOutlined style={{ color: '#f59e0b' }} />
+                            <span style={{ fontWeight: 600 }}>Event In Progress</span>
+                        </div>
+                        <Button
+                            size="small"
+                            icon={<EyeInvisibleOutlined />}
+                            onClick={handleToggleEventInProgressVisibility}
+                            style={{ marginLeft: 'auto' }}
+                        >
+                            Hide
+                        </Button>
                     </div>
                 }
                 description={
@@ -3710,9 +4077,7 @@ const UnifiedOrderEventsManagement = () => {
         );
     };
 
-    // ========================================================
-    // RENDER ONGOING EVENT TABS
-    // ========================================================
+    // ONGOING TABS
     const renderOngoingTabs = (record) => {
         if (!record) return null;
 
@@ -3913,9 +4278,7 @@ const UnifiedOrderEventsManagement = () => {
         );
     };
 
-    // ========================================================
-    // RENDER LIVE STATUS MODAL
-    // ========================================================
+    // MODALS
     const renderLiveStatusModal = () => (
         <Modal
             title={
@@ -3944,9 +4307,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER KITCHEN MODAL
-    // ========================================================
     const renderKitchenModal = () => (
         <Modal
             title={
@@ -3964,8 +4324,8 @@ const UnifiedOrderEventsManagement = () => {
             footer={
                 <div className="ue-modal-footer">
                     <Space>
-                        <Button 
-                            icon={<PrinterOutlined />} 
+                        <Button
+                            icon={<PrinterOutlined />}
                             onClick={() => printKitchenTasks('all')}
                             type="primary"
                         >
@@ -4010,9 +4370,9 @@ const UnifiedOrderEventsManagement = () => {
                                                 <span className="ue-task-name">{task.task}</span>
                                                 <span>{task.quantity || '-'}</span>
                                                 <span>
-                                                    <Input 
-                                                        size="small" 
-                                                        value={task.start_time || '-'} 
+                                                    <Input
+                                                        size="small"
+                                                        value={task.start_time || '-'}
                                                         onChange={(e) => {
                                                             const updated = [...kitchenTasks];
                                                             const index = updated.findIndex(t => t.id === task.id);
@@ -4027,9 +4387,9 @@ const UnifiedOrderEventsManagement = () => {
                                                     />
                                                 </span>
                                                 <span>
-                                                    <Input 
-                                                        size="small" 
-                                                        value={task.out_for_delivery || '-'} 
+                                                    <Input
+                                                        size="small"
+                                                        value={task.out_for_delivery || '-'}
                                                         onChange={(e) => {
                                                             const updated = [...kitchenTasks];
                                                             const index = updated.findIndex(t => t.id === task.id);
@@ -4045,8 +4405,8 @@ const UnifiedOrderEventsManagement = () => {
                                                 </span>
                                                 <span>{task.assigned_to || 'Kitchen Team'}</span>
                                                 <span>
-                                                    <Checkbox 
-                                                        checked={Boolean(task.is_done || task.status === 'completed')} 
+                                                    <Checkbox
+                                                        checked={Boolean(task.is_done || task.status === 'completed')}
                                                         onChange={(e) => handleUpdateKitchenTask(task.id, { is_done: e.target.checked })}
                                                     />
                                                 </span>
@@ -4065,9 +4425,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER DELIVERY MODAL - PROPERLY ALIGNED
-    // ========================================================
     const renderDeliveryModal = () => (
         <Modal
             title={
@@ -4101,8 +4458,8 @@ const UnifiedOrderEventsManagement = () => {
                     }}>
                         Add Item
                     </Button>
-                    <Button 
-                        icon={<SyncOutlined />} 
+                    <Button
+                        icon={<SyncOutlined />}
                         onClick={() => handleAddToDelivery(selectedBooking)}
                         style={{ marginLeft: 8 }}
                     >
@@ -4132,9 +4489,9 @@ const UnifiedOrderEventsManagement = () => {
                             rowKey={(record) => record.id || record.equipment_id}
                             pagination={{ pageSize: 5 }}
                             columns={[
-                                { 
-                                    title: '', 
-                                    width: 48, 
+                                {
+                                    title: '',
+                                    width: 48,
                                     render: (_, equipment) => {
                                         const id = equipment.id || equipment.equipment_id;
                                         const isChecked = Boolean(selectedEquipment[id]) && selectedEquipment[id].quantity > 0;
@@ -4148,28 +4505,28 @@ const UnifiedOrderEventsManagement = () => {
                                         );
                                     }
                                 },
-                                { 
-                                    title: 'Equipment', 
-                                    render: (_, equipment) => equipment.name || equipment.item_name || equipment.equipment_name || 'Equipment' 
+                                {
+                                    title: 'Equipment',
+                                    render: (_, equipment) => equipment.name || equipment.item_name || equipment.equipment_name || 'Equipment'
                                 },
-                                { 
-                                    title: 'Total', 
-                                    width: 80, 
+                                {
+                                    title: 'Total',
+                                    width: 80,
                                     align: 'center',
-                                    render: (_, equipment) => equipment.total_quantity || 0 
+                                    render: (_, equipment) => equipment.total_quantity || 0
                                 },
-                                { 
-                                    title: 'Available', 
-                                    width: 80, 
+                                {
+                                    title: 'Available',
+                                    width: 80,
                                     align: 'center',
                                     render: (_, equipment) => {
                                         const id = equipment.id || equipment.equipment_id;
                                         return selectedEquipment[id]?.available_quantity ?? equipment.available_quantity ?? equipment.available ?? 0;
                                     }
                                 },
-                                { 
-                                    title: 'Reserved', 
-                                    width: 80, 
+                                {
+                                    title: 'Reserved',
+                                    width: 80,
                                     align: 'center',
                                     render: (_, equipment) => {
                                         const total = equipment.total_quantity || 0;
@@ -4177,9 +4534,9 @@ const UnifiedOrderEventsManagement = () => {
                                         return total - available;
                                     }
                                 },
-                                { 
-                                    title: 'Qty Needed', 
-                                    width: 120, 
+                                {
+                                    title: 'Qty Needed',
+                                    width: 120,
                                     render: (_, equipment) => {
                                         const id = equipment.id || equipment.equipment_id;
                                         const currentQty = selectedEquipment[id]?.quantity || 1;
@@ -4258,9 +4615,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER STAFF ASSIGNMENT MODAL
-    // ========================================================
     const renderStaffAssignmentModal = () => (
         <Modal
             title={
@@ -4314,7 +4668,7 @@ const UnifiedOrderEventsManagement = () => {
                                 <Popconfirm title="Remove staff?" onConfirm={() => handleRemoveStaff(selectedBooking?.id, record.staff_id)}>
                                     <Button type="text" danger icon={<DeleteOutlined />} />
                                 </Popconfirm>
-                            )}
+                            ) }
                         ]}
                     />
                 ) : (
@@ -4324,9 +4678,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER ADD STAFF MODAL
-    // ========================================================
     const renderAddStaffModal = () => (
         <Modal
             title={
@@ -4385,9 +4736,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER DELIVERY TRACKING MODAL
-    // ========================================================
     const renderDeliveryTrackingModal = () => (
         <Modal
             title={
@@ -4469,9 +4817,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER CHECKLIST MODAL
-    // ========================================================
     const renderChecklistModal = () => (
         <Modal
             title={
@@ -4549,19 +4894,16 @@ const UnifiedOrderEventsManagement = () => {
                         )}
                     />
 
-                    <Progress 
-                        percent={Math.round((checklist.filter(i => Boolean(i.completed ?? i.status === 'completed')).length / Math.max(checklist.length, 1)) * 100)} 
-                        strokeColor="#3b82f6" 
-                        style={{ marginTop: 20 }} 
+                    <Progress
+                        percent={Math.round((checklist.filter(i => Boolean(i.completed ?? i.status === 'completed')).length / Math.max(checklist.length, 1)) * 100)}
+                        strokeColor="#3b82f6"
+                        style={{ marginTop: 20 }}
                     />
                 </Spin>
             </div>
         </Modal>
     );
 
-    // ========================================================
-    // RENDER INGREDIENTS MODAL - OVERALL EVENT SUMMARY ONLY
-    // ========================================================
     const renderIngredientsModal = () => (
         <Modal
             title={
@@ -4595,7 +4937,6 @@ const UnifiedOrderEventsManagement = () => {
             <div className="ue-modal-body">
                 {selectedBooking && (
                     <>
-                        {/* Total Book Section */}
                         <div className="ue-ingredients-total-book">
                             <div className="ue-total-book-header">
                                 <h2>Total Book</h2>
@@ -4620,7 +4961,6 @@ const UnifiedOrderEventsManagement = () => {
                             </div>
                         </div>
 
-                        {/* Menu Item Selection - calculations remain combined in one summary */}
                         <div className="ue-modal-section">
                             <div className="ue-modal-section-title"><ForkOutlined /> Menu Items to Calculate</div>
                             <Row gutter={[12, 12]} align="middle">
@@ -4659,7 +4999,6 @@ const UnifiedOrderEventsManagement = () => {
                             </div>
                         </div>
 
-                        {/* Full Event Ingredients Summary Section */}
                         <div className="ue-modal-section">
                             <div className="ue-modal-section-title">
                                 <StockOutlined /> Full Event Ingredients Summary
@@ -4680,12 +5019,12 @@ const UnifiedOrderEventsManagement = () => {
                                     size="small"
                                     pagination={{ pageSize: 10 }}
                                     columns={[
-                                        { 
-                                            title: 'Select', 
-                                            key: 'select', 
-                                            width: 50, 
+                                        {
+                                            title: 'Select',
+                                            key: 'select',
+                                            width: 50,
                                             render: (_, record) => (
-                                                <Checkbox 
+                                                <Checkbox
                                                     checked={selectedIngredientIds.includes(record.ingredient_id)}
                                                     disabled={!record.need_to_buy}
                                                     onChange={(e) => {
@@ -4697,54 +5036,54 @@ const UnifiedOrderEventsManagement = () => {
                                                 />
                                             )
                                         },
-                                        { 
-                                            title: 'Ingredient', 
-                                            dataIndex: 'name', 
-                                            render: (v) => <span className="ue-ingredient-name">{v}</span> 
+                                        {
+                                            title: 'Ingredient',
+                                            dataIndex: 'name',
+                                            render: (v) => <span className="ue-ingredient-name">{v}</span>
                                         },
-                                        { 
-                                            title: 'Meal Type', 
-                                            key: 'meal_type', 
-                                            render: (_, record) => safeArray(record.menu_items).map(mi => mi.meal_type).filter(Boolean).join(', ') || '-' 
+                                        {
+                                            title: 'Meal Type',
+                                            key: 'meal_type',
+                                            render: (_, record) => safeArray(record.menu_items).map(mi => mi.meal_type).filter(Boolean).join(', ') || '-'
                                         },
-                                        { 
-                                            title: 'Per Pax', 
-                                            key: 'per_pax', 
-                                            render: (_, record) => `${record.per_pax} ${record.unit}` 
+                                        {
+                                            title: 'Per Pax',
+                                            key: 'per_pax',
+                                            render: (_, record) => `${record.per_pax} ${record.unit}`
                                         },
-                                        { 
-                                            title: 'Total Needed', 
-                                            key: 'needed', 
-                                            render: (_, record) => `${Math.round(record.quantity_needed * 100) / 100} ${record.unit}` 
+                                        {
+                                            title: 'Total Needed',
+                                            key: 'needed',
+                                            render: (_, record) => `${Math.round(record.quantity_needed * 100) / 100} ${record.unit}`
                                         },
-                                        { 
-                                            title: 'Current Stock', 
-                                            key: 'stock', 
-                                            render: (_, record) => `${Math.round(record.current_stock * 100) / 100} ${record.unit}` 
+                                        {
+                                            title: 'Current Stock',
+                                            key: 'stock',
+                                            render: (_, record) => `${Math.round(record.current_stock * 100) / 100} ${record.unit}`
                                         },
-                                        { 
-                                            title: 'Reserved', 
-                                            key: 'reserved', 
-                                            render: (_, record) => `${Math.round(record.reserved_quantity * 100) / 100} ${record.unit}` 
+                                        {
+                                            title: 'Reserved',
+                                            key: 'reserved',
+                                            render: (_, record) => `${Math.round(record.reserved_quantity * 100) / 100} ${record.unit}`
                                         },
-                                        { 
-                                            title: 'Available', 
-                                            key: 'available', 
-                                            render: (_, record) => `${Math.round(record.available_stock * 100) / 100} ${record.unit}` 
+                                        {
+                                            title: 'Available',
+                                            key: 'available',
+                                            render: (_, record) => `${Math.round(record.available_stock * 100) / 100} ${record.unit}`
                                         },
-                                        { 
-                                            title: 'Shortage', 
-                                            key: 'shortage', 
-                                            render: (_, record) => record.shortage > 0 ? 
-                                                <span className="ue-shortage">{Math.round(record.shortage * 100) / 100} {record.unit}</span> : 
-                                                <span className="ue-sufficient">Sufficient</span> 
+                                        {
+                                            title: 'Shortage',
+                                            key: 'shortage',
+                                            render: (_, record) => record.shortage > 0 ?
+                                                <span className="ue-shortage">{Math.round(record.shortage * 100) / 100} {record.unit}</span> :
+                                                <span className="ue-sufficient">Sufficient</span>
                                         },
-                                        { 
-                                            title: 'Status', 
-                                            key: 'status', 
-                                            render: (_, record) => record.need_to_buy ? 
-                                                <Tag color="error">Need to Buy</Tag> : 
-                                                <Tag color="success">In Stock</Tag> 
+                                        {
+                                            title: 'Status',
+                                            key: 'status',
+                                            render: (_, record) => record.need_to_buy ?
+                                                <Tag color="error">Need to Buy</Tag> :
+                                                <Tag color="success">In Stock</Tag>
                                         },
                                     ]}
                                 />
@@ -4756,9 +5095,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER EDIT MODAL
-    // ========================================================
     const renderEditModal = () => (
         <Modal
             title={
@@ -4858,9 +5194,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER STATUS UPDATE MODAL
-    // ========================================================
     const renderStatusUpdateModal = () => (
         <Modal
             title={
@@ -4901,9 +5234,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER PAYMENT MODAL
-    // ========================================================
     const renderPaymentModal = () => (
         <Modal
             title={
@@ -4968,9 +5298,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER EQUIPMENT CHECKOUT MODAL
-    // ========================================================
     const renderEquipmentCheckoutModal = () => (
         <Modal
             title={
@@ -5016,9 +5343,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER EQUIPMENT RETURN MODAL
-    // ========================================================
     const renderEquipmentReturnModal = () => (
         <Modal
             title={
@@ -5092,9 +5416,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // RENDER ADD DELIVERY MODAL
-    // ========================================================
     const renderAddDeliveryModal = () => (
         <Modal
             title={
@@ -5175,9 +5496,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // HANDLE RECORD PAYMENT
-    // ========================================================
     const handleRecordPayment = async (values) => {
         try {
             const validatedValues = await paymentForm.validateFields();
@@ -5201,9 +5519,529 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ========================================================
+    const renderEquipmentDetailsModal = () => (
+        <Modal
+            title={
+                <div className="ue-modal-header">
+                    <div className="ue-modal-icon"><PlusCircleOutlined /></div>
+                    <div className="ue-modal-title">Equipment Details</div>
+                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
+                </div>
+            }
+            open={equipmentDetailsModalVisible}
+            onCancel={() => setEquipmentDetailsModalVisible(false)}
+            width={900}
+            className="ue-modal-clean"
+            maskClosable={false}
+            footer={
+                <div className="ue-modal-footer">
+                    <Button onClick={() => setEquipmentDetailsModalVisible(false)}>Close</Button>
+                </div>
+            }
+            destroyOnHidden={true}
+        >
+            <div className="ue-modal-body">
+                {selectedBooking && (
+                    <>
+                        <div className="ue-equipment-header">
+                            <div className="ue-equipment-booking-info">
+                                <div className="ue-equipment-booking-id">
+                                    <span className="ue-id-text">{formatBookingId(selectedBooking.booking_no)}</span>
+                                </div>
+                                <div className="ue-equipment-customer-name">{selectedBooking.customer_name}</div>
+                                <div className="ue-equipment-event-type">{getEventTypeName(selectedBooking.event_type_id, eventTypes)}</div>
+                                <div className="ue-equipment-event-date">{selectedBooking.event_date}</div>
+                            </div>
+                        </div>
+
+                        <div className="ue-equipment-actions">
+                            <Space>
+                                <Checkbox
+                                    checked={selectedEquipmentIds.length === equipmentDetailsData.length && equipmentDetailsData.length > 0}
+                                    indeterminate={selectedEquipmentIds.length > 0 && selectedEquipmentIds.length < equipmentDetailsData.length}
+                                    onChange={(e) => handleSelectAllEquipment(e.target.checked)}
+                                >
+                                    Approve Selected ({selectedEquipmentIds.length})
+                                </Checkbox>
+                                <Button
+                                    type="primary"
+                                    size="small"
+                                    onClick={handleApproveSelectedEquipmentFromDetails}
+                                    disabled={selectedEquipmentIds.length === 0}
+                                >
+                                    Approve Selected
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    size="small"
+                                    onClick={handleApproveAllEquipmentFromDetails}
+                                >
+                                    Approve All
+                                </Button>
+                            </Space>
+                        </div>
+
+                        <Table
+                            dataSource={equipmentDetailsData}
+                            rowKey={(record) => record.id}
+                            size="small"
+                            pagination={false}
+                            columns={[
+                                {
+                                    title: '',
+                                    width: 40,
+                                    render: (_, record) => (
+                                        <Checkbox
+                                            checked={selectedEquipmentIds.includes(record.id)}
+                                            onChange={(e) => handleSelectEquipment(record.id, e.target.checked)}
+                                            disabled={record.is_out_approved || ['checked_out', 'returned'].includes(record.status)}
+                                        />
+                                    )
+                                },
+                                {
+                                    title: 'NAME',
+                                    dataIndex: 'equipment_name',
+                                    render: (v, r) => v || r.equipment?.name || 'N/A'
+                                },
+                                {
+                                    title: 'QUANTITY',
+                                    dataIndex: 'quantity_reserved',
+                                    align: 'center',
+                                    render: (v) => safeNumber(v)
+                                },
+                                {
+                                    title: 'DAMAGED',
+                                    dataIndex: 'quantity_damaged',
+                                    align: 'center',
+                                    render: (v) => safeNumber(v)
+                                },
+                                {
+                                    title: 'MISSING',
+                                    dataIndex: 'quantity_missing',
+                                    align: 'center',
+                                    render: (v) => safeNumber(v)
+                                },
+                                {
+                                    title: 'STATUS',
+                                    dataIndex: 'status',
+                                    align: 'center',
+                                    render: (status) => {
+                                        const config = getStatusConfig(status);
+                                        return (
+                                            <span className="ue-status" style={{ color: config.color, background: config.bg }}>
+                                                {config.text}
+                                            </span>
+                                        );
+                                    }
+                                },
+                                {
+                                    title: 'ACTION',
+                                    key: 'action',
+                                    align: 'center',
+                                    render: (_, record) => {
+                                        const isCheckedOut = record.status === 'checked_out';
+                                        const isReturned = record.status === 'returned';
+                                        if (isReturned) {
+                                            return <Tag color="success">Returned</Tag>;
+                                        }
+                                        if (isCheckedOut) {
+                                            return (
+                                                <Button
+                                                    size="small"
+                                                    type="primary"
+                                                    onClick={() => handleReturnEquipmentFromDetails(record)}
+                                                >
+                                                    Check In / Return
+                                                </Button>
+                                            );
+                                        }
+                                        return (
+                                            <Tag color="default">{record.status || 'Pending'}</Tag>
+                                        );
+                                    }
+                                }
+                            ]}
+                        />
+
+                        <div className="ue-equipment-footer">
+                            <div className="ue-equipment-booking-label">
+                                <strong>BOOKING</strong> {formatBookingId(selectedBooking.booking_no)}
+                            </div>
+                            <div className="ue-equipment-date">
+                                {dayjs().format('dddd, MMMM D, YYYY')}
+                            </div>
+                        </div>
+                    </>
+                )}
+            </div>
+        </Modal>
+    );
+
+    const renderViewDetailsModal = () => {
+        if (!viewModalData) return null;
+        const record = viewModalData;
+
+        const mealCount = safeArray(record.meal_services).length;
+        const staffCount = safeArray(record.assigned_staff).length;
+        const balance = safeNumber(record.balance || 0);
+        const paidAmount = safeNumber(record.paid_amount || 0);
+        const totalAmount = safeNumber(record.total_amount || 0);
+        const paidPct = totalAmount > 0 ? Math.min(100, (paidAmount / totalAmount) * 100) : 0;
+        const paidPctRounded = Math.round(paidPct);
+
+        const prettyMealType = (value) => {
+            const text = safeString(value, 'Meal').replace(/_/g, ' ').trim();
+            return text.replace(/\b\w/g, (c) => c.toUpperCase());
+        };
+
+        const mealTagClass = (value) => {
+            const key = safeString(value).toLowerCase().replace(/\s+/g, '-');
+            if (key.includes('breakfast')) return 'breakfast';
+            if (key.includes('lunch')) return 'lunch';
+            if (key.includes('dinner')) return 'dinner';
+            if (key.includes('snack')) return 'snacks';
+            return 'default';
+        };
+
+        const statusCfg = getStatusConfig(getBookingDisplayStatus(record));
+        const payProgressClass = paidPct >= 100 ? '' : paidPct > 0 ? 'partial' : 'zero';
+
+        return (
+            <Modal
+                title={null}
+                icon={null}
+                open={viewModalVisible}
+                onCancel={() => setViewModalVisible(false)}
+                width={1040}
+                className="ue-vd-modal"
+                footer={null}
+                maskClosable={false}
+                centered
+                closeIcon={null}
+                destroyOnHidden={true}
+            >
+                <div className="ue-vd-hero">
+                    <button
+                        type="button"
+                        className="ue-vd-hero-close"
+                        onClick={() => setViewModalVisible(false)}
+                        aria-label="Close"
+                    >
+                        <CloseCircleOutlined style={{ fontSize: 16 }} />
+                    </button>
+
+                    <div className="ue-vd-hero-top">
+                        <div className="ue-vd-hero-icon">
+                            <EyeOutlined />
+                        </div>
+                        <div className="ue-vd-hero-text">
+                            <div className="ue-vd-hero-eyebrow">
+                                <span className="ue-vd-hero-booking-code">
+                                    {formatBookingId(record.booking_no)}
+                                </span>
+                                <span>Booking Details</span>
+                            </div>
+                            <div className="ue-vd-hero-name">
+                                {record.customer_name || 'Unknown Customer'}
+                            </div>
+                            <div className="ue-vd-hero-meta">
+                                <span>{getEventTypeName(record.event_type_id, eventTypes) || 'Event'}</span>
+                                <span className="ue-vd-meta-dot" />
+                                <span>{record.event_date || 'Date TBD'}</span>
+                                <span className="ue-vd-meta-dot" />
+                                <span>{record.event_time || 'Time TBD'}</span>
+                                <span className="ue-vd-meta-dot" />
+                                <span>{safeNumber(record.guests_count)} PAX</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="ue-vd-hero-chips">
+                        <div className="ue-vd-chip">
+                            <div className="ue-vd-chip-icon blue">
+                                <WalletOutlined />
+                            </div>
+                            <div className="ue-vd-chip-content">
+                                <span className="ue-vd-chip-label">Total</span>
+                                <span className="ue-vd-chip-value">
+                                    {formatCurrency(totalAmount)}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="ue-vd-chip">
+                            <div className="ue-vd-chip-icon green">
+                                <CheckCircleOutlined />
+                            </div>
+                            <div className="ue-vd-chip-content">
+                                <span className="ue-vd-chip-label">Paid</span>
+                                <span className={`ue-vd-chip-value ${paidAmount > 0 ? 'positive' : ''}`}>
+                                    {formatCurrency(paidAmount)}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="ue-vd-chip">
+                            <div className={`ue-vd-chip-icon ${balance > 0 ? 'red' : 'green'}`}>
+                                <DollarOutlined />
+                            </div>
+                            <div className="ue-vd-chip-content">
+                                <span className="ue-vd-chip-label">Balance</span>
+                                <span className={`ue-vd-chip-value ${balance > 0 ? 'negative' : 'positive'}`}>
+                                    {formatCurrency(balance)}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="ue-vd-chip">
+                            <div className="ue-vd-chip-icon purple">
+                                <ForkOutlined />
+                            </div>
+                            <div className="ue-vd-chip-content">
+                                <span className="ue-vd-chip-label">Meals</span>
+                                <span className="ue-vd-chip-value">
+                                    {mealCount} {mealCount === 1 ? 'meal' : 'meals'}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="ue-vd-body">
+                    <div className="ue-vd-col">
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <UserOutlined /> Customer
+                            </div>
+                            <div className="ue-vd-contact-row">
+                                <MailOutlined />
+                                <span>{record.customer_email || 'No email on file'}</span>
+                            </div>
+                            <div className="ue-vd-contact-row">
+                                <PhoneOutlined />
+                                <span>{record.customer_phone || 'No phone on file'}</span>
+                            </div>
+                            <div className="ue-vd-contact-row">
+                                <HomeOutlined />
+                                <span>{record.customer_address || 'No address on file'}</span>
+                            </div>
+                        </div>
+
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <CalendarOutlined /> Event
+                            </div>
+                            <div className="ue-vd-event-grid">
+                                <div className="ue-vd-field">
+                                    <span className="ue-vd-field-label">Type</span>
+                                    <span className="ue-vd-field-value">
+                                        <Tag color="blue">
+                                            {getEventTypeName(record.event_type_id, eventTypes) || 'N/A'}
+                                        </Tag>
+                                    </span>
+                                </div>
+                                <div className="ue-vd-field">
+                                    <span className="ue-vd-field-label">Status</span>
+                                    <span className="ue-vd-field-value">
+                                        <span
+                                            className="ue-status"
+                                            style={{ color: statusCfg.color, background: statusCfg.bg }}
+                                        >
+                                            {statusCfg.icon} {statusCfg.text}
+                                        </span>
+                                    </span>
+                                </div>
+                                <div className="ue-vd-field" style={{ gridColumn: '1 / -1' }}>
+                                    <span className="ue-vd-field-label">Venue</span>
+                                    <span className="ue-vd-field-value">
+                                        {record.venue || 'N/A'}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <ForkOutlined /> Orders
+                                <span className="ue-vd-block-title-tag">
+                                    {mealCount} {mealCount === 1 ? 'meal' : 'meals'}
+                                </span>
+                            </div>
+
+                            {mealCount === 0 ? (
+                                <div className="ue-vd-empty">No meals on this booking yet.</div>
+                            ) : (
+                                <>
+                                    <div className="ue-vd-orders-list">
+                                        {safeArray(record.meal_services).slice(0, 5).map((meal, idx) => (
+                                            <div key={idx} className="ue-vd-order-row">
+                                                <span className={`ue-vd-order-meal-tag ${mealTagClass(meal.meal_type)}`}>
+                                                    {prettyMealType(meal.meal_type)}
+                                                </span>
+                                                <span className="ue-vd-order-name">
+                                                    {meal.menu_name || meal.menuItem?.name || meal.name || 'Menu item'}
+                                                </span>
+                                                <span className="ue-vd-order-pax">
+                                                    {safeNumber(meal.pax || record.guests_count)} PAX
+                                                </span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {mealCount > 5 && (
+                                        <div className="ue-vd-orders-more">
+                                            + {mealCount - 5} more meal{mealCount - 5 === 1 ? '' : 's'}
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="ue-vd-col">
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <WalletOutlined /> Payment
+                            </div>
+
+                            <div className="ue-vd-pay-progress">
+                                <div className="ue-vd-pay-progress-head">
+                                    <span>Paid</span>
+                                    <strong>{paidPctRounded}%</strong>
+                                </div>
+                                <div className="ue-vd-pay-progress-bar">
+                                    <div
+                                        className={`ue-vd-pay-progress-fill ${payProgressClass}`}
+                                        style={{ width: `${paidPct}%` }}
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="ue-vd-pay-rows">
+                                <div className="ue-vd-pay-row">
+                                    <span className="ue-vd-pay-row-label">
+                                        <WalletOutlined /> Total Amount
+                                    </span>
+                                    <span className="ue-vd-pay-row-value">
+                                        {formatCurrency(totalAmount)}
+                                    </span>
+                                </div>
+                                <div className="ue-vd-pay-row">
+                                    <span className="ue-vd-pay-row-label">
+                                        <CheckCircleOutlined /> Amount Paid
+                                    </span>
+                                    <span className={`ue-vd-pay-row-value ${paidAmount > 0 ? 'positive' : ''}`}>
+                                        {formatCurrency(paidAmount)}
+                                    </span>
+                                </div>
+                                <div className="ue-vd-pay-row">
+                                    <span className="ue-vd-pay-row-label">
+                                        <DollarOutlined /> Outstanding
+                                    </span>
+                                    <span className={`ue-vd-pay-row-value ${balance > 0 ? 'negative' : 'positive'}`}>
+                                        {formatCurrency(balance)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <AppstoreOutlined /> Quick Actions
+                            </div>
+                            <div className="ue-vd-actions">
+                                <div className="ue-vd-action-group">
+                                    <div className="ue-vd-action-group-label">Operations</div>
+                                    <div className="ue-vd-action-grid">
+                                        <Button className="ue-vd-action-btn" icon={<StockOutlined />} onClick={() => handleCalculateIngredients(record)}>
+                                            Ingredients
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<CoffeeOutlined />} onClick={() => handleViewKitchenPrep(record)}>
+                                            Kitchen
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<TruckOutlined />} onClick={() => handleViewDeliveryPrep(record)}>
+                                            Delivery
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<CarOutlined />} onClick={() => handleViewDeliveryTracking(record)}>
+                                            Tracking
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<TeamOutlined />} onClick={() => handleStaffAssignment(record)}>
+                                            Staff
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<CheckSquareOutlined />} onClick={() => handleViewChecklist(record)}>
+                                            Checklist
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<PlusCircleOutlined />} onClick={() => handleViewEquipmentDetails(record)}>
+                                            Equipment
+                                        </Button>
+                                        <Button
+                                            className="ue-vd-action-btn"
+                                            icon={<RiseOutlined style={{ color: '#2563eb' }} />}
+                                            onClick={() => {
+                                                setViewModalVisible(false);
+                                                handleViewProfitability(record);
+                                            }}
+                                        >
+                                            Profitability
+                                        </Button>
+                                    </div>
+                                </div>
+
+                                <div className="ue-vd-action-group">
+                                    <div className="ue-vd-action-group-label">Lifecycle</div>
+                                    <div className="ue-vd-action-grid">
+                                        <Button className="ue-vd-action-btn" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
+                                            Edit
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<PlayCircleOutlined />} onClick={() => handleStartEvent(record)}>
+                                            Start
+                                        </Button>
+                                        <Button className="ue-vd-action-btn danger" danger icon={<FlagOutlined />} onClick={() => handleCompleteEvent(record)}>
+                                            Complete
+                                        </Button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="ue-vd-block">
+                            <div className="ue-vd-block-title">
+                                <TeamOutlined /> Staff
+                                <span className="ue-vd-block-title-tag">
+                                    {staffCount}
+                                </span>
+                            </div>
+                            {staffCount === 0 ? (
+                                <div className="ue-vd-empty">No staff assigned yet.</div>
+                            ) : (
+                                <div className="ue-vd-staff-tags">
+                                    {safeArray(record.assigned_staff).slice(0, 6).map((staff, idx) => {
+                                        const status = safeString(staff.status, 'pending').toLowerCase();
+                                        return (
+                                            <span
+                                                key={idx}
+                                                className={`ue-vd-staff-tag ${status === 'confirmed' ? 'confirmed' : 'pending'}`}
+                                            >
+                                                {staff.name || staff.full_name || 'Staff'}
+                                                {staff.role && (
+                                                    <span className="ue-vd-staff-role">· {staff.role}</span>
+                                                )}
+                                            </span>
+                                        );
+                                    })}
+                                    {staffCount > 6 && (
+                                        <span className="ue-vd-staff-tag">+{staffCount - 6} more</span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                <div className="ue-vd-footer">
+                    <Button onClick={() => setViewModalVisible(false)}>Close</Button>
+                </div>
+            </Modal>
+        );
+    };
+
     // MAIN RENDER
-    // ========================================================
     const containerClass = `ue-container ${isDarkMode ? 'ue-dark-mode' : ''}`;
     const tableClass = `ue-table ${isDarkMode ? 'ue-table-dark' : ''}`;
 
@@ -5388,7 +6226,6 @@ const UnifiedOrderEventsManagement = () => {
         >
             <App>
                 <div className={containerClass}>
-                    {/* HEADER */}
                     <div className="ue-header">
                         <div className="ue-header-left">
                             <div className="ue-logo-icon"><MdEventNote /></div>
@@ -5409,15 +6246,12 @@ const UnifiedOrderEventsManagement = () => {
                         </div>
                     </div>
 
-                    {/* STATS */}
                     {renderStats()}
 
-                    {/* MAIN CONTENT */}
                     <Card className="ue-main-card" variant="borderless">
                         <Tabs activeKey={activeTab} onChange={setActiveTab} className="ue-tabs" destroyOnHidden={true} items={tabItems} />
                     </Card>
 
-                    {/* ALL MODALS */}
                     {renderViewDetailsModal()}
                     {renderLiveStatusModal()}
                     {renderKitchenModal()}
@@ -5434,6 +6268,12 @@ const UnifiedOrderEventsManagement = () => {
                     {renderEquipmentCheckoutModal()}
                     {renderEquipmentReturnModal()}
                     {renderEquipmentDetailsModal()}
+
+                    <ProfitabilityModal
+                        visible={profitabilityModalVisible}
+                        onClose={handleCloseProfitability}
+                        bookingId={profitabilityBookingId}
+                    />
                 </div>
             </App>
         </ConfigProvider>

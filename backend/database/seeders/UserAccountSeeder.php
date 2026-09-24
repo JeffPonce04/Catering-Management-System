@@ -14,6 +14,16 @@ class UserAccountSeeder extends Seeder
 {
     public function run(): void
     {
+        // Create super admin role if it doesn't exist
+        $superAdminRole = Role::updateOrCreate(
+            ['slug' => 'super-admin'],
+            [
+                'name' => 'Super Administrator',
+                'description' => 'Super administrator with unrestricted access',
+                'is_active' => true,
+            ]
+        );
+
         // Create admin role if it doesn't exist
         $adminRole = Role::updateOrCreate(
             ['slug' => 'admin'],
@@ -41,6 +51,33 @@ class UserAccountSeeder extends Seeder
                 'is_active' => true,
             ]
         );
+
+        // Super Admin User
+        $superAdminPerson = Person::updateOrCreate(
+            ['email' => 'superadmin@catering.com'],
+            [
+                'first_name' => 'Super',
+                'last_name' => 'Admin',
+                'phone' => '0917-000-0000',
+                'address_line_1' => '1 Super Admin Street',
+                'city' => 'Quezon City',
+                'province' => 'Metro Manila',
+                'postal_code' => '1101',
+                'country' => 'Philippines',
+            ]
+        );
+
+        $superAdminUser = User::updateOrCreate(
+            ['username' => 'superadmin'],
+            [
+                'person_id' => $superAdminPerson->person_id,
+                'password' => Hash::make('superadmin123'),
+                'is_active' => true,
+                'email_verified_at' => now(),
+                'last_login_at' => now(),
+            ]
+        );
+        $superAdminUser->roles()->syncWithoutDetaching([$superAdminRole->role_id]);
 
         // Admin User
         $adminPerson = Person::updateOrCreate(

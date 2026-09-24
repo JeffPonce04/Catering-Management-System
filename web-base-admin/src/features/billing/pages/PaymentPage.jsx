@@ -1,5 +1,5 @@
 // src/features/billing/pages/BillingInvoicing.jsx
-// COMPLETE ENHANCED VERSION - All modals improved
+// COMPLETE ENHANCED VERSION - With Refund Management in Invoice/Inventory
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
@@ -34,6 +34,7 @@ import {
     Image,
     Avatar,
     Progress,
+    Checkbox,
 } from 'antd';
 import {
     DollarOutlined,
@@ -46,8 +47,6 @@ import {
     DeleteOutlined,
     ReloadOutlined,
     UserOutlined,
-    
-    
     MoreOutlined,
     PrinterOutlined,
     ExportOutlined,
@@ -74,6 +73,11 @@ import {
     FileSearchOutlined,
     UnorderedListOutlined,
     FileImageOutlined,
+    RollbackOutlined,
+    AuditOutlined,
+    HistoryOutlined,
+    SwapOutlined,
+    InfoCircleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
@@ -232,12 +236,53 @@ const downloadHtmlAsPdf = async (html, filename) => {
 };
 
 // ============================================================
+// REFUND STATUS CONFIG
+// ============================================================
+const getRefundStatusConfig = (status) => {
+    const config = {
+        pending: {
+            color: '#faad14',
+            text: 'Pending',
+            bg: 'rgba(250, 173, 20, 0.1)',
+            icon: <ClockCircleOutlined />,
+        },
+        approved: {
+            color: '#1890ff',
+            text: 'Approved',
+            bg: 'rgba(24, 144, 255, 0.1)',
+            icon: <CheckCircleOutlined />,
+        },
+        released: {
+            color: '#52c41a',
+            text: 'Released',
+            bg: 'rgba(82, 196, 26, 0.1)',
+            icon: <CheckCircleOutlined />,
+        },
+        rejected: {
+            color: '#ff4d4f',
+            text: 'Rejected',
+            bg: 'rgba(255, 77, 79, 0.1)',
+            icon: <CloseCircleOutlined />,
+        },
+        cancelled: {
+            color: '#8c8c8c',
+            text: 'Cancelled',
+            bg: 'rgba(140, 140, 140, 0.1)',
+            icon: <CloseCircleOutlined />,
+        },
+    };
+    return config[status] || config.pending;
+};
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 const BillingInvoicing = () => {
     const location = useLocation();
     const { user } = useAuth();
     const canApproveFinancialAdjustments = hasAllowedRole(user, ADMIN_ROLES);
+    const canProcessRefunds = hasAllowedRole(user, ADMIN_ROLES);
+    const isCashier = hasAllowedRole(user, ['cashier', 'finance', 'finance-staff', 'finance_staff']);
 
     // ==================== STATE MANAGEMENT ====================
     const [invoices, setInvoices] = useState([]);
@@ -258,21 +303,44 @@ const BillingInvoicing = () => {
     const [paymentHistoryDateRange, setPaymentHistoryDateRange] = useState([]);
     const [activeMainTab, setActiveMainTab] = useState('invoices');
 
+    // Refund state
+    const [refunds, setRefunds] = useState([]);
+    const [refundStatistics, setRefundStatistics] = useState({
+        total_refunds: 0,
+        pending: 0,
+        approved: 0,
+        released: 0,
+        rejected: 0,
+        total_released_amount: 0,
+        total_pending_amount: 0,
+    });
+    const [pendingRefunds, setPendingRefunds] = useState([]);
+    const [approvedRefunds, setApprovedRefunds] = useState([]);
+    const [refundHistorySearch, setRefundHistorySearch] = useState('');
+    const [refundHistoryStatus, setRefundHistoryStatus] = useState('all');
+    const [refundHistoryDateRange, setRefundHistoryDateRange] = useState([]);
+
     useEffect(() => {
         const requestedView = new URLSearchParams(location.search).get('view');
         const viewMap = { receipts: 'payment_history' };
         const resolvedView = viewMap[requestedView] || requestedView;
-        if (['invoices', 'payments', 'payment_history', 'mobile', 'debts', 'pdf_overview'].includes(resolvedView)) {
+        if (['invoices', 'payments', 'payment_history', 'mobile', 'debts', 'pdf_overview', 'refunds'].includes(resolvedView)) {
+            // Cashiers must never land on the refunds tab
+            if (resolvedView === 'refunds' && !canProcessRefunds) {
+                setActiveMainTab('invoices');
+                return;
+            }
             setActiveMainTab(resolvedView);
         }
-    }, [location.search]);
+    }, [location.search, canProcessRefunds]);
+
     const [isDarkMode, setIsDarkMode] = useState(() => {
         const savedTheme = localStorage.getItem('theme');
         if (savedTheme === 'dark') return true;
         if (savedTheme === 'light') return false;
         return document.body.classList.contains('dark-mode');
     });
-    
+
     // Modal states
     const [invoiceModalVisible, setInvoiceModalVisible] = useState(false);
     const [invoiceDetailsModalVisible, setInvoiceDetailsModalVisible] = useState(false);
@@ -288,18 +356,32 @@ const BillingInvoicing = () => {
     const [rejectReason, setRejectReason] = useState('');
     const [paymentMethod, setPaymentMethod] = useState('cash');
     const [createInvoiceBookingId, setCreateInvoiceBookingId] = useState(null);
-    
+
+    // Refund modal states
+    const [refundModalVisible, setRefundModalVisible] = useState(false);
+    const [refundApprovalModalVisible, setRefundApprovalModalVisible] = useState(false);
+    const [refundReleaseModalVisible, setRefundReleaseModalVisible] = useState(false);
+    const [refundRejectModalVisible, setRefundRejectModalVisible] = useState(false);
+    const [refundDetailsModalVisible, setRefundDetailsModalVisible] = useState(false);
+    const [refundDirectModalVisible, setRefundDirectModalVisible] = useState(false);
+    const [selectedRefund, setSelectedRefund] = useState(null);
+    const [refundForm] = Form.useForm();
+    const [refundApprovalForm] = Form.useForm();
+    const [refundReleaseForm] = Form.useForm();
+    const [refundRejectForm] = Form.useForm();
+    const [refundDirectForm] = Form.useForm();
+
     // Receipt Preview Modal
     const [receiptPreviewVisible, setReceiptPreviewVisible] = useState(false);
     const [receiptPreviewHtml, setReceiptPreviewHtml] = useState('');
     const [receiptPreviewZoom, setReceiptPreviewZoom] = useState(100);
-    
+
     // PDF Viewer Modal
     const [pdfViewerVisible, setPdfViewerVisible] = useState(false);
     const [pdfViewerHtml, setPdfViewerHtml] = useState('');
     const [pdfViewerBooking, setPdfViewerBooking] = useState(null);
     const [pdfViewerZoom, setPdfViewerZoom] = useState(100);
-    
+
     // PDF Overview Tab
     const [pdfOverviewSearch, setPdfOverviewSearch] = useState('');
     const [pdfOverviewBooking, setPdfOverviewBooking] = useState(null);
@@ -307,7 +389,7 @@ const BillingInvoicing = () => {
     const [pdfOverviewZoom, setPdfOverviewZoom] = useState(100);
     const [pdfOverviewLoading, setPdfOverviewLoading] = useState(false);
     const [pdfOverviewAllBookings, setPdfOverviewAllBookings] = useState([]);
-    
+
     // Forms
     const [invoiceForm] = Form.useForm();
     const [paymentForm] = Form.useForm();
@@ -332,33 +414,33 @@ const BillingInvoicing = () => {
     // ==================== THEME DETECTION ====================
     useEffect(() => {
         isMounted.current = true;
-        
+
         const updateTheme = () => {
             if (isMounted.current) {
                 const isDark = document.body.classList.contains('dark-mode');
                 setIsDarkMode(isDark);
             }
         };
-        
+
         const observer = new MutationObserver(updateTheme);
         observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-        
+
         const handleThemeChange = (e) => {
             if (isMounted.current) {
                 setIsDarkMode(e.detail.isDark);
             }
         };
-        
+
         const handleStorageChange = (e) => {
             if (e.key === 'theme' && isMounted.current) {
                 const isDark = e.newValue === 'dark';
                 setIsDarkMode(isDark);
             }
         };
-        
+
         window.addEventListener('themeChange', handleThemeChange);
         window.addEventListener('storage', handleStorageChange);
-        
+
         return () => {
             isMounted.current = false;
             observer.disconnect();
@@ -419,6 +501,34 @@ const BillingInvoicing = () => {
         queryFn: async () => extractObjectFromResponse(await api.get('/settings/business')),
     });
 
+    // ==================== REFUND QUERIES (ADMIN ONLY) ====================
+    // ⚠️ Enabled ONLY for admin / super-admin. Cashiers must never fire these
+    //    calls — the backend blocks them at RoleAccessMiddleware anyway, but
+    //    avoiding the request prevents 403 noise in the console.
+    const refundsQuery = useQuery({
+        queryKey: ['billing', 'refunds'],
+        queryFn: async () => extractDataFromResponse(await api.get('/refunds', { params: { per_page: 1000 } })),
+        enabled: canProcessRefunds,
+    });
+
+    const refundStatisticsQuery = useQuery({
+        queryKey: ['billing', 'refunds', 'statistics'],
+        queryFn: async () => extractObjectFromResponse(await api.get('/refunds/statistics')),
+        enabled: canProcessRefunds,
+    });
+
+    const pendingRefundsQuery = useQuery({
+        queryKey: ['billing', 'refunds', 'pending'],
+        queryFn: async () => extractDataFromResponse(await api.get('/refunds/pending')),
+        enabled: canProcessRefunds,
+    });
+
+    const approvedRefundsQuery = useQuery({
+        queryKey: ['billing', 'refunds', 'approved'],
+        queryFn: async () => extractDataFromResponse(await api.get('/refunds/approved')),
+        enabled: canProcessRefunds,
+    });
+
     const businessSettings = useMemo(() => {
         const settings = settingsQuery.data || {};
         return settings.business || settings.company || settings.general || settings || {};
@@ -433,6 +543,7 @@ const BillingInvoicing = () => {
         confirmedBookingsQuery,
         pdfBookingsQuery,
         settingsQuery,
+        refundsQuery,
     ].some(query => query.isLoading || query.isFetching);
 
     useEffect(() => {
@@ -502,6 +613,33 @@ const BillingInvoicing = () => {
         setPdfOverviewAllBookings(pdfBookingsQuery.data || []);
     }, [pdfBookingsQuery.data]);
 
+    // Refund data effects
+    useEffect(() => {
+        setRefunds(refundsQuery.data || []);
+    }, [refundsQuery.data]);
+
+    useEffect(() => {
+        if (refundStatisticsQuery.data) {
+            setRefundStatistics({
+                total_refunds: refundStatisticsQuery.data.total_refunds || 0,
+                pending: refundStatisticsQuery.data.pending || 0,
+                approved: refundStatisticsQuery.data.approved || 0,
+                released: refundStatisticsQuery.data.released || 0,
+                rejected: refundStatisticsQuery.data.rejected || 0,
+                total_released_amount: refundStatisticsQuery.data.total_released_amount || 0,
+                total_pending_amount: refundStatisticsQuery.data.total_pending_amount || 0,
+            });
+        }
+    }, [refundStatisticsQuery.data]);
+
+    useEffect(() => {
+        setPendingRefunds(pendingRefundsQuery.data || []);
+    }, [pendingRefundsQuery.data]);
+
+    useEffect(() => {
+        setApprovedRefunds(approvedRefundsQuery.data || []);
+    }, [approvedRefundsQuery.data]);
+
     const loadInvoices = useCallback(async () => {
         await Promise.all([
             invoicesQuery.refetch(),
@@ -512,8 +650,9 @@ const BillingInvoicing = () => {
             confirmedBookingsQuery.refetch(),
             pdfBookingsQuery.refetch(),
             settingsQuery.refetch(),
+            ...(canProcessRefunds ? [refundsQuery.refetch(), refundStatisticsQuery.refetch()] : []),
         ]);
-    }, [invoicesQuery, paymentTrackingQuery, paymentHistoryQuery, mobilePaymentsQuery, debtsQuery, confirmedBookingsQuery, pdfBookingsQuery, settingsQuery]);
+    }, [invoicesQuery, paymentTrackingQuery, paymentHistoryQuery, mobilePaymentsQuery, debtsQuery, confirmedBookingsQuery, pdfBookingsQuery, settingsQuery, refundsQuery, refundStatisticsQuery, canProcessRefunds]);
 
     const loadPayments = useCallback(async () => {
         await Promise.all([paymentTrackingQuery.refetch(), paymentHistoryQuery.refetch()]);
@@ -524,6 +663,16 @@ const BillingInvoicing = () => {
     const loadConfirmedBookings = useCallback(() => confirmedBookingsQuery.refetch(), [confirmedBookingsQuery]);
     const loadAllBookingsForPDF = useCallback(() => pdfBookingsQuery.refetch(), [pdfBookingsQuery]);
 
+    const loadRefunds = useCallback(async () => {
+        if (!canProcessRefunds) return;
+        await Promise.all([
+            refundsQuery.refetch(),
+            refundStatisticsQuery.refetch(),
+            pendingRefundsQuery.refetch(),
+            approvedRefundsQuery.refetch(),
+        ]);
+    }, [refundsQuery, refundStatisticsQuery, pendingRefundsQuery, approvedRefundsQuery, canProcessRefunds]);
+
     const invoiceSaveMutation = useMutation({
         mutationFn: ({ invoiceId, payload }) => invoiceId
             ? api.put(`/invoices/${invoiceId}`, payload)
@@ -532,6 +681,27 @@ const BillingInvoicing = () => {
 
     const paymentSaveMutation = useMutation({
         mutationFn: (payload) => api.post('/payments', payload),
+    });
+
+      const refundRequestMutation = useMutation({
+        mutationFn: (payload) => api.post('/refunds', payload),
+    });
+
+    // ⭐ Admin Direct Refund — bypasses the request → approve → release flow.
+    //    Admin processes and releases the refund in a single call.
+    const refundDirectMutation = useMutation({
+        mutationFn: (payload) => api.post('/refunds/admin-direct', payload),
+    });
+    const refundApproveMutation = useMutation({
+        mutationFn: ({ refundId, payload }) => api.post(`/refunds/${refundId}/approve`, payload),
+    });
+
+    const refundReleaseMutation = useMutation({
+        mutationFn: ({ refundId, payload }) => api.post(`/refunds/${refundId}/release`, payload),
+    });
+
+    const refundRejectMutation = useMutation({
+        mutationFn: ({ refundId, payload }) => api.post(`/refunds/${refundId}/reject`, payload),
     });
 
     const invalidateInvoiceData = useCallback(() => {
@@ -547,6 +717,244 @@ const BillingInvoicing = () => {
         queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'] });
     }, [queryClient]);
 
+    const invalidateRefundData = useCallback(() => {
+        queryClient.invalidateQueries({ queryKey: ['billing', 'refunds'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'] });
+    }, [queryClient]);
+
+    // ==================== REFUND FUNCTIONS ====================
+    const openRefundRequestModal = (invoice) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to process refunds.');
+            return;
+        }
+        if (!invoice) {
+            message.error('No invoice selected');
+            return;
+        }
+        setSelectedInvoice(invoice);
+        refundForm.resetFields();
+        setRefundModalVisible(true);
+    };
+
+    const openRefundApprovalModal = (refund) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to approve refunds.');
+            return;
+        }
+        if (!refund) {
+            message.error('No refund selected');
+            return;
+        }
+        setSelectedRefund(refund);
+        refundApprovalForm.setFieldsValue({
+            approved_amount: refund.deposit_snapshot || refund.amount || 0,
+            admin_notes: '',
+        });
+        setRefundApprovalModalVisible(true);
+    };
+
+    const openRefundReleaseModal = (refund) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to release refunds.');
+            return;
+        }
+        if (!refund) {
+            message.error('No refund selected');
+            return;
+        }
+        setSelectedRefund(refund);
+        refundReleaseForm.setFieldsValue({
+            released_amount: refund.approved_amount || refund.amount || 0,
+            payment_method: 'cash',
+            reference_number: '',
+            notes: '',
+        });
+        setRefundReleaseModalVisible(true);
+    };
+
+    const openRefundRejectModal = (refund) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to reject refunds.');
+            return;
+        }
+        if (!refund) {
+            message.error('No refund selected');
+            return;
+        }
+        setSelectedRefund(refund);
+        refundRejectForm.resetFields();
+        setRefundRejectModalVisible(true);
+    };
+
+    const openRefundDetailsModal = (refund) => {
+        if (!refund) return;
+        setSelectedRefund(refund);
+        setRefundDetailsModalVisible(true);
+    };
+
+    const handleSubmitRefundRequest = async (values) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to submit refund requests.');
+            return;
+        }
+        try {
+            await refundRequestMutation.mutateAsync({
+                invoice_id: selectedInvoice?.invoice_id,
+                booking_id: selectedInvoice?.booking_id,
+                reason: values.reason,
+            });
+            message.success('Refund request submitted successfully.');
+            setRefundModalVisible(false);
+            refundForm.resetFields();
+            setSelectedInvoice(null);
+            invalidateRefundData();
+        } catch (error) {
+            console.error('Refund request error:', error);
+            message.error(error.response?.data?.message || 'Failed to submit refund request');
+        }
+    };
+
+    const handleApproveRefund = async (values) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to approve refunds.');
+            return;
+        }
+        try {
+            await refundApproveMutation.mutateAsync({
+                refundId: selectedRefund.refund_id,
+                payload: {
+                    approved_amount: Number(values.approved_amount || 0),
+                    admin_notes: values.admin_notes || '',
+                },
+            });
+            message.success('Refund approved successfully.');
+            setRefundApprovalModalVisible(false);
+            refundApprovalForm.resetFields();
+            setSelectedRefund(null);
+            invalidateRefundData();
+        } catch (error) {
+            console.error('Refund approval error:', error);
+            message.error(error.response?.data?.message || 'Failed to approve refund');
+        }
+    };
+
+    const handleReleaseRefund = async (values) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to release refunds.');
+            return;
+        }
+        try {
+            await refundReleaseMutation.mutateAsync({
+                refundId: selectedRefund.refund_id,
+                payload: {
+                    released_amount: Number(values.released_amount || 0),
+                    payment_method: values.payment_method || 'cash',
+                    reference_number: values.reference_number || null,
+                    notes: values.notes || '',
+                    cancel_booking: true,
+                },
+            });
+            message.success(`Refund of ₱${Number(values.released_amount).toLocaleString()} released successfully.`);
+            setRefundReleaseModalVisible(false);
+            refundReleaseForm.resetFields();
+            setSelectedRefund(null);
+            invalidateRefundData();
+        } catch (error) {
+            console.error('Refund release error:', error);
+            message.error(error.response?.data?.message || 'Failed to release refund');
+        }
+    };
+    const handleRejectRefund = async (values) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to reject refunds.');
+            return;
+        }
+        try {
+            await refundRejectMutation.mutateAsync({
+                refundId: selectedRefund.refund_id,
+                payload: {
+                    reason: values.reason,
+                },
+            });
+            message.success('Refund request rejected.');
+            setRefundRejectModalVisible(false);
+            refundRejectForm.resetFields();
+            setSelectedRefund(null);
+            invalidateRefundData();
+        } catch (error) {
+            console.error('Refund rejection error:', error);
+            message.error(error.response?.data?.message || 'Failed to reject refund');
+        }
+    };
+
+    // ⭐ ADMIN DIRECT REFUND — no request, no approval chain.
+    //    Admin enters the amount + method, and the refund is released immediately.
+    const openRefundDirectModal = (invoice) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to process direct refunds.');
+            return;
+        }
+        if (!invoice) {
+            message.error('No invoice selected');
+            return;
+        }
+        setSelectedInvoice(invoice);
+        refundDirectForm.resetFields();
+        refundDirectForm.setFieldsValue({
+            refund_amount: Number(invoice.paid_amount || invoice.balance || 0),
+            payment_method: 'cash',
+            reference_number: '',
+            reason: '',
+            notes: '',
+            cancel_booking: true,
+        });
+        setRefundDirectModalVisible(true);
+    };
+
+    const handleDirectRefund = async (values) => {
+        if (!canProcessRefunds) {
+            message.error('You do not have permission to process direct refunds.');
+            return;
+        }
+        if (!selectedInvoice) {
+            message.error('No invoice selected');
+            return;
+        }
+        const refundAmount = Number(values.refund_amount || 0);
+        if (refundAmount < 0) {
+            message.error('Refund amount cannot be negative.');
+            return;
+        }
+
+        try {
+            await refundDirectMutation.mutateAsync({
+                invoice_id: selectedInvoice.invoice_id,
+                booking_id: selectedInvoice.booking_id,
+                amount: refundAmount,
+                payment_method: values.payment_method || 'cash',
+                reference_number: values.reference_number || null,
+                reason: values.reason || 'Admin direct refund',
+                notes: values.notes || '',
+                cancel_booking: values.cancel_booking !== false,
+            });
+            message.success(
+                refundAmount > 0
+                    ? `Refund of ₱${refundAmount.toLocaleString()} processed successfully.`
+                    : 'Booking cancelled without refund.'
+            );
+            setRefundDirectModalVisible(false);
+            refundDirectForm.resetFields();
+            setSelectedInvoice(null);
+            invalidateRefundData();
+        } catch (error) {
+            console.error('Direct refund error:', error);
+            message.error(error.response?.data?.message || 'Failed to process direct refund');
+        }
+    };
     // ==================== INVOICE FUNCTIONS ====================
     const handleViewInvoice = (record) => {
         setSelectedInvoice(record);
@@ -614,16 +1022,16 @@ const BillingInvoicing = () => {
         try {
             let totalAmount = values.subtotal;
             let discountAmount = values.discount || 0;
-            
+
             if (values.discount_type === 'percentage') {
                 discountAmount = values.subtotal * (values.discount / 100);
                 totalAmount = values.subtotal - discountAmount;
             } else {
                 totalAmount = values.subtotal - (values.discount || 0);
             }
-            
+
             totalAmount = totalAmount + (values.additional_charges || 0);
-            
+
             const invoiceData = canApproveFinancialAdjustments
                 ? {
                     booking_id: values.booking_id,
@@ -640,14 +1048,14 @@ const BillingInvoicing = () => {
                     due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null,
                     notes: values.notes
                 };
-            
+
             await invoiceSaveMutation.mutateAsync({
                 invoiceId: editingInvoice?.invoice_id,
                 payload: invoiceData,
             });
 
             message.success(editingInvoice ? 'Invoice updated successfully' : 'Invoice created successfully');
-            
+
             setInvoiceModalVisible(false);
             invoiceForm.resetFields();
             setEditingInvoice(null);
@@ -680,22 +1088,22 @@ const BillingInvoicing = () => {
         try {
             let totalAmount = selectedInvoice.subtotal;
             let discountAmount = values.discount_value;
-            
+
             if (values.discount_type === 'percentage') {
                 discountAmount = selectedInvoice.subtotal * (values.discount_value / 100);
                 totalAmount = selectedInvoice.subtotal - discountAmount;
             } else {
                 totalAmount = selectedInvoice.subtotal - values.discount_value;
             }
-            
+
             totalAmount = totalAmount + (selectedInvoice.additional_charges || 0);
-            
+
             await api.put(`/invoices/${selectedInvoice.invoice_id}`, {
                 discount: values.discount_value,
                 discount_type: values.discount_type,
                 total_amount: totalAmount
             });
-            
+
             message.success('Discount applied successfully');
             setDiscountModalVisible(false);
             discountForm.resetFields();
@@ -905,7 +1313,7 @@ const BillingInvoicing = () => {
         const currentDate = dayjs().format('MMMM DD, YYYY h:mm A');
 
         const groupedMenuItems = {};
-        
+
         if (mealServices && mealServices.length > 0) {
             mealServices.forEach(meal => {
                 const dayNumber = meal.day_number || 1;
@@ -919,7 +1327,7 @@ const BillingInvoicing = () => {
                 if (!groupedMenuItems[dayKey][normalizedMealType]) {
                     groupedMenuItems[dayKey][normalizedMealType] = [];
                 }
-                
+
                 const customItems = meal.custom_items || [];
                 if (customItems.length > 0) {
                     customItems.forEach(item => {
@@ -940,7 +1348,7 @@ const BillingInvoicing = () => {
                 }
             });
         }
-        
+
         if (menuItems && menuItems.length > 0) {
             menuItems.forEach(item => {
                 const dayNumber = item.day_number || 1;
@@ -969,7 +1377,7 @@ const BillingInvoicing = () => {
             const dayB = parseInt(b.match(/\d+/)?.[0] || '0', 10);
             return dayA - dayB;
         });
-        
+
         sortedDays.forEach(dayKey => {
             const meals = groupedMenuItems[dayKey];
             const sortedMealTypes = Object.keys(meals).sort((a, b) => {
@@ -977,13 +1385,13 @@ const BillingInvoicing = () => {
                 const indexB = MEAL_ORDER.indexOf(b);
                 return (indexA === -1 ? 999 : indexA) - (indexB === -1 ? 999 : indexB);
             });
-            
+
             menuItemsHTML += `<div class="menu-day"><strong>${dayKey}</strong>`;
-            
+
             sortedMealTypes.forEach(mealType => {
                 const items = meals[mealType];
                 const mealTotal = items.reduce((sum, item) => sum + item.subtotal, 0);
-                
+
                 menuItemsHTML += `
                     <div class="menu-meal">
                         <div class="menu-meal-header">
@@ -999,7 +1407,7 @@ const BillingInvoicing = () => {
                             </div>
                         </div>
                 `;
-                
+
                 items.forEach(item => {
                     menuItemsHTML += `
                         <div style="display: flex; justify-content: space-between; padding: 2px 4px; border-bottom: 1px solid #f1f5f9; font-size: 10px;">
@@ -1010,7 +1418,7 @@ const BillingInvoicing = () => {
                         </div>
                     `;
                 });
-                
+
                 menuItemsHTML += `
                         <div style="border-bottom: 2px solid #d1d5db; margin-top: 2px;"></div>
                     </div>
@@ -1329,16 +1737,16 @@ const BillingInvoicing = () => {
                 setPdfOverviewLoading(false);
                 return;
             }
-            
+
             setPdfOverviewBooking(booking);
-            
+
             const response = await api.get(`/bookings/${bookingId}`);
             const fullBooking = response.data?.data || response.data;
-            
+
             const html = generatePDFHTML(fullBooking);
             setPdfOverviewHtml(html);
             setPdfOverviewZoom(100);
-            
+
             message.success(`Loaded PDF for ${booking.booking_no || 'Booking'}`);
         } catch (error) {
             console.error('Failed to load booking PDF:', error);
@@ -1353,18 +1761,18 @@ const BillingInvoicing = () => {
             message.warning('No PDF to print');
             return;
         }
-        
+
         const printWindow = window.open('', '_blank', 'width=800,height=900');
         if (!printWindow) {
             message.error('Please allow popups to print');
             return;
         }
-        
+
         printWindow.document.open();
         printWindow.document.write(pdfOverviewHtml);
         printWindow.document.close();
         printWindow.focus();
-        
+
         setTimeout(() => {
             printWindow.print();
         }, 500);
@@ -1392,10 +1800,10 @@ const BillingInvoicing = () => {
         try {
             setPdfViewerBooking(booking);
             setPdfViewerZoom(100);
-            
+
             const response = await api.get(`/bookings/${booking.booking_id}`);
             const fullBooking = response.data?.data || response.data;
-            
+
             const html = generatePDFHTML(fullBooking);
             setPdfViewerHtml(html);
             setPdfViewerVisible(true);
@@ -1410,18 +1818,18 @@ const BillingInvoicing = () => {
             message.warning('No PDF to print');
             return;
         }
-        
+
         const printWindow = window.open('', '_blank', 'width=800,height=900');
         if (!printWindow) {
             message.error('Please allow popups to print');
             return;
         }
-        
+
         printWindow.document.open();
         printWindow.document.write(pdfViewerHtml);
         printWindow.document.close();
         printWindow.focus();
-        
+
         setTimeout(() => {
             printWindow.print();
         }, 500);
@@ -1452,7 +1860,7 @@ const BillingInvoicing = () => {
                 message.warning('No payment selected');
                 return;
             }
-            
+
             const response = await api.get(`/payments/${paymentId}/receipt`);
             const data = response.data?.data || response.data;
             const paymentData = data?.payment || payment;
@@ -1462,7 +1870,7 @@ const BillingInvoicing = () => {
             setReceiptPreviewHtml(html);
             setReceiptPreviewZoom(100);
             setReceiptPreviewVisible(true);
-            
+
         } catch (error) {
             console.error('Print receipt error:', error);
             message.error('Failed to generate receipt');
@@ -1520,18 +1928,18 @@ const BillingInvoicing = () => {
             message.warning('No receipt to print');
             return;
         }
-        
+
         const printWindow = window.open('', '_blank', 'width=800,height=900');
         if (!printWindow) {
             message.error('Please allow popups to print');
             return;
         }
-        
+
         printWindow.document.open();
         printWindow.document.write(receiptPreviewHtml);
         printWindow.document.close();
         printWindow.focus();
-        
+
         setTimeout(() => {
             printWindow.print();
         }, 500);
@@ -1588,7 +1996,7 @@ const BillingInvoicing = () => {
             message.error('Please provide a reason for rejection');
             return;
         }
-        
+
         try {
             await api.post(`/payments/mobile/${selectedPayment.payment_id}/reject`, {
                 reason: rejectReason
@@ -1608,13 +2016,13 @@ const BillingInvoicing = () => {
             message.warning('No data to export');
             return;
         }
-        
+
         const worksheetData = data.map(row => {
             const exportRow = {};
             columns.forEach(col => {
                 if (col.dataIndex) {
                     let value = row[col.dataIndex];
-                    if (col.dataIndex === 'total_amount' || col.dataIndex === 'amount' || 
+                    if (col.dataIndex === 'total_amount' || col.dataIndex === 'amount' ||
                         col.dataIndex === 'paid_amount' || col.dataIndex === 'balance') {
                         value = `₱${Number(value || 0).toLocaleString()}`;
                     }
@@ -1679,6 +2087,29 @@ const BillingInvoicing = () => {
         exportToExcel(debts, 'Debt_Management_Report', columns);
     };
 
+    const exportRefunds = () => {
+        if (!canProcessRefunds) {
+            message.warning('You do not have permission to export refunds.');
+            return;
+        }
+        const columns = [
+            { title: 'REFUND #', dataIndex: 'refund_number' },
+            { title: 'BOOKING #', key: 'booking_no' },
+            { title: 'INVOICE #', key: 'invoice_number' },
+            { title: 'AMOUNT', dataIndex: 'amount' },
+            { title: 'STATUS', dataIndex: 'status' },
+            { title: 'REASON', dataIndex: 'reason' },
+            { title: 'REQUESTED', dataIndex: 'requested_at' },
+            { title: 'RELEASED', dataIndex: 'released_at' },
+        ];
+        const exportData = refunds.map(r => ({
+            ...r,
+            booking_no: r.booking?.booking_no || 'N/A',
+            invoice_number: r.invoice?.invoice_number || 'N/A',
+        }));
+        exportToExcel(exportData, 'Refunds_Report', columns);
+    };
+
     // ==================== HELPER FUNCTIONS ====================
     const getStatusConfig = (status) => {
         const config = {
@@ -1707,32 +2138,32 @@ const BillingInvoicing = () => {
     };
 
     // ==================== STATS ====================
-    const totalRevenue = useMemo(() => 
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) : 0, 
+    const totalRevenue = useMemo(() =>
+        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) : 0,
     [invoices]);
-    
-    const totalPaid = useMemo(() => 
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0) : 0, 
+
+    const totalPaid = useMemo(() =>
+        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0) : 0,
     [invoices]);
-    
-    const totalOutstanding = useMemo(() => 
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0, 
+
+    const totalOutstanding = useMemo(() =>
+        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0,
     [invoices]);
-    
-    const totalDebt = useMemo(() => 
-        Array.isArray(debts) ? debts.reduce((sum, debt) => sum + (debt.remaining_debt || 0), 0) : 0, 
+
+    const totalDebt = useMemo(() =>
+        Array.isArray(debts) ? debts.reduce((sum, debt) => sum + (debt.remaining_debt || 0), 0) : 0,
     [debts]);
-    
-    const overdueCount = useMemo(() => 
-        Array.isArray(invoices) ? invoices.filter(i => i.status === 'overdue').length : 0, 
+
+    const overdueCount = useMemo(() =>
+        Array.isArray(invoices) ? invoices.filter(i => i.status === 'overdue').length : 0,
     [invoices]);
-    
-    const overdueDebt = useMemo(() => 
-        Array.isArray(debts) ? debts.filter(d => d.days_overdue > 0).reduce((sum, d) => sum + (d.remaining_debt || 0), 0) : 0, 
+
+    const overdueDebt = useMemo(() =>
+        Array.isArray(debts) ? debts.filter(d => d.days_overdue > 0).reduce((sum, d) => sum + (d.remaining_debt || 0), 0) : 0,
     [debts]);
-    
-    const collectionRate = useMemo(() => 
-        totalRevenue > 0 ? ((totalPaid / totalRevenue) * 100).toFixed(1) : 0, 
+
+    const collectionRate = useMemo(() =>
+        totalRevenue > 0 ? ((totalPaid / totalRevenue) * 100).toFixed(1) : 0,
     [totalRevenue, totalPaid]);
 
     // ==================== FILTERED DATA ====================
@@ -1740,7 +2171,7 @@ const BillingInvoicing = () => {
         if (!Array.isArray(invoices)) return [];
         return invoices.filter(inv => {
             if (Number(inv.balance || 0) <= 0 || String(inv.status || '').toLowerCase() === 'paid') return false;
-            if (searchText && !inv.customer_name?.toLowerCase().includes(searchText.toLowerCase()) && 
+            if (searchText && !inv.customer_name?.toLowerCase().includes(searchText.toLowerCase()) &&
                 !inv.invoice_number?.toLowerCase().includes(searchText.toLowerCase())) return false;
             if (filterStatus !== 'all' && inv.status !== filterStatus) return false;
             if (filterDate && filterDate[0] && filterDate[1]) {
@@ -1762,52 +2193,76 @@ const BillingInvoicing = () => {
             const method = String(payment.payment_method || payment.method || '').toLowerCase();
             const paymentDate = dayjs(payment.payment_date || payment.date || payment.created_at);
 
-            if (search && !customerName.includes(search) && !invoiceNumber.includes(search) && 
+            if (search && !customerName.includes(search) && !invoiceNumber.includes(search) &&
                 !String(payment.reference_number || payment.payment_number || '').toLowerCase().includes(search)) return false;
             if (customerFilter && !customerName.includes(customerFilter)) return false;
             if (invoiceFilter && !invoiceNumber.includes(invoiceFilter)) return false;
             if (paymentHistoryMethod !== 'all' && method !== paymentHistoryMethod) return false;
             if (paymentHistoryDateRange?.length === 2 && paymentDate.isValid()) {
-                if (paymentDate.isBefore(paymentHistoryDateRange[0], 'day') || 
+                if (paymentDate.isBefore(paymentHistoryDateRange[0], 'day') ||
                     paymentDate.isAfter(paymentHistoryDateRange[1], 'day')) return false;
             }
             return true;
         });
-    }, [paymentHistory, paymentHistorySearch, paymentHistoryCustomer, paymentHistoryInvoice, 
+    }, [paymentHistory, paymentHistorySearch, paymentHistoryCustomer, paymentHistoryInvoice,
         paymentHistoryMethod, paymentHistoryDateRange]);
 
     const filteredPDFBookings = useMemo(() => {
         if (!Array.isArray(pdfOverviewAllBookings)) return [];
         if (!pdfOverviewSearch) return pdfOverviewAllBookings;
         const search = pdfOverviewSearch.toLowerCase();
-        return pdfOverviewAllBookings.filter(b => 
+        return pdfOverviewAllBookings.filter(b =>
             (b.booking_no || '').toLowerCase().includes(search) ||
             (b.customer_name || '').toLowerCase().includes(search) ||
             (b.customer?.person?.full_name || '').toLowerCase().includes(search)
         );
     }, [pdfOverviewAllBookings, pdfOverviewSearch]);
 
+    const filteredRefunds = useMemo(() => {
+        if (!canProcessRefunds) return [];
+        if (!Array.isArray(refunds)) return [];
+        return refunds.filter(r => {
+            if (refundHistorySearch) {
+                const s = refundHistorySearch.toLowerCase();
+                const matchSearch =
+                    (r.refund_number || '').toLowerCase().includes(s) ||
+                    (r.booking?.booking_no || '').toLowerCase().includes(s) ||
+                    (r.invoice?.invoice_number || '').toLowerCase().includes(s) ||
+                    (r.reason || '').toLowerCase().includes(s) ||
+                    (r.booking?.serviceEvent?.customer?.person?.full_name || '').toLowerCase().includes(s) ||
+                    (r.invoice?.booking?.serviceEvent?.customer?.person?.full_name || '').toLowerCase().includes(s);
+                if (!matchSearch) return false;
+            }
+            if (refundHistoryStatus !== 'all' && r.status !== refundHistoryStatus) return false;
+            if (refundHistoryDateRange?.length === 2 && r.requested_at) {
+                const d = dayjs(r.requested_at);
+                if (d.isBefore(refundHistoryDateRange[0], 'day') || d.isAfter(refundHistoryDateRange[1], 'day')) return false;
+            }
+            return true;
+        });
+    }, [refunds, refundHistorySearch, refundHistoryStatus, refundHistoryDateRange, canProcessRefunds]);
+
     // ==================== TABLE COLUMNS ====================
-    
+
     const invoiceColumns = useMemo(() => [
-        { 
-            title: 'BOOKING #', 
-            dataIndex: 'booking_no', 
-            key: 'booking_no', 
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
             width: 140,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'INVOICE #', 
-            dataIndex: 'invoice_number', 
-            key: 'invoice_number', 
+        {
+            title: 'INVOICE #',
+            dataIndex: 'invoice_number',
+            key: 'invoice_number',
             width: 150,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'CUSTOMER', 
-            dataIndex: 'customer_name', 
-            key: 'customer_name', 
+        {
+            title: 'CUSTOMER',
+            dataIndex: 'customer_name',
+            key: 'customer_name',
             width: 200,
             render: (text, record) => (
                 <div>
@@ -1816,34 +2271,34 @@ const BillingInvoicing = () => {
                 </div>
             )
         },
-        { 
-            title: 'EVENT', 
-            dataIndex: 'event_type', 
-            key: 'event_type', 
+        {
+            title: 'EVENT',
+            dataIndex: 'event_type',
+            key: 'event_type',
             width: 130,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'TOTAL', 
-            dataIndex: 'total_amount', 
-            key: 'total_amount', 
-            width: 130, 
+        {
+            title: 'TOTAL',
+            dataIndex: 'total_amount',
+            key: 'total_amount',
+            width: 130,
             align: 'right',
             render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'PAID', 
-            dataIndex: 'paid_amount', 
-            key: 'paid_amount', 
-            width: 130, 
+        {
+            title: 'PAID',
+            dataIndex: 'paid_amount',
+            key: 'paid_amount',
+            width: 130,
             align: 'right',
             render: (v) => <Text className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'BALANCE', 
-            dataIndex: 'balance', 
-            key: 'balance', 
-            width: 130, 
+        {
+            title: 'BALANCE',
+            dataIndex: 'balance',
+            key: 'balance',
+            width: 130,
             align: 'right',
             render: (v) => (
                 <Text strong className={Number(v || 0) > 0 ? 'bi-amount-balance' : 'bi-amount-paid'}>
@@ -1851,42 +2306,60 @@ const BillingInvoicing = () => {
                 </Text>
             )
         },
-        { 
-            title: 'DUE DATE', 
-            dataIndex: 'due_date', 
-            key: 'due_date', 
+        {
+            title: 'DUE DATE',
+            dataIndex: 'due_date',
+            key: 'due_date',
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'status', 
-            key: 'status', 
-            width: 110, 
+        {
+            title: 'STATUS',
+            dataIndex: 'status',
+            key: 'status',
+            width: 110,
             align: 'center',
-            render: (s) => {
+            render: (s, record) => {
                 const config = getStatusConfig(s);
+                const refundConfig = record.refund_status ? getRefundStatusConfig(record.refund_status) : null;
                 return (
-                    <span className="bi-status-badge" style={{ 
-                        color: config.color, 
-                        background: config.bg,
-                        padding: '2px 10px',
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        fontWeight: 500,
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '4px'
-                    }}>
-                        {config.icon} {config.text}
-                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+                        <span className="bi-status-badge" style={{
+                            color: config.color,
+                            background: config.bg,
+                            padding: '2px 10px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                        }}>
+                            {config.icon} {config.text}
+                        </span>
+                        {refundConfig && (
+                            <span style={{
+                                color: refundConfig.color,
+                                background: refundConfig.bg,
+                                padding: '2px 8px',
+                                borderRadius: '10px',
+                                fontSize: '10px',
+                                fontWeight: 500,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px'
+                            }}>
+                                {refundConfig.icon} Refund: {refundConfig.text}
+                            </span>
+                        )}
+                    </div>
                 );
             }
         },
-        { 
-            title: 'ACTIONS', 
-            key: 'actions', 
-            width: 280,
+        {
+            title: 'ACTIONS',
+            key: 'actions',
+            width: canProcessRefunds ? 300 : 260,
             render: (_, record) => {
                 const actionItems = [
                     {
@@ -1926,6 +2399,13 @@ const BillingInvoicing = () => {
                         }
                     },
                     { type: 'divider' },
+                                     ...(canProcessRefunds ? [{
+                        key: 'refund-direct',
+                        label: 'Direct Refund',
+                        icon: <RollbackOutlined />,
+                        onClick: () => openRefundDirectModal(record),
+                        disabled: record.refund_status && !['rejected', 'cancelled'].includes(record.refund_status),
+                    }] : []),
                     {
                         key: 'discount',
                         label: 'Apply Discount',
@@ -1989,10 +2469,10 @@ const BillingInvoicing = () => {
                             </Tooltip>
                         )}
                         <Tooltip title="Record Payment">
-                            <Button 
-                                type="text" 
+                            <Button
+                                type="text"
                                 className="bi-action-btn bi-action-btn-payment"
-                                icon={<DollarOutlined />} 
+                                icon={<DollarOutlined />}
                                 onClick={() => {
                                     setSelectedInvoice(record);
                                     paymentForm.setFieldsValue({
@@ -2008,9 +2488,21 @@ const BillingInvoicing = () => {
                                 }}
                             />
                         </Tooltip>
-                        <Dropdown 
-                            menu={{ items: actionItems }} 
-                            placement="bottomRight" 
+                                           {canProcessRefunds && (
+                            <Tooltip title="Direct Refund (no request required)">
+                                <Button
+                                    type="text"
+                                    className="bi-action-btn"
+                                    icon={<RollbackOutlined />}
+                                    style={{ color: '#faad14' }}
+                                    disabled={record.refund_status && !['rejected', 'cancelled'].includes(record.refund_status)}
+                                    onClick={() => openRefundDirectModal(record)}
+                                />
+                            </Tooltip>
+                        )}
+                        <Dropdown
+                            menu={{ items: actionItems }}
+                            placement="bottomRight"
                             trigger={['click']}
                         >
                             <Button type="text" className="bi-action-btn" icon={<MoreOutlined />} />
@@ -2019,34 +2511,34 @@ const BillingInvoicing = () => {
                 );
             }
         }
-    ], [isDarkMode, payments, discountForm, reminderForm, paymentForm, canApproveFinancialAdjustments]);
+    ], [isDarkMode, payments, discountForm, reminderForm, paymentForm, canApproveFinancialAdjustments, canProcessRefunds]);
 
     const paymentColumns = useMemo(() => [
-        { 
-            title: 'PAYMENT #', 
-            dataIndex: 'payment_number', 
-            key: 'payment_number', 
+        {
+            title: 'PAYMENT #',
+            dataIndex: 'payment_number',
+            key: 'payment_number',
             width: 150,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'CUSTOMER', 
-            dataIndex: 'customer_name', 
-            key: 'customer_name', 
+        {
+            title: 'CUSTOMER',
+            dataIndex: 'customer_name',
+            key: 'customer_name',
             width: 200,
             render: (text) => <Text className={isDarkMode ? 'bi-text-dark-primary' : ''}>{text || 'Unknown'}</Text>
         },
-        { 
-            title: 'INVOICE', 
-            dataIndex: 'invoice_number', 
-            key: 'invoice_number', 
+        {
+            title: 'INVOICE',
+            dataIndex: 'invoice_number',
+            key: 'invoice_number',
             width: 130,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'METHOD', 
-            dataIndex: 'payment_method', 
-            key: 'payment_method', 
+        {
+            title: 'METHOD',
+            dataIndex: 'payment_method',
+            key: 'payment_method',
             width: 120,
             render: (text) => (
                 <span className="bi-method-tag">
@@ -2054,46 +2546,46 @@ const BillingInvoicing = () => {
                 </span>
             )
         },
-        { 
-            title: 'TYPE', 
-            dataIndex: 'payment_type', 
-            key: 'payment_type', 
+        {
+            title: 'TYPE',
+            dataIndex: 'payment_type',
+            key: 'payment_type',
             width: 100,
             render: (text) => <Text className="bi-plain-text">{text?.toUpperCase() || 'PARTIAL'}</Text>
         },
-        { 
-            title: 'AMOUNT', 
-            dataIndex: 'amount', 
-            key: 'amount', 
-            width: 130, 
+        {
+            title: 'AMOUNT',
+            dataIndex: 'amount',
+            key: 'amount',
+            width: 130,
             align: 'right',
             render: (v) => <Text strong className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'REFERENCE #', 
-            dataIndex: 'reference_number', 
-            key: 'reference_number', 
+        {
+            title: 'REFERENCE #',
+            dataIndex: 'reference_number',
+            key: 'reference_number',
             width: 150,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'DATE', 
-            dataIndex: 'date', 
-            key: 'date', 
+        {
+            title: 'DATE',
+            dataIndex: 'date',
+            key: 'date',
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'status', 
-            key: 'status', 
-            width: 110, 
+        {
+            title: 'STATUS',
+            dataIndex: 'status',
+            key: 'status',
+            width: 110,
             align: 'center',
             render: (s) => {
                 const config = getStatusConfig(s);
                 return (
-                    <span className="bi-status-badge" style={{ 
-                        color: config.color, 
+                    <span className="bi-status-badge" style={{
+                        color: config.color,
                         background: config.bg,
                         padding: '2px 10px',
                         borderRadius: '12px',
@@ -2105,9 +2597,9 @@ const BillingInvoicing = () => {
                 );
             }
         },
-        { 
-            title: 'ACTION', 
-            key: 'action', 
+        {
+            title: 'ACTION',
+            key: 'action',
             width: 160,
             render: (_, record) => (
                 <Space size={4}>
@@ -2126,10 +2618,10 @@ const BillingInvoicing = () => {
     ], [isDarkMode]);
 
     const mobilePaymentColumns = useMemo(() => [
-        { 
-            title: 'CUSTOMER', 
-            dataIndex: 'customer_name', 
-            key: 'customer_name', 
+        {
+            title: 'CUSTOMER',
+            dataIndex: 'customer_name',
+            key: 'customer_name',
             width: 200,
             render: (text, record) => (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2145,25 +2637,25 @@ const BillingInvoicing = () => {
                 </div>
             )
         },
-        { 
-            title: 'BOOKING #', 
-            dataIndex: 'booking_no', 
-            key: 'booking_no', 
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
             width: 130,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'AMOUNT', 
-            dataIndex: 'amount', 
-            key: 'amount', 
-            width: 130, 
+        {
+            title: 'AMOUNT',
+            dataIndex: 'amount',
+            key: 'amount',
+            width: 130,
             align: 'right',
             render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'METHOD', 
-            dataIndex: 'payment_method', 
-            key: 'payment_method', 
+        {
+            title: 'METHOD',
+            dataIndex: 'payment_method',
+            key: 'payment_method',
             width: 120,
             render: (text) => (
                 <span className="bi-method-tag">
@@ -2171,16 +2663,16 @@ const BillingInvoicing = () => {
                 </span>
             )
         },
-        { 
-            title: 'REFERENCE #', 
-            dataIndex: 'reference_number', 
-            key: 'reference_number', 
+        {
+            title: 'REFERENCE #',
+            dataIndex: 'reference_number',
+            key: 'reference_number',
             width: 150,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'ACCOUNT', 
-            key: 'account', 
+        {
+            title: 'ACCOUNT',
+            key: 'account',
             width: 150,
             render: (_, record) => (
                 <div>
@@ -2189,24 +2681,24 @@ const BillingInvoicing = () => {
                 </div>
             )
         },
-        { 
-            title: 'DATE', 
-            dataIndex: 'date', 
-            key: 'date', 
+        {
+            title: 'DATE',
+            dataIndex: 'date',
+            key: 'date',
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'status', 
-            key: 'status', 
-            width: 110, 
+        {
+            title: 'STATUS',
+            dataIndex: 'status',
+            key: 'status',
+            width: 110,
             align: 'center',
             render: (s) => {
                 const config = getStatusConfig(s);
                 return (
-                    <span className="bi-status-badge" style={{ 
-                        color: config.color, 
+                    <span className="bi-status-badge" style={{
+                        color: config.color,
                         background: config.bg,
                         padding: '2px 10px',
                         borderRadius: '12px',
@@ -2218,9 +2710,9 @@ const BillingInvoicing = () => {
                 );
             }
         },
-        { 
-            title: 'ACTIONS', 
-            key: 'actions', 
+        {
+            title: 'ACTIONS',
+            key: 'actions',
             width: 200,
             render: (_, record) => (
                 <Space size={4}>
@@ -2257,10 +2749,10 @@ const BillingInvoicing = () => {
     ], [canApproveFinancialAdjustments]);
 
     const debtColumns = useMemo(() => [
-        { 
-            title: 'CUSTOMER', 
-            dataIndex: 'customer_name', 
-            key: 'customer_name', 
+        {
+            title: 'CUSTOMER',
+            dataIndex: 'customer_name',
+            key: 'customer_name',
             width: 200,
             render: (text, record) => (
                 <div>
@@ -2269,34 +2761,34 @@ const BillingInvoicing = () => {
                 </div>
             )
         },
-        { 
-            title: 'BOOKING #', 
-            dataIndex: 'booking_no', 
-            key: 'booking_no', 
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
             width: 130,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        { 
-            title: 'TOTAL DEBT', 
-            dataIndex: 'total_debt', 
-            key: 'total_debt', 
-            width: 140, 
+        {
+            title: 'TOTAL DEBT',
+            dataIndex: 'total_debt',
+            key: 'total_debt',
+            width: 140,
             align: 'right',
             render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'TOTAL PAID', 
-            dataIndex: 'total_paid', 
-            key: 'total_paid', 
-            width: 140, 
+        {
+            title: 'TOTAL PAID',
+            dataIndex: 'total_paid',
+            key: 'total_paid',
+            width: 140,
             align: 'right',
             render: (v) => <Text className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
         },
-        { 
-            title: 'BALANCE', 
-            dataIndex: 'remaining_debt', 
-            key: 'remaining_debt', 
-            width: 140, 
+        {
+            title: 'BALANCE',
+            dataIndex: 'remaining_debt',
+            key: 'remaining_debt',
+            width: 140,
             align: 'right',
             render: (v) => (
                 <Text strong className={Number(v || 0) > 0 ? 'bi-amount-balance' : 'bi-amount-paid'}>
@@ -2304,56 +2796,56 @@ const BillingInvoicing = () => {
                 </Text>
             )
         },
-        { 
-            title: 'PROGRESS', 
-            dataIndex: 'payment_progress', 
-            key: 'payment_progress', 
+        {
+            title: 'PROGRESS',
+            dataIndex: 'payment_progress',
+            key: 'payment_progress',
             width: 170,
             render: (v) => <Progress percent={Number(v || 0)} size="small" strokeColor="#1a7ab5" />
         },
-        { 
-            title: 'PAYMENT LOGS', 
-            dataIndex: 'payment_history', 
-            key: 'payment_history', 
-            width: 120, 
+        {
+            title: 'PAYMENT LOGS',
+            dataIndex: 'payment_history',
+            key: 'payment_history',
+            width: 120,
             align: 'center',
             render: (logs) => <Badge count={Array.isArray(logs) ? logs.length : 0} showZero style={{ backgroundColor: '#1a7ab5' }} />
         },
-        { 
-            title: 'NEXT PAYMENT', 
-            dataIndex: 'next_payment', 
-            key: 'next_payment', 
+        {
+            title: 'NEXT PAYMENT',
+            dataIndex: 'next_payment',
+            key: 'next_payment',
             width: 130,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        { 
-            title: 'DUE DATE', 
-            dataIndex: 'due_date', 
-            key: 'due_date', 
+        {
+            title: 'DUE DATE',
+            dataIndex: 'due_date',
+            key: 'due_date',
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        { 
-            title: 'DAYS OVERDUE', 
-            dataIndex: 'days_overdue', 
-            key: 'days_overdue', 
-            width: 110, 
+        {
+            title: 'DAYS OVERDUE',
+            dataIndex: 'days_overdue',
+            key: 'days_overdue',
+            width: 110,
             align: 'center',
-            render: (v) => (v || 0) > 0 ? 
-                <Tag color="red" className="bi-overdue-tag">{v} days</Tag> : 
+            render: (v) => (v || 0) > 0 ?
+                <Tag color="red" className="bi-overdue-tag">{v} days</Tag> :
                 <Tag color="green" className="bi-ontime-tag">On Time</Tag>
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'status', 
-            key: 'status', 
-            width: 110, 
+        {
+            title: 'STATUS',
+            dataIndex: 'status',
+            key: 'status',
+            width: 110,
             align: 'center',
             render: (s) => {
                 const config = getStatusConfig(s);
                 return (
-                    <span className="bi-status-badge" style={{ 
-                        color: config.color, 
+                    <span className="bi-status-badge" style={{
+                        color: config.color,
                         background: config.bg,
                         padding: '2px 10px',
                         borderRadius: '12px',
@@ -2365,14 +2857,14 @@ const BillingInvoicing = () => {
                 );
             }
         },
-        { 
-            title: 'DEPOSIT', 
-            key: 'deposit', 
+        {
+            title: 'DEPOSIT',
+            key: 'deposit',
             width: 150,
             render: (_, record) => (
                 <div>
-                    {record.is_deposit_paid ? 
-                        <Tag color="green" className="bi-deposit-paid">Paid</Tag> : 
+                    {record.is_deposit_paid ?
+                        <Tag color="green" className="bi-deposit-paid">Paid</Tag> :
                         <Tag color="red" className="bi-deposit-unpaid">Unpaid</Tag>
                     }
                     <div style={{ fontSize: 11, color: '#8b93a8' }}>
@@ -2474,8 +2966,8 @@ const BillingInvoicing = () => {
             render: (s) => {
                 const config = getStatusConfig(s === 'confirmed' ? 'paid' : s === 'pending' ? 'pending' : 'unpaid');
                 return (
-                    <span className="bi-status-badge" style={{ 
-                        color: config.color, 
+                    <span className="bi-status-badge" style={{
+                        color: config.color,
                         background: config.bg,
                         padding: '2px 10px',
                         borderRadius: '12px',
@@ -2492,9 +2984,9 @@ const BillingInvoicing = () => {
             key: 'action',
             width: 120,
             render: (_, record) => (
-                <Button 
-                    type="primary" 
-                    size="small" 
+                <Button
+                    type="primary"
+                    size="small"
                     icon={<FilePdfOutlined />}
                     onClick={() => handlePDFOverviewSelectBooking(record.booking_id)}
                     loading={pdfOverviewLoading && pdfOverviewBooking?.booking_id === record.booking_id}
@@ -2505,6 +2997,166 @@ const BillingInvoicing = () => {
             )
         }
     ], [isDarkMode, pdfOverviewLoading, pdfOverviewBooking]);
+
+    const refundColumns = useMemo(() => [
+        {
+            title: 'REFUND #',
+            dataIndex: 'refund_number',
+            key: 'refund_number',
+            width: 150,
+            render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>,
+        },
+        {
+            title: 'BOOKING / INVOICE',
+            key: 'booking_invoice',
+            width: 180,
+            render: (_, record) => (
+                <div>
+                    <div><Text strong>{record.booking?.booking_no || record.invoice?.booking?.booking_no || 'N/A'}</Text></div>
+                    <div style={{ fontSize: 11, color: '#8b93a8' }}>
+                        {record.invoice?.invoice_number || 'No invoice'}
+                    </div>
+                </div>
+            ),
+        },
+        {
+            title: 'CUSTOMER',
+            key: 'customer',
+            width: 200,
+            render: (_, record) => {
+                const person = record.booking?.serviceEvent?.customer?.person
+                    || record.invoice?.booking?.serviceEvent?.customer?.person;
+                return (
+                    <div>
+                        <div>{person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown' : 'Unknown'}</div>
+                        <div style={{ fontSize: 11, color: '#8b93a8' }}>{person?.email || ''}</div>
+                    </div>
+                );
+            },
+        },
+        {
+            title: 'AMOUNT',
+            dataIndex: 'amount',
+            key: 'amount',
+            width: 130,
+            align: 'right',
+            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>,
+        },
+        {
+            title: 'DEPOSIT SNAPSHOT',
+            dataIndex: 'deposit_snapshot',
+            key: 'deposit_snapshot',
+            width: 140,
+            align: 'right',
+            render: (v) => <Text className="bi-plain-text">₱{Number(v || 0).toLocaleString()}</Text>,
+        },
+        {
+            title: 'STATUS',
+            dataIndex: 'status',
+            key: 'status',
+            width: 130,
+            align: 'center',
+            render: (s) => {
+                const config = getRefundStatusConfig(s);
+                return (
+                    <span className="bi-status-badge" style={{
+                        color: config.color,
+                        background: config.bg,
+                        padding: '2px 10px',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        fontWeight: 500,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                    }}>
+                        {config.icon} {config.text}
+                    </span>
+                );
+            },
+        },
+        {
+            title: 'REQUESTED',
+            dataIndex: 'requested_at',
+            key: 'requested_at',
+            width: 150,
+            render: (d) => d ? dayjs(d).format('YYYY-MM-DD HH:mm') : 'N/A',
+        },
+        {
+            title: 'REASON',
+            dataIndex: 'reason',
+            key: 'reason',
+            ellipsis: true,
+            render: (text) => <Text className="bi-plain-text">{text || '—'}</Text>,
+        },
+        {
+            title: 'ACTIONS',
+            key: 'actions',
+            width: 240,
+            fixed: 'right',
+            render: (_, record) => {
+                const isPending = record.status === 'pending';
+                const isApproved = record.status === 'approved';
+                const isReleased = record.status === 'released';
+
+                return (
+                    <Space size={4}>
+                        <Tooltip title="View Details">
+                            <Button
+                                type="text"
+                                className="bi-action-btn"
+                                icon={<EyeOutlined />}
+                                onClick={() => openRefundDetailsModal(record)}
+                            />
+                        </Tooltip>
+
+                        {isPending && canProcessRefunds && (
+                            <>
+                                <Tooltip title="Approve Refund">
+                                    <Button
+                                        type="primary"
+                                        size="small"
+                                        icon={<CheckCircleOutlined />}
+                                        onClick={() => openRefundApprovalModal(record)}
+                                    >
+                                        Approve
+                                    </Button>
+                                </Tooltip>
+                                <Tooltip title="Reject Refund">
+                                    <Button
+                                        danger
+                                        size="small"
+                                        icon={<CloseCircleOutlined />}
+                                        onClick={() => openRefundRejectModal(record)}
+                                    >
+                                        Reject
+                                    </Button>
+                                </Tooltip>
+                            </>
+                        )}
+
+                        {isApproved && canProcessRefunds && (
+                            <Tooltip title="Release Refund">
+                                <Button
+                                    type="primary"
+                                    size="small"
+                                    icon={<RollbackOutlined />}
+                                    style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                                    onClick={() => openRefundReleaseModal(record)}
+                                >
+                                    Release
+                                </Button>
+                            </Tooltip>
+                        )}
+
+                        {isReleased && (
+                            <Tag color="green">✓ Released</Tag>
+                        )}
+                    </Space>
+                );
+            },
+        },
+    ], [canProcessRefunds]);
 
     // ==================== RENDER FUNCTIONS ====================
     const renderEmptyTable = () => (
@@ -2570,7 +3222,13 @@ const BillingInvoicing = () => {
                         </div>
                         <Divider type="vertical" />
                         <Button icon={<ReloadOutlined />} onClick={loadInvoices}>Refresh</Button>
-                        <Button icon={<ExportOutlined />} onClick={exportInvoices}>Export</Button>
+                        <Button icon={<ExportOutlined />} onClick={() => {
+                            if (activeMainTab === 'refunds' && canProcessRefunds) {
+                                exportRefunds();
+                            } else {
+                                exportInvoices();
+                            }
+                        }}>Export</Button>
                         <Button icon={<PrinterOutlined />} onClick={() => window.print()}>Print</Button>
                     </div>
                 </div>
@@ -2578,7 +3236,7 @@ const BillingInvoicing = () => {
                 {/* MAIN CONTENT */}
                 <div className="bi-main-content">
                     {/* KPI Cards */}
-                    <div className="bi-kpi-grid">
+                    <div className={`bi-kpi-grid ${canProcessRefunds ? '' : 'bi-kpi-grid-4'}`}>
                         <div className={kpiCardClass}>
                             <div className="bi-kpi-icon blue"><FileTextOutlined /></div>
                             <div>
@@ -2607,6 +3265,15 @@ const BillingInvoicing = () => {
                                 <div className="bi-kpi-label">Overdue Invoices</div>
                             </div>
                         </div>
+                        {canProcessRefunds && (
+                            <div className={kpiCardClass}>
+                                <div className="bi-kpi-icon purple"><RollbackOutlined /></div>
+                                <div>
+                                    <div className="bi-kpi-value">{refundStatistics.total_refunds || 0}</div>
+                                    <div className="bi-kpi-label">Total Refunds</div>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Main Card */}
@@ -2631,12 +3298,12 @@ const BillingInvoicing = () => {
                                     </div>
                                     <div className="bi-search-wrapper">
                                         <SearchOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
-                                        <Input 
-                                            placeholder="Search by customer or invoice #..." 
-                                            value={searchText} 
-                                            onChange={(e) => setSearchText(e.target.value)} 
-                                            allowClear 
-                                            size="small" 
+                                        <Input
+                                            placeholder="Search by customer or invoice #..."
+                                            value={searchText}
+                                            onChange={(e) => setSearchText(e.target.value)}
+                                            allowClear
+                                            size="small"
                                             style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 280 }}
                                         />
                                     </div>
@@ -2646,15 +3313,15 @@ const BillingInvoicing = () => {
                                 </div>
 
                                 <div className="bi-table-scroll-container">
-                                    <Table 
-                                        columns={invoiceColumns} 
-                                        dataSource={filteredInvoices} 
-                                        rowKey="invoice_id" 
+                                    <Table
+                                        columns={invoiceColumns}
+                                        dataSource={filteredInvoices}
+                                        rowKey="invoice_id"
                                         loading={loading}
                                         locale={{ emptyText: renderEmptyTable() }}
                                         pagination={false}
-                                        className={tableClass} 
-                                        scroll={{ x: 1450, y: 'calc(100vh - 420px)' }} 
+                                        className={tableClass}
+                                        scroll={{ x: canProcessRefunds ? 1550 : 1450, y: 'calc(100vh - 480px)' }}
                                     />
                                 </div>
                             </TabPane>
@@ -2662,11 +3329,11 @@ const BillingInvoicing = () => {
                             {/* Payments Tab */}
                             <TabPane tab={<span><CreditCardOutlined /> Payment Tracking</span>} key="payments">
                                 <div className={tabContentClass}>
-                                    <Alert 
-                                        message="Payment Tracking" 
-                                        description="Every down payment, partial payment, installment, pending verification, and completed payment log appears here." 
-                                        type="info" 
-                                        showIcon 
+                                    <Alert
+                                        message="Payment Tracking"
+                                        description="Every down payment, partial payment, installment, pending verification, and completed payment log appears here."
+                                        type="info"
+                                        showIcon
                                         style={{ marginBottom: 20 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
@@ -2691,9 +3358,9 @@ const BillingInvoicing = () => {
                                         </Button>
                                     </div>
                                     <div className="bi-table-scroll-container">
-                                        <Table 
-                                            columns={paymentColumns} 
-                                            dataSource={payments} 
+                                        <Table
+                                            columns={paymentColumns}
+                                            dataSource={payments}
                                             rowKey="payment_id"
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
@@ -2707,45 +3374,45 @@ const BillingInvoicing = () => {
                             {/* Payment History Tab */}
                             <TabPane tab={<span><CheckCircleOutlined /> Payment History</span>} key="payment_history">
                                 <div className={tabContentClass}>
-                                    <Alert 
-                                        message="Payment History" 
-                                        description="Only invoices with zero remaining balance and Paid status appear here. Partial payments remain in Payment Tracking." 
-                                        type="success" 
-                                        showIcon 
+                                    <Alert
+                                        message="Payment History"
+                                        description="Only invoices with zero remaining balance and Paid status appear here. Partial payments remain in Payment Tracking."
+                                        type="success"
+                                        showIcon
                                         style={{ marginBottom: 20 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
                                     <div className={filtersClass} style={{ marginBottom: 16 }}>
                                         <div className="bi-search-wrapper">
                                             <SearchOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
-                                            <Input 
-                                                placeholder="Search history..." 
-                                                value={paymentHistorySearch} 
-                                                onChange={(e) => setPaymentHistorySearch(e.target.value)} 
-                                                allowClear 
-                                                size="small" 
+                                            <Input
+                                                placeholder="Search history..."
+                                                value={paymentHistorySearch}
+                                                onChange={(e) => setPaymentHistorySearch(e.target.value)}
+                                                allowClear
+                                                size="small"
                                                 style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 200 }}
                                             />
                                         </div>
                                         <div className="bi-search-wrapper">
                                             <UserOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
-                                            <Input 
-                                                placeholder="Customer" 
-                                                value={paymentHistoryCustomer} 
-                                                onChange={(e) => setPaymentHistoryCustomer(e.target.value)} 
-                                                allowClear 
-                                                size="small" 
+                                            <Input
+                                                placeholder="Customer"
+                                                value={paymentHistoryCustomer}
+                                                onChange={(e) => setPaymentHistoryCustomer(e.target.value)}
+                                                allowClear
+                                                size="small"
                                                 style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 180 }}
                                             />
                                         </div>
                                         <div className="bi-search-wrapper">
                                             <FileTextOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
-                                            <Input 
-                                                placeholder="Invoice Number" 
-                                                value={paymentHistoryInvoice} 
-                                                onChange={(e) => setPaymentHistoryInvoice(e.target.value)} 
-                                                allowClear 
-                                                size="small" 
+                                            <Input
+                                                placeholder="Invoice Number"
+                                                value={paymentHistoryInvoice}
+                                                onChange={(e) => setPaymentHistoryInvoice(e.target.value)}
+                                                allowClear
+                                                size="small"
                                                 style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 180 }}
                                             />
                                         </div>
@@ -2762,17 +3429,17 @@ const BillingInvoicing = () => {
                                         </div>
                                         <div className={filterGroupClass}>
                                             <CalendarOutlined />
-                                            <RangePicker 
-                                                value={paymentHistoryDateRange} 
-                                                onChange={(value) => setPaymentHistoryDateRange(value || [])} 
-                                                size="small" 
+                                            <RangePicker
+                                                value={paymentHistoryDateRange}
+                                                onChange={(value) => setPaymentHistoryDateRange(value || [])}
+                                                size="small"
                                             />
                                         </div>
                                     </div>
                                     <div className="bi-table-scroll-container">
-                                        <Table 
-                                            columns={paymentColumns} 
-                                            dataSource={filteredPaymentHistory} 
+                                        <Table
+                                            columns={paymentColumns}
+                                            dataSource={filteredPaymentHistory}
                                             rowKey="invoice_id"
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
@@ -2786,18 +3453,18 @@ const BillingInvoicing = () => {
                             {/* Mobile Payments Tab */}
                             <TabPane tab={<span><MobileOutlined /> Mobile Payments</span>} key="mobile">
                                 <div className={tabContentClass}>
-                                    <Alert 
-                                        message="Mobile Payment Verification" 
-                                        description="Track and verify mobile payments (GCash, Maya, Bank Transfer, Card). Customer proof of payment can be viewed." 
-                                        type="info" 
-                                        showIcon 
+                                    <Alert
+                                        message="Mobile Payment Verification"
+                                        description="Track and verify mobile payments (GCash, Maya, Bank Transfer, Card). Customer proof of payment can be viewed."
+                                        type="info"
+                                        showIcon
                                         style={{ marginBottom: 20 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
                                     <div className="bi-table-scroll-container">
-                                        <Table 
-                                            columns={mobilePaymentColumns} 
-                                            dataSource={mobilePayments} 
+                                        <Table
+                                            columns={mobilePaymentColumns}
+                                            dataSource={mobilePayments}
                                             rowKey="payment_id"
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
@@ -2811,11 +3478,11 @@ const BillingInvoicing = () => {
                             {/* Debt Management Tab */}
                             <TabPane tab={<span><WarningOutlined /> Debt Management</span>} key="debts">
                                 <div className={tabContentClass}>
-                                    <Alert 
-                                        message="Outstanding Debts" 
-                                        description="Monitor customer debts, overdue payments, and deposit status. All invoices with balance are shown here." 
-                                        type="warning" 
-                                        showIcon 
+                                    <Alert
+                                        message="Outstanding Debts"
+                                        description="Monitor customer debts, overdue payments, and deposit status. All invoices with balance are shown here."
+                                        type="warning"
+                                        showIcon
                                         style={{ marginBottom: 20 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
@@ -2848,9 +3515,9 @@ const BillingInvoicing = () => {
                                         </Row>
                                     </div>
                                     <div className="bi-table-scroll-container">
-                                        <Table 
-                                            columns={debtColumns} 
-                                            dataSource={debts} 
+                                        <Table
+                                            columns={debtColumns}
+                                            dataSource={debts}
                                             rowKey="invoice_id"
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
@@ -2861,27 +3528,136 @@ const BillingInvoicing = () => {
                                 </div>
                             </TabPane>
 
+                            {/* Refunds Tab — ADMIN & SUPER-ADMIN ONLY */}
+                            {canProcessRefunds && (
+                                <TabPane
+                                    tab={
+                                        <span>
+                                            <RollbackOutlined /> Refunds
+                                            {refundStatistics.pending > 0 && (
+                                                <Badge count={refundStatistics.pending} style={{ marginLeft: 6, backgroundColor: '#faad14' }} />
+                                            )}
+                                        </span>
+                                    }
+                                    key="refunds"
+                                >
+                                    <div className={tabContentClass}>
+                                        <Alert
+                                            message="Refund Management"
+                                            description="Track all refund requests, approvals, and releases. Refunds are now processed through invoices instead of bookings."
+                                            type="warning"
+                                            showIcon
+                                            style={{ marginBottom: 20 }}
+                                            className={isDarkMode ? 'bi-alert-dark' : ''}
+                                        />
+
+                                        {/* Refund Summary Cards */}
+                                        <Row gutter={16} style={{ marginBottom: 20 }}>
+                                            <Col xs={12} sm={6}>
+                                                <div className={debtCardClass}>
+                                                    <Text type="secondary">Pending Refunds</Text>
+                                                    <div className="bi-debt-value" style={{ color: '#faad14' }}>
+                                                        {refundStatistics.pending || 0}
+                                                    </div>
+                                                </div>
+                                            </Col>
+                                            <Col xs={12} sm={6}>
+                                                <div className={debtCardClass}>
+                                                    <Text type="secondary">Approved (Awaiting Release)</Text>
+                                                    <div className="bi-debt-value" style={{ color: '#1890ff' }}>
+                                                        {refundStatistics.approved || 0}
+                                                    </div>
+                                                </div>
+                                            </Col>
+                                            <Col xs={12} sm={6}>
+                                                <div className={debtCardClass}>
+                                                    <Text type="secondary">Released</Text>
+                                                    <div className="bi-debt-value" style={{ color: '#52c41a' }}>
+                                                        {refundStatistics.released || 0}
+                                                    </div>
+                                                </div>
+                                            </Col>
+                                            <Col xs={12} sm={6}>
+                                                <div className={debtCardClass}>
+                                                    <Text type="secondary">Total Refunded</Text>
+                                                    <div className="bi-debt-value" style={{ color: '#52c41a' }}>
+                                                        ₱{Number(refundStatistics.total_released_amount || 0).toLocaleString()}
+                                                    </div>
+                                                </div>
+                                            </Col>
+                                        </Row>
+
+                                        {/* Refund Filters */}
+                                        <div className={filtersClass} style={{ marginBottom: 16 }}>
+                                            <div className="bi-search-wrapper">
+                                                <SearchOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
+                                                <Input
+                                                    placeholder="Search refunds..."
+                                                    value={refundHistorySearch}
+                                                    onChange={(e) => setRefundHistorySearch(e.target.value)}
+                                                    allowClear
+                                                    size="small"
+                                                    style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 200 }}
+                                                />
+                                            </div>
+                                            <div className={filterGroupClass}>
+                                                <FilterOutlined />
+                                                <Select value={refundHistoryStatus} onChange={setRefundHistoryStatus} size="small" style={{ width: 140 }}>
+                                                    <Option value="all">All Status</Option>
+                                                    <Option value="pending">Pending</Option>
+                                                    <Option value="approved">Approved</Option>
+                                                    <Option value="released">Released</Option>
+                                                    <Option value="rejected">Rejected</Option>
+                                                </Select>
+                                            </div>
+                                            <div className={filterGroupClass}>
+                                                <CalendarOutlined />
+                                                <RangePicker
+                                                    value={refundHistoryDateRange}
+                                                    onChange={(v) => setRefundHistoryDateRange(v || [])}
+                                                    size="small"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        {/* Refunds Table */}
+                                        <div className="bi-table-scroll-container">
+                                            <Table
+                                                columns={refundColumns}
+                                                dataSource={filteredRefunds}
+                                                rowKey="refund_id"
+                                                loading={loading}
+                                                locale={{ emptyText: renderEmptyTable() }}
+                                                pagination={false}
+                                                className={tableClass}
+                                                scroll={{ x: 1400, y: 'calc(100vh - 620px)' }}
+                                            />
+                                        </div>
+                                    </div>
+                                </TabPane>
+                            )}
+
                             {/* PDF Overview Tab */}
                             <TabPane tab={<span><FileSearchOutlined /> PDF Overview</span>} key="pdf_overview">
                                 <div className={tabContentClass}>
-                                    <Alert 
-                                        message="Booking PDF Overview" 
-                                        description="Select a booking to view and download its complete PDF document with all details." 
-                                        type="info" 
-                                        showIcon 
+                                    <Alert
+                                        message="Booking PDF Overview"
+                                        description="Select a booking to view and download its complete PDF document with all details."
+                                        type="info"
+                                        showIcon
                                         style={{ marginBottom: 20 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
-                                    
+
                                     <div className={filtersClass} style={{ marginBottom: 16 }}>
                                         <div className="bi-search-wrapper" style={{ flex: 1, maxWidth: 400 }}>
                                             <SearchOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
-                                            <Input 
-                                                placeholder="Search by booking # or customer..." 
-                                                value={pdfOverviewSearch} 
-                                                onChange={(e) => setPdfOverviewSearch(e.target.value)} 
-                                                allowClear 
-                                                size="small" 
+                                            <Input
+                                                placeholder="Search by booking # or customer..."
+                                                value={pdfOverviewSearch}
+                                                onChange={(e) => setPdfOverviewSearch(e.target.value)}
+                                                allowClear
+                                                size="small"
                                                 style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: '100%' }}
                                             />
                                         </div>
@@ -2891,9 +3667,9 @@ const BillingInvoicing = () => {
                                     </div>
 
                                     <div className="bi-table-scroll-container">
-                                        <Table 
-                                            columns={pdfOverviewColumns} 
-                                            dataSource={filteredPDFBookings} 
+                                        <Table
+                                            columns={pdfOverviewColumns}
+                                            dataSource={filteredPDFBookings}
                                             rowKey="booking_id"
                                             loading={loading || pdfOverviewLoading}
                                             locale={{ emptyText: renderEmptyTable() }}
@@ -2912,9 +3688,9 @@ const BillingInvoicing = () => {
                                                     <Text strong>PDF Preview - {pdfOverviewBooking.booking_no || 'Booking'}</Text>
                                                 </Space>
                                             </Divider>
-                                            <div style={{ 
-                                                display: 'flex', 
-                                                justifyContent: 'space-between', 
+                                            <div style={{
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
                                                 alignItems: 'center',
                                                 padding: '8px 16px',
                                                 background: isDarkMode ? '#1a1a2e' : '#f8fafc',
@@ -2930,34 +3706,34 @@ const BillingInvoicing = () => {
                                                     <Text strong>{pdfOverviewBooking.customer_name || 'Unknown'}</Text>
                                                 </div>
                                                 <Space>
-                                                    <Button 
-                                                        icon={<ZoomOutOutlined />} 
+                                                    <Button
+                                                        icon={<ZoomOutOutlined />}
                                                         onClick={() => setPdfOverviewZoom(Math.max(50, pdfOverviewZoom - 10))}
                                                         size="small"
                                                     />
                                                     <span style={{ fontSize: 12, minWidth: 50, textAlign: 'center' }}>{pdfOverviewZoom}%</span>
-                                                    <Button 
-                                                        icon={<ZoomInOutlined />} 
+                                                    <Button
+                                                        icon={<ZoomInOutlined />}
                                                         onClick={() => setPdfOverviewZoom(Math.min(200, pdfOverviewZoom + 10))}
                                                         size="small"
                                                     />
-                                                    <Button 
-                                                        icon={<FullscreenOutlined />} 
+                                                    <Button
+                                                        icon={<FullscreenOutlined />}
                                                         onClick={() => setPdfOverviewZoom(100)}
                                                         size="small"
                                                     >
                                                         Fit
                                                     </Button>
-                                                    <Button 
-                                                        type="primary" 
-                                                        icon={<PrinterOutlined />} 
+                                                    <Button
+                                                        type="primary"
+                                                        icon={<PrinterOutlined />}
                                                         onClick={handlePrintPDFOverview}
                                                         size="small"
                                                     >
                                                         Print
                                                     </Button>
-                                                    <Button 
-                                                        icon={<DownloadOutlined />} 
+                                                    <Button
+                                                        icon={<DownloadOutlined />}
                                                         onClick={handleDownloadPDFOverview}
                                                         size="small"
                                                     >
@@ -2965,8 +3741,8 @@ const BillingInvoicing = () => {
                                                     </Button>
                                                 </Space>
                                             </div>
-                                            <div style={{ 
-                                                background: '#ffffff', 
+                                            <div style={{
+                                                background: '#ffffff',
                                                 borderRadius: '12px',
                                                 boxShadow: '0 4px 20px rgba(0,0,0,0.06)',
                                                 padding: '20px',
@@ -2975,8 +3751,8 @@ const BillingInvoicing = () => {
                                                 display: 'flex',
                                                 justifyContent: 'center'
                                             }}>
-                                                <div style={{ 
-                                                    transform: `scale(${pdfOverviewZoom / 100})`, 
+                                                <div style={{
+                                                    transform: `scale(${pdfOverviewZoom / 100})`,
                                                     transformOrigin: 'top center',
                                                     transition: 'transform 0.2s ease',
                                                     maxWidth: '210mm',
@@ -3007,8 +3783,8 @@ const BillingInvoicing = () => {
                             <div className="bi-modal-badge-group">
                                 <span className="bi-modal-badge">{selectedInvoice?.invoice_number || 'N/A'}</span>
                                 {selectedInvoice?.status && (
-                                    <span className="bi-status-badge" style={{ 
-                                        color: getStatusConfig(selectedInvoice.status).color, 
+                                    <span className="bi-status-badge" style={{
+                                        color: getStatusConfig(selectedInvoice.status).color,
                                         background: getStatusConfig(selectedInvoice.status).bg,
                                         padding: '4px 14px',
                                         borderRadius: '20px',
@@ -3031,15 +3807,15 @@ const BillingInvoicing = () => {
                     footer={
                         <div className="bi-modal-footer-enhanced">
                             <Space size={8}>
-                                <Button 
-                                    icon={<FilePdfOutlined />} 
+                                <Button
+                                    icon={<FilePdfOutlined />}
                                     onClick={() => handleViewPDF(selectedInvoice)}
                                     className="bi-footer-btn bi-footer-btn-pdf"
                                 >
                                     View PDF
                                 </Button>
-                                <Button 
-                                    icon={<PrinterOutlined />} 
+                                <Button
+                                    icon={<PrinterOutlined />}
                                     onClick={() => {
                                         const payment = payments.find(p => p.invoice_id === selectedInvoice?.invoice_id);
                                         if (payment) {
@@ -3052,8 +3828,8 @@ const BillingInvoicing = () => {
                                 >
                                     Print Receipt
                                 </Button>
-                                <Button 
-                                    icon={<MailOutlined />} 
+                                <Button
+                                    icon={<MailOutlined />}
                                     onClick={() => {
                                         reminderForm.setFieldsValue({
                                             subject: `Invoice ${selectedInvoice?.invoice_number}`,
@@ -3066,8 +3842,22 @@ const BillingInvoicing = () => {
                                 >
                                     Email
                                 </Button>
-                                <Button 
-                                    type="primary" 
+                                                            {canProcessRefunds && (
+                                    <Button
+                                        icon={<RollbackOutlined />}
+                                        onClick={() => {
+                                            openRefundDirectModal(selectedInvoice);
+                                            setInvoiceDetailsModalVisible(false);
+                                        }}
+                                        className="bi-footer-btn"
+                                        style={{ color: '#faad14', borderColor: '#faad14' }}
+                                        disabled={selectedInvoice?.refund_status && !['rejected', 'cancelled'].includes(selectedInvoice.refund_status)}
+                                    >
+                                        Direct Refund
+                                    </Button>
+                                )}
+                                <Button
+                                    type="primary"
                                     onClick={() => setInvoiceDetailsModalVisible(false)}
                                     className="bi-footer-btn bi-footer-btn-close"
                                 >
@@ -3121,6 +3911,31 @@ const BillingInvoicing = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {/* Refund Status (if applicable) */}
+                            {selectedInvoice.refund_status && (
+                                <div className="bi-info-section">
+                                    <div className="bi-section-header">
+                                        <RollbackOutlined style={{ color: '#faad14' }} />
+                                        <span className="bi-section-title-text">Refund Status</span>
+                                    </div>
+                                    <div style={{ padding: '12px 16px', background: getRefundStatusConfig(selectedInvoice.refund_status).bg, borderRadius: '10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                        <span style={{ color: getRefundStatusConfig(selectedInvoice.refund_status).color, fontSize: 20 }}>
+                                            {getRefundStatusConfig(selectedInvoice.refund_status).icon}
+                                        </span>
+                                        <div>
+                                            <div style={{ fontWeight: 600, color: getRefundStatusConfig(selectedInvoice.refund_status).color }}>
+                                                {getRefundStatusConfig(selectedInvoice.refund_status).text}
+                                            </div>
+                                            {selectedInvoice.refund_amount > 0 && (
+                                                <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                    Amount: ₱{Number(selectedInvoice.refund_amount || 0).toLocaleString()}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Customer & Event Information */}
                             <div className="bi-info-section">
@@ -3206,38 +4021,38 @@ const BillingInvoicing = () => {
                                         <UnorderedListOutlined style={{ color: '#1a7ab5' }} />
                                         <span className="bi-section-title-text">Invoice Items</span>
                                     </div>
-                                    <Table 
-                                        dataSource={selectedInvoice.items} 
+                                    <Table
+                                        dataSource={selectedInvoice.items}
                                         columns={[
-                                            { 
-                                                title: 'Description', 
+                                            {
+                                                title: 'Description',
                                                 dataIndex: 'description',
                                                 render: (text) => <Text className="bi-plain-text">{text}</Text>
                                             },
-                                            { 
-                                                title: 'Quantity', 
-                                                dataIndex: 'quantity', 
-                                                align: 'center', 
+                                            {
+                                                title: 'Quantity',
+                                                dataIndex: 'quantity',
+                                                align: 'center',
                                                 width: 100,
                                                 render: (v) => <Text className="bi-plain-text">{v}</Text>
                                             },
-                                            { 
-                                                title: 'Unit Price', 
-                                                dataIndex: 'unit_price', 
-                                                align: 'right', 
+                                            {
+                                                title: 'Unit Price',
+                                                dataIndex: 'unit_price',
+                                                align: 'right',
                                                 width: 130,
                                                 render: (v) => <Text className="bi-plain-text">₱{Number(v || 0).toLocaleString()}</Text>
                                             },
-                                            { 
-                                                title: 'Total', 
-                                                dataIndex: 'total', 
-                                                align: 'right', 
+                                            {
+                                                title: 'Total',
+                                                dataIndex: 'total',
+                                                align: 'right',
                                                 width: 130,
                                                 render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
                                             }
-                                        ]} 
-                                        pagination={false} 
-                                        size="small" 
+                                        ]}
+                                        pagination={false}
+                                        size="small"
                                         className={`${tableClass} bi-items-table`}
                                         locale={{ emptyText: renderEmptyTable() }}
                                     />
@@ -3264,9 +4079,9 @@ const BillingInvoicing = () => {
                         </div>
                     }
                     open={paymentModalVisible}
-                    onCancel={() => { 
-                        setPaymentModalVisible(false); 
-                        paymentForm.resetFields(); 
+                    onCancel={() => {
+                        setPaymentModalVisible(false);
+                        paymentForm.resetFields();
                         setPaymentMethod('cash');
                     }}
                     width={580}
@@ -3299,9 +4114,9 @@ const BillingInvoicing = () => {
                             </div>
                         </div>
 
-                        <Form 
-                            form={paymentForm} 
-                            layout="vertical" 
+                        <Form
+                            form={paymentForm}
+                            layout="vertical"
                             onFinish={handleRecordPayment}
                             onValuesChange={(changedValues) => {
                                 if (changedValues.payment_method) {
@@ -3310,32 +4125,32 @@ const BillingInvoicing = () => {
                             }}
                             className="bi-payment-form"
                         >
-                            <Form.Item 
-                                name="amount" 
+                            <Form.Item
+                                name="amount"
                                 label="Payment Amount"
                                 rules={[{ required: true, message: 'Please enter payment amount' }]}
                                 className="bi-payment-amount-field"
                             >
-                                <InputNumber 
-                                    min={0.01} 
-                                    style={{ width: '100%' }} 
-                                    prefix="₱" 
+                                <InputNumber
+                                    min={0.01}
+                                    style={{ width: '100%' }}
+                                    prefix="₱"
                                     placeholder="0.00"
                                     className="bi-form-input bi-payment-amount-input"
                                     size="large"
                                 />
                             </Form.Item>
-                            
+
                             <Form.Item noStyle shouldUpdate={(prev, cur) => prev.amount !== cur.amount}>
                                 {({ getFieldValue }) => {
                                     const entered = Number(getFieldValue('amount') || 0);
                                     const balance = Number(selectedInvoice?.balance || 0);
                                     const change = Math.max(0, entered - balance);
                                     return change > 0 ? (
-                                        <Alert 
-                                            type="success" 
-                                            showIcon 
-                                            style={{ marginBottom: 16, borderRadius: '10px' }} 
+                                        <Alert
+                                            type="success"
+                                            showIcon
+                                            style={{ marginBottom: 16, borderRadius: '10px' }}
                                             message={
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                     <span>Change to return</span>
@@ -3347,11 +4162,11 @@ const BillingInvoicing = () => {
                                     ) : null;
                                 }}
                             </Form.Item>
-                            
+
                             <div className="bi-form-row">
-                                <Form.Item 
-                                    name="payment_method" 
-                                    label="Payment Method" 
+                                <Form.Item
+                                    name="payment_method"
+                                    label="Payment Method"
                                     rules={[{ required: true }]}
                                     initialValue="cash"
                                     className="bi-form-col"
@@ -3395,10 +4210,10 @@ const BillingInvoicing = () => {
                                         </Option>
                                     </Select>
                                 </Form.Item>
-                                
-                                <Form.Item 
-                                    name="payment_type" 
-                                    label="Payment Type" 
+
+                                <Form.Item
+                                    name="payment_type"
+                                    label="Payment Type"
                                     initialValue="partial"
                                     className="bi-form-col"
                                 >
@@ -3424,7 +4239,7 @@ const BillingInvoicing = () => {
                                     </Select>
                                 </Form.Item>
                             </div>
-                            
+
                             {paymentMethod !== 'cash' && (
                                 <div className="bi-account-details">
                                     <div className="bi-account-details-header">
@@ -3432,17 +4247,17 @@ const BillingInvoicing = () => {
                                         <span>Account Details</span>
                                     </div>
                                     <div className="bi-form-row">
-                                        <Form.Item 
-                                            name="account_name" 
+                                        <Form.Item
+                                            name="account_name"
                                             label="Account Name"
                                             rules={[{ required: true, message: 'Please enter account name' }]}
                                             className="bi-form-col"
                                         >
                                             <Input placeholder="Account holder name" className="bi-form-input" prefix={<UserOutlined />} />
                                         </Form.Item>
-                                        
-                                        <Form.Item 
-                                            name="account_number" 
+
+                                        <Form.Item
+                                            name="account_number"
                                             label="Account Number"
                                             rules={[{ required: true, message: 'Please enter account number' }]}
                                             className="bi-form-col"
@@ -3450,9 +4265,9 @@ const BillingInvoicing = () => {
                                             <Input placeholder="Account number" className="bi-form-input" prefix={<CreditCardOutlined />} />
                                         </Form.Item>
                                     </div>
-                                    
-                                    <Form.Item 
-                                        name="reference_number" 
+
+                                    <Form.Item
+                                        name="reference_number"
                                         label="Reference Number"
                                         rules={[{ required: true, message: 'Please enter reference number' }]}
                                     >
@@ -3460,31 +4275,31 @@ const BillingInvoicing = () => {
                                     </Form.Item>
                                 </div>
                             )}
-                            
+
                             {paymentMethod === 'cash' && (
                                 <Form.Item name="reference_number" label="Reference Number (Optional)">
                                     <Input placeholder="Transaction reference (optional)" className="bi-form-input" prefix={<FileTextOutlined />} />
                                 </Form.Item>
                             )}
-                            
+
                             <Form.Item name="notes" label="Notes">
                                 <TextArea rows={2} placeholder="Additional notes..." className="bi-form-textarea" />
                             </Form.Item>
-                            
+
                             <div className="bi-modal-footer-enhanced">
-                                <Button 
-                                    onClick={() => { 
-                                        setPaymentModalVisible(false); 
-                                        paymentForm.resetFields(); 
+                                <Button
+                                    onClick={() => {
+                                        setPaymentModalVisible(false);
+                                        paymentForm.resetFields();
                                         setPaymentMethod('cash');
                                     }}
                                     className="bi-footer-btn"
                                 >
                                     Cancel
                                 </Button>
-                                <Button 
-                                    type="primary" 
-                                    htmlType="submit" 
+                                <Button
+                                    type="primary"
+                                    htmlType="submit"
                                     icon={<CheckCircleOutlined />}
                                     className="bi-footer-btn bi-footer-btn-submit"
                                     style={{ background: 'linear-gradient(135deg, #52c41a, #45a817)', borderColor: '#52c41a' }}
@@ -3512,7 +4327,7 @@ const BillingInvoicing = () => {
                             <div className="bi-modal-badge-group">
                                 <span className="bi-modal-badge">{selectedPayment?.payment_number || 'N/A'}</span>
                                 {selectedPayment?.status && (
-                                    <span className="bi-status-badge" style={{ 
+                                    <span className="bi-status-badge" style={{
                                         color: selectedPayment.status === 'completed' ? '#52c41a' : '#faad14',
                                         background: selectedPayment.status === 'completed' ? 'rgba(82,196,26,0.1)' : 'rgba(250,173,20,0.1)',
                                         padding: '4px 14px',
@@ -3537,22 +4352,22 @@ const BillingInvoicing = () => {
                     footer={
                         <div className="bi-modal-footer-enhanced">
                             <Space size={8}>
-                                <Button 
-                                    icon={<PrinterOutlined />} 
+                                <Button
+                                    icon={<PrinterOutlined />}
                                     onClick={() => handlePrintReceipt(selectedPayment)}
                                     className="bi-footer-btn bi-footer-btn-print"
                                 >
                                     Print
                                 </Button>
-                                <Button 
-                                    icon={<DownloadOutlined />} 
+                                <Button
+                                    icon={<DownloadOutlined />}
                                     onClick={() => handleDownloadReceipt(selectedPayment)}
                                     className="bi-footer-btn bi-footer-btn-download"
                                 >
                                     Download
                                 </Button>
-                                <Button 
-                                    type="primary" 
+                                <Button
+                                    type="primary"
                                     onClick={() => setReceiptModalVisible(false)}
                                     className="bi-footer-btn bi-footer-btn-close"
                                 >
@@ -3637,7 +4452,7 @@ const BillingInvoicing = () => {
                                         <span className="bi-payment-detail-label">Payment Method</span>
                                         <span className="bi-payment-detail-value">
                                             <span className="bi-method-tag" style={{ fontSize: '14px', padding: '4px 16px' }}>
-                                                {getPaymentMethodIcon(receiptData.payment?.payment_method)} 
+                                                {getPaymentMethodIcon(receiptData.payment?.payment_method)}
                                                 {receiptData.payment?.payment_method?.toUpperCase()}
                                             </span>
                                         </span>
@@ -3687,9 +4502,9 @@ const BillingInvoicing = () => {
                                         <span className="bi-section-title-text">Proof of Payment</span>
                                     </div>
                                     <div className="bi-receipt-image-container">
-                                        <Image 
-                                            src={resolveBackendUrl(receiptData.payment.receipt_url)} 
-                                            alt="Receipt Proof" 
+                                        <Image
+                                            src={resolveBackendUrl(receiptData.payment.receipt_url)}
+                                            alt="Receipt Proof"
                                             style={{ maxHeight: 350, objectFit: 'contain', borderRadius: '10px' }}
                                             preview={{ mask: 'View Full Image' }}
                                         />
@@ -3734,8 +4549,8 @@ const BillingInvoicing = () => {
                             <div className="bi-form-section">
                                 <div className="bi-form-section-title">Booking Selection</div>
                                 <Form.Item name="booking_id" label="Select Booking" rules={[{ required: true, message: 'Please select a booking' }]}>
-                                    <Select 
-                                        placeholder="Search and select a booking..." 
+                                    <Select
+                                        placeholder="Search and select a booking..."
                                         onChange={handleSelectBooking}
                                         showSearch
                                         optionFilterProp="children"
@@ -3814,11 +4629,11 @@ const BillingInvoicing = () => {
                                 <Row gutter={16}>
                                     <Col xs={24} sm={8}>
                                         <Form.Item name="subtotal" label="Subtotal" rules={[{ required: true, message: 'Please enter subtotal' }]}>
-                                            <InputNumber 
-                                                min={0} 
-                                                style={{ width: '100%' }} 
-                                                prefix="₱" 
-                                                placeholder="0.00" 
+                                            <InputNumber
+                                                min={0}
+                                                style={{ width: '100%' }}
+                                                prefix="₱"
+                                                placeholder="0.00"
                                                 className="bi-form-input"
                                             />
                                         </Form.Item>
@@ -3845,12 +4660,12 @@ const BillingInvoicing = () => {
                                 <Row gutter={16}>
                                     <Col xs={24} sm={12}>
                                         <Form.Item name="total_amount" label="Total Amount" rules={[{ required: true }]}>
-                                            <InputNumber 
-                                                min={0} 
-                                                style={{ width: '100%' }} 
-                                                prefix="₱" 
-                                                placeholder="0.00" 
-                                                disabled 
+                                            <InputNumber
+                                                min={0}
+                                                style={{ width: '100%' }}
+                                                prefix="₱"
+                                                placeholder="0.00"
+                                                disabled
                                                 className="bi-form-input-disabled bi-total-amount"
                                             />
                                         </Form.Item>
@@ -3870,9 +4685,9 @@ const BillingInvoicing = () => {
                                 <Button onClick={() => { setInvoiceModalVisible(false); setEditingInvoice(null); invoiceForm.resetFields(); }}>
                                     Cancel
                                 </Button>
-                                <Button 
-                                    type="primary" 
-                                    htmlType="submit" 
+                                <Button
+                                    type="primary"
+                                    htmlType="submit"
                                     icon={editingInvoice ? <EditOutlined /> : <PlusOutlined />}
                                     loading={invoiceSaveMutation.isPending}
                                     disabled={invoiceSaveMutation.isPending}
@@ -3915,7 +4730,7 @@ const BillingInvoicing = () => {
                                 </Col>
                             </Row>
                         </div>
-                        
+
                         <Form form={discountForm} layout="vertical" onFinish={handleApplyDiscount}>
                             <Form.Item name="discount_type" label="Discount Type" initialValue="fixed">
                                 <Radio.Group className="bi-radio-group">
@@ -3923,11 +4738,11 @@ const BillingInvoicing = () => {
                                     <Radio value="percentage">Percentage (%)</Radio>
                                 </Radio.Group>
                             </Form.Item>
-                            
+
                             <Form.Item name="discount_value" label="Discount Value" rules={[{ required: true, message: 'Please enter discount value' }]}>
                                 <InputNumber min={0} style={{ width: '100%' }} placeholder="Enter discount amount" className="bi-form-input" />
                             </Form.Item>
-                            
+
                             <div className="bi-modal-footer-enhanced">
                                 <Button onClick={() => setDiscountModalVisible(false)}>Cancel</Button>
                                 <Button type="primary" htmlType="submit" icon={<CheckCircleOutlined />}>
@@ -3955,24 +4770,24 @@ const BillingInvoicing = () => {
                     destroyOnClose
                 >
                     <div className="bi-modal-body-enhanced">
-                        <Alert 
-                            message={`Reminder for ${selectedInvoice?.customer_name || 'Customer'}`} 
-                            description={`Outstanding balance: ₱${Number(selectedInvoice?.balance || 0).toLocaleString()}`} 
-                            type="warning" 
-                            showIcon 
+                        <Alert
+                            message={`Reminder for ${selectedInvoice?.customer_name || 'Customer'}`}
+                            description={`Outstanding balance: ₱${Number(selectedInvoice?.balance || 0).toLocaleString()}`}
+                            type="warning"
+                            showIcon
                             style={{ marginBottom: 20 }}
                             className={isDarkMode ? 'bi-alert-dark' : ''}
                         />
-                        
+
                         <Form form={reminderForm} layout="vertical" onFinish={handleSendReminder}>
                             <Form.Item name="subject" label="Subject" rules={[{ required: true, message: 'Please enter subject' }]}>
                                 <Input placeholder="Email subject" className="bi-form-input" />
                             </Form.Item>
-                            
+
                             <Form.Item name="message" label="Message" rules={[{ required: true, message: 'Please enter message' }]}>
                                 <TextArea rows={6} placeholder="Write your reminder message..." className="bi-form-textarea" />
                             </Form.Item>
-                            
+
                             <div className="bi-modal-footer-enhanced">
                                 <Button onClick={() => setReminderModalVisible(false)}>Cancel</Button>
                                 <Button type="primary" htmlType="submit" icon={<SendOutlined />}>
@@ -4009,18 +4824,18 @@ const BillingInvoicing = () => {
                     destroyOnClose
                 >
                     <div className="bi-modal-body-enhanced">
-                        <Alert 
-                            message={`Reject payment of ${formatCurrency(selectedPayment?.amount || 0)} from ${selectedPayment?.customer_name || 'Unknown'}`} 
-                            description="Please provide a reason for rejection." 
-                            type="error" 
-                            showIcon 
+                        <Alert
+                            message={`Reject payment of ${formatCurrency(selectedPayment?.amount || 0)} from ${selectedPayment?.customer_name || 'Unknown'}`}
+                            description="Please provide a reason for rejection."
+                            type="error"
+                            showIcon
                             style={{ marginBottom: 20 }}
                             className={isDarkMode ? 'bi-alert-dark' : ''}
                         />
-                        <TextArea 
-                            value={rejectReason} 
-                            onChange={(e) => setRejectReason(e.target.value)} 
-                            rows={4} 
+                        <TextArea
+                            value={rejectReason}
+                            onChange={(e) => setRejectReason(e.target.value)}
+                            rows={4}
                             placeholder="Enter rejection reason..."
                             className="bi-form-textarea"
                         />
@@ -4065,8 +4880,8 @@ const BillingInvoicing = () => {
                         </div>
                     }
                     destroyOnClose
-                    bodyStyle={{ 
-                        padding: '20px', 
+                    bodyStyle={{
+                        padding: '20px',
                         background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
                         maxHeight: '80vh',
                         overflow: 'auto',
@@ -4075,8 +4890,8 @@ const BillingInvoicing = () => {
                         alignItems: 'flex-start'
                     }}
                 >
-                    <div style={{ 
-                        transform: `scale(${pdfViewerZoom / 100})`, 
+                    <div style={{
+                        transform: `scale(${pdfViewerZoom / 100})`,
                         transformOrigin: 'top center',
                         transition: 'transform 0.2s ease',
                         background: '#ffffff',
@@ -4126,8 +4941,8 @@ const BillingInvoicing = () => {
                         </div>
                     }
                     destroyOnClose
-                    bodyStyle={{ 
-                        padding: '20px', 
+                    bodyStyle={{
+                        padding: '20px',
                         background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
                         maxHeight: '80vh',
                         overflow: 'auto',
@@ -4136,8 +4951,8 @@ const BillingInvoicing = () => {
                         alignItems: 'flex-start'
                     }}
                 >
-                    <div style={{ 
-                        transform: `scale(${receiptPreviewZoom / 100})`, 
+                    <div style={{
+                        transform: `scale(${receiptPreviewZoom / 100})`,
                         transformOrigin: 'top center',
                         transition: 'transform 0.2s ease',
                         background: '#ffffff',
@@ -4151,6 +4966,800 @@ const BillingInvoicing = () => {
                         <div dangerouslySetInnerHTML={{ __html: receiptPreviewHtml }} />
                     </div>
                 </Modal>
+                {/* ==================== REFUND MODALS (ADMIN ONLY) ==================== */}
+                {canProcessRefunds && (
+                    <>
+                        {/* ⭐ DIRECT REFUND MODAL — Admin bypass: no request, no approval chain */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced">
+                                    <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #faad14, #d48806)' }}>
+                                        <RollbackOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Direct Refund</span>
+                                        <span className="bi-modal-subtitle">Process refund immediately — no approval required</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedInvoice?.invoice_number || 'N/A'}</span>
+                                    </div>
+                                </div>
+                            }
+                            open={refundDirectModalVisible}
+                            onCancel={() => {
+                                setRefundDirectModalVisible(false);
+                                refundDirectForm.resetFields();
+                                setSelectedInvoice(null);
+                            }}
+                            width={620}
+                            footer={null}
+                            className={modalClass}
+                            destroyOnClose
+                        >
+                            <div className="bi-modal-body-enhanced">
+                                <Alert
+                                    message="Admin Direct Refund"
+                                    description="This action will immediately cancel the booking and release the refund. No approval chain is required."
+                                    type="warning"
+                                    showIcon
+                                    style={{ marginBottom: 20 }}
+                                    className={isDarkMode ? 'bi-alert-dark' : ''}
+                                />
+
+                                <div className="bi-info-section" style={{ marginBottom: 16 }}>
+                                    <div className="bi-section-header">
+                                        <FileTextOutlined style={{ color: '#1a7ab5' }} />
+                                        <span className="bi-section-title-text">Invoice Details</span>
+                                    </div>
+                                    <div className="bi-info-grid">
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Customer</span>
+                                            <span className="bi-info-value">{selectedInvoice?.customer_name || 'N/A'}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Booking #</span>
+                                            <span className="bi-info-value">{selectedInvoice?.booking_no || 'N/A'}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Total Amount</span>
+                                            <span className="bi-info-value">₱{Number(selectedInvoice?.total_amount || 0).toLocaleString()}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Paid Amount</span>
+                                            <span className="bi-info-value" style={{ color: '#52c41a', fontWeight: 600 }}>
+                                                ₱{Number(selectedInvoice?.paid_amount || 0).toLocaleString()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <Form form={refundDirectForm} layout="vertical" onFinish={handleDirectRefund}>
+                                    <Form.Item
+                                        name="refund_amount"
+                                        label="Refund Amount"
+                                        tooltip="Enter 0 for cancel without refund."
+                                        rules={[
+                                            { required: true, message: 'Please enter the refund amount' },
+                                            { type: 'number', min: 0, message: 'Amount cannot be negative' }
+                                        ]}
+                                    >
+                                        <InputNumber
+                                            min={0}
+                                            step={0.01}
+                                            style={{ width: '100%' }}
+                                            prefix="₱"
+                                            placeholder="0.00"
+                                            className="bi-form-input"
+                                            size="large"
+                                        />
+                                    </Form.Item>
+
+                                    <Row gutter={12}>
+                                        <Col span={12}>
+                                            <Form.Item name="payment_method" label="Disbursement Method" rules={[{ required: true }]}>
+                                                <Select className="bi-form-select" size="large">
+                                                    <Option value="cash"><Space><BankOutlined /> Cash</Space></Option>
+                                                    <Option value="gcash"><Space><WalletOutlined /> GCash</Space></Option>
+                                                    <Option value="maya"><Space><WalletOutlined /> Maya</Space></Option>
+                                                    <Option value="bank_transfer"><Space><BankOutlined /> Bank Transfer</Space></Option>
+                                                    <Option value="card"><Space><CreditCardOutlined /> Card</Space></Option>
+                                                    <Option value="check"><Space><FileTextOutlined /> Check</Space></Option>
+                                                </Select>
+                                            </Form.Item>
+                                        </Col>
+                                        <Col span={12}>
+                                            <Form.Item name="reference_number" label="Reference Number (Optional)">
+                                                <Input placeholder="Transaction reference" className="bi-form-input" size="large" />
+                                            </Form.Item>
+                                        </Col>
+                                    </Row>
+
+                                    <Form.Item
+                                        name="reason"
+                                        label="Reason for Refund"
+                                        rules={[{ required: true, message: 'Please provide a reason' }]}
+                                    >
+                                        <TextArea
+                                            rows={3}
+                                            placeholder="Explain why this refund is being issued..."
+                                            maxLength={500}
+                                            showCount
+                                            className="bi-form-textarea"
+                                        />
+                                    </Form.Item>
+
+                                    <Form.Item name="notes" label="Internal Notes (Optional)">
+                                        <TextArea
+                                            rows={2}
+                                            placeholder="Additional notes (recorded in audit log)..."
+                                            maxLength={500}
+                                            showCount
+                                            className="bi-form-textarea"
+                                        />
+                                    </Form.Item>
+
+                                    <Form.Item
+                                        name="cancel_booking"
+                                        valuePropName="checked"
+                                        initialValue={true}
+                                    >
+                                        <Checkbox>
+                                            Also cancel the booking after refund
+                                        </Checkbox>
+                                    </Form.Item>
+
+                                    <div className="bi-modal-footer-enhanced">
+                                        <Button onClick={() => { setRefundDirectModalVisible(false); setSelectedInvoice(null); }}>
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="primary"
+                                            htmlType="submit"
+                                            icon={<RollbackOutlined />}
+                                            loading={refundDirectMutation.isPending}
+                                            disabled={refundDirectMutation.isPending}
+                                            style={{ background: '#faad14', borderColor: '#faad14' }}
+                                        >
+                                            Process Refund Now
+                                        </Button>
+                                    </div>
+                                </Form>
+                            </div>
+                        </Modal>
+
+                        {/* REFUND REQUEST MODAL */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced">
+                                    <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #faad14, #d48806)' }}>
+                                        <RollbackOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Request Refund</span>
+                                        <span className="bi-modal-subtitle">Submit a refund request for review</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedInvoice?.invoice_number || 'N/A'}</span>
+                                    </div>
+                                </div>
+                            }
+                            open={refundModalVisible}
+                            onCancel={() => {
+                                setRefundModalVisible(false);
+                                refundForm.resetFields();
+                                setSelectedInvoice(null);
+                            }}
+                            width={560}
+                            footer={null}
+                            className={modalClass}
+                            destroyOnClose
+                        >
+                            <div className="bi-modal-body-enhanced">
+                                <Alert
+                                    message="Refund Request"
+                                    description={`Request a refund for invoice ${selectedInvoice?.invoice_number}. This will be reviewed by an administrator.`}
+                                    type="warning"
+                                    showIcon
+                                    style={{ marginBottom: 20 }}
+                                    className={isDarkMode ? 'bi-alert-dark' : ''}
+                                />
+
+                                <div className="bi-info-section" style={{ marginBottom: 16 }}>
+                                    <div className="bi-section-header">
+                                        <FileTextOutlined style={{ color: '#1a7ab5' }} />
+                                        <span className="bi-section-title-text">Invoice Details</span>
+                                    </div>
+                                    <div className="bi-info-grid">
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Customer</span>
+                                            <span className="bi-info-value">{selectedInvoice?.customer_name || 'N/A'}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Total Amount</span>
+                                            <span className="bi-info-value">₱{Number(selectedInvoice?.total_amount || 0).toLocaleString()}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Paid Amount</span>
+                                            <span className="bi-info-value" style={{ color: '#52c41a' }}>
+                                                ₱{Number(selectedInvoice?.paid_amount || 0).toLocaleString()}
+                                            </span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Booking #</span>
+                                            <span className="bi-info-value">{selectedInvoice?.booking_no || 'N/A'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <Form form={refundForm} layout="vertical" onFinish={handleSubmitRefundRequest}>
+                                    <Form.Item
+                                        name="reason"
+                                        label="Reason for Refund"
+                                        rules={[{ required: true, message: 'Please provide a reason for the refund request' }]}
+                                    >
+                                        <TextArea
+                                            rows={4}
+                                            placeholder="Explain why this refund is being requested..."
+                                            maxLength={1000}
+                                            showCount
+                                            className="bi-form-textarea"
+                                        />
+                                    </Form.Item>
+                                    <div className="bi-modal-footer-enhanced">
+                                        <Button onClick={() => { setRefundModalVisible(false); setSelectedInvoice(null); }}>
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="primary"
+                                            htmlType="submit"
+                                            icon={<RollbackOutlined />}
+                                            loading={refundRequestMutation.isPending}
+                                            disabled={refundRequestMutation.isPending}
+                                            style={{ background: '#faad14', borderColor: '#faad14' }}
+                                        >
+                                            Submit Refund Request
+                                        </Button>
+                                    </div>
+                                </Form>
+                            </div>
+                        </Modal>
+
+                        {/* REFUND APPROVAL MODAL */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced">
+                                    <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #1890ff, #096dd9)' }}>
+                                        <CheckCircleOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Approve Refund</span>
+                                        <span className="bi-modal-subtitle">Review and approve refund request</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedRefund?.refund_number || 'N/A'}</span>
+                                    </div>
+                                </div>
+                            }
+                            open={refundApprovalModalVisible}
+                            onCancel={() => {
+                                setRefundApprovalModalVisible(false);
+                                refundApprovalForm.resetFields();
+                                setSelectedRefund(null);
+                            }}
+                            width={560}
+                            footer={null}
+                            className={modalClass}
+                            destroyOnClose
+                        >
+                            <div className="bi-modal-body-enhanced">
+                                <div className="bi-info-section" style={{ marginBottom: 16 }}>
+                                    <div className="bi-section-header">
+                                        <DollarOutlined style={{ color: '#1a7ab5' }} />
+                                        <span className="bi-section-title-text">Refund Details</span>
+                                    </div>
+                                    <div className="bi-info-grid">
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Refund #</span>
+                                            <span className="bi-info-value">{selectedRefund?.refund_number}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Deposit on File</span>
+                                            <span className="bi-info-value" style={{ color: '#1a7ab5', fontWeight: 600 }}>
+                                                ₱{Number(selectedRefund?.deposit_snapshot || 0).toLocaleString()}
+                                            </span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Booking #</span>
+                                            <span className="bi-info-value">
+                                                {selectedRefund?.booking?.booking_no || selectedRefund?.invoice?.booking?.booking_no || 'N/A'}
+                                            </span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Requested By</span>
+                                            <span className="bi-info-value">
+                                                {selectedRefund?.requested_by?.name || 'Cashier'}
+                                            </span>
+                                        </div>
+                                        <div className="bi-info-item" style={{ gridColumn: '1 / -1' }}>
+                                            <span className="bi-info-label">Reason</span>
+                                            <span className="bi-info-value">{selectedRefund?.reason || '—'}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <Form form={refundApprovalForm} layout="vertical" onFinish={handleApproveRefund}>
+                                    <Form.Item
+                                        name="approved_amount"
+                                        label="Approved Refund Amount"
+                                        rules={[
+                                            { required: true, message: 'Please enter the approved amount' },
+                                            { type: 'number', min: 0, message: 'Amount cannot be negative' }
+                                        ]}
+                                    >
+                                        <InputNumber
+                                            min={0}
+                                            style={{ width: '100%' }}
+                                            prefix="₱"
+                                            placeholder="0.00"
+                                            className="bi-form-input"
+                                            size="large"
+                                        />
+                                    </Form.Item>
+                                    <Form.Item name="admin_notes" label="Admin Notes (Optional)">
+                                        <TextArea
+                                            rows={3}
+                                            placeholder="Internal notes about this approval..."
+                                            maxLength={1000}
+                                            showCount
+                                            className="bi-form-textarea"
+                                        />
+                                    </Form.Item>
+                                    <div className="bi-modal-footer-enhanced">
+                                        <Button onClick={() => { setRefundApprovalModalVisible(false); setSelectedRefund(null); }}>
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="primary"
+                                            htmlType="submit"
+                                            icon={<CheckCircleOutlined />}
+                                            loading={refundApproveMutation.isPending}
+                                            disabled={refundApproveMutation.isPending}
+                                        >
+                                            Approve Refund
+                                        </Button>
+                                    </div>
+                                </Form>
+                            </div>
+                        </Modal>
+
+                        {/* REFUND RELEASE MODAL */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced">
+                                    <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #52c41a, #389e0d)' }}>
+                                        <RollbackOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Release Refund</span>
+                                        <span className="bi-modal-subtitle">Confirm and release the refund</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedRefund?.refund_number || 'N/A'}</span>
+                                    </div>
+                                </div>
+                            }
+                            open={refundReleaseModalVisible}
+                            onCancel={() => {
+                                setRefundReleaseModalVisible(false);
+                                refundReleaseForm.resetFields();
+                                setSelectedRefund(null);
+                            }}
+                            width={560}
+                            footer={null}
+                            className={modalClass}
+                            destroyOnClose
+                        >
+                            <div className="bi-modal-body-enhanced">
+                                <Alert
+                                    message="Confirm Refund Release"
+                                    description={`Release the approved refund of ₱${Number(selectedRefund?.approved_amount || selectedRefund?.amount || 0).toLocaleString()} to the customer. This action will also cancel the booking.`}
+                                    type="success"
+                                    showIcon
+                                    style={{ marginBottom: 20 }}
+                                    className={isDarkMode ? 'bi-alert-dark' : ''}
+                                />
+
+                                <div className="bi-info-section" style={{ marginBottom: 16 }}>
+                                    <div className="bi-section-header">
+                                        <FileTextOutlined style={{ color: '#1a7ab5' }} />
+                                        <span className="bi-section-title-text">Refund Details</span>
+                                    </div>
+                                    <div className="bi-info-grid">
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Refund #</span>
+                                            <span className="bi-info-value">{selectedRefund?.refund_number}</span>
+                                        </div>
+                                        <div className="bi-info-item">
+                                            <span className="bi-info-label">Approved Amount</span>
+                                            <span className="bi-info-value" style={{ color: '#52c41a', fontWeight: 600 }}>
+                                                ₱{Number(selectedRefund?.approved_amount || selectedRefund?.amount || 0).toLocaleString()}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <Form form={refundReleaseForm} layout="vertical" onFinish={handleReleaseRefund}>
+                                    <Form.Item
+                                        name="released_amount"
+                                        label="Amount to Release"
+                                        rules={[
+                                            { required: true, message: 'Please enter the amount to release' },
+                                            { type: 'number', min: 0.01, message: 'Amount must be greater than 0' }
+                                        ]}
+                                    >
+                                        <InputNumber
+                                            min={0.01}
+                                            style={{ width: '100%' }}
+                                            prefix="₱"
+                                            placeholder="0.00"
+                                            className="bi-form-input"
+                                            size="large"
+                                        />
+                                    </Form.Item>
+                                    <Form.Item name="payment_method" label="Payment Method" rules={[{ required: true }]}>
+                                        <Select className="bi-form-select" size="large">
+                                            <Option value="cash">
+                                                <Space><BankOutlined /> Cash</Space>
+                                            </Option>
+                                            <Option value="gcash">
+                                                <Space><WalletOutlined /> GCash</Space>
+                                            </Option>
+                                            <Option value="maya">
+                                                <Space><WalletOutlined /> Maya</Space>
+                                            </Option>
+                                            <Option value="bank_transfer">
+                                                <Space><BankOutlined /> Bank Transfer</Space>
+                                            </Option>
+                                            <Option value="card">
+                                                <Space><CreditCardOutlined /> Card</Space>
+                                            </Option>
+                                            <Option value="check">
+                                                <Space><FileTextOutlined /> Check</Space>
+                                            </Option>
+                                        </Select>
+                                    </Form.Item>
+                                    <Form.Item name="reference_number" label="Reference Number (Optional)">
+                                        <Input placeholder="Transaction reference" className="bi-form-input" size="large" />
+                                    </Form.Item>
+                                    <Form.Item name="notes" label="Notes (Optional)">
+                                        <TextArea rows={2} placeholder="Additional notes..." className="bi-form-textarea" />
+                                    </Form.Item>
+                                    <div className="bi-modal-footer-enhanced">
+                                        <Button onClick={() => { setRefundReleaseModalVisible(false); setSelectedRefund(null); }}>
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="primary"
+                                            htmlType="submit"
+                                            icon={<CheckCircleOutlined />}
+                                            loading={refundReleaseMutation.isPending}
+                                            disabled={refundReleaseMutation.isPending}
+                                            style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                                        >
+                                            Release Refund
+                                        </Button>
+                                    </div>
+                                </Form>
+                            </div>
+                        </Modal>
+
+                        {/* REFUND REJECT MODAL */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced bi-modal-header-danger">
+                                    <div className="bi-modal-icon" style={{ background: '#ff4d4f' }}>
+                                        <CloseCircleOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Reject Refund</span>
+                                        <span className="bi-modal-subtitle">Reject this refund request</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedRefund?.refund_number || 'N/A'}</span>
+                                    </div>
+                                </div>
+                            }
+                            open={refundRejectModalVisible}
+                            onCancel={() => {
+                                setRefundRejectModalVisible(false);
+                                refundRejectForm.resetFields();
+                                setSelectedRefund(null);
+                            }}
+                            width={520}
+                            footer={null}
+                            className={modalClass}
+                            destroyOnClose
+                        >
+                            <div className="bi-modal-body-enhanced">
+                                <Alert
+                                    message="Reject Refund Request"
+                                    description="The customer will be notified of this decision. This action cannot be undone."
+                                    type="error"
+                                    showIcon
+                                    style={{ marginBottom: 20 }}
+                                    className={isDarkMode ? 'bi-alert-dark' : ''}
+                                />
+
+                                <Form form={refundRejectForm} layout="vertical" onFinish={handleRejectRefund}>
+                                    <Form.Item
+                                        name="reason"
+                                        label="Rejection Reason"
+                                        rules={[{ required: true, message: 'Please provide a reason for rejection' }]}
+                                    >
+                                        <TextArea
+                                            rows={4}
+                                            placeholder="Explain why this refund is being rejected..."
+                                            maxLength={500}
+                                            showCount
+                                            className="bi-form-textarea"
+                                        />
+                                    </Form.Item>
+                                    <div className="bi-modal-footer-enhanced">
+                                        <Button onClick={() => { setRefundRejectModalVisible(false); setSelectedRefund(null); }}>
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            danger
+                                            type="primary"
+                                            htmlType="submit"
+                                            icon={<CloseCircleOutlined />}
+                                            loading={refundRejectMutation.isPending}
+                                            disabled={refundRejectMutation.isPending}
+                                        >
+                                            Reject Refund
+                                        </Button>
+                                    </div>
+                                </Form>
+                            </div>
+                        </Modal>
+
+                        {/* REFUND DETAILS MODAL */}
+                        <Modal
+                            title={
+                                <div className="bi-modal-header-enhanced">
+                                    <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #722ed1, #531dab)' }}>
+                                        <RollbackOutlined />
+                                    </div>
+                                    <div className="bi-modal-title-group">
+                                        <span className="bi-modal-title">Refund Details</span>
+                                        <span className="bi-modal-subtitle">Complete refund information</span>
+                                    </div>
+                                    <div className="bi-modal-badge-group">
+                                        <span className="bi-modal-badge">{selectedRefund?.refund_number || 'N/A'}</span>
+                                        {selectedRefund?.status && (
+                                            <span className="bi-status-badge" style={{
+                                                color: getRefundStatusConfig(selectedRefund.status).color,
+                                                background: getRefundStatusConfig(selectedRefund.status).bg,
+                                                padding: '4px 14px',
+                                                borderRadius: '20px',
+                                                fontSize: '12px',
+                                                fontWeight: 600,
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: '4px'
+                                            }}>
+                                                {getRefundStatusConfig(selectedRefund.status).icon} {getRefundStatusConfig(selectedRefund.status).text}
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            }
+                            open={refundDetailsModalVisible}
+                            onCancel={() => { setRefundDetailsModalVisible(false); setSelectedRefund(null); }}
+                            width={700}
+                            footer={
+                                <div className="bi-modal-footer-enhanced">
+                                    <Button
+                                        type="primary"
+                                        onClick={() => { setRefundDetailsModalVisible(false); setSelectedRefund(null); }}
+                                        className="bi-footer-btn bi-footer-btn-close"
+                                    >
+                                        Close
+                                    </Button>
+                                </div>
+                            }
+                            destroyOnClose
+                        >
+                            {selectedRefund && (
+                                <div className="bi-modal-body-enhanced">
+                                    {/* Refund Summary Cards */}
+                                    <div className="bi-invoice-summary-grid">
+                                        <div className="bi-summary-card">
+                                            <div className="bi-summary-icon" style={{ background: '#e8f0fe', color: '#1a7ab5' }}>
+                                                <DollarOutlined />
+                                            </div>
+                                            <div>
+                                                <div className="bi-summary-label">Refund Amount</div>
+                                                <div className="bi-summary-value">₱{Number(selectedRefund.amount || 0).toLocaleString()}</div>
+                                            </div>
+                                        </div>
+                                        <div className="bi-summary-card">
+                                            <div className="bi-summary-icon" style={{ background: '#fff7e6', color: '#faad14' }}>
+                                                <WalletOutlined />
+                                            </div>
+                                            <div>
+                                                <div className="bi-summary-label">Deposit Snapshot</div>
+                                                <div className="bi-summary-value" style={{ color: '#faad14' }}>
+                                                    ₱{Number(selectedRefund.deposit_snapshot || 0).toLocaleString()}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="bi-summary-card">
+                                            <div className="bi-summary-icon" style={{ background: '#e6f7e6', color: '#52c41a' }}>
+                                                <CheckCircleOutlined />
+                                            </div>
+                                            <div>
+                                                <div className="bi-summary-label">Released Amount</div>
+                                                <div className="bi-summary-value" style={{ color: '#52c41a' }}>
+                                                    ₱{Number(selectedRefund.released_amount || 0).toLocaleString()}
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="bi-summary-card">
+                                            <div className="bi-summary-icon" style={{ background: '#f0f0f0', color: '#8c8c8c' }}>
+                                                <ClockCircleOutlined />
+                                            </div>
+                                            <div>
+                                                <div className="bi-summary-label">Source</div>
+                                                <div className="bi-summary-value" style={{ textTransform: 'capitalize' }}>
+                                                    {selectedRefund.source || 'booking'}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Relations */}
+                                    <div className="bi-info-section">
+                                        <div className="bi-section-header">
+                                            <FileTextOutlined style={{ color: '#1a7ab5' }} />
+                                            <span className="bi-section-title-text">Related Records</span>
+                                        </div>
+                                        <div className="bi-info-grid">
+                                            <div className="bi-info-item">
+                                                <span className="bi-info-label">Booking #</span>
+                                                <span className="bi-info-value">
+                                                    {selectedRefund.booking?.booking_no || selectedRefund.invoice?.booking?.booking_no || 'N/A'}
+                                                </span>
+                                            </div>
+                                            <div className="bi-info-item">
+                                                <span className="bi-info-label">Invoice #</span>
+                                                <span className="bi-info-value">{selectedRefund.invoice?.invoice_number || 'N/A'}</span>
+                                            </div>
+                                            <div className="bi-info-item">
+                                                <span className="bi-info-label">Payment #</span>
+                                                <span className="bi-info-value">
+                                                    {selectedRefund.payment?.payment_number || selectedRefund.payment_id || 'N/A'}
+                                                </span>
+                                            </div>
+                                            <div className="bi-info-item">
+                                                <span className="bi-info-label">Customer</span>
+                                                <span className="bi-info-value">
+                                                    {(() => {
+                                                        const person = selectedRefund.booking?.serviceEvent?.customer?.person
+                                                            || selectedRefund.invoice?.booking?.serviceEvent?.customer?.person;
+                                                        return person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown' : 'Unknown';
+                                                    })()}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Reason */}
+                                    <div className="bi-info-section">
+                                        <div className="bi-section-header">
+                                            <InfoCircleOutlined style={{ color: '#1a7ab5' }} />
+                                            <span className="bi-section-title-text">Refund Reason</span>
+                                        </div>
+                                        <div className="bi-notes-content">{selectedRefund.reason || '—'}</div>
+                                    </div>
+
+                                    {/* Admin Notes */}
+                                    {selectedRefund.admin_notes && (
+                                        <div className="bi-info-section">
+                                            <div className="bi-section-header">
+                                                <AuditOutlined style={{ color: '#1a7ab5' }} />
+                                                <span className="bi-section-title-text">Admin Notes</span>
+                                            </div>
+                                            <div className="bi-notes-content">{selectedRefund.admin_notes}</div>
+                                        </div>
+                                    )}
+
+                                    {/* Rejection Reason */}
+                                    {selectedRefund.rejection_reason && (
+                                        <div className="bi-info-section">
+                                            <div className="bi-section-header">
+                                                <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                                                <span className="bi-section-title-text">Rejection Reason</span>
+                                            </div>
+                                            <div className="bi-notes-content" style={{ color: '#ff4d4f' }}>{selectedRefund.rejection_reason}</div>
+                                        </div>
+                                    )}
+
+                                    {/* Timeline */}
+                                    <div className="bi-info-section">
+                                        <div className="bi-section-header">
+                                            <HistoryOutlined style={{ color: '#1a7ab5' }} />
+                                            <span className="bi-section-title-text">Refund Timeline</span>
+                                        </div>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                                            {selectedRefund.requested_at && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(250,173,20,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#faad14' }}>
+                                                        <ClockCircleOutlined />
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontWeight: 600 }}>Requested</div>
+                                                        <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                            {dayjs(selectedRefund.requested_at).format('MMMM DD, YYYY h:mm A')}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {selectedRefund.approved_at && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(24,144,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1890ff' }}>
+                                                        <CheckCircleOutlined />
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontWeight: 600 }}>Approved</div>
+                                                        <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                            {dayjs(selectedRefund.approved_at).format('MMMM DD, YYYY h:mm A')}
+                                                            {selectedRefund.approved_by?.name && ` by ${selectedRefund.approved_by.name}`}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {selectedRefund.released_at && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(82,196,26,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#52c41a' }}>
+                                                        <RollbackOutlined />
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontWeight: 600 }}>Released</div>
+                                                        <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                            {dayjs(selectedRefund.released_at).format('MMMM DD, YYYY h:mm A')}
+                                                            {selectedRefund.released_by?.name && ` by ${selectedRefund.released_by.name}`}
+                                                        </div>
+                                                        {selectedRefund.payment_method && (
+                                                            <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                                via {selectedRefund.payment_method.toUpperCase()}
+                                                                {selectedRefund.reference_number && ` • Ref: ${selectedRefund.reference_number}`}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {selectedRefund.rejected_at && (
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                    <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'rgba(255,77,79,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff4d4f' }}>
+                                                        <CloseCircleOutlined />
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontWeight: 600 }}>Rejected</div>
+                                                        <div style={{ fontSize: 12, color: '#64748b' }}>
+                                                            {dayjs(selectedRefund.rejected_at).format('MMMM DD, YYYY h:mm A')}
+                                                            {selectedRefund.rejected_by?.name && ` by ${selectedRefund.rejected_by.name}`}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </Modal>
+                    </>
+                )}
             </div>
         </ConfigProvider>
     );

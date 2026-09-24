@@ -1,10 +1,23 @@
-// src/components/Staff/Staff_Attendance.jsx - OPTIMIZED WITH CACHE & SCROLL FIXES
+// src/components/Staff/StaffAttendancePage.jsx - v16 FINAL
+// -----------------------------------------------------------------------------
+// v16 additions (builds on v15):
+//   #6  Scheduled-but-no-attendance records are auto-tagged AWOL by the backend
+//       (materializeScheduledAbsences). The UI now renders attendance_flag_label
+//       on every record and in the Employee Overview insight strip.
+//   #7  Insight counters per employee for the selected cutoff:
+//       AWOL, Emergency Absent (EA), On Leave, Late In, Present Days.
+//   #9  New "Flag" action on each record inside Attendance Records modal.
+//       Modal supports AWOL / Emergency Absent / On Leave / Late In / Clear.
+//
+// v15 behaviour preserved:
+//   - Per-side verify/reject/un-reject that persists across refetches.
+//   - Every side has its own buttons — no auto-approve of the other side.
+//   - Employee Overview only reloads on period change / explicit refresh.
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import '../styles/StaffAttendance.css';
 
-// Import from your hooks file
 import {
   useMobileAttendance,
   useAttendanceStatistics,
@@ -13,52 +26,40 @@ import {
   useEmployeesList,
   useDepartmentsList,
   useUpdateAttendanceStatus,
-  useApproveStatusPanelRecord,
-  useDeclineStatusPanelRecord,
-  useUndeclineRecord,
-  useUnapproveRecord,
   useUnverifyAttendance,
   expandAttendanceLogs,
   normalizeAttendanceLog,
+  patchEmployeeRecordInPlace,
 } from '../../../hooks/useAttendanceQueries';
 
-// Import API for direct calls
 import api from '../../../services/api';
 
-// Icon Imports
 import {
   FiUsers, FiClock, FiCalendar, FiCheckCircle, FiXCircle, FiAlertCircle,
   FiSearch, FiFilter, FiEye, FiDownload, FiRefreshCw, FiChevronLeft,
-  FiChevronRight, FiUserCheck, FiLogOut, FiCamera, FiMapPin,
-  FiCalendar as FiCalendarIcon, FiArchive, FiTrendingUp, FiList, FiCheck,
+  FiChevronRight, FiUserCheck, FiLogOut, FiMapPin,
+  FiCalendar as FiCalendarIcon, FiArchive, FiList, FiCheck,
   FiThumbsUp, FiThumbsDown, FiRotateCcw, FiSliders, FiBell, FiBellOff,
-  FiDollarSign, FiAlertTriangle, FiTrendingUp as FiTrendingUpIcon, FiFileText, FiPrinter, FiSave, FiEdit2,
-  FiInfo, FiStar, FiClock as FiClockIcon
+  FiAlertTriangle, FiFileText, FiSave, FiEdit2,
+  FiPlus, FiMoreVertical, FiSettings, FiPrinter, FiX, FiEdit,
+  FiLock, FiChevronDown, FiInfo, FiArrowRight, FiFlag
 } from 'react-icons/fi';
 import { FiXCircle as FiXIcon } from 'react-icons/fi';
-import { BsCameraFill, BsGeoAlt } from 'react-icons/bs';
+import { BsCameraFill } from 'react-icons/bs';
 
-// ==================== TIMESTAMP AND RESPONSE HELPERS ====================
+// ==================== HELPERS ====================
 const formatDate = (dateString) => {
   if (!dateString) return 'N/A';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return 'Invalid Date';
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
 const formatTime = (dateString) => {
   if (!dateString) return 'N/A';
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return 'Invalid Time';
-  return date.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 };
 
 const extractApiList = (payload) => {
@@ -70,7 +71,6 @@ const extractApiList = (payload) => {
   return [];
 };
 
-// ==================== EMPLOYEE OVERVIEW HELPERS ====================
 const unwrapEmployeeOverviewPayload = (response) => response?.data?.data ?? response?.data ?? response ?? {};
 const toEmployeeOverviewArray = (value) => (Array.isArray(value) ? value : []);
 
@@ -82,6 +82,11 @@ const toDateInputValue = (date) => {
 };
 
 const formatDecimalHours = (value) => `${Number(value || 0).toFixed(2)}h`;
+
+const formatPeso = (value) => {
+  const num = Number(value || 0);
+  return `₱${num.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
 
 const toDateTimeLocalInput = (value, dateValue, fallbackTime) => {
   if (value) {
@@ -105,57 +110,142 @@ const formatEmployeeOverviewDate = (dateString) => {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
-const formatEmployeeOverviewLocation = (location) => {
-  if (!location?.lat || !location?.lng) return 'No location';
-  return `${Number(location.lat).toFixed(6)}, ${Number(location.lng).toFixed(6)}`;
-};
-
 const getApiErrorMessage = (error, fallback = 'Request failed') => {
   const errors = error?.response?.data?.errors;
   const firstError = errors ? Object.values(errors).flat().find(Boolean) : null;
   return error?.response?.data?.message || firstError || error?.message || fallback;
 };
 
-// ==================== RESIZEOBSERVER ERROR FIX ====================
-if (typeof window !== 'undefined') {
-  const originalConsoleError = console.error;
-  console.error = (...args) => {
-    const errorMessage = args[0]?.toString() || '';
-    if (errorMessage.includes('ResizeObserver loop') || 
-        errorMessage.includes('ResizeObserver loop completed') ||
-        errorMessage.includes('ResizeObserver loop limit exceeded')) {
-      return;
-    }
-    originalConsoleError.apply(console, args);
-  };
-}
+const getCutoffDates = (year, month, period) => {
+  if (period === 'first') return { start: new Date(year, month, 1), end: new Date(year, month, 15, 23, 59, 59) };
+  return { start: new Date(year, month, 16), end: new Date(year, month + 1, 0, 23, 59, 59) };
+};
 
-// ==================== SKELETON LOADING COMPONENTS ====================
-const SkeletonRow = () => (
-  <div className="skeleton-row">
-    <div className="skeleton-cell"><div className="skeleton-text"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-text"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-badge"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-button-small"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-text short"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-badge"></div></div>
-    <div className="skeleton-cell"><div className="skeleton-actions"></div></div>
-  </div>
-);
+const isCutoffReached = (year, month, period) => new Date() >= getCutoffDates(year, month, period).end;
 
+const formatCutoffRange = (year, month, period) => {
+  const d = getCutoffDates(year, month, period);
+  const endDay = d.end.getDate();
+  const monthName = d.start.toLocaleString('default', { month: 'long' });
+  return period === 'first' ? `${monthName} 1-15, ${year}` : `${monthName} 16-${endDay}, ${year}`;
+};
+
+const isWithinCutoff = (record, cutoffStart, cutoffEnd) => {
+  const raw = record?.attendance_date || record?.date;
+  if (!raw) return false;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return false;
+  return d >= cutoffStart && d <= cutoffEnd;
+};
+
+// ---------- "No Duty" detection ----------
+const isAbsentOrNonWorking = (rec) => {
+  if (!rec) return false;
+
+  const state = String(rec?.attendance_state || '').toLowerCase().trim();
+  const status = String(rec?.status || '').toLowerCase().trim();
+  const schedule = String(rec?.assigned_schedule || '').toLowerCase().trim();
+  const formattedIn = String(rec?.formatted_time_in || '').toLowerCase().trim();
+  const formattedOut = String(rec?.formatted_time_out || '').toLowerCase().trim();
+
+  if (
+    status === 'absent' ||
+    status === 'rest_day' ||
+    status === 'rest day' ||
+    status === 'no_duty' ||
+    status === 'no duty' ||
+    state === 'absent' ||
+    state === 'rest day' ||
+    state === 'rest_day' ||
+    state === 'no schedule' ||
+    state === 'no_schedule' ||
+    state === 'no duty' ||
+    state === 'no_duty'
+  ) {
+    return true;
+  }
+
+  const hasTimeIn = rec?.time_in && rec.time_in !== '' && rec.time_in !== null;
+  const hasTimeOut = rec?.time_out && rec.time_out !== '' && rec.time_out !== null;
+
+  if (!hasTimeIn && !hasTimeOut) {
+    const noSchedule =
+      !schedule ||
+      schedule === 'unscheduled' ||
+      schedule === '—' ||
+      schedule === 'n/a' ||
+      schedule === '-';
+
+    const zeroHours =
+      Number(rec?.regular_hours || 0) === 0 &&
+      Number(rec?.overtime_hours || 0) === 0 &&
+      Number(rec?.undertime_hours || 0) === 0;
+
+    if (noSchedule || zeroHours) return true;
+  }
+
+  const backendSaysNoIn = formattedIn === 'no time in' || formattedIn === '';
+  const backendSaysNoOut = formattedOut === 'no time out' || formattedOut === '';
+
+  if (backendSaysNoIn && backendSaysNoOut && (!schedule || schedule === 'unscheduled')) {
+    return true;
+  }
+
+  return false;
+};
+
+const isUnresolvedRecord = (rec) => {
+  if (!rec) return false;
+  if (rec.payroll_ready || rec.payroll_ready_at) return false;
+  return true;
+};
+
+const hasAnyAttendanceSignal = (rec) => {
+  const hasSchedule = rec?.assigned_schedule && rec.assigned_schedule !== 'Unscheduled';
+  const hasTimeIn = rec?.time_in && rec.time_in !== '';
+  const hasTimeOut = rec?.time_out && rec.time_out !== '';
+  return Boolean(hasSchedule || hasTimeIn || hasTimeOut);
+};
+
+// ============================================================================
+// PERSISTENT PER-SIDE STATUS STORE (localStorage-backed)
+// ============================================================================
+
+const SIDE_STATUS_STORAGE_KEY = 'attendance_side_status_v1';
+
+const loadSideStatusMap = () => {
+  try {
+    const raw = localStorage.getItem(SIDE_STATUS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const persistSideStatusMap = (map) => {
+  try {
+    localStorage.setItem(SIDE_STATUS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    // ignore quota errors
+  }
+};
+
+// ==================== SKELETONS ====================
 const SkeletonTable = () => (
   <div className="skeleton-table-container">
     <div className="skeleton-table-header">
-      <div className="skeleton-header-cell">Date & Time</div>
-      <div className="skeleton-header-cell">Employee</div>
-      <div className="skeleton-header-cell">Type</div>
-      <div className="skeleton-header-cell">Selfie</div>
-      <div className="skeleton-header-cell">Location</div>
-      <div className="skeleton-header-cell">Status</div>
-      <div className="skeleton-header-cell">Actions</div>
+      {['Date & Time','Employee','Type','Selfie','Status','Actions'].map((h) => (
+        <div key={h} className="skeleton-header-cell">{h}</div>
+      ))}
     </div>
     <div className="skeleton-table-body">
-      {[...Array(5)].map((_, i) => <SkeletonRow key={i} />)}
+      {[...Array(5)].map((_, i) => (
+        <div key={i} className="skeleton-row">
+          {[...Array(6)].map((_, j) => <div key={j} className="skeleton-cell"><div className="skeleton-text"></div></div>)}
+        </div>
+      ))}
     </div>
   </div>
 );
@@ -163,7 +253,7 @@ const SkeletonTable = () => (
 const SkeletonStatusPanelTable = () => (
   <div className="skeleton-table-container">
     <div className="skeleton-table-header">
-      {[...Array(8)].map((_, i) => <div key={i} className="skeleton-table-header-cell"></div>)}
+      {[...Array(10)].map((_, i) => <div key={i} className="skeleton-table-header-cell"></div>)}
     </div>
     <div className="skeleton-table-body">
       {[...Array(5)].map((_, i) => (
@@ -173,6 +263,7 @@ const SkeletonStatusPanelTable = () => (
           <div className="skeleton-text short"></div>
           <div className="skeleton-text"></div>
           <div className="skeleton-badge"></div>
+          <div className="skeleton-badge"></div>
           <div className="skeleton-actions"></div>
         </div>
       ))}
@@ -180,134 +271,438 @@ const SkeletonStatusPanelTable = () => (
   </div>
 );
 
-// ==================== 7TH DAY CONSECUTIVE WORKING DETECTION ====================
-const detectConsecutiveDays = (attendanceRecords) => {
-  const employeeDays = {};
-  
-  attendanceRecords.forEach(record => {
-    if (!record.employee_id) return;
-    const date = record.date || (record.timestamp ? new Date(record.timestamp).toISOString().split('T')[0] : null);
-    if (!date) return;
-    
-    if (!employeeDays[record.employee_id]) {
-      employeeDays[record.employee_id] = {
-        employee_name: record.employee_name || 'Unknown',
-        dates: new Set(),
-        records: []
-      };
-    }
-    employeeDays[record.employee_id].dates.add(date);
-    employeeDays[record.employee_id].records.push(record);
-  });
-  
-  const warnings = [];
-  
-  Object.keys(employeeDays).forEach(empId => {
-    const data = employeeDays[empId];
-    const sortedDates = Array.from(data.dates).sort();
-    
-    if (sortedDates.length < 7) return;
-    
-    let streakStart = 0;
-    let streakLength = 1;
-    
-    for (let i = 1; i < sortedDates.length; i++) {
-      const prevDate = new Date(sortedDates[i - 1]);
-      const currDate = new Date(sortedDates[i]);
-      const diffDays = Math.floor((currDate - prevDate) / (1000 * 60 * 60 * 24));
-      
-      if (diffDays === 1) {
-        streakLength++;
-        if (streakLength >= 7) {
-          warnings.push({
-            employee_id: empId,
-            employee_name: data.employee_name,
-            consecutive_days: streakLength,
-            start_date: sortedDates[streakStart],
-            end_date: sortedDates[i],
-            records: data.records.filter(r => {
-              const rDate = r.date || (r.timestamp ? new Date(r.timestamp).toISOString().split('T')[0] : null);
-              return rDate >= sortedDates[streakStart] && rDate <= sortedDates[i];
-            })
-          });
-        }
-      } else {
-        streakStart = i;
-        streakLength = 1;
+// ==================== STATUS HELPERS ====================
+const getAttendanceStatus = (schedule, attendance) => {
+  if (!schedule && !attendance) return { status: 'REST_DAY', label: 'Rest Day', severity: 'info' };
+  if (schedule && !attendance) return { status: 'AWOL', label: 'AWOL', severity: 'warning' };
+  if (!schedule && attendance) {
+    const hasTimeIn = attendance.time_in && attendance.time_in !== '' && attendance.time_in !== null;
+    const hasTimeOut = attendance.time_out && attendance.time_out !== '' && attendance.time_out !== null;
+    if (hasTimeIn || hasTimeOut) {
+      if (attendance.verification_status === 'verified' || attendance.verification_status === 'approved' || attendance.approval_status === 'approved') {
+        return { status: 'APPROVED', label: 'Approved (Unscheduled)', severity: 'success' };
       }
+      if (attendance.verification_status === 'rejected' || attendance.approval_status === 'rejected') {
+        return { status: 'REJECTED', label: 'Rejected', severity: 'danger' };
+      }
+      return { status: 'UNSCHEDULED', label: 'Unscheduled', severity: 'warning' };
     }
+  }
+  if (schedule && attendance) {
+    const hasTimeIn = attendance.time_in && attendance.time_in !== '' && attendance.time_in !== null;
+    const hasTimeOut = attendance.time_out && attendance.time_out !== '' && attendance.time_out !== null;
+    if (attendance.verification_status === 'rejected' || attendance.approval_status === 'rejected') {
+      return { status: 'REJECTED', label: 'Rejected', severity: 'danger' };
+    }
+    if (attendance.verification_status === 'verified' || attendance.verification_status === 'approved' || attendance.approval_status === 'approved') {
+      return { status: 'VERIFIED', label: 'Verified', severity: 'success' };
+    }
+    const hasSelfie = attendance.time_in_selfie_url || attendance.time_out_selfie_url || attendance.selfie_url;
+    if (hasSelfie && attendance.selfie_verified !== true && attendance.verification_status !== 'verified') {
+      return { status: 'UNVERIFIED', label: 'Unverified Selfie', severity: 'warning' };
+    }
+    if (!hasTimeIn && hasTimeOut) return { status: 'MISSING_TIME_IN', label: 'Missing Time In', severity: 'danger' };
+    if (hasTimeIn && !hasTimeOut) return { status: 'MISSING_TIME_OUT', label: 'Missing Time Out', severity: 'danger' };
+    if (hasTimeIn && hasTimeOut) return { status: 'PENDING', label: 'Pending Verification', severity: 'warning' };
+  }
+  return { status: 'INCOMPLETE', label: 'Incomplete', severity: 'warning' };
+};
+
+const getOTStatus = (recordOrHours) => {
+  const record = typeof recordOrHours === 'object' && recordOrHours !== null ? recordOrHours : null;
+  const otHours = record ? Number(record.overtime_hours || 0) : Number(recordOrHours || 0);
+
+  if (record) {
+    const explicitStatus = record.overtime_status || record.ot_status;
+    if (explicitStatus === 'approved') return { status: 'APPROVED', label: 'OT Approved', severity: 'success' };
+    if (explicitStatus === 'rejected') return { status: 'REJECTED', label: 'OT Rejected', severity: 'danger' };
+    if (explicitStatus === 'not_applicable') return { status: 'NONE', label: 'No OT', severity: 'info' };
+    if (record.overtime_approved === true && otHours > 0) return { status: 'APPROVED', label: 'OT Approved', severity: 'success' };
+  }
+
+  if (!otHours || otHours <= 0) return { status: 'NONE', label: 'No OT', severity: 'info' };
+  return { status: 'PENDING', label: 'OT Pending Approval', severity: 'warning' };
+};
+
+const getUndertimeStatus = (recordOrHours) => {
+  const record = typeof recordOrHours === 'object' && recordOrHours !== null ? recordOrHours : null;
+  const utHours = record ? Number(record.undertime_hours || 0) : Number(recordOrHours || 0);
+
+  if (record) {
+    const explicitStatus = record.undertime_status || record.ut_status;
+    if (explicitStatus === 'approved') return { status: 'APPROVED', label: 'UT Approved', severity: 'success' };
+    if (explicitStatus === 'rejected') return { status: 'REJECTED', label: 'UT Rejected', severity: 'danger' };
+    if (explicitStatus === 'not_applicable') return { status: 'NONE', label: 'No UT', severity: 'info' };
+    if (record.undertime_approved === true) return { status: 'APPROVED', label: 'UT Approved', severity: 'success' };
+    if (record.approval_status === 'approved' && utHours > 0) return { status: 'APPROVED', label: 'UT Reviewed', severity: 'success' };
+  }
+
+  if (!utHours || utHours <= 0) return { status: 'NONE', label: 'No UT', severity: 'info' };
+  return { status: 'PENDING', label: 'UT Pending Approval', severity: 'warning' };
+};
+
+// ⭐ NEW — flag label rendering map
+const getFlagStyle = (flag) => {
+  switch (flag) {
+    case 'awol':
+      return { bg: '#fee2e2', color: '#991b1b', border: '#fca5a5', label: 'AWOL' };
+    case 'emergency_absent':
+      return { bg: '#fef3c7', color: '#b45309', border: '#fcd34d', label: 'EA' };
+    case 'on_leave':
+      return { bg: '#e0e7ff', color: '#3730a3', border: '#c7d2fe', label: 'Leave' };
+    case 'late_in':
+      return { bg: '#fef3c7', color: '#b45309', border: '#fcd34d', label: 'Late In' };
+    default:
+      return null;
+  }
+};
+
+// ==================== PRINT HELPERS ====================
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+const openPrintWindow = (html) => {
+  const w = window.open('', '_blank', 'width=1200,height=800');
+  if (!w) { window.alert('Please allow pop-ups to print.'); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+};
+
+const printSavedRecords = ({ employee, summary, records, cutoffLabel, month, year, cutoff }) => {
+  if (!records || records.length === 0) { window.alert('No saved records to print.'); return; }
+  const monthName = new Date(year, month).toLocaleString('default', { month: 'long' });
+  const cutoffText = cutoff === 'first' ? '1 - 15' : '16 - End';
+  const printedAt = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+  const rowsHtml = records.map((record) => `
+    <tr>
+      <td>${escapeHtml(formatEmployeeOverviewDate(record.attendance_date || record.date))}</td>
+      <td>${escapeHtml(record.assigned_schedule || 'Unscheduled')}</td>
+      <td>${escapeHtml(record.formatted_time_in || '—')}</td>
+      <td>${escapeHtml(record.formatted_time_out || '—')}</td>
+      <td class="num">${formatDecimalHours(record.regular_hours)}</td>
+      <td class="num">${formatDecimalHours(record.overtime_hours)}</td>
+      <td class="num">${formatDecimalHours(record.undertime_hours)}</td>
+      <td class="num"><strong>${formatDecimalHours(record.total_hours)}</strong></td>
+      <td class="num">${escapeHtml(record.late_undertime || `${record.late_minutes || 0}L / ${record.undertime_minutes || 0}U`)}</td>
+      <td>${escapeHtml(record.verification_status || 'approved')}</td>
+    </tr>
+  `).join('');
+
+  openPrintWindow(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Saved Attendance - ${escapeHtml(employee.employee_name)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 14px; font-weight: 500; color: #4b5563; margin: 0 0 16px; }
+      .meta { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 20px; margin-bottom: 20px; font-size: 12px; }
+      .summary { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; padding: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; }
+      .summary .cell { text-align: center; }
+      .summary .label { font-size: 10px; text-transform: uppercase; font-weight: 600; color: #1e40af; }
+      .summary .value { font-size: 16px; font-weight: 700; color: #1e40af; margin-top: 3px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; }
+      th { background: #f3f4f6; font-size: 10px; text-transform: uppercase; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      tfoot td { background: #f8fafc; font-weight: 700; }
+      .footer { margin-top: 20px; font-size: 10px; color: #6b7280; text-align: center; }
+    </style></head><body>
+    <h1>Attendance Saved Records</h1>
+    <h2>${escapeHtml(employee.employee_name)} (${escapeHtml(employee.employee_code || employee.employee_id)})</h2>
+    <div class="meta">
+      <div><strong>Cutoff Period:</strong> ${escapeHtml(cutoffLabel || `${monthName} ${cutoffText}, ${year}`)}</div>
+      <div><strong>Department:</strong> ${escapeHtml(employee.department || 'N/A')}</div>
+      <div><strong>Position:</strong> ${escapeHtml(employee.position || 'N/A')}</div>
+      <div><strong>Total Records:</strong> ${records.length}</div>
+    </div>
+    <div class="summary">
+      <div class="cell"><div class="label">Regular Hours</div><div class="value">${formatDecimalHours(summary?.total_regular_hours)}</div></div>
+      <div class="cell"><div class="label">OT Hours</div><div class="value">${formatDecimalHours(summary?.total_overtime_hours)}</div></div>
+      <div class="cell"><div class="label">Undertime</div><div class="value">${formatDecimalHours(summary?.total_undertime_hours)}</div></div>
+      <div class="cell"><div class="label">Total Hours</div><div class="value">${formatDecimalHours(summary?.total_hours)}</div></div>
+      <div class="cell"><div class="label">Labor Cost</div><div class="value">${formatPeso(summary?.total_labor_cost)}</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Date</th><th>Schedule</th><th>Time In</th><th>Time Out</th><th>Regular</th><th>OT</th><th>Undertime</th><th>Total</th><th>Late/UT</th><th>Status</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot><tr>
+        <td colspan="4" style="text-align:right;">TOTALS:</td>
+        <td class="num">${formatDecimalHours(summary?.total_regular_hours)}</td>
+        <td class="num">${formatDecimalHours(summary?.total_overtime_hours)}</td>
+        <td class="num">${formatDecimalHours(summary?.total_undertime_hours)}</td>
+        <td class="num">${formatDecimalHours(summary?.total_hours)}</td>
+        <td colspan="2" class="num" style="text-align:right;">Labor Cost: <strong>${formatPeso(summary?.total_labor_cost)}</strong></td>
+      </tr></tfoot>
+    </table>
+    <div class="footer">Printed on ${escapeHtml(printedAt)}</div>
+    <script>window.onload=function(){setTimeout(function(){window.print();},250);}</script>
+    </body></html>`);
+};
+
+const printAttendanceRecords = ({ employee, records, cutoffLabel }) => {
+  if (!records || records.length === 0) { window.alert('No records to print.'); return; }
+  const printedAt = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+  const rowsHtml = records.map((r) => `
+    <tr>
+      <td>${escapeHtml(formatEmployeeOverviewDate(r.date || r.attendance_date))}</td>
+      <td>${escapeHtml(r.assigned_schedule || 'Unscheduled')}</td>
+      <td>${escapeHtml(r.formatted_time_in || '—')}</td>
+      <td>${escapeHtml(r.formatted_time_out || '—')}</td>
+      <td class="num">${formatDecimalHours(r.regular_hours)}</td>
+      <td class="num">${formatDecimalHours(r.overtime_hours)}</td>
+      <td class="num">${formatDecimalHours(r.undertime_hours)}</td>
+      <td class="num"><strong>${formatDecimalHours(r.total_hours)}</strong></td>
+      <td>${escapeHtml((r.verification_status || r.approval_status || 'pending'))}</td>
+    </tr>
+  `).join('');
+
+  openPrintWindow(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Attendance Records - ${escapeHtml(employee.employee_name)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 14px; color: #4b5563; margin: 0 0 16px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; }
+      th { background: #eff6ff; color: #1e40af; font-size: 10px; text-transform: uppercase; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #6b7280; }
+    </style></head><body>
+    <h1>Attendance Records</h1>
+    <h2>${escapeHtml(employee.employee_name)} (${escapeHtml(employee.employee_code || employee.employee_id)}) — ${escapeHtml(cutoffLabel || '')}</h2>
+    <table>
+      <thead><tr><th>Date</th><th>Schedule</th><th>Time In</th><th>Time Out</th><th>Regular</th><th>OT</th><th>UT</th><th>Total</th><th>Status</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    <div class="footer">Printed on ${escapeHtml(printedAt)}</div>
+    <script>window.onload=function(){setTimeout(function(){window.print();},250);}</script>
+    </body></html>`);
+};
+
+const printArchiveRecords = ({ employee, records, cutoffLabel }) => {
+  if (!records || records.length === 0) { window.alert('No archive records to print.'); return; }
+  const printedAt = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const rowsHtml = records.map((r) => `
+    <tr>
+      <td>${escapeHtml(formatDate(r.attendance_date || r.date || r.timestamp))}</td>
+      <td>${escapeHtml(r.assigned_schedule || 'Unscheduled')}</td>
+      <td>${escapeHtml(r.formatted_time_in || '—')}</td>
+      <td>${escapeHtml(r.formatted_time_out || '—')}</td>
+      <td class="num">${formatDecimalHours(r.regular_hours)}</td>
+      <td class="num">${formatDecimalHours(r.overtime_hours)}</td>
+      <td class="num">${formatDecimalHours(r.undertime_hours)}</td>
+      <td class="num"><strong>${formatDecimalHours(r.total_hours)}</strong></td>
+      <td>${escapeHtml(r.verification_status || r.approval_status || 'pending')}</td>
+    </tr>
+  `).join('');
+
+  const totals = records.reduce((acc, r) => {
+    acc.reg += Number(r.regular_hours || 0);
+    acc.ot += Number(r.overtime_hours || 0);
+    acc.ut += Number(r.undertime_hours || 0);
+    acc.total += Number(r.total_hours || (Number(r.regular_hours || 0) + Number(r.overtime_hours || 0)));
+    return acc;
+  }, { reg: 0, ot: 0, ut: 0, total: 0 });
+
+  openPrintWindow(`<!DOCTYPE html><html><head><meta charset="utf-8"/>
+    <title>Archive - ${escapeHtml(employee.employee_name)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 14px; color: #4b5563; margin: 0 0 16px; }
+      .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; padding: 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; }
+      .summary .cell { text-align: center; }
+      .summary .label { font-size: 10px; text-transform: uppercase; font-weight: 600; color: #1e40af; }
+      .summary .value { font-size: 16px; font-weight: 700; color: #1e40af; margin-top: 3px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { border: 1px solid #d1d5db; padding: 6px 8px; text-align: left; }
+      th { background: #eff6ff; color: #1e40af; font-size: 10px; text-transform: uppercase; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #6b7280; }
+    </style></head><body>
+    <h1>Attendance Archive</h1>
+    <h2>${escapeHtml(employee.employee_name)} (${escapeHtml(employee.employee_code || employee.employee_id)}) — ${escapeHtml(cutoffLabel)}</h2>
+    <div class="summary">
+      <div class="cell"><div class="label">Regular</div><div class="value">${formatDecimalHours(totals.reg)}</div></div>
+      <div class="cell"><div class="label">Overtime</div><div class="value">${formatDecimalHours(totals.ot)}</div></div>
+      <div class="cell"><div class="label">Undertime</div><div class="value">${formatDecimalHours(totals.ut)}</div></div>
+      <div class="cell"><div class="label">Total</div><div class="value">${formatDecimalHours(totals.total)}</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Date</th><th>Schedule</th><th>Time In</th><th>Time Out</th><th>Regular</th><th>OT</th><th>UT</th><th>Total</th><th>Status</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+    </table>
+    <div class="footer">Printed on ${escapeHtml(printedAt)}</div>
+    <script>window.onload=function(){setTimeout(function(){window.print();},250);}</script>
+    </body></html>`);
+};
+
+// ==================== VALIDATION LOGIC ====================
+const inspectRecordsForSave = (records) => {
+  const issues = {
+    missingTimeIn: [],
+    missingTimeOut: [],
+    pendingAttendance: [],
+    pendingOvertime: [],
+    pendingUndertime: [],
+    empty: records.length === 0,
+  };
+
+  records.forEach((rec) => {
+    const isAbsent = isAbsentOrNonWorking(rec);
+    if (isAbsent) return;
+
+    const hasTimeIn = rec.time_in && rec.time_in !== '';
+    const hasTimeOut = rec.time_out && rec.time_out !== '';
+
+    if (!hasTimeIn) issues.missingTimeIn.push(rec);
+    if (!hasTimeOut) issues.missingTimeOut.push(rec);
+
+    const approval = String(rec.approval_status || rec.verification_status || 'pending').toLowerCase();
+    if (approval === 'pending') issues.pendingAttendance.push(rec);
+
+    const otStatus = getOTStatus(rec);
+    if (otStatus.status === 'PENDING') issues.pendingOvertime.push(rec);
+
+    const utStatus = getUndertimeStatus(rec);
+    if (utStatus.status === 'PENDING') issues.pendingUndertime.push(rec);
   });
-  
-  return warnings;
+
+  const totalBlockers =
+    issues.missingTimeIn.length +
+    issues.missingTimeOut.length +
+    issues.pendingAttendance.length +
+    issues.pendingOvertime.length +
+    issues.pendingUndertime.length;
+
+  return { issues, totalBlockers, canSave: totalBlockers === 0 && !issues.empty };
 };
 
 // ==================== MAIN COMPONENT ====================
 const Staff_Attendance = () => {
   const mainContentRef = useRef(null);
   const queryClient = useQueryClient();
+
+  // ---- Refs that must survive re-renders ----
   const hasInitiallyLoadedRef = useRef(false);
-  
-  // Local state
+  const fetchInFlightRef = useRef(false);
+  const lastFetchedPeriodRef = useRef(null);
+  const searchRef = useRef('');
+  const deptRef = useRef('all');
+  const currentPeriodKeyRef = useRef(null);
+
+  // Persistent per-side status map (localStorage-backed)
+  const [sideStatusMap, setSideStatusMap] = useState(() => loadSideStatusMap());
+  useEffect(() => { persistSideStatusMap(sideStatusMap); }, [sideStatusMap]);
+
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [cutoffPeriod, setCutoffPeriod] = useState('first');
-  const [cutoffHistory, setCutoffHistory] = useState([]);
-  const [showHistoryModal, setShowHistoryModal] = useState(false);
-  const [selectedHistoryCutoff, setSelectedHistoryCutoff] = useState(null);
-  const [historyAttendance, setHistoryAttendance] = useState([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [showFilters, setShowFilters] = useState(false);
-  const [selectedAttendance, setSelectedAttendance] = useState(null);
-  const [showAttendanceModal, setShowAttendanceModal] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [lastRefreshTime, setLastRefreshTime] = useState(new Date());
+  const [activeMainTab, setActiveMainTab] = useState('attendance');
+  const [submitting, setSubmitting] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
+
   const [selectedSelfie, setSelectedSelfie] = useState(null);
   const [showSelfieModal, setShowSelfieModal] = useState(false);
+  const [selectedAttendance, setSelectedAttendance] = useState(null);
+  const [showAttendanceModal, setShowAttendanceModal] = useState(false);
   const [showNotification, setShowNotification] = useState(false);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [notificationType, setNotificationType] = useState('success');
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
-  
-  // Auto-refresh toggle state
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
-  const [lastRefreshTime, setLastRefreshTime] = useState(new Date());
 
-  const [selectedOvertimeHours, setSelectedOvertimeHours] = useState(0);
-  const [overtimeAction, setOvertimeAction] = useState('approve_all');
+  const [employeeOverviewEmployees, setEmployeeOverviewEmployees] = useState([]);
+  const [employeeOverviewSelectedEmployee, setEmployeeOverviewSelectedEmployee] = useState(null);
+  const [employeeOverviewSelectedRecords, setEmployeeOverviewSelectedRecords] = useState([]);
+  const [employeeOverviewLoading, setEmployeeOverviewLoading] = useState(false);
+  const [employeeOverviewActionLoading, setEmployeeOverviewActionLoading] = useState(null);
+  const [employeeOverviewSearch, setEmployeeOverviewSearch] = useState('');
+  const [employeeOverviewDepartment, setEmployeeOverviewDepartment] = useState('all');
+  const [dropdownOpen, setDropdownOpen] = useState(null);
 
-  // Status Panel States
-  const [activeMainTab, setActiveMainTab] = useState('attendance');
-  const [statusPanelFilters, setStatusPanelFilters] = useState({
-    start_date: '',
-    end_date: '',
-    department_id: 'all',
-    employee_id: ''
-  });
-  const [statusPanelPage, setStatusPanelPage] = useState(1);
-  const [showDeclineModal, setShowDeclineModal] = useState(false);
-  const [selectedRecordForDecline, setSelectedRecordForDecline] = useState(null);
-  const [declineReason, setDeclineReason] = useState('');
-  const [showApproveNotesModal, setShowApproveNotesModal] = useState(false);
-  const [selectedRecordForApprove, setSelectedRecordForApprove] = useState(null);
-  const [approveNotes, setApproveNotes] = useState('');
-  const [statusPanelDateFilter, setStatusPanelDateFilter] = useState('this-month');
-  const [submitting, setSubmitting] = useState(false);
-  
-  // Overtime confirmation states
-  const [showOvertimeConfirmModal, setShowOvertimeConfirmModal] = useState(false);
-  const [pendingApproveRecord, setPendingApproveRecord] = useState(null);
-  const [overtimeReason, setOvertimeReason] = useState('');
-  const [overtimeConfirmed, setOvertimeConfirmed] = useState(false);
-  
-  // Bulk action states
-  const [selectedRecords, setSelectedRecords] = useState([]);
-  const [showBulkApproveModal, setShowBulkApproveModal] = useState(false);
-  const [bulkApproveNotes, setBulkApproveNotes] = useState('');
-  const [bulkOvertimeConfirmed, setBulkOvertimeConfirmed] = useState(false);
+  const [inlineEditRecord, setInlineEditRecord] = useState(null);
+  const [inlineEditTimeIn, setInlineEditTimeIn] = useState('');
+  const [inlineEditTimeOut, setInlineEditTimeOut] = useState('');
+  const [inlineEditNotes, setInlineEditNotes] = useState('');
+  const [inlineEditSaving, setInlineEditSaving] = useState(false);
 
-  // UNSCHEDULED APPROVALS STATES
+  const [showAddAttendanceModal, setShowAddAttendanceModal] = useState(false);
+  const [addAttendanceEmployee, setAddAttendanceEmployee] = useState(null);
+  const [addAttendanceDate, setAddAttendanceDate] = useState('');
+  const [addAttendanceTimeIn, setAddAttendanceTimeIn] = useState('');
+  const [addAttendanceTimeOut, setAddAttendanceTimeOut] = useState('');
+  const [addAttendanceNotes, setAddAttendanceNotes] = useState('');
+
+  const [recordFilterMonth, setRecordFilterMonth] = useState(new Date().getMonth());
+  const [recordFilterYear, setRecordFilterYear] = useState(new Date().getFullYear());
+  const [recordFilterCutoff, setRecordFilterCutoff] = useState('first');
+  const [showRecordModal, setShowRecordModal] = useState(false);
+  const [selectedRecordEmployee, setSelectedRecordEmployee] = useState(null);
+  const [employeeSavedRecords, setEmployeeSavedRecords] = useState([]);
+  const [employeeSavedRecordsSummary, setEmployeeSavedRecordsSummary] = useState(null);
+  const [loadingRecords, setLoadingRecords] = useState(false);
+
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveEmployees, setArchiveEmployees] = useState([]);
+  const [archiveSelectedEmployee, setArchiveSelectedEmployee] = useState(null);
+  const [archiveRecords, setArchiveRecords] = useState([]);
+  const [archiveLoadingRecords, setArchiveLoadingRecords] = useState(false);
+  const [archiveMonth, setArchiveMonth] = useState(new Date().getMonth());
+  const [archiveYear, setArchiveYear] = useState(new Date().getFullYear());
+  const [archiveCutoff, setArchiveCutoff] = useState('first');
+  const [archiveSearch, setArchiveSearch] = useState('');
+
+  // OT approval modal
+  const [showOTApprovalModal, setShowOTApprovalModal] = useState(false);
+  const [otApprovalRecord, setOtApprovalRecord] = useState(null);
+  const [otApprovalHours, setOtApprovalHours] = useState(0);
+  const [otApprovalReason, setOtApprovalReason] = useState('');
+  const [otApprovalSubmitting, setOtApprovalSubmitting] = useState(false);
+
+  // OT rejection modal
+  const [showOTRejectModal, setShowOTRejectModal] = useState(false);
+  const [otRejectRecord, setOtRejectRecord] = useState(null);
+  const [otRejectReason, setOtRejectReason] = useState('');
+  const [otRejectSubmitting, setOtRejectSubmitting] = useState(false);
+
+  // UT approval modal
+  const [showUTApprovalModal, setShowUTApprovalModal] = useState(false);
+  const [utApprovalRecord, setUtApprovalRecord] = useState(null);
+  const [utApprovalHours, setUtApprovalHours] = useState(0);
+  const [utApprovalReason, setUtApprovalReason] = useState('');
+  const [utApprovalSubmitting, setUtApprovalSubmitting] = useState(false);
+
+  // UT rejection modal
+  const [showUTRejectModal, setShowUTRejectModal] = useState(false);
+  const [utRejectRecord, setUtRejectRecord] = useState(null);
+  const [utRejectReason, setUtRejectReason] = useState('');
+  const [utRejectSubmitting, setUtRejectSubmitting] = useState(false);
+
+  const [showRequirementsModal, setShowRequirementsModal] = useState(false);
+  const [requirementsInfo, setRequirementsInfo] = useState(null);
+
+  const [showCutoffConfirmModal, setShowCutoffConfirmModal] = useState(false);
+  const [pendingSaveAction, setPendingSaveAction] = useState(null);
+
+  // ⭐ NEW — Flag modal state (#9)
+  const [showFlagModal, setShowFlagModal] = useState(false);
+  const [flagRecord, setFlagRecord] = useState(null);
+  const [flagType, setFlagType] = useState('awol');
+  const [flagNotes, setFlagNotes] = useState('');
+  const [flagSubmitting, setFlagSubmitting] = useState(false);
+
+  // Unscheduled
   const [pendingUnscheduledRecords, setPendingUnscheduledRecords] = useState([]);
   const [showUnscheduledModal, setShowUnscheduledModal] = useState(false);
   const [selectedUnscheduledRecord, setSelectedUnscheduledRecord] = useState(null);
@@ -315,36 +710,18 @@ const Staff_Attendance = () => {
   const [unscheduledPage, setUnscheduledPage] = useState(1);
   const unscheduledItemsPerPage = 10;
 
-  // EMPLOYEE OVERVIEW TAB STATES
-  const [employeeOverviewEmployees, setEmployeeOverviewEmployees] = useState([]);
-  const [employeeOverviewMeta, setEmployeeOverviewMeta] = useState({ can_generate: false });
-  const [employeeOverviewGenerated, setEmployeeOverviewGenerated] = useState({});
-  const [employeeOverviewSaved, setEmployeeOverviewSaved] = useState({});
-  const [employeeOverviewRecordsByEmployee, setEmployeeOverviewRecordsByEmployee] = useState({});
-  const [employeeOverviewSelectedEmployee, setEmployeeOverviewSelectedEmployee] = useState(null);
-  const [employeeOverviewSelectedRecords, setEmployeeOverviewSelectedRecords] = useState([]);
-  const [employeeOverviewLoading, setEmployeeOverviewLoading] = useState(false);
-  const [employeeOverviewActionLoading, setEmployeeOverviewActionLoading] = useState(null);
-  const [employeeOverviewSearch, setEmployeeOverviewSearch] = useState('');
-  const [employeeOverviewDepartment, setEmployeeOverviewDepartment] = useState('all');
-  const [employeeOverviewSelectedOvertimeIds, setEmployeeOverviewSelectedOvertimeIds] = useState([]);
-  const [employeeOverviewEditingRecord, setEmployeeOverviewEditingRecord] = useState(null);
-  const [employeeOverviewEditTimeIn, setEmployeeOverviewEditTimeIn] = useState('');
-  const [employeeOverviewEditTimeOut, setEmployeeOverviewEditTimeOut] = useState('');
-  const [employeeOverviewEditApprovalStatus, setEmployeeOverviewEditApprovalStatus] = useState('pending');
-  const [employeeOverviewEditNotes, setEmployeeOverviewEditNotes] = useState('');
+  // ============ DATES ============
+  const dates = useMemo(() => getCutoffDates(selectedYear, selectedMonth, cutoffPeriod), [selectedYear, selectedMonth, cutoffPeriod]);
+  const employeeOverviewPeriod = useMemo(() => ({
+    start_date: toDateInputValue(dates.start),
+    end_date: toDateInputValue(dates.end),
+  }), [dates]);
+  const employeeOverviewCutoffLabel = formatCutoffRange(selectedYear, selectedMonth, cutoffPeriod);
+  const currentPeriodKey = `${selectedYear}-${selectedMonth}-${cutoffPeriod}`;
 
-  // 7TH DAY CONSECUTIVE WARNING STATES
-  const [consecutiveWarnings, setConsecutiveWarnings] = useState([]);
-  const [showConsecutiveModal, setShowConsecutiveModal] = useState(false);
-  const [selectedConsecutiveWarning, setSelectedConsecutiveWarning] = useState(null);
-
-  // ==================== REACT QUERY DATA FETCHING WITH CACHE CONTROL ====================
-  const dates = useMemo(() => {
-    const start = new Date(selectedYear, selectedMonth, cutoffPeriod === 'first' ? 1 : 16);
-    const end = new Date(selectedYear, selectedMonth, cutoffPeriod === 'first' ? 15 : new Date(selectedYear, selectedMonth + 1, 0).getDate(), 23, 59, 59);
-    return { start, end };
-  }, [selectedYear, selectedMonth, cutoffPeriod]);
+  useEffect(() => { currentPeriodKeyRef.current = currentPeriodKey; }, [currentPeriodKey]);
+  useEffect(() => { searchRef.current = employeeOverviewSearch; }, [employeeOverviewSearch]);
+  useEffect(() => { deptRef.current = employeeOverviewDepartment; }, [employeeOverviewDepartment]);
 
   const mobileAttendanceParams = useMemo(() => ({
     year: selectedYear,
@@ -354,115 +731,25 @@ const Staff_Attendance = () => {
     per_page: 100
   }), [selectedYear, selectedMonth, dates]);
 
-  const statusPanelParams = useMemo(() => ({
-    page: statusPanelPage,
-    per_page: 15,
-    start_date: statusPanelFilters.start_date,
-    end_date: statusPanelFilters.end_date,
-    department_id: statusPanelFilters.department_id !== 'all' ? statusPanelFilters.department_id : undefined,
-    employee_id: statusPanelFilters.employee_id || undefined
-  }), [statusPanelPage, statusPanelFilters]);
-
-  // Queries with proper cache - NO auto-refetch on mount
-  const { 
-    data: mobileAttendanceData, 
-    isLoading: mobileLoading, 
-    refetch: refetchMobile,
-    isFetching: isMobileFetching
-  } = useMobileAttendance(mobileAttendanceParams);
-  
+  const { data: mobileAttendanceData, isLoading: mobileLoading, refetch: refetchMobile, isFetching: isMobileFetching } = useMobileAttendance(mobileAttendanceParams);
   const { refetch: refetchStats } = useAttendanceStatistics(selectedYear, selectedMonth + 1);
-  
-  const { 
-    data: statusPanelData, 
-    isLoading: statusPanelLoading, 
-    refetch: refetchStatusPanel,
-    isFetching: isStatusPanelFetching
-  } = useStatusPanel(statusPanelParams);
-  
-  const { 
-    data: statusPanelSummaryData, 
-    refetch: refetchStatusPanelSummary,
-    isFetching: isSummaryFetching
-  } = useStatusPanelSummary();
-  
+  const { refetch: refetchStatusPanelSummary } = useStatusPanelSummary();
   const { data: employeesData } = useEmployeesList();
   const { data: departmentsData } = useDepartmentsList();
+  const { refetch: refetchStatusPanel } = useStatusPanel({});
 
-  // Mutations
-  const updateAttendanceStatusMutation = useUpdateAttendanceStatus();
-  const approveRecordMutation = useApproveStatusPanelRecord();
-  const declineRecordMutation = useDeclineStatusPanelRecord();
-  const undeclineRecordMutation = useUndeclineRecord();
-  const unapproveRecordMutation = useUnapproveRecord();
   const unverifyAttendanceMutation = useUnverifyAttendance();
+  const updateAttendanceStatusMutation = useUpdateAttendanceStatus();
 
-  // Track refresh state
-  const isRefreshing = isMobileFetching || isStatusPanelFetching || isSummaryFetching;
-  
-  // Update last refresh time when data is fetched
+  const isRefreshing = isMobileFetching;
+
   useEffect(() => {
-    if (!isRefreshing && (mobileAttendanceData || statusPanelData)) {
-      setLastRefreshTime(new Date());
-    }
-  }, [isRefreshing, mobileAttendanceData, statusPanelData]);
+    if (!isRefreshing && mobileAttendanceData) setLastRefreshTime(new Date());
+  }, [isRefreshing, mobileAttendanceData]);
 
-  // Extract normalized response data
   const employees = extractApiList(employeesData);
   const departments = extractApiList(departmentsData);
   const mobileAttendance = extractApiList(mobileAttendanceData);
-  const statusPanelRecords = extractApiList(statusPanelData).map(normalizeAttendanceLog);
-  
-  const statusPanelStats = {
-    pending_approval_count: statusPanelSummaryData?.data?.pending_approval_count || 0,
-    approved_this_month: statusPanelSummaryData?.data?.approved_this_month || 0,
-    declined_this_month: statusPanelSummaryData?.data?.declined_this_month || 0,
-    total_hours_pending: statusPanelSummaryData?.data?.total_hours_pending || 0,
-    employees_with_pending: statusPanelSummaryData?.data?.employees_with_pending || 0,
-    approval_rate: statusPanelSummaryData?.data?.approval_rate || 0
-  };
-
-  const attendanceStats = {
-    total_employees: employees.length,
-    total_check_ins: mobileAttendance.filter(r => r.type === 'IN').length,
-    total_check_outs: mobileAttendance.filter(r => r.type === 'OUT').length,
-    verified_check_ins: mobileAttendance.filter(r => r.type === 'IN' && r.verification_status === 'verified').length,
-    pending_verification: mobileAttendance.filter(r => r.verification_status === 'pending').length,
-    average_daily_attendance: mobileAttendance.length > 0 ? Math.round(mobileAttendance.length / 15) : 0
-  };
-
-  // ==================== CONSECUTIVE DAYS WARNING DETECTION ====================
-  useEffect(() => {
-    if (mobileAttendance.length > 0) {
-      const warnings = detectConsecutiveDays(mobileAttendance);
-      setConsecutiveWarnings(warnings);
-      if (warnings.length > 0) {
-        console.warn('⚠️ Consecutive working day warnings:', warnings);
-      }
-    }
-  }, [mobileAttendance]);
-
-  // ==================== HELPER FUNCTIONS ====================
-  const getCutoffDates = (year, month, period) => {
-    if (period === 'first') {
-      return { start: new Date(year, month, 1), end: new Date(year, month, 15, 23, 59, 59) };
-    } else {
-      return { start: new Date(year, month, 16), end: new Date(year, month + 1, 0, 23, 59, 59) };
-    }
-  };
-
-  const formatCutoffRange = (year, month, period) => {
-    const datesRange = getCutoffDates(year, month, period);
-    const endDay = datesRange.end.getDate();
-    const monthName = datesRange.start.toLocaleString('default', { month: 'long' });
-    return period === 'first' ? `${monthName} 1-15, ${year}` : `${monthName} 16-${endDay}, ${year}`;
-  };
-
-  const formatHoursAndMinutes = (hours) => {
-    const hrs = Math.floor(hours);
-    const mins = Math.round((hours - hrs) * 60);
-    return `${hrs}h ${mins}m`;
-  };
 
   const showNotificationMessage = (message, type = 'success') => {
     setNotificationMessage(message);
@@ -472,628 +759,347 @@ const Staff_Attendance = () => {
   };
 
   const getVerificationStatusDetails = (status) => {
-    const statusMap = {
-      'verified': { color: '#27ae60', icon: FiCheckCircle, text: 'Verified', bg: 'rgba(39, 174, 96, 0.1)' },
-      'pending': { color: '#f39c12', icon: FiClock, text: 'Pending', bg: 'rgba(243, 156, 18, 0.1)' },
-      'rejected': { color: '#e74c3c', icon: FiXCircle, text: 'Rejected', bg: 'rgba(231, 76, 60, 0.1)' }
+    const map = {
+      verified: { color: '#27ae60', icon: FiCheckCircle, text: 'Verified' },
+      approved: { color: '#27ae60', icon: FiCheckCircle, text: 'Approved' },
+      pending: { color: '#f39c12', icon: FiClock, text: 'Pending' },
+      rejected: { color: '#e74c3c', icon: FiXCircle, text: 'Rejected' }
     };
-    return statusMap[status] || statusMap['pending'];
+    return map[status] || map.pending;
   };
 
   const getTypeDetails = (type) => {
-    const typeMap = {
-      'IN': { color: '#27ae60', icon: FiLogOut, text: 'Time In', bg: 'rgba(39, 174, 96, 0.1)', iconRotation: 'rotate(180deg)' },
-      'OUT': { color: '#e74c3c', icon: FiLogOut, text: 'Time Out', bg: 'rgba(231, 76, 60, 0.1)', iconRotation: '0deg' }
+    const map = {
+      IN: { icon: FiLogOut, text: 'Time In', iconRotation: 'rotate(180deg)' },
+      OUT: { icon: FiLogOut, text: 'Time Out', iconRotation: '0deg' }
     };
-    return typeMap[type] || typeMap['IN'];
+    return map[type] || map.IN;
   };
 
   const getCurrentCutoffAttendance = () => {
-    const datesRange = getCutoffDates(selectedYear, selectedMonth, cutoffPeriod);
-    return mobileAttendance.filter(record => {
-      const recordDate = new Date(record.timestamp);
-      return recordDate >= datesRange.start && recordDate <= datesRange.end;
+    const range = getCutoffDates(selectedYear, selectedMonth, cutoffPeriod);
+    return mobileAttendance.filter((record) => {
+      const d = new Date(record.timestamp);
+      return d >= range.start && d <= range.end;
     });
   };
 
-  // ==================== FETCH PENDING UNSCHEDULED RECORDS ====================
-  const fetchPendingUnscheduledRecords = useCallback(async () => {
-    try {
-      const response = await api.get('/attendance/needs-approval', {
-        params: {
-          status: 'unscheduled',
-          approval_status: 'pending',
-          per_page: 100,
-        },
-      });
-      const records = extractApiList(response).map(normalizeAttendanceLog);
-      setPendingUnscheduledRecords(records);
-      console.log('📋 Pending unscheduled records:', records.length);
-    } catch (error) {
-      console.error('Error fetching unscheduled records:', error);
-      setPendingUnscheduledRecords([]);
+  const getStatusForRecord = (record) => {
+    const hasSchedule = record.assigned_schedule && record.assigned_schedule !== 'Unscheduled';
+    return getAttendanceStatus(hasSchedule ? { exists: true } : null, record);
+  };
+
+  // ============ PER-SIDE HELPERS (persistent) ============
+  const getSideKey = (recordOrId, side) => {
+    const id = typeof recordOrId === 'object'
+      ? (recordOrId?.attendance_id ?? recordOrId?.id)
+      : recordOrId;
+    return `${id}:${side}`;
+  };
+
+  const getSideStatus = (recordOrId, side) => {
+    const key = getSideKey(recordOrId, side);
+    if (sideStatusMap[key]) return sideStatusMap[key];
+    const recStatus = String(
+      (typeof recordOrId === 'object'
+        ? (recordOrId?.verification_status || recordOrId?.approval_status)
+        : null) || 'pending'
+    ).toLowerCase();
+    if (recStatus === 'verified' || recStatus === 'approved') return 'verified';
+    if (recStatus === 'rejected' || recStatus === 'declined') return 'rejected';
+    return 'pending';
+  };
+
+  const setSideStatus = (recordOrId, side, status) => {
+    const key = getSideKey(recordOrId, side);
+    setSideStatusMap((prev) => ({ ...prev, [key]: status }));
+  };
+
+  const handleVerifySide = async (recordOrId, side, status) => {
+    const attendanceId = typeof recordOrId === 'object'
+      ? (recordOrId?.attendance_id ?? recordOrId?.id)
+      : recordOrId;
+    if (!attendanceId) {
+      showNotificationMessage('Invalid record ID', 'error');
+      return false;
     }
+
+    setSideStatus(attendanceId, side, status);
+
+    setEmployeeOverviewSelectedRecords((prev) =>
+      patchEmployeeRecordInPlace(
+        prev,
+        attendanceId,
+        status === 'verified'
+          ? { verification_status: 'verified', approval_status: 'approved' }
+          : status === 'rejected'
+            ? { verification_status: 'rejected', approval_status: 'rejected' }
+            : { verification_status: 'pending', approval_status: 'pending' }
+      )
+    );
+
+    try {
+      const response = await api.put(`/attendance/${attendanceId}/status`, {
+        verification_status:
+          status === 'verified' ? 'approved'
+          : status === 'rejected' ? 'rejected'
+          : 'pending',
+        verification_notes:
+          status === 'verified'
+            ? `Verified ${side === 'in' ? 'Time In' : 'Time Out'} by admin`
+            : status === 'rejected'
+              ? `Rejected ${side === 'in' ? 'Time In' : 'Time Out'} by admin`
+              : `Un-verified ${side === 'in' ? 'Time In' : 'Time Out'} by admin`,
+      });
+
+      if (response.data?.success || response.data?.data) {
+        const verb = status === 'verified' ? 'verified' : status === 'rejected' ? 'rejected' : 'un-rejected';
+        showNotificationMessage(
+          `${side === 'in' ? 'Time In' : 'Time Out'} ${verb}`,
+          status === 'verified' ? 'success' : 'info'
+        );
+        queryClient.invalidateQueries({ queryKey: ['attendance'] });
+        return true;
+      }
+      showNotificationMessage(response.data?.message || 'Failed to update', 'error');
+      setSideStatus(attendanceId, side, 'pending');
+      return false;
+    } catch (error) {
+      setSideStatus(attendanceId, side, 'pending');
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to update'), 'error');
+      return false;
+    }
+  };
+
+  const handleApproveBoth = async (record) => {
+    const attendanceId = record?.attendance_id ?? record?.id;
+    if (!attendanceId) return;
+
+    setSideStatus(attendanceId, 'in', 'verified');
+    setSideStatus(attendanceId, 'out', 'verified');
+    setEmployeeOverviewSelectedRecords((prev) =>
+      patchEmployeeRecordInPlace(prev, attendanceId, {
+        verification_status: 'verified',
+        approval_status: 'approved',
+      })
+    );
+
+    try {
+      const response = await api.put(`/attendance/${attendanceId}/status`, {
+        verification_status: 'approved',
+        verification_notes: 'Approved both Time In and Time Out by admin',
+      });
+      if (response.data?.success || response.data?.data) {
+        showNotificationMessage('Time In and Time Out approved', 'success');
+        queryClient.invalidateQueries({ queryKey: ['attendance'] });
+      }
+    } catch (error) {
+      setSideStatus(attendanceId, 'in', 'pending');
+      setSideStatus(attendanceId, 'out', 'pending');
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to approve'), 'error');
+    }
+  };
+
+  // ⭐ NEW #9 — Flag handlers
+  const openFlagModal = (record) => {
+    setFlagRecord(record);
+    setFlagType(record?.attendance_flag || 'awol');
+    setFlagNotes(record?.flag_notes || '');
+    setShowFlagModal(true);
+  };
+
+  const closeFlagModal = () => {
+    if (flagSubmitting) return;
+    setShowFlagModal(false);
+    setFlagRecord(null);
+    setFlagNotes('');
+  };
+
+  const submitFlag = async () => {
+    if (!flagRecord) return;
+    const attendanceId = flagRecord.attendance_id ?? flagRecord.id;
+    if (!attendanceId) return;
+
+    setFlagSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${attendanceId}/flag`, {
+        flag: flagType,
+        notes: flagNotes?.trim() || null,
+      });
+
+      if (response.data?.success || response.data?.data) {
+        const label = flagType === 'none' ? 'cleared' : flagType.replace('_', ' ');
+        showNotificationMessage(`Attendance flag ${label}`, 'success');
+
+        // Patch the modal list in place so the badge updates without refetch.
+        setEmployeeOverviewSelectedRecords((prev) =>
+          patchEmployeeRecordInPlace(prev, attendanceId, {
+            attendance_flag: flagType === 'none' ? null : flagType,
+            attendance_flag_label: flagType === 'none' ? null : label,
+            flag_notes: flagNotes?.trim() || null,
+          })
+        );
+
+        setShowFlagModal(false);
+        setFlagRecord(null);
+        setFlagNotes('');
+        queryClient.invalidateQueries({ queryKey: ['attendance'] });
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to update flag', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to update flag'), 'error');
+    } finally {
+      setFlagSubmitting(false);
+    }
+  };
+
+  // ============ UNIFIED MODAL FILTER ============
+  const filterEmployeeRecordsForModal = useCallback((records, cutoffStart, cutoffEnd) => {
+    if (!Array.isArray(records)) return [];
+    const inCutoff = records.filter((rec) => isWithinCutoff(rec, cutoffStart, cutoffEnd));
+    return inCutoff.filter((rec) => {
+      if (!isUnresolvedRecord(rec)) return false;
+
+      // ⭐ AWOL / EA / On Leave records SHOW even though they have no times —
+      //    we need to display them so admins can review and re-flag.
+      if (rec.attendance_flag === 'awol' || rec.attendance_flag === 'emergency_absent' || rec.attendance_flag === 'on_leave') {
+        return true;
+      }
+
+      if (isAbsentOrNonWorking(rec)) return false;
+      if (hasAnyAttendanceSignal(rec)) return true;
+      const state = String(rec?.attendance_state || '').toLowerCase();
+      if (state && state !== 'complete') return true;
+      return false;
+    });
   }, []);
 
-  // ==================== APPROVE UNSCHEDULED RECORD ====================
-  const approveUnscheduledRecord = async (recordId, notes) => {
-    setSubmitting(true);
-    try {
-      const response = await api.post(`/attendance/${recordId}/approve-unscheduled`, { 
-        admin_notes: notes 
-      });
-      
-      if (response.data?.success) {
-        showNotificationMessage('✓ Unscheduled attendance approved!', 'success');
-        await fetchPendingUnscheduledRecords();
-        await refetchMobile();
-        await refetchStatusPanel();
-        await refetchStatusPanelSummary();
-        setShowUnscheduledModal(false);
-        setSelectedUnscheduledRecord(null);
-        setUnscheduledApprovalNote('');
-        return true;
-      } else {
-        showNotificationMessage(response.data?.message || 'Approval failed', 'error');
-        return false;
-      }
-    } catch (error) {
-      console.error('Approval error:', error);
-      showNotificationMessage(error.response?.data?.message || 'Failed to approve', 'error');
-      return false;
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  // ============ FETCH EMPLOYEE OVERVIEW ============
+  const fetchEmployeeOverviewRef = useRef(null);
+  fetchEmployeeOverviewRef.current = async (force = false) => {
+    const periodKey = currentPeriodKeyRef.current;
 
-  // ==================== REJECT UNSCHEDULED RECORD ====================
-  const rejectUnscheduledRecord = async (attendanceId, reason) => {
-    setSubmitting(true);
-    try {
-      const result = await updateAttendanceStatusMutation.mutateAsync({ 
-        attendanceId, 
-        status: 'rejected',
-        notes: `Unscheduled attendance rejected: ${reason}`
-      });
-      
-      if (result?.success) {
-        showNotificationMessage('✓ Unscheduled attendance rejected', 'info');
-        await fetchPendingUnscheduledRecords();
-        await refetchMobile();
-      } else {
-        showNotificationMessage(result?.message || 'Failed to reject', 'error');
-      }
-    } catch (error) {
-      console.error('Reject error:', error);
-      showNotificationMessage('Failed to reject record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // ==================== LOAD CUTOFF HISTORY ====================
-  const loadCutoffHistory = async () => {
-    const history = [];
-    const currentDate = new Date(selectedYear, selectedMonth);
-    for (let i = 0; i < 6; i++) {
-      let year = currentDate.getFullYear();
-      let month = currentDate.getMonth();
-      let period = cutoffPeriod;
-      if (i > 0) {
-        if (period === 'first') period = 'second';
-        else { period = 'first'; month--; if (month < 0) { month = 11; year--; } }
-      }
-      if (month >= 0 && year >= 2020) {
-        history.push({
-          id: `${year}-${month}-${period}`,
-          year, month, period,
-          label: formatCutoffRange(year, month, period),
-          dateRange: getCutoffDates(year, month, period)
-        });
-      }
-    }
-    setCutoffHistory(history);
-  };
-
-  const loadCutoffAttendance = async (year, month, period) => {
-    setLoadingHistory(true);
-    try {
-      const datesRange = getCutoffDates(year, month, period);
-      const response = await api.get('/attendance/all', {
-        params: {
-          start_date: datesRange.start.toISOString().split('T')[0],
-          end_date: datesRange.end.toISOString().split('T')[0],
-          per_page: 1000,
-          include_history: true
-        }
-      });
-      const attendanceData = expandAttendanceLogs(extractApiList(response));
-      setHistoryAttendance(attendanceData);
-      setSelectedHistoryCutoff({
-        year,
-        month,
-        period,
-        label: formatCutoffRange(year, month, period),
-      });
-      setShowHistoryModal(true);
-    } catch (error) {
-      console.error('Error loading cutoff attendance:', error);
-      showNotificationMessage('Failed to load cutoff history', 'error');
-    } finally {
-      setLoadingHistory(false);
-    }
-  };
-
-  // ==================== REFRESH FUNCTIONS ====================
-  const handleRefresh = async () => {
-    const refreshTasks = [refetchMobile(), refetchStats(), fetchPendingUnscheduledRecords()];
-    if (activeMainTab === 'status-panel') {
-      refreshTasks.push(fetchEmployeeOverview());
-    } else {
-      refreshTasks.push(refetchStatusPanel(), refetchStatusPanelSummary());
-    }
-    await Promise.all(refreshTasks);
-    showNotificationMessage('Data refreshed successfully', 'success');
-  };
-
-  const toggleAutoRefresh = () => {
-    setAutoRefreshEnabled(!autoRefreshEnabled);
-    showNotificationMessage(
-      autoRefreshEnabled ? 'Auto-refresh disabled' : 'Auto-refresh enabled',
-      'info'
-    );
-  };
-
-  // ==================== EXPORT FUNCTION ====================
-  const handleExport = () => {
-    const currentCutoffData = getCurrentCutoffAttendance();
-    if (currentCutoffData.length === 0) {
-      showNotificationMessage('No data to export', 'warning');
+    if (
+      !force &&
+      hasInitiallyLoadedRef.current &&
+      lastFetchedPeriodRef.current === periodKey &&
+      employeeOverviewEmployees.length > 0
+    ) {
       return;
     }
-    const csv = convertToCSV(currentCutoffData);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `attendance_${formatCutoffRange(selectedYear, selectedMonth, cutoffPeriod)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showNotificationMessage('Export completed successfully', 'success');
-  };
+    if (fetchInFlightRef.current) return;
 
-  const convertToCSV = (data) => {
-    if (!data.length) return '';
-    const headers = ['Date', 'Time', 'Employee Name', 'Employee Code', 'Type', 'Status', 'Face Verified'];
-    const rows = data.map(record => [
-      formatDate(record.timestamp), formatTime(record.timestamp),
-      record.employee_name || '', record.employee_code || '',
-      record.type === 'IN' ? 'Time In' : 'Time Out',
-      record.verification_status || 'pending',
-      record.face_verified ? 'Yes' : 'No'
-    ]);
-    return [headers, ...rows].map(row => row.join(',')).join('\n');
-  };
-
-  // ==================== VIEW SELFIE ====================
-  const handleViewSelfie = (selfieUrl) => {
-    setSelectedSelfie(selfieUrl);
-    setShowSelfieModal(true);
-  };
-
-  // ==================== VERIFY ATTENDANCE ====================
-  const handleVerifyAttendance = async (attendanceId, status) => {
-    setSubmitting(true);
-    try {
-      const result = await updateAttendanceStatusMutation.mutateAsync({ 
-        attendanceId, 
-        status,
-        notes: status === 'verified' ? 'Verified by admin' : 'Rejected by admin'
-      });
-      
-      if (result?.success) {
-        showNotificationMessage(`✓ Attendance ${status === 'verified' ? 'verified' : 'rejected'} successfully!`, 'success');
-        setCurrentPage(1);
-        await refetchMobile();
-        await refetchStatusPanel();
-        await refetchStatusPanelSummary();
-        await fetchPendingUnscheduledRecords();
-      } else {
-        showNotificationMessage(result?.message || 'Failed to update status', 'error');
-      }
-    } catch (error) {
-      console.error('Update error:', error);
-      showNotificationMessage('Failed to update status', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // ==================== APPROVE RECORD ====================
-  const handleApproveRecord = async (record, skipOvertimeCheck = false, overtimeData = {}) => {
-    if (!record) return;
-    
-    const hasOvertime = (record.overtime_hours || 0) > 0;
-    const { action, approvedHours, reason } = overtimeData;
-    
-    if (hasOvertime && !skipOvertimeCheck && !overtimeConfirmed) {
-      setPendingApproveRecord(record);
-      setShowOvertimeConfirmModal(true);
-      return;
-    }
-    
-    setSubmitting(true);
-    try {
-      let result;
-      
-      if (action === 'remove') {
-        result = await approveRecordMutation.mutateAsync({ 
-          recordId: record.id, 
-          notes: approveNotes,
-          overtimeConfirmed: false,
-          removeOvertime: true,
-          overtimeReason: reason || overtimeReason,
-          approvedOvertimeHours: 0
-        });
-      } 
-      else if (action === 'approve_partial') {
-        result = await approveRecordMutation.mutateAsync({ 
-          recordId: record.id, 
-          notes: approveNotes,
-          overtimeConfirmed: true,
-          overtimeReason: reason || overtimeReason,
-          approvedOvertimeHours: approvedHours || selectedOvertimeHours
-        });
-      }
-      else if (action === 'decline_record') {
-        result = await declineRecordMutation.mutateAsync({ 
-          recordId: record.id, 
-          reason: reason || overtimeReason || 'Overtime not approved - record declined'
-        });
-        if (result?.success) {
-          showNotificationMessage(`Record declined for ${record.employee_name}`, 'info');
-          setShowOvertimeConfirmModal(false);
-          setSelectedRecordForApprove(null);
-          setOvertimeReason('');
-          setSelectedOvertimeHours(0);
-          setOvertimeAction('approve_all');
-          setStatusPanelPage(1);
-          await refetchStatusPanel();
-          await refetchStatusPanelSummary();
-          setSubmitting(false);
-          return;
-        }
-      }
-      else {
-        result = await approveRecordMutation.mutateAsync({ 
-          recordId: record.id, 
-          notes: approveNotes,
-          overtimeConfirmed: overtimeConfirmed || skipOvertimeCheck,
-          overtimeReason: overtimeReason,
-          removeOvertime: false
-        });
-      }
-      
-      if (result?.success) {
-        let message = `✓ Record approved for ${record.employee_name}`;
-        if (action === 'remove') {
-          message += ` with overtime removed`;
-        } else if (action === 'approve_partial') {
-          message += ` with ${approvedHours || selectedOvertimeHours}h overtime approved (out of ${record.overtime_hours}h)`;
-        } else if (record.overtime_hours > 0) {
-          message += ` with ${record.overtime_hours}h overtime approved`;
-        }
-        showNotificationMessage(message, 'success');
-        
-        setShowApproveNotesModal(false);
-        setShowOvertimeConfirmModal(false);
-        setApproveNotes('');
-        setOvertimeReason('');
-        setOvertimeConfirmed(false);
-        setPendingApproveRecord(null);
-        setSelectedRecordForApprove(null);
-        setSelectedOvertimeHours(0);
-        setOvertimeAction('approve_all');
-        setStatusPanelPage(1);
-        
-        await refetchStatusPanel();
-        await refetchStatusPanelSummary();
-        
-      } else if (result?.requires_overtime_confirmation) {
-        setPendingApproveRecord(record);
-        setShowOvertimeConfirmModal(true);
-      } else {
-        showNotificationMessage(result?.message || 'Failed to approve record', 'error');
-      }
-    } catch (error) {
-      console.error('Approve error:', error);
-      showNotificationMessage('Failed to approve record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleApproveClick = (record) => {
-    setSelectedRecordForApprove(record);
-    setApproveNotes('');
-    setOvertimeReason('');
-    setOvertimeConfirmed(false);
-    setSelectedOvertimeHours(record.overtime_hours || 0);
-    setOvertimeAction('approve_all');
-    
-    if (record.overtime_hours > 0) {
-      setShowOvertimeConfirmModal(true);
-    } else {
-      setShowApproveNotesModal(true);
-    }
-  };
-
-  // ==================== DECLINE RECORD ====================
-  const handleDeclineRecord = async () => {
-    if (!selectedRecordForDecline) return;
-    if (!declineReason.trim()) {
-      showNotificationMessage('Please provide a reason for declining', 'warning');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const result = await declineRecordMutation.mutateAsync({ 
-        recordId: selectedRecordForDecline.id, 
-        reason: declineReason 
-      });
-      
-      if (result?.success) {
-        showNotificationMessage(`Record declined for ${selectedRecordForDecline.employee_name}`, 'info');
-        setShowDeclineModal(false);
-        setDeclineReason('');
-        setSelectedRecordForDecline(null);
-        refetchStatusPanel();
-        refetchStatusPanelSummary();
-      } else {
-        showNotificationMessage(result?.message || 'Failed to decline record', 'error');
-      }
-    } catch (error) {
-      console.error('Decline error:', error);
-      showNotificationMessage('Failed to decline record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // ==================== UNDECLINE / UNAPPROVE RECORD ====================
-  const handleUndeclineRecord = async (record) => {
-    setSubmitting(true);
-    try {
-      const result = await undeclineRecordMutation.mutateAsync(record.id);
-      if (result?.success) {
-        showNotificationMessage(`Record restored for ${record.employee_name}`, 'success');
-        refetchStatusPanel();
-        refetchStatusPanelSummary();
-      } else {
-        showNotificationMessage('Failed to restore record', 'error');
-      }
-    } catch (error) {
-      showNotificationMessage('Failed to restore record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleUnapproveRecord = async (record) => {
-    if (!window.confirm(`Remove ${record.employee_name}'s attendance from payroll?`)) return;
-    setSubmitting(true);
-    try {
-      const result = await unapproveRecordMutation.mutateAsync(record.id);
-      if (result?.success) {
-        showNotificationMessage('Record removed from payroll', 'success');
-        refetchStatusPanel();
-        refetchStatusPanelSummary();
-      } else {
-        showNotificationMessage('Failed to unapprove record', 'error');
-      }
-    } catch (error) {
-      showNotificationMessage('Failed to unapprove record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleUnverifyAttendance = async (attendance) => {
-    if (!window.confirm(`Unverify this ${attendance.type === 'IN' ? 'time-in' : 'time-out'} record?`)) return;
-    setSubmitting(true);
-    try {
-      const result = await unverifyAttendanceMutation.mutateAsync(attendance.id);
-      if (result?.success) {
-        showNotificationMessage('Attendance record unverified', 'info');
-        refetchMobile();
-        refetchStatusPanel();
-      } else {
-        showNotificationMessage('Failed to unverify record', 'error');
-      }
-    } catch (error) {
-      showNotificationMessage('Failed to unverify record', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // ==================== BULK APPROVE ====================
-  const handleSelectRecord = (recordId) => {
-    setSelectedRecords(prev => 
-      prev.includes(recordId) 
-        ? prev.filter(id => id !== recordId)
-        : [...prev, recordId]
-    );
-  };
-
-  const handleSelectAllRecords = () => {
-    if (selectedRecords.length === statusPanelRecords.length) {
-      setSelectedRecords([]);
-    } else {
-      setSelectedRecords(statusPanelRecords.map(r => r.id));
-    }
-  };
-
-  const handleBulkApprove = () => {
-    if (selectedRecords.length === 0) {
-      showNotificationMessage('Please select records to approve', 'warning');
-      return;
-    }
-    
-    const hasOvertime = statusPanelRecords.some(r => 
-      selectedRecords.includes(r.id) && (r.overtime_hours || 0) > 0
-    );
-    
-    if (hasOvertime && !bulkOvertimeConfirmed) {
-      setShowBulkApproveModal(true);
-    } else {
-      processBulkApprove();
-    }
-  };
-
-  const processBulkApprove = async () => {
-    setSubmitting(true);
-    try {
-      const results = await Promise.all(
-        selectedRecords.map(recordId => {
-          const record = statusPanelRecords.find(r => r.id === recordId);
-          return approveRecordMutation.mutateAsync({
-            recordId,
-            notes: bulkApproveNotes,
-            overtimeConfirmed: bulkOvertimeConfirmed,
-            overtimeReason: 'Bulk approval with overtime confirmed'
-          });
-        })
-      );
-      
-      const successCount = results.filter(r => r?.success).length;
-      showNotificationMessage(`✓ ${successCount} records approved successfully`, 'success');
-      
-      setSelectedRecords([]);
-      setBulkApproveNotes('');
-      setBulkOvertimeConfirmed(false);
-      setShowBulkApproveModal(false);
-      refetchStatusPanel();
-      refetchStatusPanelSummary();
-    } catch (error) {
-      console.error('Bulk approve error:', error);
-      showNotificationMessage('Failed to approve some records', 'error');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const applyStatusPanelDateFilter = (filter) => {
-    const now = new Date();
-    let startDate = '', endDate = '';
-    switch(filter) {
-      case 'this-month':
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-        break;
-      case 'last-month':
-        startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
-        endDate = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
-        break;
-      default: break;
-    }
-    if (filter !== 'custom') {
-      setStatusPanelFilters(prev => ({ ...prev, start_date: startDate, end_date: endDate }));
-    }
-    setStatusPanelDateFilter(filter);
-  };
-
-  // ==================== RENDER ATTENDANCE ACTIONS ====================
-  const renderAttendanceActions = (record) => {
-    if (record.verification_status === 'pending') {
-      return (
-        <>
-          <button className="action-icon-btn verify" onClick={() => handleVerifyAttendance(record.id, 'verified')} title="Verify" disabled={submitting}>
-            <FiCheckCircle />
-          </button>
-          <button className="action-icon-btn reject" onClick={() => handleVerifyAttendance(record.id, 'rejected')} title="Reject" disabled={submitting}>
-            <FiXCircle />
-          </button>
-        </>
-      );
-    } else if (record.verification_status === 'verified') {
-      return (
-        <>
-          <button className="action-icon-btn unverify" onClick={() => handleUnverifyAttendance(record)} title="Unverify" disabled={submitting}>
-            <FiRotateCcw />
-          </button>
-          <button className="action-icon-btn view" onClick={() => { setSelectedAttendance(record); setShowAttendanceModal(true); }} title="View">
-            <FiEye />
-          </button>
-        </>
-      );
-    } else {
-      return (
-        <button className="action-icon-btn view" onClick={() => { setSelectedAttendance(record); setShowAttendanceModal(true); }} title="View">
-          <FiEye />
-        </button>
-      );
-    }
-  };
-
-  // Filter and paginate mobile attendance
-  const getFilteredMobileAttendance = () => {
-    const currentCutoff = getCurrentCutoffAttendance();
-    let filtered = [...currentCutoff];
-    if (typeFilter !== 'ALL') filtered = filtered.filter(record => record.type === typeFilter);
-    if (statusFilter !== 'all') filtered = filtered.filter(record => record.verification_status === statusFilter);
-    if (searchTerm) {
-      filtered = filtered.filter(record => 
-        (record.employee_name && record.employee_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (record.employee_code && record.employee_code.toLowerCase().includes(searchTerm.toLowerCase()))
-      );
-    }
-    return filtered;
-  };
-
-  const filteredMobileAttendance = getFilteredMobileAttendance();
-  const totalMobilePages = Math.ceil(filteredMobileAttendance.length / itemsPerPage);
-  const paginatedMobileAttendance = filteredMobileAttendance.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-
-  // ==================== EMPLOYEE OVERVIEW TAB LOGIC ====================
-  const employeeOverviewPeriod = useMemo(() => ({
-    start_date: toDateInputValue(dates.start),
-    end_date: toDateInputValue(dates.end),
-  }), [dates]);
-
-  const employeeOverviewCutoffLabel = formatCutoffRange(selectedYear, selectedMonth, cutoffPeriod);
-
-  // ==================== FIX: Employee Overview - Only fetch once on mount ====================
-  const fetchEmployeeOverview = useCallback(async (force = false) => {
-    // If data already exists and not forcing, skip fetch
-    if (!force && hasInitiallyLoadedRef.current && employeeOverviewEmployees.length > 0) {
-      console.log('📊 Employee Overview data already loaded, skipping fetch');
-      return;
-    }
-    
+    fetchInFlightRef.current = true;
     setEmployeeOverviewLoading(true);
+
     try {
       const response = await api.get('/attendance/employee-overview', {
         params: {
           start_date: employeeOverviewPeriod.start_date,
           end_date: employeeOverviewPeriod.end_date,
-          employee_id: employeeOverviewSearch || undefined,
-          department_id: employeeOverviewDepartment !== 'all' ? employeeOverviewDepartment : undefined,
+          employee_id: searchRef.current || undefined,
+          department_id: deptRef.current !== 'all' ? deptRef.current : undefined,
         },
+        timeout: 60000,
       });
       const body = unwrapEmployeeOverviewPayload(response);
-      setEmployeeOverviewMeta(body);
-      setEmployeeOverviewEmployees(toEmployeeOverviewArray(body.employees));
+      const list = toEmployeeOverviewArray(body.employees).map((emp) => ({
+        ...emp,
+        _fetched_for_period: periodKey,
+      }));
+
+      setEmployeeOverviewEmployees(list);
       setLastRefreshTime(new Date());
       hasInitiallyLoadedRef.current = true;
+      lastFetchedPeriodRef.current = periodKey;
     } catch (error) {
-      console.error('Employee Overview error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to load Employee Overview'), 'error');
-      setEmployeeOverviewEmployees([]);
+      if (error.code !== 'ECONNABORTED') {
+        showNotificationMessage(getApiErrorMessage(error, 'Failed to load Employee Overview'), 'error');
+      }
+      if (force) setEmployeeOverviewEmployees([]);
     } finally {
+      fetchInFlightRef.current = false;
       setEmployeeOverviewLoading(false);
     }
-  }, [employeeOverviewPeriod.start_date, employeeOverviewPeriod.end_date, employeeOverviewSearch, employeeOverviewDepartment, employeeOverviewEmployees.length]);
+  };
+
+  const fetchEmployeeOverview = useCallback((force = false) => {
+    return fetchEmployeeOverviewRef.current?.(force);
+  }, []);
+
+  // ============ REFRESH ============
+  const refreshEverything = useCallback(async (opts = {}) => {
+    const { forceOverview = false } = opts;
+    queryClient.invalidateQueries({ queryKey: ['attendance'] });
+    queryClient.invalidateQueries({ queryKey: ['payroll'] });
+    await Promise.all([
+      refetchMobile(),
+      refetchStats(),
+      refetchStatusPanelSummary(),
+      refetchStatusPanel(),
+    ]);
+    if (forceOverview) {
+      await fetchEmployeeOverview(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, refetchMobile, refetchStats, refetchStatusPanelSummary, refetchStatusPanel, fetchEmployeeOverview]);
+
+  // ============ EFFECT: only reload overview when the period changes ============
+  useEffect(() => {
+    const periodKey = `${selectedYear}-${selectedMonth}-${cutoffPeriod}`;
+    const periodChanged = lastFetchedPeriodRef.current !== periodKey;
+
+    if (periodChanged) {
+      hasInitiallyLoadedRef.current = false;
+      lastFetchedPeriodRef.current = null;
+      setEmployeeOverviewEmployees([]);
+      setEmployeeOverviewSelectedRecords([]);
+      setEmployeeOverviewSelectedEmployee(null);
+      setDropdownOpen(null);
+      fetchEmployeeOverview(true);
+    }
+
+    if (activeMainTab === 'unscheduled') {
+      fetchPendingUnscheduledRecords();
+      setUnscheduledPage(1);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedYear, selectedMonth, cutoffPeriod]);
+
+  // ============ EFFECT: first mount only ============
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) { window.location.href = '/login'; return; }
+    fetchPendingUnscheduledRecords();
+    fetchEmployeeOverview(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ============ REFRESH MODAL RECORDS ============
+  const refreshSelectedEmployeeRecords = useCallback(async () => {
+    const emp = employeeOverviewSelectedEmployee;
+    if (!emp) return;
+    try {
+      const response = await api.get('/attendance/employee-records', {
+        params: {
+          employee_id: emp.employee_id,
+          start_date: employeeOverviewPeriod.start_date,
+          end_date: employeeOverviewPeriod.end_date,
+        },
+        timeout: 60000,
+      });
+      const body = unwrapEmployeeOverviewPayload(response);
+      const records = toEmployeeOverviewArray(body.records);
+      const unsaved = filterEmployeeRecordsForModal(records, dates.start, dates.end);
+      setEmployeeOverviewSelectedRecords(unsaved);
+    } catch (error) {
+      if (error.code !== 'ECONNABORTED') {
+        showNotificationMessage(getApiErrorMessage(error, 'Failed to refresh attendance records'), 'error');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeOverviewSelectedEmployee, employeeOverviewPeriod.start_date, employeeOverviewPeriod.end_date, dates, filterEmployeeRecordsForModal]);
 
   const loadEmployeeOverviewRecords = async (employee, openModal = true) => {
     setEmployeeOverviewActionLoading(`view-${employee.employee_id}`);
@@ -1104,513 +1110,1107 @@ const Staff_Attendance = () => {
           start_date: employeeOverviewPeriod.start_date,
           end_date: employeeOverviewPeriod.end_date,
         },
+        timeout: 60000
       });
       const body = unwrapEmployeeOverviewPayload(response);
       const records = toEmployeeOverviewArray(body.records);
-      setEmployeeOverviewRecordsByEmployee((prev) => ({ ...prev, [employee.employee_id]: records }));
+
+      const unsaved = filterEmployeeRecordsForModal(records, dates.start, dates.end);
+
       if (openModal) {
         setEmployeeOverviewSelectedEmployee(employee);
-        setEmployeeOverviewSelectedRecords(records);
-        setEmployeeOverviewSelectedOvertimeIds([]);
+        setEmployeeOverviewSelectedRecords(unsaved);
+        cancelInlineEdit();
       }
-      return records;
+      return unsaved;
     } catch (error) {
-      console.error('Employee Overview records error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to load employee attendance records'), 'error');
+      if (error.code !== 'ECONNABORTED') {
+        showNotificationMessage(getApiErrorMessage(error, 'Failed to load employee records'), 'error');
+      }
       return [];
     } finally {
       setEmployeeOverviewActionLoading(null);
     }
   };
 
-  // ==================== FIX: Generate Summary with proper time detection ====================
-  const generateEmployeeOverviewSummary = async (employee, cutoffWarningConfirmed = false) => {
-    if (!employeeOverviewMeta.can_generate && !cutoffWarningConfirmed) {
-      const shouldContinue = window.confirm(
-        'The selected payroll cutoff has not been reached yet. The summary may still change as new attendance records are added. Continue generating now?'
-      );
-      if (!shouldContinue) return;
-    }
-
-    setEmployeeOverviewActionLoading(`generate-${employee.employee_id}`);
-    try {
-      const response = await api.post('/attendance/generate-summary', {
-        employee_id: employee.employee_id,
-        start_date: employeeOverviewPeriod.start_date,
-        end_date: employeeOverviewPeriod.end_date,
-      });
-      const body = unwrapEmployeeOverviewPayload(response);
-      
-      // Check if employee has any time in/time out records
-      const records = toEmployeeOverviewArray(body.records);
-      const hasTimeIn = records.some(r => r.time_in !== null && r.time_in !== undefined && r.time_in !== '');
-      const hasTimeOut = records.some(r => r.time_out !== null && r.time_out !== undefined && r.time_out !== '');
-      
-      if (!hasTimeIn || !hasTimeOut) {
-        showNotificationMessage(`${employee.employee_name} has no complete time-in/time-out records. Cannot generate summary.`, 'warning');
-        setEmployeeOverviewActionLoading(null);
-        return;
-      }
-      
-      setEmployeeOverviewGenerated((prev) => ({ ...prev, [employee.employee_id]: body.summary || {} }));
-      setEmployeeOverviewRecordsByEmployee((prev) => ({ ...prev, [employee.employee_id]: records }));
-      showNotificationMessage(`Generated attendance summary for ${employee.employee_name}.`, 'success');
-    } catch (error) {
-      console.error('Generate Employee Overview summary error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to generate attendance summary'), 'error');
-    } finally {
-      setEmployeeOverviewActionLoading(null);
-    }
-  };
-
-  const saveEmployeeOverviewToPayroll = async (employee) => {
-    const records = employeeOverviewRecordsByEmployee[employee.employee_id]?.length
-      ? employeeOverviewRecordsByEmployee[employee.employee_id]
-      : await loadEmployeeOverviewRecords(employee, false);
-    
-    // ==================== FIX: Check for complete time in/out ====================
-    const hasCompleteRecord = records.some(r => 
-      r.time_in !== null && r.time_in !== undefined && r.time_in !== '' &&
-      r.time_out !== null && r.time_out !== undefined && r.time_out !== ''
-    );
-    
-    if (!hasCompleteRecord) {
-      showNotificationMessage(`${employee.employee_name} has no complete time-in/time-out records. Cannot save to payroll.`, 'warning');
-      return;
-    }
-    
-    const pendingOvertime = records.some((record) => record.overtime_status === 'pending');
-    const unverifiedRecords = records.some((record) => !['verified', 'approved'].includes(String(
-      record.approval_status || record.verification_status || record.attendance_status || ''
-    ).toLowerCase()));
-
-    if (!employeeOverviewGenerated[employee.employee_id]) {
-      showNotificationMessage('Generate the attendance summary first before saving to Payroll.', 'warning');
-      return;
-    }
-
-    if (records.length === 0) {
-      showNotificationMessage('Cannot save. No attendance records were found for this payroll cutoff.', 'warning');
-      return;
-    }
-
-    if (unverifiedRecords) {
-      showNotificationMessage('Cannot save. Approve all attendance records before saving to Payroll.', 'warning');
-      return;
-    }
-
-    if (pendingOvertime) {
-      showNotificationMessage('Cannot save. Approve or decline all pending overtime records first.', 'warning');
-      return;
-    }
+  // ============ SAVE ============
+  const handleSaveSingleEmployeeToPayroll = async (employee, bypass = false) => {
+    if (!employee) { showNotificationMessage('Invalid employee', 'error'); return; }
+    const cutoffReached = isCutoffReached(selectedYear, selectedMonth, cutoffPeriod);
 
     setEmployeeOverviewActionLoading(`save-${employee.employee_id}`);
+    let allRecords = [];
     try {
-      await api.post('/attendance/save-summary-to-payroll', {
+      const response = await api.get('/attendance/employee-records', {
+        params: {
+          employee_id: employee.employee_id,
+          start_date: employeeOverviewPeriod.start_date,
+          end_date: employeeOverviewPeriod.end_date,
+        },
+        timeout: 60000
+      });
+      const body = unwrapEmployeeOverviewPayload(response);
+      allRecords = toEmployeeOverviewArray(body.records);
+    } catch (err) {
+      // fallback
+    } finally {
+      setEmployeeOverviewActionLoading(null);
+    }
+
+    const unsavedRecords = filterEmployeeRecordsForModal(allRecords, dates.start, dates.end);
+
+    if (unsavedRecords.length === 0) {
+      const inCutoff = allRecords.filter((rec) => isWithinCutoff(rec, dates.start, dates.end));
+      const realRecords = inCutoff.filter((rec) => !isAbsentOrNonWorking(rec));
+      setRequirementsInfo({
+        title: 'Nothing to Save',
+        tone: 'info',
+        message: realRecords.length === 0
+          ? `${employee.employee_name} has no attendance records for ${employeeOverviewCutoffLabel}.`
+          : `All of ${employee.employee_name}'s attendance for ${employeeOverviewCutoffLabel} has already been saved to payroll. There is nothing new to save.`,
+        items: [],
+        employee,
+      });
+      setShowRequirementsModal(true);
+      return;
+    }
+
+    const inspection = inspectRecordsForSave(unsavedRecords);
+    if (!inspection.canSave) {
+      const items = [];
+      if (inspection.issues.missingTimeIn.length > 0)
+        items.push(`${inspection.issues.missingTimeIn.length} record(s) missing Time In`);
+      if (inspection.issues.missingTimeOut.length > 0)
+        items.push(`${inspection.issues.missingTimeOut.length} record(s) missing Time Out`);
+      if (inspection.issues.pendingAttendance.length > 0)
+        items.push(`${inspection.issues.pendingAttendance.length} record(s) with pending attendance approval`);
+      if (inspection.issues.pendingOvertime.length > 0)
+        items.push(`${inspection.issues.pendingOvertime.length} record(s) with pending overtime decision`);
+      if (inspection.issues.pendingUndertime.length > 0)
+        items.push(`${inspection.issues.pendingUndertime.length} record(s) with pending undertime decision`);
+
+      setRequirementsInfo({
+        title: 'Action Required Before Saving',
+        tone: 'warning',
+        message: `These records must be resolved before saving to payroll:`,
+        items,
+        employee,
+      });
+      setShowRequirementsModal(true);
+      return;
+    }
+
+    if (!cutoffReached && !bypass) {
+      setPendingSaveAction({ type: 'single', employee });
+      setShowCutoffConfirmModal(true);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await api.post('/attendance/save-summary-to-payroll', {
+        employee_id: employee.employee_id,
+        start_date: dates.start.toISOString().split('T')[0],
+        end_date: dates.end.toISOString().split('T')[0],
+        notes: 'Saved from Employee Overview'
+      });
+      if (response.data?.success) {
+        showNotificationMessage(`Attendance saved for ${employee.employee_name}!`, 'success');
+
+        setEmployeeOverviewEmployees((prev) =>
+          prev.map((emp) =>
+            emp.employee_id === employee.employee_id
+              ? { ...emp, saved_to_payroll: true, unsaved_count: 0 }
+              : emp
+          )
+        );
+
+        if (employeeOverviewSelectedEmployee?.employee_id === employee.employee_id) {
+          await refreshSelectedEmployeeRecords();
+        }
+
+        refreshEverything({ forceOverview: false });
+        if (selectedRecordEmployee?.employee_id === employee.employee_id) await fetchSavedRecords();
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to save attendance', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to save attendance'), 'error');
+    } finally {
+      setSubmitting(false);
+      setShowCutoffConfirmModal(false);
+      setPendingSaveAction(null);
+    }
+  };
+
+  const handleSaveFromModal = async (bypass = false) => {
+    const employee = employeeOverviewSelectedEmployee;
+    if (!employee) return;
+
+    const cutoffReached = isCutoffReached(selectedYear, selectedMonth, cutoffPeriod);
+    if (!cutoffReached && !bypass) {
+      setPendingSaveAction({ type: 'modal', employee });
+      setShowCutoffConfirmModal(true);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await api.post('/attendance/save-summary-to-payroll', {
         employee_id: employee.employee_id,
         start_date: employeeOverviewPeriod.start_date,
         end_date: employeeOverviewPeriod.end_date,
-        notes: 'Saved from Employee Overview attendance summary.',
+        notes: 'Saved from Attendance Records modal',
       });
-      setEmployeeOverviewSaved((prev) => ({ ...prev, [employee.employee_id]: true }));
-      showNotificationMessage(`Saved ${employee.employee_name}'s attendance summary to Payroll.`, 'success');
-      await fetchEmployeeOverview(true);
-      queryClient.invalidateQueries({ queryKey: ['payroll'] });
-    } catch (error) {
-      console.error('Save Employee Overview payroll error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to save attendance summary to Payroll'), 'error');
-    } finally {
-      setEmployeeOverviewActionLoading(null);
-    }
-  };
 
-  const approveEmployeeOverviewOvertime = async (record) => {
-    setEmployeeOverviewActionLoading(`approve-ot-${record.attendance_id}`);
-    try {
-      await api.post(`/attendance/${record.attendance_id}/approve-overtime`, {
-        approved_overtime_hours: record.overtime_hours,
-        notes: 'Approved from Employee Overview.',
-      });
-      showNotificationMessage('Overtime approved.', 'success');
-      if (employeeOverviewSelectedEmployee) {
-        await generateEmployeeOverviewSummary(employeeOverviewSelectedEmployee);
-        const refreshed = await loadEmployeeOverviewRecords(employeeOverviewSelectedEmployee, false);
-        setEmployeeOverviewSelectedRecords(refreshed);
+      if (response.data?.success) {
+        showNotificationMessage(`Attendance saved for ${employee.employee_name}!`, 'success');
+
+        setEmployeeOverviewEmployees((prev) =>
+          prev.map((emp) =>
+            emp.employee_id === employee.employee_id
+              ? { ...emp, saved_to_payroll: true, unsaved_count: 0 }
+              : emp
+          )
+        );
+
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to save attendance', 'error');
       }
     } catch (error) {
-      console.error('Approve Employee Overview overtime error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to approve overtime'), 'error');
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to save attendance'), 'error');
     } finally {
-      setEmployeeOverviewActionLoading(null);
+      setSubmitting(false);
+      setShowCutoffConfirmModal(false);
+      setPendingSaveAction(null);
     }
   };
 
-  const declineEmployeeOverviewOvertime = async (record) => {
-    const reason = window.prompt('Reason for declining overtime:', 'Overtime declined by admin.');
-    if (reason === null) return;
-
-    setEmployeeOverviewActionLoading(`decline-ot-${record.attendance_id}`);
-    try {
-      await api.post(`/attendance/${record.attendance_id}/reject-overtime`, { reason });
-      showNotificationMessage('Overtime declined.', 'success');
-      if (employeeOverviewSelectedEmployee) {
-        await generateEmployeeOverviewSummary(employeeOverviewSelectedEmployee);
-        const refreshed = await loadEmployeeOverviewRecords(employeeOverviewSelectedEmployee, false);
-        setEmployeeOverviewSelectedRecords(refreshed);
-      }
-    } catch (error) {
-      console.error('Decline Employee Overview overtime error:', error);
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to decline overtime'), 'error');
-    } finally {
-      setEmployeeOverviewActionLoading(null);
-    }
-  };
-
-  const toggleEmployeeOverviewOvertime = (attendanceId) => {
-    setEmployeeOverviewSelectedOvertimeIds((prev) => (
-      prev.includes(attendanceId)
-        ? prev.filter((id) => id !== attendanceId)
-        : [...prev, attendanceId]
-    ));
-  };
-
-  const selectAllEmployeeOverviewOvertime = () => {
-    const pendingIds = employeeOverviewSelectedRecords
-      .filter((record) => record.overtime_status === 'pending')
-      .map((record) => record.attendance_id);
-    const allSelected = pendingIds.length > 0 && pendingIds.every((id) => employeeOverviewSelectedOvertimeIds.includes(id));
-    setEmployeeOverviewSelectedOvertimeIds(allSelected ? [] : pendingIds);
-  };
-
-  const decideSelectedEmployeeOverviewOvertime = async (action) => {
-    if (employeeOverviewSelectedOvertimeIds.length === 0) {
-      showNotificationMessage('Select at least one pending overtime record.', 'warning');
+  const handleSaveAllAttendance = async (bypass = false) => {
+    const cutoffReached = isCutoffReached(selectedYear, selectedMonth, cutoffPeriod);
+    if (!cutoffReached && !bypass) {
+      setPendingSaveAction('save-all');
+      setShowCutoffConfirmModal(true);
       return;
     }
-
-    const reason = action === 'reject'
-      ? window.prompt('Reason for declining selected overtime:', 'Overtime declined by admin.')
-      : 'Bulk approved from Employee Overview.';
-    if (reason === null) return;
-
-    setEmployeeOverviewActionLoading(`bulk-ot-${action}`);
-    try {
-      const response = await api.post('/attendance/overtime/bulk-decision', {
-        attendance_ids: employeeOverviewSelectedOvertimeIds,
-        action,
-        reason,
-      });
-      const body = unwrapEmployeeOverviewPayload(response);
-      showNotificationMessage(
-        `${body.updated_count || 0} overtime record(s) ${action === 'approve' ? 'approved' : 'declined'}.`,
-        'success'
-      );
-      setEmployeeOverviewSelectedOvertimeIds([]);
-      if (employeeOverviewSelectedEmployee) {
-        const refreshed = await loadEmployeeOverviewRecords(employeeOverviewSelectedEmployee, false);
-        setEmployeeOverviewSelectedRecords(refreshed);
-        setEmployeeOverviewGenerated((prev) => {
-          const next = { ...prev };
-          delete next[employeeOverviewSelectedEmployee.employee_id];
-          return next;
-        });
-      }
-      await fetchEmployeeOverview(true);
-    } catch (error) {
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to update selected overtime records'), 'error');
-    } finally {
-      setEmployeeOverviewActionLoading(null);
-    }
-  };
-
-  const saveAllEmployeeOverviewToPayroll = async () => {
-    setEmployeeOverviewActionLoading('save-all-payroll');
+    setSavingAll(true);
     try {
       const response = await api.post('/attendance/save-all-summaries-to-payroll', {
-        start_date: employeeOverviewPeriod.start_date,
-        end_date: employeeOverviewPeriod.end_date,
-        notes: 'Automatically synchronized from Attendance Employee Overview.',
+        start_date: dates.start.toISOString().split('T')[0],
+        end_date: dates.end.toISOString().split('T')[0],
+        month: selectedMonth + 1,
+        year: selectedYear,
+        cutoff: cutoffPeriod,
+        notes: 'Saved from Employee Overview'
       });
-      const body = unwrapEmployeeOverviewPayload(response);
-      const processed = Number(body.processed_count || 0);
-      const skipped = Number(body.skipped_count || 0);
-      showNotificationMessage(
-        processed > 0
-          ? `${processed} payroll record(s) saved${skipped ? `; ${skipped} need attention` : ''}.`
-          : `${skipped || 'All'} employee record(s) still need attendance approval or correction.`,
-        processed > 0 ? 'success' : 'warning'
-      );
-      await fetchEmployeeOverview(true);
-      queryClient.invalidateQueries({ queryKey: ['payroll'] });
-    } catch (error) {
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to synchronize attendance to Payroll'), 'error');
-    } finally {
-      setEmployeeOverviewActionLoading(null);
-    }
-  };
+      if (response.data?.success) {
+        const processed = response.data?.data?.processed_count || 0;
+        const skipped = response.data?.data?.skipped_count || 0;
 
-  // ==================== FIX: Edit Attendance with proper time detection ====================
-  const openEmployeeOverviewAttendanceEditor = (record) => {
-    // Check if record has no time in or time out
-    const hasNoTimeIn = !record.time_in || record.time_in === '' || record.time_in === null;
-    const hasNoTimeOut = !record.time_out || record.time_out === '' || record.time_out === null;
-    
-    if (hasNoTimeIn && hasNoTimeOut) {
-      showNotificationMessage('This record has no time-in or time-out. Cannot edit a non-existent attendance record.', 'warning');
-      return;
-    }
-    
-    setEmployeeOverviewEditingRecord(record);
-    setEmployeeOverviewEditTimeIn(toDateTimeLocalInput(record.time_in, record.date, '08:00'));
-    setEmployeeOverviewEditTimeOut(toDateTimeLocalInput(record.time_out, record.date, '17:00'));
-    setEmployeeOverviewEditApprovalStatus(record.approval_status || 'pending');
-    setEmployeeOverviewEditNotes('Corrected from Employee Overview.');
-  };
+        if (processed === 0) {
+          setRequirementsInfo({
+            title: 'Nothing to Save',
+            tone: 'info',
+            message: skipped > 0
+              ? `No new attendance records were ready to save for ${employeeOverviewCutoffLabel}. ${skipped} record(s) were skipped (see details).`
+              : `All attendance for ${employeeOverviewCutoffLabel} has already been saved to payroll. There is nothing new to save.`,
+            items: (response.data?.data?.skipped || []).map(
+              (s) => `${s.employee_name || s.employee_id}: ${s.reason}`
+            ),
+            employee: null,
+          });
+          setShowRequirementsModal(true);
+        } else {
+          showNotificationMessage(`${processed} attendance record(s) saved successfully!`, 'success');
+        }
 
-  const saveEmployeeOverviewAttendanceEdit = async () => {
-    if (!employeeOverviewEditingRecord) return;
-    
-    // Check if both time fields are empty
-    if (!employeeOverviewEditTimeIn && !employeeOverviewEditTimeOut) {
-      showNotificationMessage('Enter at least a time-in or time-out to save.', 'warning');
-      return;
-    }
-
-    setEmployeeOverviewActionLoading(`edit-${employeeOverviewEditingRecord.attendance_id}`);
-    try {
-      const response = await api.put(`/attendance/${employeeOverviewEditingRecord.attendance_id}/times`, {
-        time_in: employeeOverviewEditTimeIn || null,
-        time_out: employeeOverviewEditTimeOut || null,
-        approval_status: employeeOverviewEditApprovalStatus,
-        notes: employeeOverviewEditNotes,
-      });
-      const body = unwrapEmployeeOverviewPayload(response);
-      const syncMessage = body.payroll_sync?.synced ? ' Payroll was synchronized automatically.' : '';
-      showNotificationMessage(`Attendance record updated.${syncMessage}`, 'success');
-      setEmployeeOverviewEditingRecord(null);
-      if (employeeOverviewSelectedEmployee) {
-        const refreshed = await loadEmployeeOverviewRecords(employeeOverviewSelectedEmployee, false);
-        setEmployeeOverviewSelectedRecords(refreshed);
-        setEmployeeOverviewGenerated((prev) => {
-          const next = { ...prev };
-          delete next[employeeOverviewSelectedEmployee.employee_id];
-          return next;
-        });
+        refreshEverything({ forceOverview: false });
+        if (employeeOverviewSelectedEmployee) await refreshSelectedEmployeeRecords();
+        if (selectedRecordEmployee) await fetchSavedRecords();
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to save attendance', 'error');
       }
-      await fetchEmployeeOverview(true);
-      queryClient.invalidateQueries({ queryKey: ['payroll'] });
     } catch (error) {
-      showNotificationMessage(getApiErrorMessage(error, 'Failed to update attendance times'), 'error');
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to save attendance'), 'error');
     } finally {
-      setEmployeeOverviewActionLoading(null);
+      setSavingAll(false);
+      setShowCutoffConfirmModal(false);
+      setPendingSaveAction(null);
     }
   };
 
-  const printEmployeeOverviewReport = async (employee) => {
-    const records = employeeOverviewRecordsByEmployee[employee.employee_id]?.length
-      ? employeeOverviewRecordsByEmployee[employee.employee_id]
-      : await loadEmployeeOverviewRecords(employee, false);
-    const summary = employeeOverviewGenerated[employee.employee_id] || {
-      regular_hours: 0,
-      overtime_hours: 0,
-      total_hours: 0,
-      late_undertime: '0 min late / 0 min undertime',
-    };
+  // ============ SAVED RECORDS ============
+  const openRecordModal = async (employee) => {
+    setSelectedRecordEmployee(employee);
+    setLoadingRecords(true);
+    setShowRecordModal(true);
+    setEmployeeSavedRecordsSummary(null);
+    setRecordFilterMonth(selectedMonth);
+    setRecordFilterYear(selectedYear);
+    setRecordFilterCutoff(cutoffPeriod);
 
-    const rows = records.map((record) => `
-      <tr>
-        <td>${record.day || ''}</td>
-        <td>${formatEmployeeOverviewDate(record.date)}</td>
-        <td>${record.assigned_schedule || 'Unscheduled'}</td>
-        <td>${record.formatted_time_in || 'No Time In'}</td>
-        <td>${record.formatted_time_out || 'No Time Out'}</td>
-        <td>${formatEmployeeOverviewLocation(record.time_in_location)}</td>
-        <td>${formatEmployeeOverviewLocation(record.time_out_location)}</td>
-        <td>${formatDecimalHours(record.regular_hours)}</td>
-        <td>${formatDecimalHours(record.overtime_hours)}</td>
-        <td>${formatDecimalHours(record.total_hours)}</td>
-        <td>${record.late_undertime || ''}</td>
-      </tr>
-    `).join('');
+    try {
+      const response = await api.get('/attendance/employee-saved-records', {
+        params: { employee_id: employee.employee_id, month: selectedMonth + 1, year: selectedYear, cutoff: cutoffPeriod }
+      });
+      const body = unwrapEmployeeOverviewPayload(response);
+      setEmployeeSavedRecords(toEmployeeOverviewArray(body.records));
+      setEmployeeSavedRecordsSummary(body.summary || null);
+    } catch (error) {
+      console.error('Saved records fetch error:', error);
+      setEmployeeSavedRecords([]);
+      setEmployeeSavedRecordsSummary(null);
+    } finally {
+      setLoadingRecords(false);
+    }
+  };
 
-    const win = window.open('', '_blank');
-    if (!win) {
-      showNotificationMessage('Popup blocked. Please allow popups to print the report.', 'warning');
+  const fetchSavedRecords = async (employeeId = null) => {
+    const targetId = employeeId || selectedRecordEmployee?.employee_id;
+    if (!targetId) return;
+    setLoadingRecords(true);
+    try {
+      const response = await api.get('/attendance/employee-saved-records', {
+        params: { employee_id: targetId, month: recordFilterMonth + 1, year: recordFilterYear, cutoff: recordFilterCutoff }
+      });
+      const body = unwrapEmployeeOverviewPayload(response);
+      setEmployeeSavedRecords(toEmployeeOverviewArray(body.records));
+      setEmployeeSavedRecordsSummary(body.summary || null);
+    } catch (error) {
+      setEmployeeSavedRecords([]);
+      setEmployeeSavedRecordsSummary(null);
+    } finally {
+      setLoadingRecords(false);
+    }
+  };
+
+  const handlePrintSavedRecords = () => {
+    if (!selectedRecordEmployee) return;
+    printSavedRecords({
+      employee: selectedRecordEmployee,
+      summary: employeeSavedRecordsSummary,
+      records: employeeSavedRecords,
+      cutoffLabel: `${new Date(recordFilterYear, recordFilterMonth).toLocaleString('default', { month: 'long' })} ${recordFilterCutoff === 'first' ? '1 - 15' : '16 - End'}, ${recordFilterYear}`,
+      month: recordFilterMonth,
+      year: recordFilterYear,
+      cutoff: recordFilterCutoff,
+    });
+  };
+
+  // ============ RECORD-LEVEL VERIFY (legacy compatibility) ============
+  const handleVerifyAttendance = async (recordOrId, status) => {
+    if (recordOrId && typeof recordOrId === 'object' && recordOrId.type) {
+      const side = recordOrId.type === 'IN' ? 'in' : 'out';
+      return handleVerifySide(recordOrId, side, status);
+    }
+    return handleVerifySide(recordOrId, 'in', status);
+  };
+
+  const handleUnverifyAttendance = async (record) => {
+    if (record && typeof record === 'object' && record.type) {
+      const side = record.type === 'IN' ? 'in' : 'out';
+      return handleVerifySide(record, side, 'pending');
+    }
+    const recordId = record?.id || record?.attendance_id;
+    if (!recordId) return;
+    return handleVerifySide(recordId, 'in', 'pending');
+  };
+
+  const handleCancelReject = async (record) => {
+    if (record && typeof record === 'object' && record.type) {
+      const side = record.type === 'IN' ? 'in' : 'out';
+      return handleVerifySide(record, side, 'pending');
+    }
+    const recordId = record?.id || record?.attendance_id;
+    if (!recordId) return;
+    return handleVerifySide(recordId, 'in', 'pending');
+  };
+
+  // ============ OT ============
+  const openOTApprovalModal = (record) => {
+    setOtApprovalRecord(record);
+    setOtApprovalHours(Number(record?.overtime_hours || 0));
+    setOtApprovalReason('');
+    setShowOTApprovalModal(true);
+  };
+
+  const submitOTApproval = async () => {
+    if (!otApprovalRecord) return;
+    const maxHours = Number(otApprovalRecord.overtime_hours || 0);
+    if (otApprovalHours <= 0) { showNotificationMessage('Approved hours must be greater than 0.', 'warning'); return; }
+    if (otApprovalHours > maxHours) { showNotificationMessage(`Cannot exceed ${maxHours}h.`, 'warning'); return; }
+    if (!otApprovalReason.trim()) { showNotificationMessage('Please provide a reason.', 'warning'); return; }
+    const attendanceId = otApprovalRecord?.id || otApprovalRecord?.attendance_id;
+    setOtApprovalSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${attendanceId}/approve-overtime`, {
+        approved_overtime_hours: otApprovalHours,
+        notes: otApprovalReason,
+      });
+      if (response.data?.success) {
+        showNotificationMessage(`Overtime approved (${otApprovalHours}h)`, 'success');
+        setShowOTApprovalModal(false);
+        setOtApprovalRecord(null);
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to approve overtime', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to approve overtime'), 'error');
+    } finally {
+      setOtApprovalSubmitting(false);
+    }
+  };
+
+  const openOTRejectModal = (record) => {
+    setOtRejectRecord(record);
+    setOtRejectReason('');
+    setShowOTRejectModal(true);
+  };
+
+  const submitOTRejection = async () => {
+    if (!otRejectRecord) return;
+    if (!otRejectReason.trim()) {
+      showNotificationMessage('Please provide a reason for rejection.', 'warning');
       return;
     }
-
-    win.document.write(`
-      <html>
-        <head>
-          <title>Attendance Report - ${employee.employee_name}</title>
-          <style>
-            body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
-            h1 { margin-bottom: 4px; }
-            .muted { color: #6b7280; margin-top: 0; }
-            .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 20px 0; }
-            .card { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; }
-            .label { color: #6b7280; font-size: 12px; }
-            .value { font-size: 20px; font-weight: 700; }
-            table { width: 100%; border-collapse: collapse; font-size: 12px; }
-            th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; }
-            th { background: #f3f4f6; }
-            @media print { button { display: none; } }
-          </style>
-        </head>
-        <body>
-          <button onclick="window.print()">Print</button>
-          <h1>Attendance Report</h1>
-          <p class="muted">${employeeOverviewCutoffLabel}</p>
-          <p><strong>${employee.employee_name}</strong> · ${employee.employee_code || 'N/A'} · ${employee.position || 'N/A'}</p>
-          <div class="summary">
-            <div class="card"><div class="label">Regular Hours</div><div class="value">${formatDecimalHours(summary.regular_hours)}</div></div>
-            <div class="card"><div class="label">OT Hours</div><div class="value">${formatDecimalHours(summary.overtime_hours)}</div></div>
-            <div class="card"><div class="label">Total Hours</div><div class="value">${formatDecimalHours(summary.total_hours)}</div></div>
-            <div class="card"><div class="label">Late/Undertime</div><div class="value" style="font-size:14px">${summary.late_undertime || '0 min late / 0 min undertime'}</div></div>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Day</th><th>Date</th><th>Assigned Schedule</th><th>Time In</th><th>Time Out</th><th>Time In Location</th><th>Time Out Location</th><th>Regular</th><th>OT</th><th>Total</th><th>Late/Undertime</th>
-              </tr>
-            </thead>
-            <tbody>${rows || '<tr><td colspan="11">No attendance records found.</td></tr>'}</tbody>
-          </table>
-        </body>
-      </html>
-    `);
-    win.document.close();
+    const attendanceId = otRejectRecord?.id || otRejectRecord?.attendance_id;
+    setOtRejectSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${attendanceId}/reject-overtime`, {
+        reason: otRejectReason,
+      });
+      if (response.data?.success) {
+        showNotificationMessage('Overtime rejected', 'info');
+        setShowOTRejectModal(false);
+        setOtRejectRecord(null);
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to reject overtime', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to reject overtime'), 'error');
+    } finally {
+      setOtRejectSubmitting(false);
+    }
   };
 
-  const displayedEmployeeOverviewEmployees = employeeOverviewEmployees.map((employee) => {
-    const summary = employeeOverviewGenerated[employee.employee_id] || employee;
+  // ============ UT ============
+  const openUTApprovalModal = (record) => {
+    setUtApprovalRecord(record);
+    setUtApprovalHours(Number(record?.undertime_hours || 0));
+    setUtApprovalReason('');
+    setShowUTApprovalModal(true);
+  };
+
+  const submitUTApproval = async () => {
+    if (!utApprovalRecord) return;
+    const maxHours = Number(utApprovalRecord.undertime_hours || 0);
+    if (utApprovalHours <= 0) { showNotificationMessage('Approved hours must be greater than 0.', 'warning'); return; }
+    if (utApprovalHours > maxHours) { showNotificationMessage(`Cannot exceed ${maxHours}h.`, 'warning'); return; }
+    if (!utApprovalReason.trim()) { showNotificationMessage('Please provide a reason.', 'warning'); return; }
+    const attendanceId = utApprovalRecord?.id || utApprovalRecord?.attendance_id;
+    setUtApprovalSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${attendanceId}/approve-undertime`, {
+        approved_undertime_hours: utApprovalHours,
+        notes: utApprovalReason,
+      });
+      if (!response.data?.success) {
+        showNotificationMessage(response.data?.message || 'Failed to approve undertime', 'error');
+        return;
+      }
+      if (utApprovalRecord?.approval_status !== 'approved') {
+        try {
+          await api.put(`/attendance/${attendanceId}/status`, {
+            verification_status: 'approved',
+            verification_notes: 'Undertime reviewed and approved',
+          });
+        } catch (e) { /* non-fatal */ }
+      }
+      showNotificationMessage(`Undertime approved (${utApprovalHours}h)`, 'success');
+      setShowUTApprovalModal(false);
+      setUtApprovalRecord(null);
+      await refreshSelectedEmployeeRecords();
+      refreshEverything({ forceOverview: false });
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to approve undertime'), 'error');
+    } finally {
+      setUtApprovalSubmitting(false);
+    }
+  };
+
+  const openUTRejectModal = (record) => {
+    setUtRejectRecord(record);
+    setUtRejectReason('');
+    setShowUTRejectModal(true);
+  };
+
+  const submitUTRejection = async () => {
+    if (!utRejectRecord) return;
+    if (!utRejectReason.trim()) {
+      showNotificationMessage('Please provide a reason for rejection.', 'warning');
+      return;
+    }
+    const attendanceId = utRejectRecord?.id || utRejectRecord?.attendance_id;
+    setUtRejectSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${attendanceId}/reject-undertime`, {
+        reason: utRejectReason,
+      });
+      if (response.data?.success) {
+        showNotificationMessage('Undertime rejected', 'info');
+        setShowUTRejectModal(false);
+        setUtRejectRecord(null);
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to reject undertime', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to reject undertime'), 'error');
+    } finally {
+      setUtRejectSubmitting(false);
+    }
+  };
+
+  // ============ INLINE EDIT ============
+  const openInlineEdit = (record) => {
+    setInlineEditRecord(record);
+    setInlineEditTimeIn(toDateTimeLocalInput(record.time_in, record.date, '08:00'));
+    setInlineEditTimeOut(toDateTimeLocalInput(record.time_out, record.date, '17:00'));
+    setInlineEditNotes('Edited from Attendance Records');
+  };
+
+  const cancelInlineEdit = () => {
+    setInlineEditRecord(null);
+    setInlineEditTimeIn('');
+    setInlineEditTimeOut('');
+    setInlineEditNotes('');
+  };
+
+  const saveInlineEdit = async () => {
+    if (!inlineEditRecord) return;
+    if (!inlineEditTimeIn && !inlineEditTimeOut) {
+      showNotificationMessage('Enter at least a time-in or time-out.', 'warning');
+      return;
+    }
+    setInlineEditSaving(true);
+    try {
+      const response = await api.put(`/attendance/${inlineEditRecord.attendance_id || inlineEditRecord.id}/times`, {
+        time_in: inlineEditTimeIn || null,
+        time_out: inlineEditTimeOut || null,
+        notes: inlineEditNotes,
+      }, { timeout: 60000 });
+      if (response.data?.success) {
+        const merged = response.data?.data?.merged === true;
+        showNotificationMessage(
+          merged
+            ? 'Attendance merged with an existing record on the same date.'
+            : 'Attendance updated successfully.',
+          merged ? 'info' : 'success'
+        );
+        cancelInlineEdit();
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to update attendance'), 'error');
+    } finally {
+      setInlineEditSaving(false);
+    }
+  };
+
+  // ============ PRINT ============
+  const handlePrintAttendanceRecords = () => {
+    if (!employeeOverviewSelectedEmployee) return;
+    printAttendanceRecords({
+      employee: employeeOverviewSelectedEmployee,
+      records: employeeOverviewSelectedRecords,
+      cutoffLabel: employeeOverviewCutoffLabel,
+    });
+  };
+
+  // ============ ADD ATTENDANCE ============
+  const handleAddAttendance = (employee) => {
+    setAddAttendanceEmployee(employee);
+    setAddAttendanceDate(new Date().toISOString().split('T')[0]);
+    setAddAttendanceTimeIn('');
+    setAddAttendanceTimeOut('');
+    setAddAttendanceNotes('');
+    setShowAddAttendanceModal(true);
+  };
+
+  const confirmAddAttendance = async () => {
+    if (!addAttendanceEmployee || !addAttendanceDate) {
+      showNotificationMessage('Please select employee and date', 'warning');
+      return;
+    }
+    if (!addAttendanceTimeIn && !addAttendanceTimeOut) {
+      showNotificationMessage('Enter at least a time-in or time-out.', 'warning');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const existingRes = await api.get('/attendance/employee-records', {
+        params: { employee_id: addAttendanceEmployee.employee_id, start_date: addAttendanceDate, end_date: addAttendanceDate },
+        timeout: 30000,
+      });
+      const existing = toEmployeeOverviewArray(unwrapEmployeeOverviewPayload(existingRes).records).filter(
+        (rec) => (rec.date || rec.attendance_date) === addAttendanceDate && (rec.time_in || rec.time_out)
+      );
+      if (existing.length > 0) {
+        showNotificationMessage(`${addAttendanceEmployee.employee_name} already has a record for ${formatDate(addAttendanceDate)}.`, 'warning');
+        return;
+      }
+
+      const timeInIso = addAttendanceTimeIn ? `${addAttendanceDate}T${addAttendanceTimeIn}:00` : null;
+      const timeOutIso = addAttendanceTimeOut ? `${addAttendanceDate}T${addAttendanceTimeOut}:00` : null;
+
+      if (timeInIso) {
+        await api.post('/attendance/time-in', {
+          employee_id: addAttendanceEmployee.employee_id,
+          captured_at: timeInIso,
+          device_info: 'Admin manual entry',
+          notes: addAttendanceNotes || 'Added from Employee Overview',
+        }, { timeout: 30000 });
+      }
+      if (timeOutIso) {
+        try {
+          await api.post('/attendance/time-out', {
+            employee_id: addAttendanceEmployee.employee_id,
+            captured_at: timeOutIso,
+            device_info: 'Admin manual entry',
+          }, { timeout: 30000 });
+        } catch (e) {
+          showNotificationMessage(`Time-out failed. Time-in was recorded.`, 'warning');
+        }
+      }
+
+      showNotificationMessage(`Attendance created for ${addAttendanceEmployee.employee_name}`, 'success');
+      setShowAddAttendanceModal(false);
+      setAddAttendanceEmployee(null);
+      if (employeeOverviewSelectedEmployee?.employee_id === addAttendanceEmployee.employee_id) {
+        await refreshSelectedEmployeeRecords();
+      }
+      refreshEverything({ forceOverview: false });
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to create attendance'), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ============ UNSCHEDULED ============
+  const fetchPendingUnscheduledRecords = useCallback(async () => {
+    try {
+      const response = await api.get('/attendance/needs-approval', {
+        params: { status: 'unscheduled', approval_status: 'pending', per_page: 100 },
+      });
+      const records = extractApiList(response).map(normalizeAttendanceLog);
+      setPendingUnscheduledRecords(records);
+    } catch (error) {
+      setPendingUnscheduledRecords([]);
+    }
+  }, []);
+
+  const approveUnscheduledRecord = async (recordId, notes) => {
+    setSubmitting(true);
+    try {
+      const response = await api.post(`/attendance/${recordId}/approve-unscheduled`, {
+        admin_notes: notes || 'Approved from Unscheduled tab',
+      });
+      if (response.data?.success) {
+        showNotificationMessage('Unscheduled attendance approved!', 'success');
+        await fetchPendingUnscheduledRecords();
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+        setShowUnscheduledModal(false);
+        setSelectedUnscheduledRecord(null);
+        setUnscheduledApprovalNote('');
+      } else {
+        showNotificationMessage(response.data?.message || 'Failed to approve', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to approve'), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const rejectUnscheduledRecord = async (attendanceId, reason) => {
+    setSubmitting(true);
+    try {
+      const result = await updateAttendanceStatusMutation.mutateAsync({
+        attendanceId,
+        status: 'rejected',
+        notes: `Unscheduled attendance rejected: ${reason || 'No reason provided'}`,
+      });
+      if (result?.success) {
+        showNotificationMessage('Unscheduled attendance rejected', 'info');
+        await fetchPendingUnscheduledRecords();
+        await refreshSelectedEmployeeRecords();
+        refreshEverything({ forceOverview: false });
+      } else {
+        showNotificationMessage('Failed to reject record', 'error');
+      }
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to reject record'), 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ============ ARCHIVE ============
+  const openArchiveModal = async () => {
+    setShowArchiveModal(true);
+    setArchiveLoading(true);
+    setArchiveSelectedEmployee(null);
+    setArchiveRecords([]);
+    setArchiveMonth(selectedMonth);
+    setArchiveYear(selectedYear);
+    setArchiveCutoff(cutoffPeriod);
+    try {
+      const response = await api.get('/employees', { params: { all: true, per_page: 1000 } });
+      setArchiveEmployees(extractApiList(response));
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to load employees'), 'error');
+      setArchiveEmployees([]);
+    } finally {
+      setArchiveLoading(false);
+    }
+  };
+
+  const loadArchiveForEmployee = async (employee) => {
+    setArchiveSelectedEmployee(employee);
+    setArchiveLoadingRecords(true);
+    setArchiveRecords([]);
+    try {
+      const range = getCutoffDates(archiveYear, archiveMonth, archiveCutoff);
+      const response = await api.get('/attendance/employee-records', {
+        params: {
+          employee_id: employee.employee_id,
+          start_date: toDateInputValue(range.start),
+          end_date: toDateInputValue(range.end),
+        },
+        timeout: 60000,
+      });
+      const body = unwrapEmployeeOverviewPayload(response);
+      setArchiveRecords(toEmployeeOverviewArray(body.records));
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Failed to load archive records'), 'error');
+      setArchiveRecords([]);
+    } finally {
+      setArchiveLoadingRecords(false);
+    }
+  };
+
+  const handlePrintArchive = () => {
+    if (!archiveSelectedEmployee) return;
+    printArchiveRecords({
+      employee: archiveSelectedEmployee,
+      records: archiveRecords,
+      cutoffLabel: `${new Date(archiveYear, archiveMonth).toLocaleString('default', { month: 'long' })} ${archiveCutoff === 'first' ? '1 - 15' : '16 - End'}, ${archiveYear}`,
+    });
+  };
+
+  const filteredArchiveEmployees = useMemo(() => {
+    if (!archiveSearch.trim()) return archiveEmployees;
+    const term = archiveSearch.toLowerCase();
+    return archiveEmployees.filter((e) =>
+      (e.employee_name || e.full_name || '').toLowerCase().includes(term) ||
+      (e.employee_code || '').toLowerCase().includes(term)
+    );
+  }, [archiveEmployees, archiveSearch]);
+
+  // ============ DERIVED ============
+  const attendanceTabStats = useMemo(() => {
+    const records = getCurrentCutoffAttendance();
+    const ins = records.filter((r) => r.type === 'IN');
+    const outs = records.filter((r) => r.type === 'OUT');
+    const verified = records.filter((r) => r.verification_status === 'verified' || r.verification_status === 'approved');
+    const pending = records.filter((r) => r.verification_status === 'pending' || !r.verification_status);
+    const rejected = records.filter((r) => r.verification_status === 'rejected');
     return {
-      ...employee,
-      regular_hours: Number(summary.regular_hours || 0),
-      overtime_hours: Number(summary.overtime_hours || 0),
-      total_hours: Number(summary.total_hours || 0),
-      late_undertime: summary.late_undertime || '0 min late / 0 min undertime',
-      generated: Boolean(employeeOverviewGenerated[employee.employee_id]),
-      saved_to_payroll: Boolean(employeeOverviewSaved[employee.employee_id] || employee.saved_to_payroll),
+      total: records.length,
+      ins: ins.length,
+      outs: outs.length,
+      verified: verified.length,
+      pending: pending.length,
+      rejected: rejected.length,
     };
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobileAttendance, selectedYear, selectedMonth, cutoffPeriod]);
 
-  const pendingEmployeeOverviewOvertime = employeeOverviewSelectedRecords.filter(
-    (record) => record.overtime_status === 'pending'
-  );
-  const allPendingEmployeeOverviewOvertimeSelected = pendingEmployeeOverviewOvertime.length > 0
-    && pendingEmployeeOverviewOvertime.every((record) => employeeOverviewSelectedOvertimeIds.includes(record.attendance_id));
+  // ⭐ NEW #7 — Cutoff-wide insight totals across all employees
+  const cutoffInsightTotals = useMemo(() => {
+    const list = Array.isArray(employeeOverviewEmployees) ? employeeOverviewEmployees : [];
+    return list.reduce(
+      (acc, emp) => {
+        acc.awol += Number(emp.awol_count || 0);
+        acc.ea += Number(emp.emergency_absent_count || 0);
+        acc.leave += Number(emp.on_leave_count || 0);
+        acc.lateIn += Number(emp.late_in_count || 0);
+        acc.present += Number(emp.present_days_count || 0);
+        return acc;
+      },
+      { awol: 0, ea: 0, leave: 0, lateIn: 0, present: 0 }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeeOverviewEmployees]);
 
-  // Paginated unscheduled records
+  const filteredMobileAttendance = useMemo(() => {
+    let filtered = [...getCurrentCutoffAttendance()];
+    if (typeFilter !== 'ALL') filtered = filtered.filter(r => r.type === typeFilter);
+    if (statusFilter !== 'all') filtered = filtered.filter(r => r.verification_status === statusFilter);
+    if (searchTerm) {
+      filtered = filtered.filter(r =>
+        (r.employee_name && r.employee_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (r.employee_code && r.employee_code.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+    }
+    return filtered;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mobileAttendance, selectedYear, selectedMonth, cutoffPeriod, typeFilter, statusFilter, searchTerm]);
+
+  const paginatedMobileAttendance = filteredMobileAttendance.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+  const totalUnscheduledPages = Math.ceil(pendingUnscheduledRecords.length / unscheduledItemsPerPage);
   const paginatedUnscheduledRecords = pendingUnscheduledRecords.slice(
     (unscheduledPage - 1) * unscheduledItemsPerPage,
     unscheduledPage * unscheduledItemsPerPage
   );
-  const totalUnscheduledPages = Math.ceil(pendingUnscheduledRecords.length / unscheduledItemsPerPage);
 
-  // ==================== EFFECTS ====================
-  useEffect(() => {
-    if (statusPanelData) {
-      console.log('📊 Status Panel Data Updated:', {
-        recordCount: statusPanelRecords.length,
-        records: statusPanelRecords,
-        filters: statusPanelParams,
-        lastRefresh: new Date().toLocaleTimeString()
-      });
+  // ============ STYLES ============
+  const injectedStyles = `
+    /* ============ ACTION BUTTONS + DROPDOWN ============ */
+    .action-buttons-row { position: relative; display: flex; align-items: center; gap: 6px; }
+    .pro-dropdown { position: absolute; top: calc(100% + 6px); right: 0; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 12px 32px rgba(15,23,42,0.12); min-width: 250px; z-index: 1000; padding: 6px; animation: proDropIn 0.14s ease-out; }
+    @keyframes proDropIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    .pro-dropdown-header { padding: 8px 12px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #94a3b8; }
+    .pro-dropdown-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; width: 100%; border: none; background: transparent; cursor: pointer; font-size: 13px; color: #1f2937; border-radius: 7px; text-align: left; transition: background 0.12s ease; }
+    .pro-dropdown-item:hover { background: #eff6ff; }
+    .pro-dropdown-item .icon-wrapper { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; }
+    .pro-dropdown-item .icon-wrapper.blue { background: #dbeafe; color: #2563eb; }
+    .pro-dropdown-item .icon-wrapper.green { background: #d1fae5; color: #059669; }
+    .pro-dropdown-item .icon-wrapper.purple { background: #ede9fe; color: #7c3aed; }
+    .pro-dropdown-item .text-block { display: flex; flex-direction: column; gap: 1px; }
+    .pro-dropdown-item .label { font-weight: 600; font-size: 13px; color: #0f172a; }
+    .pro-dropdown-item .sub-label { font-size: 11px; color: #64748b; }
+    .pro-dropdown-divider { height: 1px; background: #f1f5f9; margin: 6px 8px; }
+
+    /* ============ SAVED BADGE ============ */
+    .saved-badge { display: inline-flex; align-items: center; gap: 4px; background: #d1fae5; color: #059669; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+
+    /* ============ FLAG BADGE (⭐ NEW #6 / #9) ============ */
+    .flag-badge { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+
+    /* ============ INLINE EDIT ============ */
+    .inline-edit-row td { background: #eff6ff !important; }
+    .inline-edit-input { width: 100%; padding: 5px 8px; border: 1px solid #bfdbfe; border-radius: 6px; font-size: 12px; background: #fff; }
+    .inline-edit-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+
+    /* ============ MISSING TIME HIGHLIGHT ============ */
+    .time-missing { color: #dc2626; font-weight: 600; }
+
+    /* ============ BLUE-WHITE MODAL ============ */
+    .modal-blue-white { border-top: 4px solid #2563eb; }
+    .modal-blue-white .modal-header { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border-bottom: 1px solid #bfdbfe; }
+    .modal-blue-white .modal-header h2 { color: #1e40af; display: flex; align-items: center; gap: 8px; }
+    .modal-blue-white .modal-body { background: #ffffff; }
+    .modal-blue-white .modal-footer { background: #f8fafc; border-top: 1px solid #e2e8f0; }
+
+    /* ============ INFO MODAL ICONS ============ */
+    .info-modal-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+    .info-modal-icon.warning { background: #fef3c7; color: #d97706; }
+    .info-modal-icon.info { background: #dbeafe; color: #2563eb; }
+    .info-modal-icon.success { background: #d1fae5; color: #059669; }
+
+    /* ============ REQUIREMENTS LIST ============ */
+    .requirements-list { margin: 12px 0 0 0; padding-left: 20px; }
+    .requirements-list li { margin-bottom: 6px; font-size: 13px; color: #334155; }
+
+    /* ============ BLUE BUTTONS ============ */
+    .blue-primary-btn { background: #2563eb; color: #fff; border: none; padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background 0.12s; }
+    .blue-primary-btn:hover { background: #1d4ed8; }
+    .blue-primary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .blue-secondary-btn { background: #fff; color: #1e40af; border: 1px solid #bfdbfe; padding: 9px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .blue-secondary-btn:hover { background: #eff6ff; }
+    .blue-secondary-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    /* ============ EVENT VERIFY PILLS ============ */
+    .event-verify-row { display: inline-flex; align-items: center; gap: 4px; }
+    .event-verify-btn { display: inline-flex; align-items: center; gap: 3px; padding: 3px 7px; border-radius: 6px; font-size: 10.5px; font-weight: 600; border: 1px solid transparent; cursor: pointer; }
+    .event-verify-btn.approve { background: #d1fae5; color: #065f46; border-color: #6ee7b7; }
+    .event-verify-btn.approve:hover { background: #a7f3d0; }
+    .event-verify-btn.reject { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+    .event-verify-btn.reject:hover { background: #fecaca; }
+    .event-verify-btn.undo { background: #e2e8f0; color: #475569; border-color: #cbd5e1; }
+    .event-verify-btn.undo:hover { background: #cbd5e1; }
+    .event-status-pill { display: inline-flex; align-items: center; gap: 3px; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+    .event-status-pill.pending { background: #fef3c7; color: #b45309; }
+    .event-status-pill.verified { background: #d1fae5; color: #065f46; }
+    .event-status-pill.rejected { background: #fee2e2; color: #991b1b; }
+
+    /* ============ OT / UT MODAL ============ */
+    .ot-modal-info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; font-size: 12px; }
+    .ot-modal-info .label { color: #1e40af; text-transform: uppercase; font-size: 10px; font-weight: 700; letter-spacing: 0.4px; }
+    .ot-modal-info .value { color: #0f172a; font-weight: 600; font-size: 14px; margin-top: 2px; }
+    .ot-modal-field label { display: block; font-size: 12px; font-weight: 600; color: #334155; margin-bottom: 6px; }
+    .ot-modal-field .helper { font-size: 11px; color: #64748b; margin-top: 4px; }
+    .ot-modal-field input[type="number"], .ot-modal-field textarea { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 13px; font-family: inherit; background: #fff; }
+    .ot-modal-field input[type="number"]:focus, .ot-modal-field textarea:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+    .hours-quick-picks { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+    .hours-quick-picks button { padding: 5px 10px; border: 1px solid #bfdbfe; background: #fff; border-radius: 20px; font-size: 11px; color: #1e40af; cursor: pointer; }
+    .hours-quick-picks button:hover { background: #eff6ff; }
+    .hours-quick-picks button.active { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+
+    /* ============ ARCHIVE ============ */
+    .archive-layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+    .archive-employee-list { max-height: 520px; overflow-y: auto; border-right: 1px solid #e5e7eb; padding-right: 12px; }
+    .archive-employee-item { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; margin-bottom: 6px; border: 1px solid transparent; transition: all 0.12s; }
+    .archive-employee-item:hover { background: #eff6ff; }
+    .archive-employee-item.active { background: #dbeafe; border-color: #2563eb; }
+    .archive-employee-item .avatar { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(135deg, #3b82f6, #1e40af); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; }
+    .archive-employee-item .name { font-weight: 600; font-size: 13px; color: #0f172a; }
+    .archive-employee-item .code { font-size: 11px; color: #64748b; }
+
+    /* ============ TAB BADGE ============ */
+    .tab-badge { margin-left: 6px; background: #2563eb; color: #fff; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
+
+    /* ============ ATTENDANCE TAB INSIGHTS ============ */
+    .attendance-insights-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 12px;
+      margin: 16px 0;
+      padding: 0 24px;
     }
-  }, [statusPanelData, statusPanelRecords, statusPanelParams]);
-
-  useEffect(() => {
-    // Only fetch on tab switch if not already loaded
-    if (activeMainTab === 'status-panel') {
-      console.log('🔄 Switching to Employee Overview tab...');
-      if (!hasInitiallyLoadedRef.current || employeeOverviewEmployees.length === 0) {
-        fetchEmployeeOverview();
-      } else {
-        console.log('📊 Employee Overview data already loaded, using cache');
-      }
-    } else if (activeMainTab === 'unscheduled') {
-      console.log('🔄 Switching to Unscheduled tab - fetching pending records...');
-      fetchPendingUnscheduledRecords();
+    @media (max-width: 1280px) {
+      .attendance-insights-grid { grid-template-columns: repeat(3, 1fr); }
     }
-  }, [activeMainTab, employeeOverviewPeriod.start_date, employeeOverviewPeriod.end_date, employeeOverviewDepartment, fetchEmployeeOverview, fetchPendingUnscheduledRecords, employeeOverviewEmployees.length]);
-
-  useEffect(() => {
-    const verifiedRecords = mobileAttendance.filter(r => r.verification_status === 'verified');
-    if (verifiedRecords.length > 0) {
-      console.log(`✅ Found ${verifiedRecords.length} verified records that should be in Status Panel`);
+    @media (max-width: 720px) {
+      .attendance-insights-grid { grid-template-columns: repeat(2, 1fr); }
     }
-  }, [mobileAttendance]);
-
-  useEffect(() => {
-    window.refreshAttendanceData = () => {
-      refetchMobile();
-      fetchEmployeeOverview(true);
-      fetchPendingUnscheduledRecords();
-    };
-    return () => { delete window.refreshAttendanceData; };
-  }, [refetchMobile, fetchEmployeeOverview, fetchPendingUnscheduledRecords]);
-
-  useEffect(() => { 
-    loadCutoffHistory(); 
-  }, [selectedYear, selectedMonth, cutoffPeriod]);
-
-  useEffect(() => {
-    const now = new Date();
-    const startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-    const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-    setStatusPanelFilters(prev => ({ ...prev, start_date: startDate, end_date: endDate }));
-    fetchPendingUnscheduledRecords();
-    // Load Employee Overview only once on initial mount
-    if (!hasInitiallyLoadedRef.current) {
-      fetchEmployeeOverview();
+    .insight-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+      transition: transform 0.12s ease, box-shadow 0.12s ease;
     }
-  }, [fetchPendingUnscheduledRecords, fetchEmployeeOverview]);
-
-  useEffect(() => {
-    const token = localStorage.getItem('auth_token');
-    if (!token) {
-      window.location.href = '/login';
+    .insight-card:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(15,23,42,0.06);
     }
-  }, []);
+    .insight-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+    .insight-info { display: flex; flex-direction: column; min-width: 0; }
+    .insight-value { font-size: 20px; font-weight: 700; color: #0f172a; line-height: 1; }
+    .insight-label { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; margin-top: 4px; }
 
-  // Auto-refresh interval with proper cleanup - only refresh if data is stale
-  useEffect(() => {
-    if (!autoRefreshEnabled) return;
-    const interval = setInterval(() => {
-      if (activeMainTab === 'status-panel') {
-        // Only refresh if data might be stale (e.g., after 5 minutes)
-        const dataAge = Date.now() - lastRefreshTime.getTime();
-        if (dataAge > 300000) { // 5 minutes
-          fetchEmployeeOverview(true);
-        }
-      } else if (activeMainTab === 'unscheduled') {
-        fetchPendingUnscheduledRecords();
-      }
-    }, 30000);
-    return () => clearInterval(interval);
-  }, [autoRefreshEnabled, activeMainTab, fetchEmployeeOverview, fetchPendingUnscheduledRecords, lastRefreshTime]);
+    .insight-blue    .insight-icon { background: #dbeafe; color: #2563eb; }
+    .insight-green   .insight-icon { background: #d1fae5; color: #059669; }
+    .insight-red     .insight-icon { background: #fee2e2; color: #dc2626; }
+    .insight-emerald .insight-icon { background: #d1fae5; color: #059669; }
+    .insight-amber   .insight-icon { background: #fef3c7; color: #d97706; }
+    .insight-slate   .insight-icon { background: #e2e8f0; color: #475569; }
+    .insight-violet  .insight-icon { background: #ede9fe; color: #7c3aed; }
+    .insight-rose    .insight-icon { background: #ffe4e6; color: #e11d48; }
+    .insight-indigo  .insight-icon { background: #e0e7ff; color: #4338ca; }
 
-  // ==================== NOTIFICATION COMPONENT ====================
-  const Notification = () => (
-    <div className={`attendance-notification ${notificationType}`}>
-      <div className="notification-icon">
-        {notificationType === 'success' && <FiCheckCircle />}
-        {notificationType === 'error' && <FiXCircle />}
-        {notificationType === 'warning' && <FiAlertCircle />}
-        {notificationType === 'info' && <FiClock />}
-      </div>
-      <div className="notification-message">{notificationMessage}</div>
-      <button className="notification-close" onClick={() => setShowNotification(false)}><FiXIcon /></button>
-    </div>
-  );
+    /* ============ CUTOFF INSIGHTS STRIP (⭐ NEW #7) ============ */
+    .cutoff-insights-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin: 0 24px 16px 24px;
+      padding: 16px;
+      background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+      border: 1px solid #dbeafe;
+      border-radius: 12px;
+    }
+    @media (max-width: 1024px) {
+      .cutoff-insights-strip { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 640px) {
+      .cutoff-insights-strip { grid-template-columns: repeat(2, 1fr); }
+    }
+    .cutoff-insight-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 8px;
+      background: #fff;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      text-align: center;
+    }
+    .cutoff-insight-value { font-size: 22px; font-weight: 800; line-height: 1; }
+    .cutoff-insight-label { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b; margin-top: 6px; }
 
-  // ==================== RENDER ====================
+    /* ============ UNSCHEDULED ============ */
+    .unscheduled-container { padding: 16px 24px 24px 24px; }
+    .unscheduled-header-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+      padding: 22px 28px;
+      background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+      border: 1px solid #bfdbfe;
+      border-radius: 12px;
+    }
+    .unscheduled-header-left { display: flex; align-items: center; gap: 18px; flex: 1; min-width: 0; }
+    .unscheduled-header-icon {
+      width: 52px; height: 52px; border-radius: 12px;
+      background: #2563eb; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 24px; flex-shrink: 0;
+    }
+    .unscheduled-header-card h3 { margin: 0 0 4px 0; color: #1e40af; font-size: 17px; font-weight: 700; line-height: 1.25; }
+    .unscheduled-header-card p { margin: 0; color: #475569; font-size: 13px; line-height: 1.4; }
+
+    .unscheduled-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
+    .unscheduled-stat {
+      display: flex; align-items: center; gap: 14px;
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 16px 18px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+    }
+    .unscheduled-stat .stat-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+    .unscheduled-stat .stat-icon.blue { background: #dbeafe; color: #2563eb; }
+    .unscheduled-stat .stat-icon.green { background: #d1fae5; color: #059669; }
+    .unscheduled-stat .stat-icon.red { background: #fee2e2; color: #dc2626; }
+    .unscheduled-stat .stat-info { display: flex; flex-direction: column; }
+    .unscheduled-stat .stat-value { font-size: 22px; font-weight: 700; color: #0f172a; line-height: 1; }
+    .unscheduled-stat .stat-label { font-size: 11px; text-transform: uppercase; color: #64748b; margin-top: 4px; letter-spacing: 0.5px; font-weight: 600; }
+
+    .unscheduled-empty-state {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      padding: 60px 20px; text-align: center;
+    }
+    .unscheduled-empty-icon {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: #dbeafe; color: #2563eb;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 32px; margin: 0 auto 16px;
+    }
+    .unscheduled-empty-state h3 { margin: 0 0 6px; color: #1e40af; font-size: 16px; font-weight: 700; }
+    .unscheduled-empty-state p { margin: 0; color: #64748b; font-size: 13px; }
+
+    .unscheduled-table-wrapper {
+      background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+      overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+    }
+    .unscheduled-table-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 16px 20px;
+      background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+      border-bottom: 1px solid #bfdbfe;
+    }
+    .unscheduled-table-header h4 { margin: 0; color: #1e40af; font-size: 14px; font-weight: 700; }
+    .unscheduled-table-count { background: #2563eb; color: #fff; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 10px; }
+
+    .unscheduled-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .unscheduled-table th {
+      background: #f8fafc; text-align: left; padding: 12px 20px;
+      font-size: 11px; text-transform: uppercase; color: #475569;
+      border-bottom: 1px solid #e2e8f0; font-weight: 700; letter-spacing: 0.4px;
+    }
+    .unscheduled-table td { padding: 14px 20px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+    .unscheduled-table tr:hover td { background: #f8fafc; }
+    .unscheduled-table tr:last-child td { border-bottom: none; }
+
+    .attendance-type-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+    .attendance-type-pill.in { background: #d1fae5; color: #065f46; }
+    .attendance-type-pill.out { background: #fee2e2; color: #991b1b; }
+
+    .unscheduled-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .unscheduled-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 14px; border-radius: 8px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      border: 1px solid transparent; transition: all 0.12s;
+    }
+    .unscheduled-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .unscheduled-btn.approve { background: #2563eb; color: #fff; }
+    .unscheduled-btn.approve:hover:not(:disabled) { background: #1d4ed8; }
+    .unscheduled-btn.reject { background: #fff; color: #dc2626; border-color: #fecaca; }
+    .unscheduled-btn.reject:hover:not(:disabled) { background: #fef2f2; }
+
+    /* ============ FLAG MODAL QUICK PICKS (⭐ NEW #9) ============ */
+    .flag-quick-picks { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .flag-quick-picks button {
+      padding: 7px 14px;
+      border: 1px solid #bfdbfe;
+      background: #fff;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #1e40af;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .flag-quick-picks button:hover { background: #eff6ff; }
+    .flag-quick-picks button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+    /* ============ PAGINATION ============ */
+    .pagination-controls { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 16px; border-top: 1px solid #f1f5f9; }
+    .pagination-btn {
+      padding: 7px 14px; border: 1px solid #bfdbfe; background: #fff;
+      border-radius: 8px; font-size: 12px; color: #1e40af;
+      cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+      font-weight: 600;
+    }
+    .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .pagination-btn:hover:not(:disabled) { background: #eff6ff; }
+    .pagination-info { font-size: 12px; color: #64748b; font-weight: 500; }
+
+    /* ============ MINI FLAG DOT ============ */
+    .flag-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+  `;
+
   return (
     <div className="attendance-container">
-      {showNotification && <Notification />}
+      <style>{injectedStyles}</style>
 
-      {/* Selfie Modal */}
+      {showNotification && (
+        <div className={`attendance-notification ${notificationType}`}>
+          <div className="notification-icon">
+            {notificationType === 'success' && <FiCheckCircle />}
+            {notificationType === 'error' && <FiXCircle />}
+            {notificationType === 'warning' && <FiAlertCircle />}
+            {notificationType === 'info' && <FiClock />}
+          </div>
+          <div className="notification-message">{notificationMessage}</div>
+          <button className="notification-close" onClick={() => setShowNotification(false)}><FiXIcon /></button>
+        </div>
+      )}
+
       {showSelfieModal && selectedSelfie && (
         <div className="modal-overlay" onClick={() => setShowSelfieModal(false)}>
           <div className="modal-content selfie-modal" onClick={e => e.stopPropagation()}>
@@ -1625,110 +2225,6 @@ const Staff_Attendance = () => {
         </div>
       )}
 
-      {/* History Modal */}
-      {showHistoryModal && selectedHistoryCutoff && (
-        <div className="modal-overlay" onClick={() => setShowHistoryModal(false)}>
-          <div className="modal-content history-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Attendance History</h2>
-              <h3>{selectedHistoryCutoff.label}</h3>
-              <button className="close-modal" onClick={() => setShowHistoryModal(false)}><FiXIcon /></button>
-            </div>
-            <div className="modal-body">
-              {loadingHistory ? (
-                <div className="loading-container">
-                  <div className="loading-spinner"></div>
-                  <p>Loading history data...</p>
-                </div>
-              ) : (
-                <>
-                  <div className="history-stats">
-                    <div className="history-stat">
-                      <span className="stat-label">Total Records</span>
-                      <span className="stat-value">{historyAttendance.length}</span>
-                    </div>
-                    <div className="history-stat">
-                      <span className="stat-label">Time Ins</span>
-                      <span className="stat-value">{historyAttendance.filter(r => r.type === 'IN').length}</span>
-                    </div>
-                    <div className="history-stat">
-                      <span className="stat-label">Time Outs</span>
-                      <span className="stat-value">{historyAttendance.filter(r => r.type === 'OUT').length}</span>
-                    </div>
-                    <div className="history-stat">
-                      <span className="stat-label">Verified</span>
-                      <span className="stat-value">{historyAttendance.filter(r => r.verification_status === 'verified').length}</span>
-                    </div>
-                  </div>
-                  <div className="history-list">
-                    <table className="attendance-table formal">
-                      <thead>
-                        <tr>
-                          <th>Date & Time</th>
-                          <th>Employee</th>
-                          <th>Type</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {historyAttendance.slice(0, 50).map((record, index) => {
-                          const typeDetails = getTypeDetails(record.type);
-                          const TypeIcon = typeDetails.icon;
-                          const statusDetails = getVerificationStatusDetails(record.verification_status);
-                          const StatusIcon = statusDetails.icon;
-                          return (
-                            <tr key={record.event_id || record.id || index}>
-                              <td>
-                                <div className="datetime-cell">
-                                  <span className="date">{formatDate(record.timestamp)}</span>
-                                  <span className="time">{formatTime(record.timestamp)}</span>
-                                </div>
-                              </td>
-                              <td>
-                                <div className="employee-cell">
-                                  <span className="employee-name">{record.employee_name || 'N/A'}</span>
-                                  <span className="employee-code">{record.employee_code}</span>
-                                </div>
-                              </td>
-                              <td>
-                                <span className={`attendance-type ${record.type === 'IN' ? 'check-in' : 'check-out'}`}>
-                                  <TypeIcon style={{ transform: typeDetails.iconRotation }} />
-                                  <span>{typeDetails.text}</span>
-                                </span>
-                              </td>
-                              <td>
-                                <span className={`verification-status ${record.verification_status}`}>
-                                  <StatusIcon />
-                                  <span>{statusDetails.text}</span>
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {historyAttendance.length === 0 && (
-                      <div className="empty-state">
-                        <p>No attendance records found for this cutoff period</p>
-                      </div>
-                    )}
-                    {historyAttendance.length > 50 && (
-                      <div className="history-note">
-                        <p>Showing first 50 of {historyAttendance.length} records</p>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowHistoryModal(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===== HEADER ===== */}
       <div className="attendance-header">
         <div className="header-left">
           <div className="header-icon"><FiUserCheck /></div>
@@ -1738,46 +2234,25 @@ const Staff_Attendance = () => {
           </div>
         </div>
         <div className="header-actions">
-          <button className={`action-btn auto-refresh-btn ${autoRefreshEnabled ? 'active' : ''}`} onClick={toggleAutoRefresh} title={autoRefreshEnabled ? 'Auto-refresh ON (30s)' : 'Auto-refresh OFF'}>
+          <button className={`action-btn auto-refresh-btn ${autoRefreshEnabled ? 'active' : ''}`} onClick={() => setAutoRefreshEnabled(!autoRefreshEnabled)} title="Toggle auto-refresh">
             {autoRefreshEnabled ? <FiBell /> : <FiBellOff />}
           </button>
-          <button className="action-btn history-btn" onClick={() => loadCutoffHistory()} title="View Cutoff History">
-            <FiArchive />
-          </button>
-          <button className="action-btn export-btn" onClick={handleExport} title="Export Current Cutoff">
-            <FiDownload />
-          </button>
-          <button className="action-btn refresh-btn" onClick={handleRefresh} title="Refresh Data">
-            <FiRefreshCw />
-          </button>
+          <button className="action-btn archive-btn" onClick={openArchiveModal} title="Attendance Archive"><FiArchive /></button>
+          <button className="action-btn refresh-btn" onClick={() => refreshEverything({ forceOverview: true })} title="Refresh"><FiRefreshCw /></button>
         </div>
       </div>
 
-      {/* ===== MAIN TABS ===== */}
       <div className="main-tabs">
-        <button className={`main-tab ${activeMainTab === 'attendance' ? 'active' : ''}`} onClick={() => setActiveMainTab('attendance')}>
-          <FiList /> Attendance Records
-        </button>
-        <button className={`main-tab ${activeMainTab === 'status-panel' ? 'active' : ''}`} onClick={() => setActiveMainTab('status-panel')}>
-          <FiSliders /> Employee Overview
-        </button>
+        <button className={`main-tab ${activeMainTab === 'attendance' ? 'active' : ''}`} onClick={() => setActiveMainTab('attendance')}><FiList /> Attendance Records</button>
+        <button className={`main-tab ${activeMainTab === 'status-panel' ? 'active' : ''}`} onClick={() => setActiveMainTab('status-panel')}><FiSliders /> Employee Overview</button>
         <button className={`main-tab ${activeMainTab === 'unscheduled' ? 'active' : ''}`} onClick={() => setActiveMainTab('unscheduled')}>
           <FiAlertTriangle /> Unscheduled
           {pendingUnscheduledRecords.length > 0 && <span className="tab-badge warning">{pendingUnscheduledRecords.length}</span>}
         </button>
-        {/* 7th Day Warning Tab */}
-        {consecutiveWarnings.length > 0 && (
-          <button className={`main-tab warning ${activeMainTab === 'consecutive' ? 'active' : ''}`} onClick={() => setActiveMainTab('consecutive')}>
-            <FiAlertCircle /> 7th Day
-            <span className="tab-badge danger">{consecutiveWarnings.length}</span>
-          </button>
-        )}
       </div>
 
-      {/* ===== ATTENDANCE TAB - SCROLLABLE ===== */}
       {activeMainTab === 'attendance' && (
         <>
-          {/* Cutoff Selector */}
           <div className="cutoff-selector">
             <div className="cutoff-info">
               <FiCalendarIcon className="cutoff-icon" />
@@ -1788,215 +2263,238 @@ const Staff_Attendance = () => {
             </div>
             <div className="cutoff-controls">
               <div className="period-selector">
-                <button className={`period-btn ${cutoffPeriod === 'first' ? 'active' : ''}`} onClick={() => setCutoffPeriod('first')}>
-                  <FiCalendar /> 1st - 15th
-                </button>
-                <button className={`period-btn ${cutoffPeriod === 'second' ? 'active' : ''}`} onClick={() => setCutoffPeriod('second')}>
-                  <FiCalendar /> 16th - End
-                </button>
+                <button className={`period-btn ${cutoffPeriod === 'first' ? 'active' : ''}`} onClick={() => setCutoffPeriod('first')}><FiCalendar /> 1st - 15th</button>
+                <button className={`period-btn ${cutoffPeriod === 'second' ? 'active' : ''}`} onClick={() => setCutoffPeriod('second')}><FiCalendar /> 16th - End</button>
               </div>
               <div className="month-selector">
                 <button className="month-nav-btn" onClick={() => {
-                  if (cutoffPeriod === 'first') {
-                    setCutoffPeriod('second');
-                  } else {
-                    setCutoffPeriod('first');
-                    let newMonth = selectedMonth - 1;
-                    let newYear = selectedYear;
-                    if (newMonth < 0) {
-                      newMonth = 11;
-                      newYear--;
-                    }
-                    setSelectedMonth(newMonth);
-                    setSelectedYear(newYear);
-                  }
-                }}>
-                  <FiChevronLeft />
-                </button>
+                  if (cutoffPeriod === 'first') setCutoffPeriod('second');
+                  else { setCutoffPeriod('first'); let m = selectedMonth - 1, y = selectedYear; if (m < 0) { m = 11; y--; } setSelectedMonth(m); setSelectedYear(y); }
+                }}><FiChevronLeft /></button>
                 <span className="current-month">{new Date(selectedYear, selectedMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
                 <button className="month-nav-btn" onClick={() => {
-                  if (cutoffPeriod === 'second') {
-                    setCutoffPeriod('first');
-                  } else {
-                    setCutoffPeriod('second');
-                    let newMonth = selectedMonth + 1;
-                    let newYear = selectedYear;
-                    if (newMonth > 11) {
-                      newMonth = 0;
-                      newYear++;
-                    }
-                    setSelectedMonth(newMonth);
-                    setSelectedYear(newYear);
-                  }
-                }}>
-                  <FiChevronRight />
-                </button>
-              </div>
-              <div className="history-shortcut">
-                <button className="history-shortcut-btn" onClick={() => { loadCutoffHistory(); showNotificationMessage('Click the archive icon to view full history', 'info'); }}>
-                  <FiTrendingUp /> Previous Cutoffs
-                </button>
+                  if (cutoffPeriod === 'second') setCutoffPeriod('first');
+                  else { setCutoffPeriod('second'); let m = selectedMonth + 1, y = selectedYear; if (m > 11) { m = 0; y++; } setSelectedMonth(m); setSelectedYear(y); }
+                }}><FiChevronRight /></button>
               </div>
             </div>
           </div>
 
-          {/* Stats Grid */}
-          <div className="stats-grid">
-            <div className="stat-card formal">
-              <div className="stat-icon total"><FiUsers /></div>
-              <div className="stat-info">
-                <span className="stat-label">Total Records</span>
-                <span className="stat-value">{getCurrentCutoffAttendance().length}</span>
+          <div className="attendance-insights-grid">
+            <div className="insight-card insight-blue">
+              <div className="insight-icon"><FiUsers /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.total}</span>
+                <span className="insight-label">Total Records</span>
               </div>
             </div>
-            <div className="stat-card formal">
-              <div className="stat-icon present"><FiLogOut style={{ transform: 'rotate(180deg)' }} /></div>
-              <div className="stat-info">
-                <span className="stat-label">Time Ins</span>
-                <span className="stat-value">{attendanceStats.total_check_ins}</span>
+
+            <div className="insight-card insight-green">
+              <div className="insight-icon"><FiLogOut style={{ transform: 'rotate(180deg)' }} /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.ins}</span>
+                <span className="insight-label">Time Ins</span>
               </div>
             </div>
-            <div className="stat-card formal">
-              <div className="stat-icon"><FiLogOut /></div>
-              <div className="stat-info">
-                <span className="stat-label">Time Outs</span>
-                <span className="stat-value">{attendanceStats.total_check_outs}</span>
+
+            <div className="insight-card insight-red">
+              <div className="insight-icon"><FiLogOut /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.outs}</span>
+                <span className="insight-label">Time Outs</span>
               </div>
             </div>
-            <div className="stat-card formal">
-              <div className="stat-icon verified"><FiCheckCircle /></div>
-              <div className="stat-info">
-                <span className="stat-label">Verified</span>
-                <span className="stat-value">{attendanceStats.verified_check_ins}</span>
+
+            <div className="insight-card insight-emerald">
+              <div className="insight-icon"><FiCheckCircle /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.verified}</span>
+                <span className="insight-label">Verified</span>
+              </div>
+            </div>
+
+            <div className="insight-card insight-amber">
+              <div className="insight-icon"><FiClock /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.pending}</span>
+                <span className="insight-label">Pending</span>
+              </div>
+            </div>
+
+            <div className="insight-card insight-slate">
+              <div className="insight-icon"><FiXCircle /></div>
+              <div className="insight-info">
+                <span className="insight-value">{attendanceTabStats.rejected}</span>
+                <span className="insight-label">Rejected</span>
               </div>
             </div>
           </div>
 
-          {/* Search and Filter Bar */}
           <div className="search-filter-bar">
             <div className="search-wrapper">
               <FiSearch className="search-icon" />
-              <input type="text" placeholder="Search by employee name or ID..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" />
-              {searchTerm && <button className="clear-search" onClick={() => setSearchTerm('')}><FiXIcon /></button>}
+              <input type="text" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="search-input" />
             </div>
-            <div className="filter-actions">
-              <button className={`filter-btn ${showFilters ? 'active' : ''}`} onClick={() => setShowFilters(!showFilters)}>
-                <FiFilter /><span>Filters</span>
-                {(statusFilter !== 'all' || typeFilter !== 'ALL') && <span className="filter-badge">{(statusFilter !== 'all' ? 1 : 0) + (typeFilter !== 'ALL' ? 1 : 0)}</span>}
-              </button>
-            </div>
+            <button className={`filter-btn ${showFilters ? 'active' : ''}`} onClick={() => setShowFilters(!showFilters)}><FiFilter /><span>Filters</span></button>
           </div>
 
-          {/* Filters Panel */}
           {showFilters && (
             <div className="filters-panel">
-              <div className="filters-header">
-                <h3>Filter Attendance</h3>
-                <button className="close-filters" onClick={() => setShowFilters(false)}><FiXIcon /></button>
-              </div>
               <div className="filters-content">
                 <div className="filter-group">
-                  <label>Attendance Type</label>
+                  <label>Type</label>
                   <div className="filter-options">
-                    {['ALL', 'IN', 'OUT'].map(type => (
-                      <button key={type} className={`filter-option ${typeFilter === type ? 'active' : ''}`} onClick={() => setTypeFilter(type)}>
-                        {type === 'ALL' ? 'All' : type === 'IN' ? 'Time In' : 'Time Out'}
-                      </button>
-                    ))}
+                    {['ALL', 'IN', 'OUT'].map(t => <button key={t} className={`filter-option ${typeFilter === t ? 'active' : ''}`} onClick={() => setTypeFilter(t)}>{t}</button>)}
                   </div>
                 </div>
                 <div className="filter-group">
-                  <label>Verification Status</label>
+                  <label>Status</label>
                   <div className="filter-options">
-                    {['all', 'pending', 'verified', 'rejected'].map(status => (
-                      <button key={status} className={`filter-option ${statusFilter === status ? 'active' : ''}`} onClick={() => setStatusFilter(status)}>
-                        {status === 'all' ? 'All' : status.charAt(0).toUpperCase() + status.slice(1)}
-                      </button>
-                    ))}
+                    {['all', 'pending', 'verified', 'rejected'].map(s => <button key={s} className={`filter-option ${statusFilter === s ? 'active' : ''}`} onClick={() => setStatusFilter(s)}>{s}</button>)}
                   </div>
-                </div>
-                <div className="filter-actions-bottom">
-                  <button className="clear-filters-btn" onClick={() => { setStatusFilter('all'); setTypeFilter('ALL'); showNotificationMessage('All filters cleared', 'success'); }}>
-                    <FiXCircle /> Clear All Filters
-                  </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* ===== FIX: Main Content - SCROLLABLE TABLE ===== */}
           <div className="main-content-scrollable" ref={mainContentRef}>
             <div className="attendance-list">
-              {mobileLoading ? (
-                <SkeletonTable />
-              ) : (
+              {mobileLoading ? <SkeletonTable /> : (
                 <>
-                  {/* Scrollable table wrapper */}
                   <div className="table-wrapper-scrollable">
                     <table className="attendance-table formal">
-                      <thead>
-                        <tr>
-                          <th>Date & Time</th>
-                          <th>Employee</th>
-                          <th>Type</th>
-                          <th>Selfie</th>
-                          <th>Location</th>
-                          <th>Status</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
+                      <thead><tr><th>Date & Time</th><th>Employee</th><th>Type</th><th>Selfie</th><th>Status</th><th>Actions</th></tr></thead>
                       <tbody>
                         {paginatedMobileAttendance.map((record) => {
-                          const typeDetails = getTypeDetails(record.type);
-                          const TypeIcon = typeDetails.icon;
-                          const statusDetails = getVerificationStatusDetails(record.verification_status);
-                          const StatusIcon = statusDetails.icon;
+                          const td = getTypeDetails(record.type);
+                          const TIcon = td.icon;
+
+                          const side = record.type === 'IN' ? 'in' : 'out';
+                          const sideStatus = getSideStatus(record, side);
+                          const sd = getVerificationStatusDetails(sideStatus);
+                          const SIcon = sd.icon;
+
                           return (
-                            <tr key={record.event_id || record.id} className="formal-row">
+                            <tr key={record.event_id || record.id}>
+                              <td><div className="datetime-cell"><span className="date">{formatDate(record.timestamp)}</span><span className="time">{formatTime(record.timestamp)}</span></div></td>
+                              <td><div className="employee-cell"><span className="employee-name">{record.employee_name || 'N/A'}</span><span className="employee-code">{record.employee_code}</span></div></td>
+                              <td><span className={`attendance-type ${record.type === 'IN' ? 'check-in' : 'check-out'}`}><TIcon style={{ transform: td.iconRotation }} /><span>{td.text}</span></span></td>
+                              <td>{record.selfie_url ? <button className="selfie-view-btn" onClick={() => { setSelectedSelfie(record.selfie_url); setShowSelfieModal(true); }}><BsCameraFill /><span>View</span></button> : <span className="no-selfie">No selfie</span>}</td>
                               <td>
-                                <div className="datetime-cell">
-                                  <span className="date">{formatDate(record.timestamp)}</span>
-                                  <span className="time">{formatTime(record.timestamp)}</span>
-                                </div>
-                              </td>
-                              <td>
-                                <div className="employee-cell">
-                                  <span className="employee-name">{record.employee_name || 'N/A'}</span>
-                                  <span className="employee-code">{record.employee_code}</span>
-                                </div>
-                              </td>
-                              <td>
-                                <span className={`attendance-type ${record.type === 'IN' ? 'check-in' : 'check-out'}`}>
-                                  <TypeIcon style={{ transform: typeDetails.iconRotation }} />
-                                  <span>{typeDetails.text}</span>
-                                </span>
-                              </td>
-                              <td>
-                                {record.selfie_url ? (
-                                  <button className="selfie-view-btn" onClick={() => handleViewSelfie(record.selfie_url)}>
-                                    <BsCameraFill /><span>View</span>
-                                  </button>
-                                ) : (
-                                  <span className="no-selfie">No selfie</span>
-                                )}
-                              </td>
-                              <td>
-                                {record.location ? (
-                                  <span className="location-badge" title={`Lat: ${record.location.lat}, Lng: ${record.location.lng}`}>
-                                    <BsGeoAlt /> Captured
+                                <span
+                                  className={`verification-status ${
+                                    sideStatus === 'verified' ? 'verified' :
+                                    sideStatus === 'rejected' ? 'rejected' : 'pending'
+                                  }`}
+                                >
+                                  <SIcon />
+                                  <span>
+                                    {sideStatus === 'verified' ? `Verified (${record.type === 'IN' ? 'IN' : 'OUT'})` :
+                                     sideStatus === 'rejected' ? `Rejected (${record.type === 'IN' ? 'IN' : 'OUT'})` :
+                                     'Pending'}
                                   </span>
-                                ) : (
-                                  <span className="no-location">—</span>
-                                )}
-                              </td>
-                              <td>
-                                <span className={`verification-status ${record.verification_status}`}>
-                                  <StatusIcon /><span>{statusDetails.text}</span>
                                 </span>
                               </td>
                               <td>
-                                <div className="action-buttons">
-                                  {renderAttendanceActions(record)}
+                                <div className="action-buttons" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  {sideStatus === 'pending' && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        title={`Approve this ${record.type === 'IN' ? 'Time In' : 'Time Out'} only`}
+                                        onClick={() => handleVerifySide(record, side, 'verified')}
+                                        disabled={submitting}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          padding: '6px 10px',
+                                          borderRadius: '6px',
+                                          border: '1px solid #6ee7b7',
+                                          background: '#d1fae5',
+                                          color: '#065f46',
+                                          cursor: submitting ? 'not-allowed' : 'pointer',
+                                          opacity: submitting ? 0.5 : 1,
+                                        }}
+                                      >
+                                        <FiCheckCircle size={14} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        title={`Reject this ${record.type === 'IN' ? 'Time In' : 'Time Out'} only`}
+                                        onClick={() => handleVerifySide(record, side, 'rejected')}
+                                        disabled={submitting}
+                                        style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          padding: '6px 10px',
+                                          borderRadius: '6px',
+                                          border: '1px solid #fca5a5',
+                                          background: '#fee2e2',
+                                          color: '#991b1b',
+                                          cursor: submitting ? 'not-allowed' : 'pointer',
+                                          opacity: submitting ? 0.5 : 1,
+                                        }}
+                                      >
+                                        <FiXCircle size={14} />
+                                      </button>
+                                    </>
+                                  )}
+
+                                  {sideStatus === 'verified' && (
+                                    <button
+                                      type="button"
+                                      title="Undo this side back to pending"
+                                      onClick={() => handleVerifySide(record, side, 'pending')}
+                                      disabled={submitting}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        padding: '6px 10px',
+                                        borderRadius: '6px',
+                                        border: '1px solid #fcd34d',
+                                        background: '#fef3c7',
+                                        color: '#b45309',
+                                        cursor: submitting ? 'not-allowed' : 'pointer',
+                                        opacity: submitting ? 0.5 : 1,
+                                      }}
+                                    >
+                                      <FiRotateCcw size={14} />
+                                    </button>
+                                  )}
+
+                                  {sideStatus === 'rejected' && (
+                                    <button
+                                      type="button"
+                                      title="Un-reject this side back to pending"
+                                      onClick={() => handleVerifySide(record, side, 'pending')}
+                                      disabled={submitting}
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        padding: '6px 10px',
+                                        borderRadius: '6px',
+                                        border: '1px solid #cbd5e1',
+                                        background: '#e2e8f0',
+                                        color: '#475569',
+                                        cursor: submitting ? 'not-allowed' : 'pointer',
+                                        opacity: submitting ? 0.5 : 1,
+                                      }}
+                                    >
+                                      <FiRotateCcw size={14} />
+                                    </button>
+                                  )}
+
+                                  <button
+                                    type="button"
+                                    className="action-icon-btn view"
+                                    onClick={() => { setSelectedAttendance(record); setShowAttendanceModal(true); }}
+                                  >
+                                    <FiEye />
+                                  </button>
                                 </div>
                               </td>
                             </tr>
@@ -2005,51 +2503,7 @@ const Staff_Attendance = () => {
                       </tbody>
                     </table>
                   </div>
-                  
-                  {filteredMobileAttendance.length === 0 && (
-                    <div className="empty-state">
-                      <BsCameraFill className="empty-icon" />
-                      <h3>No attendance records found</h3>
-                      <button className="clear-filters-btn" onClick={() => { setSearchTerm(''); setStatusFilter('all'); setTypeFilter('ALL'); }}>
-                        Clear Filters
-                      </button>
-                    </div>
-                  )}
-                  
-                  {filteredMobileAttendance.length > 0 && (
-                    <div className="pagination formal">
-                      <div className="pagination-info">
-                        Showing {(currentPage - 1) * itemsPerPage + 1} to {Math.min(currentPage * itemsPerPage, filteredMobileAttendance.length)} of {filteredMobileAttendance.length} records
-                      </div>
-                      <div className="pagination-controls">
-                        <button className="pagination-btn" onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} disabled={currentPage === 1}>
-                          <FiChevronLeft />
-                        </button>
-                        
-                        {[...Array(Math.min(totalMobilePages, 5))].map((_, i) => {
-                          let pageNum;
-                          if (totalMobilePages <= 5) {
-                            pageNum = i + 1;
-                          } else if (currentPage <= 3) {
-                            pageNum = i + 1;
-                          } else if (currentPage >= totalMobilePages - 2) {
-                            pageNum = totalMobilePages - 4 + i;
-                          } else {
-                            pageNum = currentPage - 2 + i;
-                          }
-                          return (
-                            <button key={pageNum} className={`pagination-btn ${currentPage === pageNum ? 'active' : ''}`} onClick={() => setCurrentPage(pageNum)}>
-                              {pageNum}
-                            </button>
-                          );
-                        })}
-                        
-                        <button className="pagination-btn" onClick={() => setCurrentPage(prev => Math.min(totalMobilePages, prev + 1))} disabled={currentPage === totalMobilePages}>
-                          <FiChevronRight />
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  {filteredMobileAttendance.length === 0 && <div className="empty-state"><h3>No attendance records found</h3></div>}
                 </>
               )}
             </div>
@@ -2057,25 +2511,16 @@ const Staff_Attendance = () => {
         </>
       )}
 
-      {/* ===== EMPLOYEE OVERVIEW TAB - SCROLLABLE ===== */}
       {activeMainTab === 'status-panel' && (
         <div className="status-panel-container">
           <div className="status-panel-header-info">
             <div>
               <span style={{ fontWeight: 'bold' }}>Employee Overview</span>
-              <span style={{ marginLeft: '10px', fontSize: '12px', color: '#666' }}>
-                One row per employee with attendance records for the selected payroll cutoff
-              </span>
+              <span style={{ marginLeft: '10px', fontSize: '12px', color: '#666' }}>History for the selected cutoff</span>
             </div>
             <div>
-              <span style={{ fontSize: '12px', color: '#999' }}>
-                Last updated: {lastRefreshTime.toLocaleTimeString()}
-              </span>
-              {employeeOverviewLoading && (
-                <span style={{ marginLeft: '10px', fontSize: '12px', color: '#f39c12' }}>
-                  <FiRefreshCw className="spinning" /> Updating...
-                </span>
-              )}
+              <span style={{ fontSize: '12px', color: '#999' }}>Last updated: {lastRefreshTime.toLocaleTimeString()}</span>
+              {employeeOverviewLoading && <span style={{ marginLeft: '10px', fontSize: '12px', color: '#2563eb' }}><FiRefreshCw className="spinning" /> Updating...</span>}
             </div>
           </div>
 
@@ -2085,62 +2530,57 @@ const Staff_Attendance = () => {
               <div className="cutoff-details">
                 <span className="cutoff-label">Payroll Period</span>
                 <span className="cutoff-range">{employeeOverviewCutoffLabel}</span>
-                {!employeeOverviewMeta.can_generate && (
-                  <span className="cutoff-warning">Cutoff not reached; generation remains available after confirmation.</span>
-                )}
+                {!isCutoffReached(selectedYear, selectedMonth, cutoffPeriod) && <span className="cutoff-warning">Cutoff not yet reached</span>}
               </div>
             </div>
             <div className="cutoff-controls">
               <div className="period-selector">
-                <button className={`period-btn ${cutoffPeriod === 'first' ? 'active' : ''}`} onClick={() => setCutoffPeriod('first')}>
-                  <FiCalendar /> 1st - 15th
-                </button>
-                <button className={`period-btn ${cutoffPeriod === 'second' ? 'active' : ''}`} onClick={() => setCutoffPeriod('second')}>
-                  <FiCalendar /> 16th - End
-                </button>
+                <button className={`period-btn ${cutoffPeriod === 'first' ? 'active' : ''}`} onClick={() => setCutoffPeriod('first')}><FiCalendar /> 1st - 15th</button>
+                <button className={`period-btn ${cutoffPeriod === 'second' ? 'active' : ''}`} onClick={() => setCutoffPeriod('second')}><FiCalendar /> 16th - End</button>
               </div>
               <select value={selectedMonth} onChange={(e) => setSelectedMonth(parseInt(e.target.value))} className="month-select">
-                {Array.from({ length: 12 }, (_, i) => (
-                  <option key={i} value={i}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>
-                ))}
+                {Array.from({ length: 12 }, (_, i) => <option key={i} value={i}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>)}
               </select>
               <input type="number" value={selectedYear} onChange={(e) => setSelectedYear(parseInt(e.target.value))} className="year-input" min="2020" max="2030" />
             </div>
           </div>
 
-          <div className="status-panel-filters">
-            <div className="filter-group">
-              <select className="filter-select" value={employeeOverviewDepartment} onChange={(e) => setEmployeeOverviewDepartment(e.target.value)}>
-                <option value="all">All Departments</option>
-                {departments.map(dept => <option key={dept.id} value={dept.id}>{dept.name}</option>)}
-              </select>
+          {/* ⭐ NEW #7 — Cutoff insight strip */}
+          <div className="cutoff-insights-strip">
+            <div className="cutoff-insight-cell">
+              <span className="cutoff-insight-value" style={{ color: '#059669' }}>{cutoffInsightTotals.present}</span>
+              <span className="cutoff-insight-label">Present Days</span>
             </div>
-            <div className="filter-group">
-              <input
-                type="text"
-                className="filter-search"
-                placeholder="Search employee name or ID..."
-                value={employeeOverviewSearch}
-                onChange={(e) => setEmployeeOverviewSearch(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') fetchEmployeeOverview(true); }}
-              />
+            <div className="cutoff-insight-cell">
+              <span className="cutoff-insight-value" style={{ color: '#dc2626' }}>{cutoffInsightTotals.awol}</span>
+              <span className="cutoff-insight-label">AWOL</span>
             </div>
-            <button className="refresh-btn" onClick={() => fetchEmployeeOverview(true)} disabled={employeeOverviewLoading}>
-              <FiSearch /> Search
-            </button>
-            <button className="refresh-btn force-refresh" onClick={() => fetchEmployeeOverview(true)} disabled={employeeOverviewLoading}>
-              <FiRefreshCw /> Refresh
-            </button>
-            <button className="refresh-btn" onClick={saveAllEmployeeOverviewToPayroll} disabled={employeeOverviewActionLoading === 'save-all-payroll'}>
-              <FiSave /> {employeeOverviewActionLoading === 'save-all-payroll' ? 'Saving...' : 'Save All Ready to Payroll'}
-            </button>
+            <div className="cutoff-insight-cell">
+              <span className="cutoff-insight-value" style={{ color: '#d97706' }}>{cutoffInsightTotals.ea}</span>
+              <span className="cutoff-insight-label">Emergency Absent</span>
+            </div>
+            <div className="cutoff-insight-cell">
+              <span className="cutoff-insight-value" style={{ color: '#4338ca' }}>{cutoffInsightTotals.leave}</span>
+              <span className="cutoff-insight-label">On Leave</span>
+            </div>
+            <div className="cutoff-insight-cell">
+              <span className="cutoff-insight-value" style={{ color: '#b45309' }}>{cutoffInsightTotals.lateIn}</span>
+              <span className="cutoff-insight-label">Late In</span>
+            </div>
           </div>
 
-          {/* ===== FIX: Scrollable Employee Overview Table ===== */}
+          <div className="status-panel-filters">
+            <select className="filter-select" value={employeeOverviewDepartment} onChange={(e) => setEmployeeOverviewDepartment(e.target.value)}>
+              <option value="all">All Departments</option>
+              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <input type="text" className="filter-search" placeholder="Search employee..." value={employeeOverviewSearch} onChange={(e) => setEmployeeOverviewSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') fetchEmployeeOverview(true); }} />
+            <button className="refresh-btn" onClick={() => fetchEmployeeOverview(true)} disabled={employeeOverviewLoading}><FiSearch /> Search</button>
+            <button className="refresh-btn force-refresh" onClick={() => handleSaveAllAttendance()} disabled={savingAll || submitting}><FiSave /> Save All to Payroll</button>
+          </div>
+
           <div className="status-panel-table-wrapper">
-            {employeeOverviewLoading ? (
-              <SkeletonStatusPanelTable />
-            ) : displayedEmployeeOverviewEmployees.length > 0 ? (
+            {employeeOverviewLoading ? <SkeletonStatusPanelTable /> : employeeOverviewEmployees.length > 0 ? (
               <div className="table-wrapper-scrollable">
                 <table className="status-panel-table">
                   <thead>
@@ -2152,47 +2592,119 @@ const Staff_Attendance = () => {
                       <th>OT Hours</th>
                       <th>Total Hours</th>
                       <th>Late/Undertime</th>
+                      <th>Record</th>
+                      <th>Status</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedEmployeeOverviewEmployees.map((employee) => (
-                      <tr key={employee.employee_id}>
-                        <td>
-                          <div className="employee-info">
-                            <div className="employee-avatar" style={{ background: `linear-gradient(135deg, #3b82f6, #1e40af)` }}>
-                              {employee.employee_name?.charAt(0) || '?'}
+                    {employeeOverviewEmployees.map((employee) => {
+                      const hasUnsaved = (employee.unsaved_count || 0) > 0;
+                      const isCurrentPeriod = employee._fetched_for_period === currentPeriodKey;
+                      const savedForThisCutoff = isCurrentPeriod && employee.saved_to_payroll;
+                      return (
+                        <tr key={employee.employee_id}>
+                          <td>
+                            <div className="employee-info">
+                              <div className="employee-avatar" style={{ background: 'linear-gradient(135deg, #3b82f6, #1e40af)' }}>{employee.employee_name?.charAt(0) || '?'}</div>
+                              <div className="employee-details">
+                                <span className="employee-name">{employee.employee_name || 'N/A'}</span>
+                                <span className="employee-dept">{employee.department || 'N/A'}</span>
+                              </div>
                             </div>
-                            <div className="employee-details">
-                              <span className="employee-name">{employee.employee_name || 'N/A'}</span>
-                              <span className="employee-dept">{employee.department || 'N/A'}</span>
+                          </td>
+                          <td>{employee.employee_code || employee.employee_id}</td>
+                          <td>{employee.position || 'N/A'}</td>
+                          <td>{formatDecimalHours(employee.regular_hours)}</td>
+                          <td>{formatDecimalHours(employee.overtime_hours)}</td>
+                          <td><strong>{formatDecimalHours(employee.total_hours)}</strong></td>
+                          <td>{employee.late_undertime}</td>
+                          {/* ⭐ NEW #7 — Per-employee insight pills */}
+                          <td>
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {(employee.present_days_count || 0) > 0 && (
+                                <span className="flag-badge" style={{ background: '#d1fae5', color: '#065f46', border: '1px solid #6ee7b7' }}>
+                                  {employee.present_days_count}P
+                                </span>
+                              )}
+                              {(employee.awol_count || 0) > 0 && (
+                                <span className="flag-badge" style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5' }}>
+                                  {employee.awol_count} AWOL
+                                </span>
+                              )}
+                              {(employee.emergency_absent_count || 0) > 0 && (
+                                <span className="flag-badge" style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
+                                  {employee.emergency_absent_count} EA
+                                </span>
+                              )}
+                              {(employee.on_leave_count || 0) > 0 && (
+                                <span className="flag-badge" style={{ background: '#e0e7ff', color: '#3730a3', border: '1px solid #c7d2fe' }}>
+                                  {employee.on_leave_count} Leave
+                                </span>
+                              )}
+                              {(employee.late_in_count || 0) > 0 && (
+                                <span className="flag-badge" style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}>
+                                  {employee.late_in_count} Late
+                                </span>
+                              )}
+                              {(employee.present_days_count || 0) === 0
+                                && (employee.awol_count || 0) === 0
+                                && (employee.emergency_absent_count || 0) === 0
+                                && (employee.on_leave_count || 0) === 0
+                                && (employee.late_in_count || 0) === 0 && (
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
+                                )}
                             </div>
-                          </div>
-                        </td>
-                        <td>{employee.employee_code || employee.employee_id}</td>
-                        <td>{employee.position || 'N/A'}</td>
-                        <td>{formatDecimalHours(employee.regular_hours)}</td>
-                        <td>{formatDecimalHours(employee.overtime_hours)}</td>
-                        <td><strong>{formatDecimalHours(employee.total_hours)}</strong></td>
-                        <td>{employee.late_undertime}</td>
-                        <td>
-                          <div className="action-buttons-row">
-                            <button className="action-icon-btn view" onClick={() => loadEmployeeOverviewRecords(employee)} disabled={employeeOverviewActionLoading === `view-${employee.employee_id}`} title="View">
-                              <FiEye />
-                            </button>
-                            <button className="action-icon-btn verify" onClick={() => generateEmployeeOverviewSummary(employee)} disabled={employeeOverviewActionLoading === `generate-${employee.employee_id}`} title="Generate">
-                              <FiCheckCircle />
-                            </button>
-                            <button className="action-icon-btn" onClick={() => printEmployeeOverviewReport(employee)} title="Print">
-                              <FiPrinter />
-                            </button>
-                            <button className="action-icon-btn verify" onClick={() => saveEmployeeOverviewToPayroll(employee)} disabled={!employee.generated || employee.saved_to_payroll || employeeOverviewActionLoading === `save-${employee.employee_id}`} title={employee.saved_to_payroll ? "Already saved to Payroll" : "Save to Payroll"}>
-                              {employee.saved_to_payroll ? <FiCheckCircle /> : <FiSave />}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          </td>
+                          <td>
+                            {savedForThisCutoff && !hasUnsaved && (<span className="saved-badge">Saved</span>)}
+                            {hasUnsaved && !savedForThisCutoff && (<span className="status-badge pending">Pending</span>)}
+                            {hasUnsaved && savedForThisCutoff && (<span className="status-badge partial">Partial ({employee.unsaved_count} unsaved)</span>)}
+                          </td>
+                          <td>
+                            <div className="action-buttons-row">
+                              <button className="action-icon-btn view" onClick={() => loadEmployeeOverviewRecords(employee)} disabled={employeeOverviewActionLoading === `view-${employee.employee_id}`} title="View Attendance"><FiEye /></button>
+                              <button
+                                className="action-icon-btn save"
+                                onClick={() => handleSaveSingleEmployeeToPayroll(employee)}
+                                disabled={
+                                  submitting ||
+                                  employeeOverviewActionLoading === `save-${employee.employee_id}` ||
+                                  (savedForThisCutoff && !hasUnsaved)
+                                }
+                                title={
+                                  savedForThisCutoff && !hasUnsaved
+                                    ? 'Already saved for this cutoff'
+                                    : 'Save to Payroll'
+                                }
+                              >
+                                <FiSave />
+                              </button>
+                              <button className="action-icon-btn more" onClick={(e) => { e.stopPropagation(); setDropdownOpen(dropdownOpen === employee.employee_id ? null : employee.employee_id); }} title="More Actions"><FiMoreVertical size={16} /></button>
+
+                              {dropdownOpen === employee.employee_id && (
+                                <div className="pro-dropdown" style={{ right: 0, top: '100%' }}>
+                                  <div className="pro-dropdown-header">Actions</div>
+                                  <button className="pro-dropdown-item" onClick={() => { handleAddAttendance(employee); setDropdownOpen(null); }}>
+                                    <span className="icon-wrapper blue"><FiPlus size={15} /></span>
+                                    <div className="text-block"><span className="label">Add Attendance</span><span className="sub-label">Manually add a new record</span></div>
+                                  </button>
+                                  <button className="pro-dropdown-item" onClick={() => { openRecordModal(employee); setDropdownOpen(null); }}>
+                                    <span className="icon-wrapper green"><FiFileText size={15} /></span>
+                                    <div className="text-block"><span className="label">Saved Records</span><span className="sub-label">Payroll history + print</span></div>
+                                  </button>
+                                  <div className="pro-dropdown-divider" />
+                                  <button className="pro-dropdown-item" onClick={async () => { await loadEmployeeOverviewRecords(employee); setDropdownOpen(null); }}>
+                                    <span className="icon-wrapper purple"><FiEye size={15} /></span>
+                                    <div className="text-block"><span className="label">View Attendance</span><span className="sub-label">Open records modal</span></div>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2200,226 +2712,265 @@ const Staff_Attendance = () => {
               <div className="empty-state">
                 <FiFileText className="empty-icon" />
                 <h3>No employees with attendance</h3>
-                <p>No attendance records were found for {employeeOverviewCutoffLabel}.</p>
               </div>
             )}
           </div>
 
-          {/* Employee Overview Modal */}
           {employeeOverviewSelectedEmployee && (
-            <div className="modal-overlay" onClick={() => setEmployeeOverviewSelectedEmployee(null)}>
-              <div className="modal-content" style={{ maxWidth: '1200px', width: '96%' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-overlay" onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}>
+              <div className="modal-content" style={{ maxWidth: '1400px', width: '96%' }} onClick={(e) => e.stopPropagation()}>
                 <div className="modal-header">
                   <div>
-                    <h2>{employeeOverviewSelectedEmployee.employee_name}</h2>
-                    <p style={{ margin: 0, color: '#6b7280' }}>{employeeOverviewCutoffLabel}</p>
+                    <h2>Attendance Records</h2>
+                    <p style={{ margin: 0, color: '#374151', fontWeight: 600 }}>{employeeOverviewSelectedEmployee.employee_name}</p>
+                    <p style={{ margin: 0, color: '#6b7280', fontSize: '12px' }}>{employeeOverviewCutoffLabel} — Unsaved records</p>
                   </div>
-                  <button className="close-modal" onClick={() => setEmployeeOverviewSelectedEmployee(null)}>×</button>
+                  <button className="close-modal" onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}>×</button>
                 </div>
                 <div className="modal-body">
-                  {pendingEmployeeOverviewOvertime.length > 0 && (
-                    <div className="status-panel-filters" style={{ marginBottom: '12px' }}>
-                      <button className="refresh-btn" onClick={selectAllEmployeeOverviewOvertime}>
-                        <FiCheck /> {allPendingEmployeeOverviewOvertimeSelected ? 'Deselect All OT' : 'Select All Pending OT'}
-                      </button>
-                      <button className="refresh-btn" onClick={() => decideSelectedEmployeeOverviewOvertime('approve')} disabled={employeeOverviewSelectedOvertimeIds.length === 0 || employeeOverviewActionLoading === 'bulk-ot-approve'}>
-                        <FiCheckCircle /> Approve Selected
-                      </button>
-                      <button className="refresh-btn" onClick={() => decideSelectedEmployeeOverviewOvertime('reject')} disabled={employeeOverviewSelectedOvertimeIds.length === 0 || employeeOverviewActionLoading === 'bulk-ot-reject'}>
-                        <FiXCircle /> Decline Selected
-                      </button>
-                      <span style={{ fontSize: '12px', color: '#6b7280' }}>{employeeOverviewSelectedOvertimeIds.length} selected</span>
-                    </div>
-                  )}
                   <div className="attendance-table-wrapper">
                     <table className="status-panel-table">
                       <thead>
                         <tr>
-                          <th style={{ width: '42px' }}>
-                            <input
-                              type="checkbox"
-                              checked={allPendingEmployeeOverviewOvertimeSelected}
-                              onChange={selectAllEmployeeOverviewOvertime}
-                              disabled={pendingEmployeeOverviewOvertime.length === 0}
-                              aria-label="Select all pending overtime"
-                            />
-                          </th>
-                          <th>Day</th>
-                          <th>Assigned Schedule</th>
-                          <th>Time In Selfie</th>
-                          <th>Time Out Selfie</th>
-                          <th>Original Location</th>
-                          <th>Regular Hours</th>
-                          <th>OT Hours</th>
-                          <th>Total Hours</th>
-                          <th>Late/Undertime</th>
-                          <th>Action</th>
+                          <th>Date</th><th>Schedule</th>
+                          <th>Time In</th><th>In Status</th>
+                          <th>Time Out</th><th>Out Status</th>
+                          <th>Flag</th>
+                          <th>Reg Hrs</th><th>OT Hrs</th><th>OT Status</th>
+                          <th>UT Hrs</th><th>UT Status</th><th>Total</th>
+                          <th>Record</th><th>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {employeeOverviewSelectedRecords.map((record) => (
-                          <tr key={record.attendance_id}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                checked={employeeOverviewSelectedOvertimeIds.includes(record.attendance_id)}
-                                onChange={() => toggleEmployeeOverviewOvertime(record.attendance_id)}
-                                disabled={record.overtime_status !== 'pending'}
-                                aria-label={`Select overtime for ${record.date}`}
-                              />
-                            </td>
-                            <td>
-                              <strong>{record.day || 'N/A'}</strong><br />
-                              <span>{formatEmployeeOverviewDate(record.date)}</span>
-                            </td>
-                            <td>{record.assigned_schedule || 'Unscheduled'}</td>
-                            <td>
-                              <div>{record.formatted_time_in || 'No Time In'}</div>
-                              {record.time_in_selfie_url ? (
-                                <button className="action-icon-btn view-selfie" onClick={() => handleViewSelfie(record.time_in_selfie_url)}><FiEye /> View</button>
-                              ) : <span>No selfie</span>}
-                            </td>
-                            <td>
-                              <div>{record.formatted_time_out || 'No Time Out'}</div>
-                              {record.time_out_selfie_url ? (
-                                <button className="action-icon-btn view-selfie" onClick={() => handleViewSelfie(record.time_out_selfie_url)}><FiEye /> View</button>
-                              ) : <span>No selfie</span>}
-                            </td>
-                            <td>
-                              <div><strong>In:</strong> {formatEmployeeOverviewLocation(record.time_in_location)}</div>
-                              <div><strong>Out:</strong> {formatEmployeeOverviewLocation(record.time_out_location)}</div>
-                            </td>
-                            <td>{formatDecimalHours(record.regular_hours)}</td>
-                            <td>{formatDecimalHours(record.overtime_hours)}</td>
-                            <td><strong>{formatDecimalHours(record.total_hours)}</strong></td>
-                            <td>{record.late_undertime}</td>
-                            <td>
-                              <div className="action-buttons-row" style={{ flexWrap: 'wrap' }}>
-                                {/* ===== FIX: Only show Edit Time if record has time in or time out ===== */}
-                                {(record.time_in || record.time_out) && (
-                                  <button className="action-icon-btn" onClick={() => openEmployeeOverviewAttendanceEditor(record)} title="Edit time-in/time-out">
-                                    <FiEdit2 /> Edit Time
-                                  </button>
-                                )}
-                                {(!record.time_in && !record.time_out) && (
-                                  <span className="no-time-warning" style={{ color: '#e74c3c', fontSize: '11px' }}>
-                                    No time record to edit
+                        {employeeOverviewSelectedRecords.map((record, index) => {
+                          if (!record) return null;
+                          const status = getStatusForRecord(record);
+                          const otStatus = getOTStatus(record);
+                          const utStatus = getUndertimeStatus(record);
+                          const isInline = inlineEditRecord && (inlineEditRecord.attendance_id || inlineEditRecord.id) === (record.attendance_id || record.id);
+                          const missingTimeIn = !record.time_in || record.time_in === '';
+                          const missingTimeOut = !record.time_out || record.time_out === '';
+
+                          const inStatus = getSideStatus(record.attendance_id ?? record.id, 'in');
+                          const outStatus = getSideStatus(record.attendance_id ?? record.id, 'out');
+                          const flagStyle = getFlagStyle(record.attendance_flag);
+
+                          return (
+                            <tr key={record.attendance_id || index} className={isInline ? 'inline-edit-row' : ''}>
+                              <td><strong>{record.day || 'N/A'}</strong><br /><span style={{ fontSize: '11px', color: '#6b7280' }}>{formatEmployeeOverviewDate(record.date)}</span></td>
+                              <td>{record.assigned_schedule || 'Unscheduled'}</td>
+
+                              <td>
+                                {isInline ? (
+                                  <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeIn} onChange={(e) => setInlineEditTimeIn(e.target.value)} />
+                                ) : (
+                                  <span className={missingTimeIn ? 'time-missing' : ''}>
+                                    {record.formatted_time_in || 'No Time In'}
                                   </span>
                                 )}
-                                {record.overtime_status === 'pending' ? (
-                                  <>
-                                    <button className="action-icon-btn verify" onClick={() => approveEmployeeOverviewOvertime(record)} disabled={employeeOverviewActionLoading === `approve-ot-${record.attendance_id}`}><FiCheckCircle /> Approve</button>
-                                    <button className="action-icon-btn reject" onClick={() => declineEmployeeOverviewOvertime(record)} disabled={employeeOverviewActionLoading === `decline-ot-${record.attendance_id}`}><FiXCircle /> Decline</button>
-                                  </>
-                                ) : record.overtime_status === 'approved' ? (
-                                  <span className="status-badge verified">OT Approved</span>
-                                ) : record.overtime_status === 'rejected' ? (
-                                  <span className="status-badge rejected">OT Declined</span>
+                              </td>
+                              <td>
+                                {missingTimeIn ? (
+                                  <span className="event-status-pill pending">N/A</span>
                                 ) : (
-                                  <span>No OT</span>
+                                  <div className="event-verify-row">
+                                    <span className={`event-status-pill ${inStatus}`}>
+                                      {inStatus === 'verified' ? 'VERIFIED' : inStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
+                                    </span>
+                                    {!isInline && inStatus === 'pending' && (
+                                      <>
+                                        <button className="event-verify-btn approve" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'verified')} title="Approve Time In"><FiCheck size={11} /></button>
+                                        <button className="event-verify-btn reject" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'rejected')} title="Reject Time In"><FiX size={11} /></button>
+                                      </>
+                                    )}
+                                    {!isInline && inStatus === 'verified' && (
+                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'pending')} title="Undo Time In"><FiRotateCcw size={11} /></button>
+                                    )}
+                                    {!isInline && inStatus === 'rejected' && (
+                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'pending')} title="Un-reject Time In"><FiRotateCcw size={11} /></button>
+                                    )}
+                                  </div>
                                 )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+
+                              <td>
+                                {isInline ? (
+                                  <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeOut} onChange={(e) => setInlineEditTimeOut(e.target.value)} />
+                                ) : (
+                                  <span className={missingTimeOut ? 'time-missing' : ''}>
+                                    {record.formatted_time_out || 'No Time Out'}
+                                  </span>
+                                )}
+                              </td>
+                              <td>
+                                {missingTimeOut ? (
+                                  <span className="event-status-pill pending">N/A</span>
+                                ) : (
+                                  <div className="event-verify-row">
+                                    <span className={`event-status-pill ${outStatus}`}>
+                                      {outStatus === 'verified' ? 'VERIFIED' : outStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
+                                    </span>
+                                    {!isInline && outStatus === 'pending' && (
+                                      <>
+                                        <button className="event-verify-btn approve" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'verified')} title="Approve Time Out"><FiCheck size={11} /></button>
+                                        <button className="event-verify-btn reject" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'rejected')} title="Reject Time Out"><FiX size={11} /></button>
+                                      </>
+                                    )}
+                                    {!isInline && outStatus === 'verified' && (
+                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'pending')} title="Undo Time Out"><FiRotateCcw size={11} /></button>
+                                    )}
+                                    {!isInline && outStatus === 'rejected' && (
+                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'pending')} title="Un-reject Time Out"><FiRotateCcw size={11} /></button>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* ⭐ NEW #6 — Flag badge per row */}
+                              <td>
+                                {flagStyle ? (
+                                  <span
+                                    className="flag-badge"
+                                    style={{
+                                      background: flagStyle.bg,
+                                      color: flagStyle.color,
+                                      border: `1px solid ${flagStyle.border}`,
+                                    }}
+                                    title={record.flag_notes || flagStyle.label}
+                                  >
+                                    <FiFlag size={10} /> {flagStyle.label}
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
+                                )}
+                              </td>
+
+                              <td>{formatDecimalHours(record.regular_hours)}</td>
+                              <td>{formatDecimalHours(record.overtime_hours)}</td>
+                              <td><span className={`status-badge ${otStatus.status.toLowerCase()}`}>{otStatus.label}</span></td>
+                              <td>{formatDecimalHours(record.undertime_hours)}</td>
+                              <td><span className={`status-badge ${utStatus.status.toLowerCase()}`}>{utStatus.label}</span></td>
+                              <td><strong>{formatDecimalHours(record.total_hours)}</strong></td>
+                              <td><span className={`status-badge ${status.status.toLowerCase().replace('_', '-')}`}>{status.label}</span></td>
+                              <td>
+                                {isInline ? (
+                                  <div style={{ display: 'flex', gap: '6px' }}>
+                                    <button className="action-icon-btn verify" onClick={saveInlineEdit} disabled={inlineEditSaving} title="Save">{inlineEditSaving ? <FiRefreshCw className="spinning" /> : <FiSave />}</button>
+                                    <button className="action-icon-btn reject" onClick={cancelInlineEdit} disabled={inlineEditSaving} title="Cancel"><FiX /></button>
+                                  </div>
+                                ) : (
+                                  <div className="action-buttons-row" style={{ flexWrap: 'wrap', gap: '4px' }}>
+                                    <button className="action-icon-btn" onClick={() => openInlineEdit(record)} title="Edit Times"><FiEdit2 /></button>
+
+                                    {/* ⭐ NEW #9 — Flag action */}
+                                    <button
+                                      className="action-icon-btn"
+                                      onClick={() => openFlagModal(record)}
+                                      title="Flag: AWOL / EA / Leave / Late In"
+                                      style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}
+                                    >
+                                      <FiFlag />
+                                    </button>
+
+                                    {inStatus === 'pending' && outStatus === 'pending' && !missingTimeIn && !missingTimeOut && (
+                                      <button className="event-verify-btn approve" onClick={() => handleApproveBoth(record)} title="Approve Both Time In & Time Out">
+                                        <FiCheckCircle size={11} /> Both
+                                      </button>
+                                    )}
+
+                                    {status.status === 'REJECTED' && (
+                                      <button className="action-icon-btn cancel-reject" onClick={() => handleCancelReject(record)} title="Un-reject"><FiRotateCcw /></button>
+                                    )}
+
+                                    {otStatus.status === 'PENDING' && (
+                                      <>
+                                        <button className="action-icon-btn verify" onClick={() => openOTApprovalModal(record)} title="Approve Overtime"><FiCheckCircle /> OT</button>
+                                        <button className="action-icon-btn reject" onClick={() => openOTRejectModal(record)} title="Reject Overtime"><FiXCircle /> OT</button>
+                                      </>
+                                    )}
+                                    {utStatus.status === 'PENDING' && (
+                                      <>
+                                        <button className="action-icon-btn verify" onClick={() => openUTApprovalModal(record)} title="Approve Undertime"><FiCheckCircle /> UT</button>
+                                        <button className="action-icon-btn reject" onClick={() => openUTRejectModal(record)} title="Reject Undertime"><FiXCircle /> UT</button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
-                    {employeeOverviewSelectedRecords.length === 0 && <div className="empty-state"><p>No attendance records found.</p></div>}
+                    {employeeOverviewSelectedRecords.length === 0 && (
+                      <div className="empty-state">
+                        <FiCheckCircle className="empty-icon" />
+                        <p>All records have been saved to payroll.</p>
+                      </div>
+                    )}
                   </div>
                 </div>
-                <div className="modal-footer">
-                  <button className="modal-btn secondary" onClick={() => setEmployeeOverviewSelectedEmployee(null)}>Close</button>
-                  <button className="modal-btn" onClick={() => printEmployeeOverviewReport(employeeOverviewSelectedEmployee)}><FiPrinter /> Print Report</button>
+                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      className="blue-primary-btn"
+                      onClick={handlePrintAttendanceRecords}
+                      disabled={employeeOverviewSelectedRecords.length === 0}
+                    >
+                      <FiPrinter /> Print
+                    </button>
+                    <button
+                      className="blue-primary-btn"
+                      onClick={() => handleSaveFromModal()}
+                      disabled={submitting || employeeOverviewSelectedRecords.length === 0}
+                      title="Save all verified records for this employee to payroll"
+                    >
+                      {submitting ? <FiRefreshCw className="spinning" /> : <FiSave />} Save to Payroll
+                    </button>
+                  </div>
+                  <button
+                    className="modal-btn secondary"
+                    onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* ===== FIX: Edit Attendance Modal - Shows warning when no time ===== */}
-          {employeeOverviewEditingRecord && (
-            <div className="modal-overlay" onClick={() => setEmployeeOverviewEditingRecord(null)}>
-              <div className="modal-content" style={{ maxWidth: '560px', width: '94%' }} onClick={(e) => e.stopPropagation()}>
+          {showAddAttendanceModal && addAttendanceEmployee && (
+            <div className="modal-overlay" onClick={() => setShowAddAttendanceModal(false)}>
+              <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
                 <div className="modal-header">
-                  <div>
-                    <h2>Edit Attendance Times</h2>
-                    <p style={{ margin: 0, color: '#6b7280' }}>{formatEmployeeOverviewDate(employeeOverviewEditingRecord.date)}</p>
-                  </div>
-                  <button className="close-modal" onClick={() => setEmployeeOverviewEditingRecord(null)}>×</button>
+                  <h2><FiPlus /> Add Attendance</h2>
+                  <button className="close-modal" onClick={() => setShowAddAttendanceModal(false)}>×</button>
                 </div>
                 <div className="modal-body">
-                  {/* Warning if no time records */}
-                  {(!employeeOverviewEditingRecord.time_in && !employeeOverviewEditingRecord.time_out) && (
-                    <div className="warning-box" style={{ background: '#fef3c7', padding: '10px', borderRadius: '6px', marginBottom: '14px', border: '1px solid #f59e0b' }}>
-                      <FiAlertCircle style={{ color: '#f59e0b', marginRight: '8px' }} />
-                      <span style={{ color: '#92400e', fontSize: '13px' }}>
-                        This record has no time-in or time-out. You cannot edit a non-existent attendance record.
-                      </span>
-                    </div>
-                  )}
-                  
-                  {/* Only show time fields if there's at least one time record */}
-                  {(employeeOverviewEditingRecord.time_in || employeeOverviewEditingRecord.time_out) ? (
-                    <>
-                      <div className="filter-group" style={{ marginBottom: '14px' }}>
-                        <label>Time In</label>
-                        <input 
-                          type="datetime-local" 
-                          className="filter-search" 
-                          value={employeeOverviewEditTimeIn} 
-                          onChange={(e) => setEmployeeOverviewEditTimeIn(e.target.value)} 
-                          placeholder={!employeeOverviewEditingRecord.time_in ? "No time in recorded" : ""}
-                        />
-                        {!employeeOverviewEditingRecord.time_in && (
-                          <span style={{ fontSize: '11px', color: '#e74c3c' }}>⚠️ No time-in recorded for this day</span>
-                        )}
-                      </div>
-                      <div className="filter-group" style={{ marginBottom: '14px' }}>
-                        <label>Time Out</label>
-                        <input 
-                          type="datetime-local" 
-                          className="filter-search" 
-                          value={employeeOverviewEditTimeOut} 
-                          onChange={(e) => setEmployeeOverviewEditTimeOut(e.target.value)} 
-                          placeholder={!employeeOverviewEditingRecord.time_out ? "No time out recorded" : ""}
-                        />
-                        {!employeeOverviewEditingRecord.time_out && (
-                          <span style={{ fontSize: '11px', color: '#e74c3c' }}>⚠️ No time-out recorded for this day</span>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="no-time-warning-box" style={{ background: '#fee2e2', padding: '16px', borderRadius: '8px', border: '1px solid #ef4444' }}>
-                      <FiAlertCircle style={{ color: '#dc2626', fontSize: '24px', marginBottom: '8px' }} />
-                      <p style={{ color: '#991b1b', fontWeight: 'bold' }}>No attendance record exists for this day.</p>
-                      <p style={{ color: '#7f1d1d', fontSize: '13px' }}>This employee did not clock in or out. Cannot edit a non-existent record.</p>
-                    </div>
-                  )}
-                  
                   <div className="filter-group" style={{ marginBottom: '14px' }}>
-                    <label>Attendance Approval</label>
-                    <select className="filter-select" value={employeeOverviewEditApprovalStatus} onChange={(e) => setEmployeeOverviewEditApprovalStatus(e.target.value)}>
-                      <option value="pending">Pending</option>
-                      <option value="approved">Approved</option>
-                      <option value="rejected">Rejected</option>
-                    </select>
+                    <label>Employee</label>
+                    <input type="text" className="filter-search" value={addAttendanceEmployee.employee_name || ''} readOnly />
+                  </div>
+                  <div className="filter-group" style={{ marginBottom: '14px' }}>
+                    <label>Date</label>
+                    <input type="date" className="filter-search" value={addAttendanceDate} onChange={(e) => setAddAttendanceDate(e.target.value)} />
+                  </div>
+                  <div className="filter-group" style={{ marginBottom: '14px' }}>
+                    <label>Time In</label>
+                    <input type="time" className="filter-search" value={addAttendanceTimeIn} onChange={(e) => setAddAttendanceTimeIn(e.target.value)} />
+                  </div>
+                  <div className="filter-group" style={{ marginBottom: '14px' }}>
+                    <label>Time Out</label>
+                    <input type="time" className="filter-search" value={addAttendanceTimeOut} onChange={(e) => setAddAttendanceTimeOut(e.target.value)} />
                   </div>
                   <div className="filter-group">
-                    <label>Correction Notes</label>
-                    <textarea className="filter-search" rows="3" value={employeeOverviewEditNotes} onChange={(e) => setEmployeeOverviewEditNotes(e.target.value)} />
+                    <label>Notes</label>
+                    <textarea className="filter-search" rows="3" value={addAttendanceNotes} onChange={(e) => setAddAttendanceNotes(e.target.value)} />
                   </div>
                 </div>
                 <div className="modal-footer">
-                  <button className="modal-btn secondary" onClick={() => setEmployeeOverviewEditingRecord(null)}>Cancel</button>
-                  {(employeeOverviewEditingRecord.time_in || employeeOverviewEditingRecord.time_out) && (
-                    <button className="modal-btn" onClick={saveEmployeeOverviewAttendanceEdit} disabled={employeeOverviewActionLoading === `edit-${employeeOverviewEditingRecord.attendance_id}`}>
-                      <FiSave /> Save Attendance
-                    </button>
-                  )}
-                  {(!employeeOverviewEditingRecord.time_in && !employeeOverviewEditingRecord.time_out) && (
-                    <button className="modal-btn disabled" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
-                      Cannot Edit - No Time Record
-                    </button>
-                  )}
+                  <button className="blue-secondary-btn" onClick={() => setShowAddAttendanceModal(false)}>Cancel</button>
+                  <button className="blue-primary-btn" onClick={confirmAddAttendance} disabled={submitting}><FiSave /> Create</button>
                 </div>
               </div>
             </div>
@@ -2427,813 +2978,779 @@ const Staff_Attendance = () => {
         </div>
       )}
 
-      {/* ===== UNSCHEDULED APPROVALS TAB ===== */}
       {activeMainTab === 'unscheduled' && (
         <div className="unscheduled-container">
-          <div className="unscheduled-header">
-            <div className="unscheduled-header-info">
-              <FiAlertTriangle className="unscheduled-icon" />
+          <div className="unscheduled-header-card">
+            <div className="unscheduled-header-left">
+              <div className="unscheduled-header-icon">
+                <FiAlertTriangle />
+              </div>
               <div>
-                <h3>Pending Unscheduled Attendance Approvals</h3>
-                <p>These attendance records were created without a valid schedule. Review the selfie and approve if valid, or reject if invalid.</p>
+                <h3>Pending Unscheduled Attendance</h3>
+                <p>Review and approve or reject unscheduled time-in / time-out records below.</p>
               </div>
             </div>
-            <button className="refresh-btn" onClick={fetchPendingUnscheduledRecords} disabled={submitting}>
+            <button className="blue-secondary-btn" onClick={fetchPendingUnscheduledRecords} disabled={submitting}>
               <FiRefreshCw /> Refresh
             </button>
           </div>
 
           <div className="unscheduled-stats">
             <div className="unscheduled-stat">
-              <span className="stat-value">{pendingUnscheduledRecords.length}</span>
-              <span className="stat-label">Pending Approvals</span>
+              <div className="stat-icon blue"><FiAlertCircle /></div>
+              <div className="stat-info">
+                <span className="stat-value">{pendingUnscheduledRecords.length}</span>
+                <span className="stat-label">Total Pending</span>
+              </div>
             </div>
             <div className="unscheduled-stat">
-              <span className="stat-value">{pendingUnscheduledRecords.filter(r => r.type === 'IN').length}</span>
-              <span className="stat-label">Unscheduled Time Ins</span>
+              <div className="stat-icon green"><FiLogOut style={{ transform: 'rotate(180deg)' }} /></div>
+              <div className="stat-info">
+                <span className="stat-value">{pendingUnscheduledRecords.filter(r => r.type === 'IN').length}</span>
+                <span className="stat-label">Time Ins</span>
+              </div>
             </div>
             <div className="unscheduled-stat">
-              <span className="stat-value">{pendingUnscheduledRecords.filter(r => r.type === 'OUT').length}</span>
-              <span className="stat-label">Unscheduled Time Outs</span>
+              <div className="stat-icon red"><FiLogOut /></div>
+              <div className="stat-info">
+                <span className="stat-value">{pendingUnscheduledRecords.filter(r => r.type === 'OUT').length}</span>
+                <span className="stat-label">Time Outs</span>
+              </div>
             </div>
           </div>
 
           {pendingUnscheduledRecords.length === 0 ? (
-            <div className="empty-state">
-              <FiCheckCircle className="empty-icon" />
-              <h3>No pending unscheduled approvals</h3>
-              <p>All attendance records have valid schedules or have been reviewed</p>
+            <div className="unscheduled-empty-state">
+              <div className="unscheduled-empty-icon">
+                <FiCheckCircle />
+              </div>
+              <h3>No Pending Unscheduled Approvals</h3>
+              <p>All unscheduled attendance records have been reviewed. You're all caught up.</p>
             </div>
           ) : (
-            <>
-              <div className="unscheduled-table-wrapper">
-                <table className="unscheduled-table">
-                  <thead>
-                    <tr>
-                      <th>Date & Time</th>
-                      <th>Employee</th>
-                      <th>Type</th>
-                      <th>Validation Message</th>
-                      <th>Selfie</th>
-                      <th>Location</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paginatedUnscheduledRecords.map((record) => (
-                      <tr key={record.event_id || record.id}>
-                        <td>
-                          <div className="datetime-cell">
-                            <span className="date">{formatDate(record.timestamp)}</span>
-                            <span className="time">{formatTime(record.timestamp)}</span>
-                          </div>
-                        </td>
-                        <td>
-                          <div className="employee-cell">
-                            <span className="employee-name">{record.employee_name || 'N/A'}</span>
-                            <span className="employee-code">{record.employee_code}</span>
-                          </div>
-                        </td>
-                        <td>
-                          <span className={`attendance-type ${record.type === 'IN' ? 'check-in' : 'check-out'}`}>
-                            {record.type === 'IN' ? 'Time In' : 'Time Out'}
-                          </span>
-                        </td>
-                        <td>
-                          <div className="validation-message">
-                            <FiAlertTriangle className="warning-icon" />
-                            <span>{record.validation_message || 'No schedule found'}</span>
-                          </div>
-                        </td>
-                        <td>
-                          {record.selfie_url ? (
-                            <button className="selfie-view-btn" onClick={() => handleViewSelfie(record.selfie_url)}>
-                              <BsCameraFill /> View
-                            </button>
-                          ) : (
-                            <span className="no-selfie">No selfie</span>
-                          )}
-                        </td>
-                        <td>
-                          {record.location ? (
-                            <span className="location-badge"><BsGeoAlt /> Captured</span>
-                          ) : (
-                            <span className="no-location">—</span>
-                          )}
-                        </td>
-                        <td>
-                          <div className="action-buttons">
-                            <button 
-                              className="action-btn approve" 
-                              onClick={() => {
-                                setSelectedUnscheduledRecord(record);
-                                setUnscheduledApprovalNote('');
-                                setShowUnscheduledModal(true);
-                              }}
-                              disabled={submitting}
-                            >
-                              <FiThumbsUp /> Approve
-                            </button>
-                            <button 
-                              className="action-btn decline" 
-                              onClick={() => {
-                                const reason = prompt('Please provide a reason for rejecting this unscheduled attendance:');
-                                if (reason && reason.trim()) {
-                                  rejectUnscheduledRecord(record.id, reason);
-                                }
-                              }}
-                              disabled={submitting}
-                            >
-                              <FiThumbsDown /> Reject
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            <div className="unscheduled-table-wrapper">
+              <div className="unscheduled-table-header">
+                <h4>Attendance Records Awaiting Review</h4>
+                <span className="unscheduled-table-count">
+                  {pendingUnscheduledRecords.length} record{pendingUnscheduledRecords.length === 1 ? '' : 's'}
+                </span>
               </div>
+              <table className="unscheduled-table">
+                <thead>
+                  <tr>
+                    <th>Date & Time</th>
+                    <th>Employee</th>
+                    <th>Type</th>
+                    <th>Selfie</th>
+                    <th style={{ textAlign: 'right' }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paginatedUnscheduledRecords.map((record) => (
+                    <tr key={record.event_id || record.id}>
+                      <td>
+                        <div className="datetime-cell">
+                          <span className="date">{formatDate(record.timestamp)}</span>
+                          <span className="time">{formatTime(record.timestamp)}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="employee-cell">
+                          <span className="employee-name">{record.employee_name || 'N/A'}</span>
+                          <span className="employee-code">{record.employee_code || '—'}</span>
+                        </div>
+                      </td>
+                      <td>
+                        <span className={`attendance-type-pill ${record.type === 'IN' ? 'in' : 'out'}`}>
+                          <FiLogOut style={{ transform: record.type === 'IN' ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                          {record.type === 'IN' ? 'Time In' : 'Time Out'}
+                        </span>
+                      </td>
+                      <td>
+                        {record.selfie_url ? (
+                          <button className="selfie-view-btn" onClick={() => { setSelectedSelfie(record.selfie_url); setShowSelfieModal(true); }}>
+                            <BsCameraFill /> View
+                          </button>
+                        ) : (
+                          <span className="no-selfie">No selfie</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="unscheduled-actions">
+                          <button
+                            className="unscheduled-btn approve"
+                            onClick={() => { setSelectedUnscheduledRecord(record); setShowUnscheduledModal(true); }}
+                            disabled={submitting}
+                          >
+                            <FiThumbsUp /> Approve
+                          </button>
+                          <button
+                            className="unscheduled-btn reject"
+                            onClick={() => {
+                              const reason = prompt('Reason for rejecting:');
+                              if (reason && reason.trim()) rejectUnscheduledRecord(record.id, reason);
+                            }}
+                            disabled={submitting}
+                          >
+                            <FiThumbsDown /> Reject
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
 
-              {totalUnscheduledPages > 1 && (
-                <div className="pagination">
-                  <div className="pagination-info">
-                    Showing {(unscheduledPage - 1) * unscheduledItemsPerPage + 1} to {Math.min(unscheduledPage * unscheduledItemsPerPage, pendingUnscheduledRecords.length)} of {pendingUnscheduledRecords.length} records
-                  </div>
-                  <div className="pagination-controls">
-                    <button 
-                      className="pagination-btn" 
-                      onClick={() => setUnscheduledPage(prev => Math.max(1, prev - 1))} 
-                      disabled={unscheduledPage === 1}
-                    >
-                      <FiChevronLeft />
-                    </button>
-                    {[...Array(Math.min(totalUnscheduledPages, 5))].map((_, i) => {
-                      let pageNum;
-                      if (totalUnscheduledPages <= 5) {
-                        pageNum = i + 1;
-                      } else if (unscheduledPage <= 3) {
-                        pageNum = i + 1;
-                      } else if (unscheduledPage >= totalUnscheduledPages - 2) {
-                        pageNum = totalUnscheduledPages - 4 + i;
-                      } else {
-                        pageNum = unscheduledPage - 2 + i;
-                      }
-                      return (
-                        <button 
-                          key={pageNum} 
-                          className={`pagination-btn ${unscheduledPage === pageNum ? 'active' : ''}`} 
-                          onClick={() => setUnscheduledPage(pageNum)}
-                        >
-                          {pageNum}
-                        </button>
-                      );
-                    })}
-                    <button 
-                      className="pagination-btn" 
-                      onClick={() => setUnscheduledPage(prev => Math.min(totalUnscheduledPages, prev + 1))} 
-                      disabled={unscheduledPage === totalUnscheduledPages}
-                    >
-                      <FiChevronRight />
-                    </button>
-                  </div>
+              {pendingUnscheduledRecords.length > unscheduledItemsPerPage && (
+                <div className="pagination-controls">
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setUnscheduledPage((p) => Math.max(1, p - 1))}
+                    disabled={unscheduledPage === 1}
+                  >
+                    <FiChevronLeft /> Prev
+                  </button>
+                  <span className="pagination-info">
+                    Page {unscheduledPage} of {totalUnscheduledPages}
+                  </span>
+                  <button
+                    className="pagination-btn"
+                    onClick={() => setUnscheduledPage((p) => Math.min(totalUnscheduledPages, p + 1))}
+                    disabled={unscheduledPage === totalUnscheduledPages}
+                  >
+                    Next <FiChevronRight />
+                  </button>
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
       )}
 
-      {/* ===== 7TH DAY CONSECUTIVE WORKING WARNING TAB ===== */}
-      {activeMainTab === 'consecutive' && consecutiveWarnings.length > 0 && (
-        <div className="consecutive-container">
-          <div className="consecutive-header">
-            <div className="consecutive-header-info">
-              <FiAlertCircle className="consecutive-icon warning" />
+      {showRecordModal && selectedRecordEmployee && (
+        <div className="modal-overlay" onClick={() => { setShowRecordModal(false); setEmployeeSavedRecordsSummary(null); }}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '1300px', width: '96%' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
               <div>
-                <h3>⚠️ 7th Consecutive Working Day Warning</h3>
-                <p>These employees are working on their 7th consecutive day. Additional payment approval is required before payroll processing.</p>
+                <h2><FiFileText /> Saved Records - {selectedRecordEmployee.employee_name}</h2>
+                <p style={{ margin: 0, color: '#475569' }}>Payroll history for the selected cutoff</p>
               </div>
-            </div>
-            <button className="refresh-btn" onClick={() => { 
-              const warnings = detectConsecutiveDays(mobileAttendance);
-              setConsecutiveWarnings(warnings);
-              showNotificationMessage(`Found ${warnings.length} warnings`, 'info');
-            }}>
-              <FiRefreshCw /> Recheck
-            </button>
-          </div>
-
-          <div className="consecutive-stats">
-            <div className="consecutive-stat">
-              <span className="stat-value">{consecutiveWarnings.length}</span>
-              <span className="stat-label">Employees Affected</span>
-            </div>
-            <div className="consecutive-stat">
-              <span className="stat-value">{consecutiveWarnings.reduce((sum, w) => sum + w.consecutive_days, 0)}</span>
-              <span className="stat-label">Total Consecutive Days</span>
-            </div>
-          </div>
-
-          <div className="consecutive-table-wrapper">
-            <table className="consecutive-table">
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>Consecutive Days</th>
-                  <th>Start Date</th>
-                  <th>End Date</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {consecutiveWarnings.map((warning, index) => (
-                  <tr key={index}>
-                    <td>
-                      <div className="employee-cell">
-                        <span className="employee-name">{warning.employee_name}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <span className="consecutive-days-badge">{warning.consecutive_days} days</span>
-                    </td>
-                    <td>{formatDate(warning.start_date)}</td>
-                    <td>{formatDate(warning.end_date)}</td>
-                    <td>
-                      <span className="status-badge warning">Needs Review</span>
-                    </td>
-                    <td>
-                      <button 
-                        className="action-btn view" 
-                        onClick={() => {
-                          setSelectedConsecutiveWarning(warning);
-                          setShowConsecutiveModal(true);
-                        }}
-                      >
-                        <FiEye /> View Details
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ===== CONSECUTIVE DAYS DETAIL MODAL ===== */}
-      {showConsecutiveModal && selectedConsecutiveWarning && (
-        <div className="modal-overlay" onClick={() => setShowConsecutiveModal(false)}>
-          <div className="modal-content consecutive-detail-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2><FiAlertCircle style={{ color: '#e74c3c' }} /> 7th Day Consecutive Working</h2>
-              <button className="close-modal" onClick={() => setShowConsecutiveModal(false)}><FiXIcon /></button>
+              <button className="close-modal" onClick={() => { setShowRecordModal(false); setEmployeeSavedRecordsSummary(null); }}>×</button>
             </div>
             <div className="modal-body">
-              <div className="consecutive-warning-box">
-                <FiAlertCircle className="warning-icon" />
-                <div>
-                  <p><strong>{selectedConsecutiveWarning.employee_name}</strong> is working on their <strong>{selectedConsecutiveWarning.consecutive_days}th consecutive day</strong>.</p>
-                  <p className="small-text">Period: {formatDate(selectedConsecutiveWarning.start_date)} - {formatDate(selectedConsecutiveWarning.end_date)}</p>
+              <div className="status-panel-filters" style={{ marginBottom: '16px' }}>
+                <div className="filter-group">
+                  <label>Month</label>
+                  <select className="filter-select" value={recordFilterMonth} onChange={(e) => setRecordFilterMonth(parseInt(e.target.value))}>
+                    {Array.from({ length: 12 }, (_, i) => (<option key={i} value={i}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>))}
+                  </select>
                 </div>
+                <div className="filter-group">
+                  <label>Year</label>
+                  <input type="number" className="filter-search" value={recordFilterYear} onChange={(e) => setRecordFilterYear(parseInt(e.target.value) || new Date().getFullYear())} min="2020" max="2100" />
+                </div>
+                <div className="filter-group">
+                  <label>Cutoff</label>
+                  <select className="filter-select" value={recordFilterCutoff} onChange={(e) => setRecordFilterCutoff(e.target.value)}>
+                    <option value="first">1 - 15</option>
+                    <option value="second">16 - End</option>
+                  </select>
+                </div>
+                <button className="blue-primary-btn" onClick={() => fetchSavedRecords()} disabled={loadingRecords}><FiSearch /> Apply Filters</button>
               </div>
 
-              <div className="consecutive-records">
-                <h4>Attendance Records During This Period</h4>
-                <table className="attendance-table formal">
-                  <thead>
-                    <tr>
-                      <th>Date</th>
-                      <th>Type</th>
-                      <th>Time</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {selectedConsecutiveWarning.records.map((record, idx) => (
-                      <tr key={idx}>
-                        <td>{formatDate(record.timestamp || record.date)}</td>
-                        <td>
-                          <span className={`attendance-type ${record.type === 'IN' ? 'check-in' : 'check-out'}`}>
-                            {record.type === 'IN' ? 'Time In' : 'Time Out'}
-                          </span>
-                        </td>
-                        <td>{formatTime(record.timestamp)}</td>
-                        <td>
-                          <span className={`verification-status ${record.verification_status || 'pending'}`}>
-                            {record.verification_status || 'Pending'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {loadingRecords ? (
+                <div className="loading-container"><div className="loading-spinner"></div><p>Loading saved records...</p></div>
+              ) : employeeSavedRecords.length > 0 ? (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', padding: '14px', marginBottom: '16px', background: 'linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)', border: '1px solid #bfdbfe', borderRadius: '10px' }}>
+                    <div style={{ textAlign: 'center' }}><div style={{ fontSize: '11px', color: '#1e40af', textTransform: 'uppercase', fontWeight: '600' }}>Total Regular Hours</div><div style={{ fontSize: '20px', fontWeight: '700', color: '#1e40af', marginTop: '4px' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_regular_hours)}</div></div>
+                    <div style={{ textAlign: 'center' }}><div style={{ fontSize: '11px', color: '#1e40af', textTransform: 'uppercase', fontWeight: '600' }}>Total OT Hours</div><div style={{ fontSize: '20px', fontWeight: '700', color: '#1e40af', marginTop: '4px' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_overtime_hours)}</div></div>
+                    <div style={{ textAlign: 'center' }}><div style={{ fontSize: '11px', color: '#b45309', textTransform: 'uppercase', fontWeight: '600' }}>Total Undertime</div><div style={{ fontSize: '20px', fontWeight: '700', color: '#b45309', marginTop: '4px' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_undertime_hours)}</div></div>
+                    <div style={{ textAlign: 'center', borderLeft: '1px solid #93c5fd', paddingLeft: '10px' }}><div style={{ fontSize: '11px', color: '#1e40af', textTransform: 'uppercase', fontWeight: '600' }}>Total Hours</div><div style={{ fontSize: '20px', fontWeight: '700', color: '#1e40af', marginTop: '4px' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_hours)}</div></div>
+                    <div style={{ textAlign: 'center', borderLeft: '1px solid #93c5fd', paddingLeft: '10px' }}><div style={{ fontSize: '11px', color: '#1e40af', textTransform: 'uppercase', fontWeight: '600' }}>Labor Cost</div><div style={{ fontSize: '20px', fontWeight: '700', color: '#1e40af', marginTop: '4px' }}>{formatPeso(employeeSavedRecordsSummary?.total_labor_cost)}</div></div>
+                  </div>
 
-              <div className="consecutive-actions">
-                <h4>Required Action</h4>
-                <div className="action-box">
-                  <p>⚠️ This employee must receive <strong>additional payment</strong> for working on the 7th consecutive day.</p>
-                  <p className="small-text">Please ensure this is approved and included in the payroll before processing.</p>
-                </div>
-                <div className="approval-buttons">
-                  <button className="action-btn approve" onClick={() => {
-                    showNotificationMessage(`✓ 7th-day approval recorded for ${selectedConsecutiveWarning.employee_name}`, 'success');
-                    setShowConsecutiveModal(false);
-                  }}>
-                    <FiCheckCircle /> Mark as Approved
-                  </button>
-                  <button className="action-btn view" onClick={() => {
-                    showNotificationMessage(`📋 Reviewing ${selectedConsecutiveWarning.employee_name}'s records...`, 'info');
-                  }}>
-                    <FiEye /> Review Records
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowConsecutiveModal(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ===== DECLINE MODAL ===== */}
-      {showDeclineModal && selectedRecordForDecline && (
-        <div className="modal-overlay" onClick={() => setShowDeclineModal(false)}>
-          <div className="modal-content decline-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Decline Attendance Record</h2>
-              <button className="close-modal" onClick={() => setShowDeclineModal(false)}><FiXIcon /></button>
-            </div>
-            <div className="modal-body">
-              <p>Please provide a reason for declining <strong>{selectedRecordForDecline.employee_name}</strong>'s attendance on <strong>{selectedRecordForDecline.formatted_date}</strong>.</p>
-              <textarea className="decline-reason-input" rows={4} placeholder="Enter decline reason..." value={declineReason} onChange={(e) => setDeclineReason(e.target.value)} />
-            </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowDeclineModal(false)}>Cancel</button>
-              <button className="modal-btn danger" onClick={handleDeclineRecord} disabled={submitting || !declineReason.trim()}>
-                {submitting ? 'Processing...' : 'Confirm Decline'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* ===== APPROVE NOTES MODAL ===== */}
-      {showApproveNotesModal && selectedRecordForApprove && (
-        <div className="modal-overlay" onClick={() => setShowApproveNotesModal(false)}>
-          <div className="modal-content approve-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Approve & Add to Payroll</h2>
-              <button className="close-modal" onClick={() => setShowApproveNotesModal(false)}><FiXIcon /></button>
-            </div>
-            <div className="modal-body">
-              <div className="record-summary">
-                <div className="summary-row"><span>Employee:</span><strong>{selectedRecordForApprove.employee_name}</strong></div>
-                <div className="summary-row"><span>Date:</span><strong>{selectedRecordForApprove.formatted_date}</strong></div>
-                <div className="summary-row"><span>Total Hours:</span><strong>{selectedRecordForApprove.formatted_total_hours}</strong></div>
-                <div className="summary-row"><span>Regular Hours:</span><span>{selectedRecordForApprove.regular_hours}h</span></div>
-                <div className="summary-row"><span>Overtime Hours:</span><span className={selectedRecordForApprove.overtime_hours > 0 ? 'overtime' : ''}>{selectedRecordForApprove.overtime_hours}h</span></div>
-                <div className="summary-row"><span>Late Minutes:</span><span className={selectedRecordForApprove.late_minutes > 0 ? 'warning' : ''}>{selectedRecordForApprove.late_minutes}min</span></div>
-                <div className="summary-row"><span>Undertime Minutes:</span><span className={selectedRecordForApprove.undertime_minutes > 0 ? 'warning' : ''}>{selectedRecordForApprove.undertime_minutes}min</span></div>
-              </div>
-              
-              {selectedRecordForApprove.overtime_hours > 0 && (
-                <div className="overtime-notice">
-                  <FiAlertCircle />
-                  <span>This record has {selectedRecordForApprove.overtime_hours} hours of overtime. You will be prompted to confirm.</span>
+                  <div className="table-wrapper-scrollable">
+                    <table className="status-panel-table">
+                      <thead>
+                        <tr><th>Date</th><th>Schedule</th><th>Time In</th><th>Time Out</th><th>Regular</th><th>OT</th><th>Undertime</th><th>Total</th><th>Late/UT</th><th>Flag</th><th>Status</th><th>Saved</th></tr>
+                      </thead>
+                      <tbody>
+                        {employeeSavedRecords.map((record) => {
+                          const flagStyle = getFlagStyle(record.attendance_flag);
+                          return (
+                            <tr key={record.attendance_id || record.date}>
+                              <td>{formatEmployeeOverviewDate(record.attendance_date || record.date)}</td>
+                              <td>{record.assigned_schedule || 'Unscheduled'}</td>
+                              <td>{record.formatted_time_in || '—'}</td>
+                              <td>{record.formatted_time_out || '—'}</td>
+                              <td>{formatDecimalHours(record.regular_hours)}</td>
+                              <td>{formatDecimalHours(record.overtime_hours)}</td>
+                              <td>{formatDecimalHours(record.undertime_hours)}</td>
+                              <td><strong>{formatDecimalHours(record.total_hours)}</strong></td>
+                              <td style={{ fontSize: '11px' }}>{record.late_undertime || `${record.late_minutes || 0}L / ${record.undertime_minutes || 0}U`}</td>
+                              <td>
+                                {flagStyle ? (
+                                  <span
+                                    className="flag-badge"
+                                    style={{ background: flagStyle.bg, color: flagStyle.color, border: `1px solid ${flagStyle.border}` }}
+                                  >
+                                    {flagStyle.label}
+                                  </span>
+                                ) : (
+                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
+                                )}
+                              </td>
+                              <td><span className={`status-badge ${record.verification_status || 'approved'}`}>{record.verification_status || 'Approved'}</span></td>
+                              <td style={{ fontSize: '11px', color: '#6b7280' }}>{record.saved_at ? formatDate(record.saved_at) : '—'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: '#eff6ff', fontWeight: '700', borderTop: '2px solid #bfdbfe' }}>
+                          <td colSpan="4" style={{ textAlign: 'right', paddingRight: '12px' }}>TOTALS:</td>
+                          <td style={{ color: '#1e40af' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_regular_hours)}</td>
+                          <td style={{ color: '#1e40af' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_overtime_hours)}</td>
+                          <td style={{ color: '#b45309' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_undertime_hours)}</td>
+                          <td style={{ color: '#1e40af' }}>{formatDecimalHours(employeeSavedRecordsSummary?.total_hours)}</td>
+                          <td colSpan="3" style={{ textAlign: 'right', color: '#1e40af' }}>Labor Cost:</td>
+                          <td style={{ color: '#1e40af' }}>{formatPeso(employeeSavedRecordsSummary?.total_labor_cost)}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <div className="empty-state">
+                  <FiFileText className="empty-icon" />
+                  <h3>No saved records found</h3>
+                  <p>No payroll records for {new Date(recordFilterYear, recordFilterMonth).toLocaleString('default', { month: 'long', year: 'numeric' })} — {recordFilterCutoff === 'first' ? '1 - 15' : '16 - End'}.</p>
                 </div>
               )}
-              
-              <textarea 
-                className="notes-input" 
-                rows={3} 
-                placeholder="Add approval notes (optional)..." 
-                value={approveNotes} 
-                onChange={(e) => setApproveNotes(e.target.value)} 
-              />
-              <div className="info-message">
-                <FiAlertCircle />
-                <span>This will create a payroll record for this employee. The action cannot be automatically reversed.</span>
-              </div>
             </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowApproveNotesModal(false)}>Cancel</button>
-              <button className="modal-btn success" onClick={() => handleApproveRecord(selectedRecordForApprove, false)} disabled={submitting}>
-                {submitting ? 'Processing...' : 'Proceed to Approval'}
-              </button>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button className="blue-primary-btn" onClick={handlePrintSavedRecords} disabled={loadingRecords || employeeSavedRecords.length === 0}><FiPrinter /> Print</button>
+              <button className="blue-secondary-btn" onClick={() => { setShowRecordModal(false); setEmployeeSavedRecordsSummary(null); }}>Close</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== OVERTIME CONFIRMATION MODAL ===== */}
-      {showOvertimeConfirmModal && selectedRecordForApprove && selectedRecordForApprove.overtime_hours > 0 && (
-        <div className="modal-overlay" onClick={() => setShowOvertimeConfirmModal(false)}>
-          <div className="modal-content overtime-modal-large" onClick={e => e.stopPropagation()}>
+      {showArchiveModal && (
+        <div className="modal-overlay" onClick={() => setShowArchiveModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '1300px', width: '96%' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h2><FiAlertTriangle style={{ color: '#f39c12' }} /> Overtime Confirmation Required</h2>
-              <button className="close-modal" onClick={() => setShowOvertimeConfirmModal(false)}><FiXIcon /></button>
+              <div>
+                <h2><FiArchive /> Attendance Archive</h2>
+                <p style={{ margin: 0, color: '#475569' }}>Select month & cutoff, then click an employee to view their records.</p>
+              </div>
+              <button className="close-modal" onClick={() => setShowArchiveModal(false)}>×</button>
             </div>
             <div className="modal-body">
-              <div className="overtime-warning">
-                <FiAlertCircle className="warning-icon" />
-                <p>This record has <strong>{selectedRecordForApprove.overtime_hours} hours</strong> of overtime.</p>
-                <p className="small-text">Please choose how you want to handle the overtime:</p>
-              </div>
-              
-              <div className="record-summary">
-                <div className="summary-row"><span>Employee:</span><strong>{selectedRecordForApprove.employee_name}</strong></div>
-                <div className="summary-row"><span>Date:</span><strong>{selectedRecordForApprove.formatted_date}</strong></div>
-                <div className="summary-row"><span>Total Hours Worked:</span><strong>{selectedRecordForApprove.formatted_total_hours}</strong></div>
-                <div className="summary-row"><span>Regular Hours:</span><span>{selectedRecordForApprove.regular_hours}h</span></div>
-                <div className="summary-row"><span>Overtime Hours:</span><span className="overtime">{selectedRecordForApprove.overtime_hours}h</span></div>
+              <div className="status-panel-filters" style={{ marginBottom: '16px' }}>
+                <div className="filter-group"><label>Month</label>
+                  <select className="filter-select" value={archiveMonth} onChange={(e) => setArchiveMonth(parseInt(e.target.value))}>
+                    {Array.from({ length: 12 }, (_, i) => <option key={i} value={i}>{new Date(0, i).toLocaleString('default', { month: 'long' })}</option>)}
+                  </select>
+                </div>
+                <div className="filter-group"><label>Year</label>
+                  <input type="number" className="filter-search" value={archiveYear} onChange={(e) => setArchiveYear(parseInt(e.target.value) || new Date().getFullYear())} min="2020" max="2100" />
+                </div>
+                <div className="filter-group"><label>Cutoff</label>
+                  <select className="filter-select" value={archiveCutoff} onChange={(e) => setArchiveCutoff(e.target.value)}>
+                    <option value="first">1 - 15</option><option value="second">16 - End</option>
+                  </select>
+                </div>
+                <button className="blue-primary-btn" onClick={() => archiveSelectedEmployee && loadArchiveForEmployee(archiveSelectedEmployee)} disabled={!archiveSelectedEmployee}><FiSearch /> Apply Filters</button>
               </div>
 
-              {/* Overtime Options */}
-              <div className="overtime-options">
-                <h4>Overtime Handling Options:</h4>
-                
-                <label className={`overtime-option ${overtimeAction === 'approve_all' ? 'selected' : ''}`}>
-                  <input 
-                    type="radio" 
-                    name="overtimeAction" 
-                    value="approve_all"
-                    checked={overtimeAction === 'approve_all'}
-                    onChange={() => setOvertimeAction('approve_all')}
-                  />
-                  <div className="option-content">
-                    <strong>✅ Approve All Overtime</strong>
-                    <span className="option-detail">Approve all {selectedRecordForApprove.overtime_hours} overtime hours. Employee will receive 1.5x pay for overtime.</span>
+              <div className="archive-layout">
+                <div>
+                  <input type="text" className="filter-search" placeholder="Search employee..." value={archiveSearch} onChange={(e) => setArchiveSearch(e.target.value)} style={{ width: '100%', marginBottom: '10px' }} />
+                  <div className="archive-employee-list">
+                    {archiveLoading ? (
+                      <div className="loading-container"><div className="loading-spinner"></div></div>
+                    ) : filteredArchiveEmployees.length === 0 ? (
+                      <p style={{ fontSize: '12px', color: '#999' }}>No employees found.</p>
+                    ) : (
+                      filteredArchiveEmployees.map((emp) => (
+                        <div key={emp.employee_id} className={`archive-employee-item ${archiveSelectedEmployee?.employee_id === emp.employee_id ? 'active' : ''}`} onClick={() => loadArchiveForEmployee(emp)}>
+                          <div className="avatar">{(emp.employee_name || emp.full_name || '?').charAt(0)}</div>
+                          <div>
+                            <div className="name">{emp.employee_name || emp.full_name || 'N/A'}</div>
+                            <div className="code">{emp.employee_code || emp.employee_id}</div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
-                </label>
+                </div>
 
-                <label className={`overtime-option ${overtimeAction === 'approve_partial' ? 'selected' : ''}`}>
-                  <input 
-                    type="radio" 
-                    name="overtimeAction" 
-                    value="approve_partial"
-                    checked={overtimeAction === 'approve_partial'}
-                    onChange={() => setOvertimeAction('approve_partial')}
-                  />
-                  <div className="option-content">
-                    <strong>✏️ Approve Partial Overtime</strong>
-                    <span className="option-detail">Approve only a portion of the overtime hours.</span>
-                    <div className="partial-hours-input">
-                      <label>Hours to approve:</label>
-                      <input 
-                        type="number" 
-                        step="0.5" 
-                        min="0" 
-                        max={selectedRecordForApprove.overtime_hours}
-                        value={selectedOvertimeHours}
-                        onChange={(e) => setSelectedOvertimeHours(parseFloat(e.target.value) || 0)}
-                        className="partial-hours-field"
-                        disabled={overtimeAction !== 'approve_partial'}
-                      />
-                      <span className="max-hint">Max: {selectedRecordForApprove.overtime_hours} hours</span>
+                <div>
+                  {archiveSelectedEmployee ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                        <div>
+                          <strong>{archiveSelectedEmployee.employee_name}</strong>
+                          <span style={{ marginLeft: 10, color: '#6b7280', fontSize: '12px' }}>
+                            {new Date(archiveYear, archiveMonth).toLocaleString('default', { month: 'long' })} {archiveCutoff === 'first' ? '1 - 15' : '16 - End'}, {archiveYear} · {archiveRecords.length} record(s)
+                          </span>
+                        </div>
+                        <button className="blue-primary-btn" onClick={handlePrintArchive} disabled={archiveRecords.length === 0}><FiPrinter /> Print</button>
+                      </div>
+                      {archiveLoadingRecords ? (
+                        <div className="loading-container"><div className="loading-spinner"></div></div>
+                      ) : archiveRecords.length === 0 ? (
+                        <div className="empty-state"><p>No records for this employee in the selected cutoff.</p></div>
+                      ) : (
+                        <div className="table-wrapper-scrollable" style={{ maxHeight: '480px' }}>
+                          <table className="status-panel-table">
+                            <thead>
+                              <tr><th>Date</th><th>Schedule</th><th>Time In</th><th>Time Out</th><th>Regular</th><th>OT</th><th>UT</th><th>Total</th><th>Flag</th><th>Status</th></tr>
+                            </thead>
+                            <tbody>
+                              {archiveRecords.map((r, idx) => {
+                                const flagStyle = getFlagStyle(r.attendance_flag);
+                                return (
+                                  <tr key={r.attendance_id || idx}>
+                                    <td>{formatEmployeeOverviewDate(r.attendance_date || r.date)}</td>
+                                    <td>{r.assigned_schedule || 'Unscheduled'}</td>
+                                    <td>{r.formatted_time_in || '—'}</td>
+                                    <td>{r.formatted_time_out || '—'}</td>
+                                    <td>{formatDecimalHours(r.regular_hours)}</td>
+                                    <td>{formatDecimalHours(r.overtime_hours)}</td>
+                                    <td>{formatDecimalHours(r.undertime_hours)}</td>
+                                    <td><strong>{formatDecimalHours(r.total_hours)}</strong></td>
+                                    <td>
+                                      {flagStyle ? (
+                                        <span className="flag-badge" style={{ background: flagStyle.bg, color: flagStyle.color, border: `1px solid ${flagStyle.border}` }}>
+                                          {flagStyle.label}
+                                        </span>
+                                      ) : (
+                                        <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
+                                      )}
+                                    </td>
+                                    <td><span className={`status-badge ${(r.verification_status || r.approval_status || 'pending').toLowerCase()}`}>{r.verification_status || r.approval_status || 'pending'}</span></td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="empty-state">
+                      <FiArchive className="empty-icon" />
+                      <h3>Select an employee</h3>
+                      <p style={{ fontSize: '12px', color: '#6b7280' }}>Click any employee on the left to view their archive.</p>
                     </div>
-                  </div>
-                </label>
-
-                <label className={`overtime-option ${overtimeAction === 'remove' ? 'selected' : ''}`}>
-                  <input 
-                    type="radio" 
-                    name="overtimeAction" 
-                    value="remove"
-                    checked={overtimeAction === 'remove'}
-                    onChange={() => setOvertimeAction('remove')}
-                  />
-                  <div className="option-content">
-                    <strong>❌ Remove Overtime</strong>
-                    <span className="option-detail">Remove overtime hours and approve only regular hours. Employee will NOT receive overtime pay.</span>
-                  </div>
-                </label>
-
-                <label className={`overtime-option ${overtimeAction === 'decline_record' ? 'selected' : ''}`}>
-                  <input 
-                    type="radio" 
-                    name="overtimeAction" 
-                    value="decline_record"
-                    checked={overtimeAction === 'decline_record'}
-                    onChange={() => setOvertimeAction('decline_record')}
-                  />
-                  <div className="option-content">
-                    <strong>⛔ Decline Entire Record</strong>
-                    <span className="option-detail">Decline this attendance record. It will NOT be included in payroll.</span>
-                  </div>
-                </label>
-              </div>
-
-              <div className="form-group">
-                <label>Reason / Justification <span className="required">*</span></label>
-                <textarea 
-                  className="overtime-reason-input" 
-                  rows={3} 
-                  placeholder="Please provide a reason for your decision..."
-                  value={overtimeReason}
-                  onChange={(e) => setOvertimeReason(e.target.value)}
-                />
-              </div>
-
-              <div className="overtime-preview">
-                <h4>Preview of Changes:</h4>
-                {(overtimeAction === 'approve_all' || (overtimeAction === 'approve_partial' && selectedOvertimeHours > 0)) && (
-                  <div className="preview-content">
-                    <p>✅ Record will be <strong>APPROVED</strong></p>
-                    <p>Overtime hours: <strong>{overtimeAction === 'approve_partial' ? selectedOvertimeHours : selectedRecordForApprove.overtime_hours} hours</strong></p>
-                    <p>Overtime pay: <strong>₱{((selectedRecordForApprove.hourly_rate || 500) * (overtimeAction === 'approve_partial' ? selectedOvertimeHours : selectedRecordForApprove.overtime_hours) * 1.5).toLocaleString()}</strong></p>
-                  </div>
-                )}
-                {overtimeAction === 'remove' && (
-                  <div className="preview-content remove">
-                    <p>⭕ Record will be <strong>APPROVED</strong> (overtime removed)</p>
-                    <p>Overtime hours: <strong>0 hours</strong> (removed {selectedRecordForApprove.overtime_hours}h)</p>
-                    <p>Overtime pay: <strong>₱0.00</strong></p>
-                  </div>
-                )}
-                {overtimeAction === 'decline_record' && (
-                  <div className="preview-content decline">
-                    <p>⛔ Record will be <strong>DECLINED</strong></p>
-                    <p>Not included in payroll</p>
-                  </div>
-                )}
-                {(overtimeAction === 'approve_partial' && selectedOvertimeHours === 0) && (
-                  <div className="preview-content warning">
-                    <p>⚠️ Please enter overtime hours to approve</p>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
             <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowOvertimeConfirmModal(false)}>Cancel</button>
-              <button 
-                className="modal-btn success" 
-                onClick={async () => {
-                  if (!overtimeReason.trim()) {
-                    showNotificationMessage('Please provide a reason for your decision', 'warning');
-                    return;
-                  }
-                  
-                  let approvedHours = selectedRecordForApprove?.overtime_hours || 0;
-                  let finalAction = overtimeAction;
-                  
-                  if (overtimeAction === 'approve_partial') {
-                    if (selectedOvertimeHours <= 0) {
-                      showNotificationMessage('Please enter valid overtime hours to approve', 'warning');
-                      return;
-                    }
-                    if (selectedOvertimeHours > (selectedRecordForApprove?.overtime_hours || 0)) {
-                      showNotificationMessage(`Cannot approve more than ${selectedRecordForApprove?.overtime_hours} hours`, 'warning');
-                      return;
-                    }
-                    approvedHours = selectedOvertimeHours;
-                  }
-                  
-                  if (overtimeAction === 'remove') {
-                    finalAction = 'remove_overtime';
-                  }
-                  
-                  if (overtimeAction === 'decline_record') {
-                    setSubmitting(true);
-                    try {
-                      const result = await declineRecordMutation.mutateAsync({ 
-                        recordId: selectedRecordForApprove.id, 
-                        reason: overtimeReason || 'Overtime not approved'
-                      });
-                      if (result?.success) {
-                        showNotificationMessage(`Record declined for ${selectedRecordForApprove.employee_name}`, 'info');
-                        setShowOvertimeConfirmModal(false);
-                        setSelectedRecordForApprove(null);
-                        setOvertimeReason('');
-                        setSelectedOvertimeHours(0);
-                        setOvertimeAction('approve_all');
-                        await refetchStatusPanel();
-                        await refetchStatusPanelSummary();
-                      }
-                    } catch (error) {
-                      showNotificationMessage('Failed to decline record', 'error');
-                    } finally {
-                      setSubmitting(false);
-                    }
-                    return;
-                  }
-                  
-                  setSubmitting(true);
-                  try {
-                    const result = await approveRecordMutation.mutateAsync({
-                      recordId: selectedRecordForApprove.id,
-                      notes: approveNotes,
-                      overtimeConfirmed: (finalAction !== 'remove_overtime'),
-                      removeOvertime: (finalAction === 'remove_overtime'),
-                      overtimeReason: overtimeReason,
-                      approvedOvertimeHours: approvedHours
-                    });
-                    
-                    if (result?.success) {
-                      let message = `✓ Record approved for ${selectedRecordForApprove.employee_name}`;
-                      if (finalAction === 'remove_overtime') {
-                        message += ` with overtime removed`;
-                      } else if (overtimeAction === 'approve_partial') {
-                        message += ` with ${approvedHours}h overtime approved (out of ${selectedRecordForApprove.overtime_hours}h)`;
-                      } else {
-                        message += ` with ${approvedHours}h overtime approved`;
-                      }
-                      showNotificationMessage(message, 'success');
-                      setShowOvertimeConfirmModal(false);
-                      setShowApproveNotesModal(false);
-                      setApproveNotes('');
-                      setOvertimeReason('');
-                      setSelectedOvertimeHours(0);
-                      setOvertimeAction('approve_all');
-                      setSelectedRecordForApprove(null);
-                      setStatusPanelPage(1);
-                      await refetchStatusPanel();
-                      await refetchStatusPanelSummary();
-                    } else if (result?.requires_overtime_confirmation) {
-                      showNotificationMessage('Please handle overtime before approving', 'warning');
-                    } else {
-                      showNotificationMessage(result?.message || 'Failed to approve record', 'error');
-                    }
-                  } catch (error) {
-                    console.error('Approve error:', error);
-                    showNotificationMessage('Failed to approve record', 'error');
-                  } finally {
-                    setSubmitting(false);
-                  }
-                }} 
-                disabled={submitting || !overtimeReason.trim() || (overtimeAction === 'approve_partial' && selectedOvertimeHours <= 0)}
-              >
-                {submitting ? 'Processing...' : 'Confirm & Continue'}
-              </button>
+              <button className="blue-secondary-btn" onClick={() => setShowArchiveModal(false)}>Close</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== BULK APPROVE MODAL ===== */}
-      {showBulkApproveModal && (
-        <div className="modal-overlay" onClick={() => setShowBulkApproveModal(false)}>
-          <div className="modal-content bulk-approve-modal" onClick={e => e.stopPropagation()}>
+      {showRequirementsModal && requirementsInfo && (
+        <div className="modal-overlay" onClick={() => setShowRequirementsModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Bulk Approval Confirmation</h2>
-              <button className="close-modal" onClick={() => setShowBulkApproveModal(false)}><FiXIcon /></button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className={`info-modal-icon ${requirementsInfo.tone}`}>
+                  {requirementsInfo.tone === 'warning' ? <FiAlertTriangle /> : <FiInfo />}
+                </div>
+                <h2 style={{ margin: 0 }}>{requirementsInfo.title}</h2>
+              </div>
+              <button className="close-modal" onClick={() => setShowRequirementsModal(false)}>×</button>
             </div>
             <div className="modal-body">
-              <div className="bulk-warning">
-                <FiAlertCircle className="warning-icon" />
-                <p>You are about to approve <strong>{selectedRecords.length} records</strong>.</p>
-                <p className="note">Some records contain overtime hours. Please confirm below.</p>
+              <p style={{ margin: 0, color: '#334155' }}>{requirementsInfo.message}</p>
+              {requirementsInfo.items.length > 0 && (
+                <ul className="requirements-list">
+                  {requirementsInfo.items.map((it, i) => <li key={i}>{it}</li>)}
+                </ul>
+              )}
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowRequirementsModal(false)}>Cancel</button>
+              {requirementsInfo.employee && requirementsInfo.items.length > 0 && (
+                <button className="blue-primary-btn" onClick={async () => {
+                  const emp = requirementsInfo.employee;
+                  setShowRequirementsModal(false);
+                  await loadEmployeeOverviewRecords(emp);
+                }}>
+                  <FiArrowRight /> Go to Attendance Records
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCutoffConfirmModal && (
+        <div className="modal-overlay" onClick={() => setShowCutoffConfirmModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="info-modal-icon warning"><FiAlertTriangle /></div>
+                <h2 style={{ margin: 0 }}>Payroll Cutoff Not Yet Reached</h2>
               </div>
-              
-              <div className="form-group">
-                <label>Approval Notes (Optional)</label>
-                <textarea 
-                  className="notes-input" 
-                  rows={2} 
-                  placeholder="Add notes for all approved records..."
-                  value={bulkApproveNotes}
-                  onChange={(e) => setBulkApproveNotes(e.target.value)}
+              <button className="close-modal" onClick={() => setShowCutoffConfirmModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>You are about to save attendance for a cutoff that is not yet complete.</p>
+              <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px', fontSize: '13px' }}>
+                <div><strong>Cutoff:</strong> {employeeOverviewCutoffLabel}</div>
+                <div><strong>Ends:</strong> {formatDate(dates.end.toISOString())}</div>
+              </div>
+              <p style={{ fontSize: '12px', color: '#64748b', marginTop: '12px' }}>You can continue, but please verify all records are correct before saving to payroll.</p>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => { setShowCutoffConfirmModal(false); setPendingSaveAction(null); }}>Cancel</button>
+              <button className="blue-primary-btn" onClick={() => {
+                setShowCutoffConfirmModal(false);
+                if (pendingSaveAction === 'save-all') handleSaveAllAttendance(true);
+                else if (pendingSaveAction?.type === 'single') handleSaveSingleEmployeeToPayroll(pendingSaveAction.employee, true);
+                else if (pendingSaveAction?.type === 'modal') handleSaveFromModal(true);
+                setPendingSaveAction(null);
+              }}><FiCheckCircle /> Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⭐ NEW #9 — Flag Modal */}
+      {showFlagModal && flagRecord && (
+        <div className="modal-overlay" onClick={closeFlagModal}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="info-modal-icon warning"><FiFlag /></div>
+                <h2 style={{ margin: 0 }}>Flag Attendance Record</h2>
+              </div>
+              <button className="close-modal" onClick={closeFlagModal} disabled={flagSubmitting}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="ot-modal-info" style={{ marginBottom: 16 }}>
+                <div>
+                  <div className="label">Employee</div>
+                  <div className="value">{flagRecord.employee_name || 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="label">Date</div>
+                  <div className="value">{formatEmployeeOverviewDate(flagRecord.date || flagRecord.attendance_date)}</div>
+                </div>
+                <div>
+                  <div className="label">Time In</div>
+                  <div className="value">{flagRecord.formatted_time_in || '—'}</div>
+                </div>
+                <div>
+                  <div className="label">Time Out</div>
+                  <div className="value">{flagRecord.formatted_time_out || '—'}</div>
+                </div>
+              </div>
+
+              <div className="ot-modal-field">
+                <label>Flag Type</label>
+                <div className="flag-quick-picks">
+                  {[
+                    { id: 'awol', label: 'AWOL' },
+                    { id: 'emergency_absent', label: 'Emergency Absent (EA)' },
+                    { id: 'on_leave', label: 'On Leave' },
+                    { id: 'late_in', label: 'Late In' },
+                    { id: 'none', label: 'Clear flag' },
+                  ].map(({ id, label }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      className={flagType === id ? 'active' : ''}
+                      onClick={() => setFlagType(id)}
+                      disabled={flagSubmitting}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {flagType === 'awol' && (
+                  <div className="helper">Marking as AWOL will clear any time-in/out on this record.</div>
+                )}
+                {flagType === 'emergency_absent' && (
+                  <div className="helper">Emergency Absent clears times and marks the record as absent.</div>
+                )}
+                {flagType === 'on_leave' && (
+                  <div className="helper">Use when the employee has an approved leave for this day.</div>
+                )}
+                {flagType === 'late_in' && (
+                  <div className="helper">Times stay as-is; the record is tagged as a late check-in.</div>
+                )}
+                {flagType === 'none' && (
+                  <div className="helper">Clears the current flag. Existing time data is not affected.</div>
+                )}
+              </div>
+
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Notes (optional)</label>
+                <textarea
+                  rows={3}
+                  value={flagNotes}
+                  onChange={(e) => setFlagNotes(e.target.value)}
+                  placeholder="Reason or additional context for this flag..."
+                  disabled={flagSubmitting}
                 />
               </div>
-              
-              <div className="checkbox-group">
-                <label className="checkbox-label">
-                  <input 
-                    type="checkbox" 
-                    checked={bulkOvertimeConfirmed}
-                    onChange={(e) => setBulkOvertimeConfirmed(e.target.checked)}
-                  />
-                  <span>I confirm that all overtime in these records is valid and approved</span>
-                </label>
-              </div>
             </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowBulkApproveModal(false)}>Cancel</button>
-              <button className="modal-btn success" onClick={processBulkApprove} disabled={submitting || !bulkOvertimeConfirmed}>
-                {submitting ? 'Processing...' : `Confirm & Approve ${selectedRecords.length} Records`}
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={closeFlagModal} disabled={flagSubmitting}>Cancel</button>
+              <button className="blue-primary-btn" onClick={submitFlag} disabled={flagSubmitting}>
+                {flagSubmitting ? <><FiRefreshCw className="spinning" /> Saving...</> : <><FiSave /> Save Flag</>}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== UNSCHEDULED APPROVAL MODAL ===== */}
+      {showOTApprovalModal && otApprovalRecord && (
+        <div className="modal-overlay" onClick={() => !otApprovalSubmitting && setShowOTApprovalModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2><FiClock /> Approve Overtime</h2>
+              <button className="close-modal" onClick={() => !otApprovalSubmitting && setShowOTApprovalModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="ot-modal-info">
+                <div><div className="label">Employee</div><div className="value">{otApprovalRecord.employee_name || 'N/A'}</div></div>
+                <div><div className="label">Date</div><div className="value">{formatEmployeeOverviewDate(otApprovalRecord.date)}</div></div>
+                <div><div className="label">Recorded OT</div><div className="value">{Number(otApprovalRecord.overtime_hours || 0).toFixed(2)} h</div></div>
+                <div><div className="label">Max Approvable</div><div className="value">{Number(otApprovalRecord.overtime_hours || 0).toFixed(2)} h</div></div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Approved Overtime Hours <span style={{ color: '#dc2626' }}>*</span></label>
+                <input type="number" min="0" step="0.25" max={Number(otApprovalRecord.overtime_hours || 0)} value={otApprovalHours} onChange={(e) => setOtApprovalHours(parseFloat(e.target.value) || 0)} />
+                <div className="helper">Enter the number of hours to approve. Cannot exceed {Number(otApprovalRecord.overtime_hours || 0).toFixed(2)}h.</div>
+                <div className="hours-quick-picks">
+                  {[0.25, 0.5, 1, 2, 3, 4].filter((h) => h <= Number(otApprovalRecord.overtime_hours || 0)).map((h) => (
+                    <button key={h} type="button" className={otApprovalHours === h ? 'active' : ''} onClick={() => setOtApprovalHours(h)}>{h}h</button>
+                  ))}
+                  <button type="button" className={otApprovalHours === Number(otApprovalRecord.overtime_hours || 0) ? 'active' : ''} onClick={() => setOtApprovalHours(Number(otApprovalRecord.overtime_hours || 0))}>Max</button>
+                </div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Reason for Approval <span style={{ color: '#dc2626' }}>*</span></label>
+                <textarea placeholder="e.g., Approved 3 of 5 hours due to budget constraint." value={otApprovalReason} onChange={(e) => setOtApprovalReason(e.target.value)} rows={3} />
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowOTApprovalModal(false)} disabled={otApprovalSubmitting}>Cancel</button>
+              <button className="blue-primary-btn" onClick={submitOTApproval} disabled={otApprovalSubmitting}>{otApprovalSubmitting ? 'Approving...' : `Approve ${otApprovalHours}h`}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showOTRejectModal && otRejectRecord && (
+        <div className="modal-overlay" onClick={() => !otRejectSubmitting && setShowOTRejectModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2><FiXCircle /> Reject Overtime</h2>
+              <button className="close-modal" onClick={() => !otRejectSubmitting && setShowOTRejectModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="ot-modal-info">
+                <div><div className="label">Employee</div><div className="value">{otRejectRecord.employee_name || 'N/A'}</div></div>
+                <div><div className="label">Date</div><div className="value">{formatEmployeeOverviewDate(otRejectRecord.date)}</div></div>
+                <div><div className="label">Recorded OT</div><div className="value">{Number(otRejectRecord.overtime_hours || 0).toFixed(2)} h</div></div>
+                <div><div className="label">Decision</div><div className="value" style={{ color: '#dc2626' }}>Rejection</div></div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Reason for Rejection <span style={{ color: '#dc2626' }}>*</span></label>
+                <textarea
+                  placeholder="e.g., OT not pre-approved / outside scope / not required by operations."
+                  value={otRejectReason}
+                  onChange={(e) => setOtRejectReason(e.target.value)}
+                  rows={4}
+                />
+                <div className="helper">This reason will be recorded against the overtime request.</div>
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowOTRejectModal(false)} disabled={otRejectSubmitting}>Cancel</button>
+              <button
+                className="blue-primary-btn"
+                style={{ background: '#dc2626' }}
+                onClick={submitOTRejection}
+                disabled={otRejectSubmitting}
+              >
+                {otRejectSubmitting ? 'Rejecting...' : (<><FiXCircle /> Reject Overtime</>)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showUTApprovalModal && utApprovalRecord && (
+        <div className="modal-overlay" onClick={() => !utApprovalSubmitting && setShowUTApprovalModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2><FiClock /> Approve Undertime</h2>
+              <button className="close-modal" onClick={() => !utApprovalSubmitting && setShowUTApprovalModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="ot-modal-info">
+                <div><div className="label">Employee</div><div className="value">{utApprovalRecord.employee_name || 'N/A'}</div></div>
+                <div><div className="label">Date</div><div className="value">{formatEmployeeOverviewDate(utApprovalRecord.date)}</div></div>
+                <div><div className="label">Recorded UT</div><div className="value">{Number(utApprovalRecord.undertime_hours || 0).toFixed(2)} h</div></div>
+                <div><div className="label">Max Approvable</div><div className="value">{Number(utApprovalRecord.undertime_hours || 0).toFixed(2)} h</div></div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Approved Undertime Hours <span style={{ color: '#dc2626' }}>*</span></label>
+                <input type="number" min="0" step="0.25" max={Number(utApprovalRecord.undertime_hours || 0)} value={utApprovalHours} onChange={(e) => setUtApprovalHours(parseFloat(e.target.value) || 0)} />
+                <div className="helper">Enter the number of undertime hours to approve. Cannot exceed {Number(utApprovalRecord.undertime_hours || 0).toFixed(2)}h.</div>
+                <div className="hours-quick-picks">
+                  {[0.25, 0.5, 1, 2].filter((h) => h <= Number(utApprovalRecord.undertime_hours || 0)).map((h) => (
+                    <button key={h} type="button" className={utApprovalHours === h ? 'active' : ''} onClick={() => setUtApprovalHours(h)}>{h}h</button>
+                  ))}
+                  <button type="button" className={utApprovalHours === Number(utApprovalRecord.undertime_hours || 0) ? 'active' : ''} onClick={() => setUtApprovalHours(Number(utApprovalRecord.undertime_hours || 0))}>Max</button>
+                </div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Reason for Approval <span style={{ color: '#dc2626' }}>*</span></label>
+                <textarea placeholder="e.g., Approved due to medical appointment with documentation." value={utApprovalReason} onChange={(e) => setUtApprovalReason(e.target.value)} rows={3} />
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowUTApprovalModal(false)} disabled={utApprovalSubmitting}>Cancel</button>
+              <button className="blue-primary-btn" onClick={submitUTApproval} disabled={utApprovalSubmitting}>{utApprovalSubmitting ? 'Approving...' : `Approve ${utApprovalHours}h`}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showUTRejectModal && utRejectRecord && (
+        <div className="modal-overlay" onClick={() => !utRejectSubmitting && setShowUTRejectModal(false)}>
+          <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2><FiXCircle /> Reject Undertime</h2>
+              <button className="close-modal" onClick={() => !utRejectSubmitting && setShowUTRejectModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="ot-modal-info">
+                <div><div className="label">Employee</div><div className="value">{utRejectRecord.employee_name || 'N/A'}</div></div>
+                <div><div className="label">Date</div><div className="value">{formatEmployeeOverviewDate(utRejectRecord.date)}</div></div>
+                <div><div className="label">Recorded UT</div><div className="value">{Number(utRejectRecord.undertime_hours || 0).toFixed(2)} h</div></div>
+                <div><div className="label">Decision</div><div className="value" style={{ color: '#dc2626' }}>Rejection</div></div>
+              </div>
+              <div className="ot-modal-field" style={{ marginTop: 16 }}>
+                <label>Reason for Rejection <span style={{ color: '#dc2626' }}>*</span></label>
+                <textarea
+                  placeholder="e.g., Undertime not covered by any leave or approval / schedule was adjusted."
+                  value={utRejectReason}
+                  onChange={(e) => setUtRejectReason(e.target.value)}
+                  rows={4}
+                />
+                <div className="helper">This reason will be recorded against the undertime decision.</div>
+              </div>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowUTRejectModal(false)} disabled={utRejectSubmitting}>Cancel</button>
+              <button
+                className="blue-primary-btn"
+                style={{ background: '#dc2626' }}
+                onClick={submitUTRejection}
+                disabled={utRejectSubmitting}
+              >
+                {utRejectSubmitting ? 'Rejecting...' : (<><FiXCircle /> Reject Undertime</>)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showUnscheduledModal && selectedUnscheduledRecord && (
         <div className="modal-overlay" onClick={() => setShowUnscheduledModal(false)}>
-          <div className="modal-content unscheduled-approve-modal" onClick={e => e.stopPropagation()}>
+          <div className="modal-content modal-blue-white unscheduled-approve-modal" style={{ maxWidth: '520px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2><FiAlertTriangle /> Approve Unscheduled Attendance</h2>
-              <button className="close-modal" onClick={() => setShowUnscheduledModal(false)}><FiXIcon /></button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="info-modal-icon warning"><FiAlertTriangle /></div>
+                <h2 style={{ margin: 0 }}>Approve Unscheduled Attendance</h2>
+              </div>
+              <button className="close-modal" onClick={() => setShowUnscheduledModal(false)}>×</button>
             </div>
             <div className="modal-body">
-              <div className="unscheduled-warning">
-                <FiAlertCircle className="warning-icon" />
-                <p>This employee did not have a scheduled shift for this time.</p>
+              <div className="ot-modal-info" style={{ marginBottom: '16px' }}>
+                <div>
+                  <div className="label">Employee</div>
+                  <div className="value">{selectedUnscheduledRecord.employee_name || 'N/A'}</div>
+                </div>
+                <div>
+                  <div className="label">Date</div>
+                  <div className="value">{formatDate(selectedUnscheduledRecord.timestamp)}</div>
+                </div>
+                <div>
+                  <div className="label">Time</div>
+                  <div className="value">{formatTime(selectedUnscheduledRecord.timestamp)}</div>
+                </div>
+                <div>
+                  <div className="label">Type</div>
+                  <div className="value">{selectedUnscheduledRecord.type === 'IN' ? 'Time In' : 'Time Out'}</div>
+                </div>
               </div>
-              
-              <div className="record-summary">
-                <div className="summary-row"><span>Employee:</span><strong>{selectedUnscheduledRecord.employee_name}</strong></div>
-                <div className="summary-row"><span>Date:</span><strong>{formatDate(selectedUnscheduledRecord.timestamp)}</strong></div>
-                <div className="summary-row"><span>Time:</span><strong>{formatTime(selectedUnscheduledRecord.timestamp)}</strong></div>
-                <div className="summary-row"><span>Type:</span><strong>{selectedUnscheduledRecord.type === 'IN' ? 'Time In' : 'Time Out'}</strong></div>
-                <div className="summary-row"><span>Validation Message:</span><span className="warning">{selectedUnscheduledRecord.validation_message}</span></div>
-              </div>
-              
+
               {selectedUnscheduledRecord.selfie_url && (
-                <div className="selfie-preview-section">
-                  <label>Selfie Verification</label>
-                  <img 
-                    src={selectedUnscheduledRecord.selfie_url} 
-                    alt="Attendance Selfie" 
-                    className="selfie-preview"
-                    onClick={() => handleViewSelfie(selectedUnscheduledRecord.selfie_url)}
+                <div className="selfie-preview" style={{ marginBottom: '16px', textAlign: 'center' }}>
+                  <img
+                    src={selectedUnscheduledRecord.selfie_url}
+                    alt="Selfie"
+                    style={{ maxWidth: '100%', maxHeight: '200px', borderRadius: '8px', border: '1px solid #bfdbfe' }}
                   />
-                  <button className="view-full-selfie" onClick={() => handleViewSelfie(selectedUnscheduledRecord.selfie_url)}>
-                    <FiEye /> View Full Size
-                  </button>
                 </div>
               )}
-              
-              <div className="form-group">
-                <label>Admin Notes (Optional)</label>
-                <textarea 
-                  className="notes-input" 
-                  rows={3} 
-                  placeholder="Add notes about why this unscheduled attendance is being approved..."
+
+              <div className="ot-modal-field">
+                <label>Admin Notes</label>
+                <textarea
+                  rows={3}
+                  placeholder="Reason for approving this unscheduled attendance (optional)"
                   value={unscheduledApprovalNote}
                   onChange={(e) => setUnscheduledApprovalNote(e.target.value)}
                 />
               </div>
-              
-              <div className="info-message">
-                <FiAlertCircle />
-                <span>Approving this record will mark it as verified. If both time-in and time-out are approved, a daily attendance record will be created for payroll.</span>
-              </div>
             </div>
-            <div className="modal-footer">
-              <button className="modal-btn secondary" onClick={() => setShowUnscheduledModal(false)}>Cancel</button>
-              <button 
-                className="modal-btn success" 
-                onClick={() => approveUnscheduledRecord(selectedUnscheduledRecord.id, unscheduledApprovalNote)} 
+            <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button className="blue-secondary-btn" onClick={() => setShowUnscheduledModal(false)} disabled={submitting}>Cancel</button>
+              <button
+                className="blue-primary-btn"
+                onClick={() => approveUnscheduledRecord(selectedUnscheduledRecord.id, unscheduledApprovalNote)}
                 disabled={submitting}
               >
-                {submitting ? 'Processing...' : '✓ Approve Unscheduled Attendance'}
+                {submitting ? 'Processing...' : (<><FiCheckCircle /> Approve</>)}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* ===== ATTENDANCE DETAILS MODAL ===== */}
       {showAttendanceModal && selectedAttendance && (
         <div className="modal-overlay" onClick={() => setShowAttendanceModal(false)}>
-          <div className="modal-content attendance-details-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Attendance Details</h2>
-              <button className="close-modal" onClick={() => setShowAttendanceModal(false)}><FiXIcon /></button>
-            </div>
+          <div className="modal-content attendance-details-modal modal-blue-white" onClick={e => e.stopPropagation()}>
+            <div className="modal-header"><h2>Attendance Details</h2><button className="close-modal" onClick={() => setShowAttendanceModal(false)}><FiXIcon /></button></div>
             <div className="modal-body">
-              {selectedAttendance.selfie_url && (
-                <div className="selfie-preview">
-                  <img src={selectedAttendance.selfie_url} alt="Attendance Selfie" />
-                  <button className="view-full-selfie" onClick={() => handleViewSelfie(selectedAttendance.selfie_url)}>View Full Size</button>
-                </div>
-              )}
+              {selectedAttendance.selfie_url && <div className="selfie-preview"><img src={selectedAttendance.selfie_url} alt="Attendance Selfie" /></div>}
               <div className="details-grid">
                 <div className="detail-item"><span className="detail-label">Employee</span><span className="detail-value">{selectedAttendance.employee_name}</span></div>
                 <div className="detail-item"><span className="detail-label">Date</span><span className="detail-value">{formatDate(selectedAttendance.timestamp)}</span></div>
                 <div className="detail-item"><span className="detail-label">Time</span><span className="detail-value">{formatTime(selectedAttendance.timestamp)}</span></div>
                 <div className="detail-item"><span className="detail-label">Type</span><span className="detail-value">{selectedAttendance.type === 'IN' ? 'Time In' : 'Time Out'}</span></div>
-                <div className="detail-item"><span className="detail-label">Face Verified</span><span className="detail-value">{selectedAttendance.face_verified ? 'Yes' : 'No'}</span></div>
-                <div className="detail-item"><span className="detail-label">Liveness Checked</span><span className="detail-value">{selectedAttendance.liveness_checked ? 'Yes' : 'No'}</span></div>
-                <div className="detail-item"><span className="detail-label">Device Info</span><span className="detail-value">{selectedAttendance.device_info || 'N/A'}</span></div>
-                <div className="detail-item"><span className="detail-label">IP Address</span><span className="detail-value">{selectedAttendance.ip_address || 'N/A'}</span></div>
-                {selectedAttendance.location && (
-                  <div className="detail-item full-width">
-                    <span className="detail-label">Location</span>
-                    <span className="detail-value">Lat: {selectedAttendance.location.lat}, Lng: {selectedAttendance.location.lng}</span>
-                  </div>
-                )}
-                <div className="detail-item full-width">
-                  <span className="detail-label">Verification Status</span>
-                  <span className={`verification-status ${selectedAttendance.verification_status}`}>{selectedAttendance.verification_status || 'Pending'}</span>
-                </div>
               </div>
             </div>
             <div className="modal-footer">
-              {selectedAttendance.verification_status === 'pending' && (
-                <>
-                  <button className="modal-btn success" onClick={() => { handleVerifyAttendance(selectedAttendance.id, 'verified'); setShowAttendanceModal(false); }} disabled={submitting}>
-                    <FiCheck /> Verify & Move to Status Panel
-                  </button>
-                  <button className="modal-btn danger" onClick={() => { handleVerifyAttendance(selectedAttendance.id, 'rejected'); setShowAttendanceModal(false); }} disabled={submitting}>
-                    <FiXIcon /> Reject
-                  </button>
-                </>
-              )}
-              <button className="modal-btn secondary" onClick={() => setShowAttendanceModal(false)}>Close</button>
+              <button className="blue-secondary-btn" onClick={() => setShowAttendanceModal(false)}>Close</button>
             </div>
           </div>
         </div>

@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class CustomerController extends Controller
 {
@@ -21,35 +22,35 @@ class CustomerController extends Controller
     /**
      * Generic sequential number generator
      */
- private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
-{
-    try {
-        if (!class_exists($modelClass)) {
-            throw new \Exception("Model class {$modelClass} not found");
-        }
+    private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
+    {
+        try {
+            if (!class_exists($modelClass)) {
+                throw new \Exception("Model class {$modelClass} not found");
+            }
 
-        // Create a new instance to get the key name
-        $instance = new $modelClass();
-        $keyName = $instance->getKeyName();
+            $instance = new $modelClass();
+            $keyName = $instance->getKeyName();
 
-        $lastRecord = $modelClass::withTrashed()
-            ->where($column, 'LIKE', $prefix . '%')
-            ->orderBy($keyName, 'desc')
-            ->first();
-        
-        if ($lastRecord && isset($lastRecord->$column)) {
-            $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
-            $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
-        } else {
-            $newNumber = str_repeat('0', $padding - 1) . '1';
+            $lastRecord = $modelClass::withTrashed()
+                ->where($column, 'LIKE', $prefix . '%')
+                ->orderBy($keyName, 'desc')
+                ->first();
+
+            if ($lastRecord && isset($lastRecord->$column)) {
+                $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
+                $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
+            } else {
+                $newNumber = str_repeat('0', $padding - 1) . '1';
+            }
+
+            return $prefix . $newNumber;
+        } catch (\Exception $e) {
+            Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
+            return $prefix . str_pad((string) (time() % 10000), $padding, '0', STR_PAD_LEFT);
         }
-        
-        return $prefix . $newNumber;
-    } catch (\Exception $e) {
-        Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
-        return $prefix . str_pad((string) (time() % 10000), $padding, '0', STR_PAD_LEFT);
     }
-}
+
     /**
      * Display a listing of customers.
      */
@@ -79,9 +80,9 @@ class CustomerController extends Controller
                 $search = $request->input('search');
                 $query->whereHas('person', function ($q) use ($search) {
                     $q->where('first_name', 'like', '%' . $search . '%')
-                      ->orWhere('last_name', 'like', '%' . $search . '%')
-                      ->orWhere('email', 'like', '%' . $search . '%')
-                      ->orWhere('phone', 'like', '%' . $search . '%');
+                        ->orWhere('last_name', 'like', '%' . $search . '%')
+                        ->orWhere('email', 'like', '%' . $search . '%')
+                        ->orWhere('phone', 'like', '%' . $search . '%');
                 });
             }
 
@@ -94,7 +95,7 @@ class CustomerController extends Controller
             }
 
             $customers = $query->latest('customer_id')->paginate($request->integer('per_page', 20));
-            $customers->getCollection()->transform(fn ($customer) => $this->appendCustomerMetrics($customer));
+            $customers->getCollection()->transform(fn($customer) => $this->appendCustomerMetrics($customer));
 
             return $this->ok($customers, 'Customers retrieved successfully');
         } catch (\Exception $e) {
@@ -107,7 +108,7 @@ class CustomerController extends Controller
     {
         try {
             $customers = Customer::whereNotNull('user_id')
-                ->whereHas('user.roles', fn ($q) => $q->where('slug', 'customer'));
+                ->whereHas('user.roles', fn($q) => $q->where('slug', 'customer'));
 
             $reviews = Review::query();
 
@@ -151,9 +152,9 @@ class CustomerController extends Controller
         try {
             return $this->ok(
                 $customer->load([
-                    'person', 
-                    'bookings.serviceEvent', 
-                    'bookings.payments', 
+                    'person',
+                    'bookings.serviceEvent',
+                    'bookings.payments',
                     'bookings.invoice',
                     'bookings.review',
                     'chatThreads.messages.sender.person'
@@ -217,7 +218,6 @@ class CustomerController extends Controller
                     'Customer created successfully'
                 );
             });
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -226,7 +226,7 @@ class CustomerController extends Controller
             ], 422);
         } catch (\Exception $e) {
             Log::error('Customer store error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to create customer: ' . $e->getMessage(),
@@ -257,7 +257,7 @@ class CustomerController extends Controller
             $customer->update(
                 $request->only(['tier', 'dietary_restrictions', 'notes', 'is_active'])
             );
-            
+
             $personData = $request->only(['first_name', 'last_name', 'email', 'phone', 'address_line_1', 'city', 'province']);
             if (!empty($personData)) {
                 $customer->person->update($personData);
@@ -266,7 +266,6 @@ class CustomerController extends Controller
             Log::info('Customer updated', ['customer_id' => $customer->customer_id]);
 
             return $this->show($customer);
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -275,7 +274,7 @@ class CustomerController extends Controller
             ], 422);
         } catch (\Exception $e) {
             Log::error('Customer update error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update customer: ' . $e->getMessage(),
@@ -290,14 +289,13 @@ class CustomerController extends Controller
     {
         try {
             $customer->update(['is_active' => false]);
-            
+
             Log::info('Customer deactivated', ['customer_id' => $customer->customer_id]);
-            
+
             return $this->ok(null, 'Customer deactivated successfully');
-            
         } catch (\Exception $e) {
             Log::error('Customer destroy error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to deactivate customer: ' . $e->getMessage(),
@@ -312,13 +310,13 @@ class CustomerController extends Controller
     {
         try {
             $query = Review::with(['booking.serviceEvent.customer.person']);
-            
+
             if ($request->customer_id) {
                 $query->whereHas('booking.serviceEvent.customer', function ($q) use ($request) {
                     $q->where('customer_id', $request->customer_id);
                 });
             }
-            
+
             $reviews = $query->latest()->paginate($request->integer('per_page', 20));
             $reviews->getCollection()->transform(function ($review) {
                 $customer = $review->booking?->serviceEvent?->customer;
@@ -330,10 +328,9 @@ class CustomerController extends Controller
             });
 
             return $this->ok($reviews);
-            
         } catch (\Exception $e) {
             Log::error('Customer feedback error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch feedback: ' . $e->getMessage(),
@@ -385,18 +382,17 @@ class CustomerController extends Controller
             }
 
             $query = ChatThread::with(['customer.person', 'messages.sender.person']);
-            
+
             if ($request->customer_id) {
                 $query->where('customer_id', $request->customer_id);
             }
-            
+
             return $this->ok(
                 $query->latest('updated_at')->paginate($request->integer('per_page', 20))
             );
-            
         } catch (\Exception $e) {
             Log::error('Customer messages error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch messages: ' . $e->getMessage(),
@@ -406,6 +402,7 @@ class CustomerController extends Controller
 
     /**
      * Send a message to customer.
+     * ⭐ When the sender is admin/staff (not the customer), the customer gets notified.
      */
     public function sendMessage(Request $request)
     {
@@ -442,11 +439,51 @@ class CustomerController extends Controller
 
             Log::info('Message sent to customer', [
                 'customer_id' => $data['customer_id'],
-                'thread_id' => $chatThread->thread_id
+                'thread_id' => $chatThread->thread_id,
+                'from_admin' => !$isCustomerSender,
             ]);
 
-            return $this->ok($message->load('sender.person'), 'Message sent successfully');
+            // ============================================================
+            // ⭐ Notify the customer when the sender is admin/staff
+            // ============================================================
+            if (!$isCustomerSender) {
+                try {
+                    $customer = Customer::with('user')->find($data['customer_id']);
 
+                    if ($customer && $customer->user_id) {
+                        $senderName = $currentUser?->person?->full_name
+                            ?? $currentUser?->username
+                            ?? "Dear Bab's Team";
+
+                        $preview = Str::limit(strip_tags((string) $data['message']), 120);
+
+                        app(\App\Services\NotificationService::class)->notifyUser(
+                            $customer->user_id,
+                            'chat_message_from_admin',
+                            "💬 New Message from Dear Bab's",
+                            "{$senderName}: {$preview}",
+                            \App\Models\Notification::PRIORITY_HIGH,
+                            [
+                                'thread_id'   => $chatThread->thread_id,
+                                'message_id'  => $message->message_id,
+                                'customer_id' => $customer->customer_id,
+                                'type'        => 'chat_message_from_admin',
+                            ],
+                            "/customer/chat/{$chatThread->thread_id}"
+                        );
+
+                        Log::info('Admin reply notification sent to customer', [
+                            'customer_id' => $customer->customer_id,
+                            'user_id'     => $customer->user_id,
+                            'message_id'  => $message->message_id,
+                        ]);
+                    }
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Admin reply notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($message->load('sender.person'), 'Message sent successfully');
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -455,7 +492,7 @@ class CustomerController extends Controller
             ], 422);
         } catch (\Exception $e) {
             Log::error('Send message error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to send message: ' . $e->getMessage(),
@@ -475,10 +512,9 @@ class CustomerController extends Controller
                 ->get();
 
             return $this->ok($bookings, 'Customer bookings retrieved successfully');
-            
         } catch (\Exception $e) {
             Log::error('Customer bookings error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch bookings: ' . $e->getMessage(),
@@ -495,10 +531,9 @@ class CustomerController extends Controller
             return $this->ok(
                 $customer->load(['bookings.payments'])
             );
-            
         } catch (\Exception $e) {
             Log::error('Customer payments error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch payments: ' . $e->getMessage(),
@@ -517,10 +552,9 @@ class CustomerController extends Controller
                     $q->where('customer_id', $customer->customer_id);
                 })->with(['booking.serviceEvent'])->latest()->get()
             );
-            
         } catch (\Exception $e) {
             Log::error('Customer reviews error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to fetch reviews: ' . $e->getMessage(),
@@ -536,20 +570,19 @@ class CustomerController extends Controller
         try {
             $customer->is_active = !$customer->is_active;
             $customer->save();
-            
+
             Log::info('Customer status toggled', [
                 'customer_id' => $customer->customer_id,
                 'is_active' => $customer->is_active
             ]);
-            
+
             return $this->ok(
                 $customer,
                 'Customer status updated successfully'
             );
-            
         } catch (\Exception $e) {
             Log::error('Customer toggle status error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to toggle status: ' . $e->getMessage(),
@@ -710,7 +743,6 @@ class CustomerController extends Controller
             ]);
 
             return $this->ok(null, 'Email sent successfully');
-
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -719,7 +751,7 @@ class CustomerController extends Controller
             ], 422);
         } catch (\Exception $e) {
             Log::error('Send email error: ' . $e->getMessage());
-            
+
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to send email: ' . $e->getMessage(),

@@ -1,448 +1,959 @@
-    // ============================================================
-    // FILE: src/components/RescheduleModal.jsx
-    // ============================================================
+// src/components/RescheduleModal.jsx
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { bookingService } from '../services/bookingService';
 
-    import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
-    import DateTimePicker from '@react-native-community/datetimepicker';
-    import { LinearGradient } from 'expo-linear-gradient';
-    import { useState } from 'react';
-    import {
-        ActivityIndicator,
-        Alert,
-        Modal,
-        Platform,
-        StyleSheet,
-        Text,
-        TextInput,
-        TouchableOpacity,
-        View,
-    } from 'react-native';
+const TIME_OPTIONS = [
+  '8:00 AM', '9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM',
+  '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM',
+  '6:00 PM', '7:00 PM', '8:00 PM',
+];
 
-    const RescheduleModal = ({
-        visible,
-        booking,
-        onClose,
-        onRescheduleConfirmed,
-        onCancelConfirmed,
-        loading,
-    }) => {
-        const [newDate, setNewDate] = useState(new Date());
-        const [newTime, setNewTime] = useState(new Date());
-        const [reason, setReason] = useState('');
-        const [showDatePicker, setShowDatePicker] = useState(false);
-        const [showTimePicker, setShowTimePicker] = useState(false);
-        const [step, setStep] = useState(1);
+export default function RescheduleModal({
+  visible,
+  mode = 'customer-request',
+  booking,
+  onClose,
+  onSuccess,
+}) {
+  const [submitting, setSubmitting] = useState(false);
 
-        if (!booking) return null;
+  // customer-request
+  const [requestedDate, setRequestedDate] = useState('');
+  const [requestedTime, setRequestedTime] = useState('');
+  const [reason, setReason] = useState('');
 
-        const handleConfirmReschedule = () => {
-            if (step === 1) {
-                setStep(2);
+  // customer-admin-proposal
+  const [adminAction, setAdminAction] = useState('accept');
+  const [counterDate, setCounterDate] = useState('');
+  const [counterTime, setCounterTime] = useState('');
+  const [cancelReason, setCancelReason] = useState('');
+
+  // customer-after-rejection
+  const [postRejectionAction, setPostRejectionAction] = useState('continue');
+  const [postRejectionReason, setPostRejectionReason] = useState('');
+
+  useEffect(() => {
+    if (!visible) return;
+
+    setSubmitting(false);
+    setRequestedDate('');
+    setRequestedTime('');
+    setReason('');
+    setAdminAction('accept');
+    setCounterDate('');
+    setCounterTime('');
+    setCancelReason('');
+    setPostRejectionAction('continue');
+    setPostRejectionReason('');
+  }, [visible]);
+
+  // ------------------------------------------------------------
+  // Helpers
+  // ------------------------------------------------------------
+  const isValidDate = (value) => {
+    if (!value) return false;
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const target = new Date(value);
+    target.setHours(0, 0, 0, 0);
+    return target >= today;
+  };
+
+  const safeBookingId = () =>
+    booking?.booking_id || booking?.id || booking?.unique_id || null;
+
+  const checkAvailability = async (date, time, excludeId) => {
+    try {
+      const res = await bookingService.validateSlot({
+        event_date: date,
+        event_time: time,
+        exclude_booking_id: excludeId,
+      });
+      const payload = res?.data || {};
+      return {
+        available: payload.available === true,
+        same_datetime: payload.same_datetime === true,
+        conflict: payload.conflict || null,
+      };
+    } catch (e) {
+      return {
+        available: false,
+        conflict:
+          e?.response?.data?.message ||
+          e?.message ||
+          'Could not verify slot availability.',
+      };
+    }
+  };
+
+  const closeIfNotBusy = () => {
+    if (submitting) return;
+    if (typeof onClose === 'function') onClose();
+  };
+
+  // ------------------------------------------------------------
+  // Propose new schedule
+  // ------------------------------------------------------------
+  const handlePropose = async () => {
+    const bookingId = safeBookingId();
+    if (!bookingId) {
+      Alert.alert('Error', 'Invalid booking reference.');
+      return;
+    }
+
+    if (!isValidDate(requestedDate)) {
+      Alert.alert('Invalid date', 'Please enter a valid future date (YYYY-MM-DD).');
+      return;
+    }
+    if (!requestedTime) {
+      Alert.alert('Missing time', 'Please select a time slot.');
+      return;
+    }
+    if (!reason.trim() || reason.trim().length < 5) {
+      Alert.alert('Missing reason', 'Please enter at least 5 characters explaining the reschedule.');
+      return;
+    }
+
+    setSubmitting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const check = await checkAvailability(requestedDate, requestedTime, bookingId);
+
+      if (!check.available && !check.same_datetime) {
+        const msg =
+          check.conflict?.message ||
+          check.conflict ||
+          'The selected slot is not available.';
+        Alert.alert('Slot not available', msg);
+        setSubmitting(false);
+        return;
+      }
+
+      const res = await bookingService.customerRequestReschedule(bookingId, {
+        requested_date: requestedDate,
+        requested_time: requestedTime,
+        reason: reason.trim(),
+      });
+
+      if (res?.success === false) {
+        Alert.alert('Cannot reschedule', res.message || 'Failed to send request.');
+        setSubmitting(false);
+        return;
+      }
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Request Sent', 'Your reschedule request has been sent to the admin.', [
+        { text: 'OK', onPress: () => typeof onSuccess === 'function' && onSuccess() },
+      ]);
+    } catch (error) {
+      const msg =
+        error?.response?.data?.message ||
+        error?.message ||
+        'Failed to send reschedule request.';
+      Alert.alert('Error', msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // Accept admin proposal
+  // ------------------------------------------------------------
+  const handleAcceptAdmin = async () => {
+    const bookingId = safeBookingId();
+    if (!bookingId) {
+      Alert.alert('Error', 'Invalid booking reference.');
+      return;
+    }
+
+    setSubmitting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const res = await bookingService.customerRescheduleResponse(bookingId, {
+        action: 'accept',
+      });
+
+      if (res?.success === false) {
+        Alert.alert('Error', res.message || 'Failed to accept.');
+        setSubmitting(false);
+        return;
+      }
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Accepted', 'You have accepted the new schedule.', [
+        { text: 'OK', onPress: () => typeof onSuccess === 'function' && onSuccess() },
+      ]);
+    } catch (error) {
+      const msg = error?.response?.data?.message || error?.message || 'Failed to accept.';
+      Alert.alert('Error', msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // Counter-propose
+  // ------------------------------------------------------------
+  const handleCounterAdmin = async () => {
+    const bookingId = safeBookingId();
+    if (!bookingId) {
+      Alert.alert('Error', 'Invalid booking reference.');
+      return;
+    }
+
+    if (!isValidDate(counterDate)) {
+      Alert.alert('Invalid date', 'Please enter a valid future date (YYYY-MM-DD).');
+      return;
+    }
+    if (!counterTime) {
+      Alert.alert('Missing time', 'Please select a time slot.');
+      return;
+    }
+
+    setSubmitting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const check = await checkAvailability(counterDate, counterTime, bookingId);
+
+      if (!check.available && !check.same_datetime) {
+        const msg =
+          check.conflict?.message ||
+          check.conflict ||
+          'The selected slot is not available.';
+        Alert.alert('Slot not available', msg);
+        setSubmitting(false);
+        return;
+      }
+
+      const res = await bookingService.customerRescheduleResponse(bookingId, {
+        action: 'counter',
+        new_date: counterDate,
+        new_time: counterTime,
+        reason: reason.trim() || 'Customer proposed an alternative date.',
+      });
+
+      if (res?.success === false) {
+        Alert.alert('Error', res.message || 'Failed to send counter proposal.');
+        setSubmitting(false);
+        return;
+      }
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Sent', 'Your counter-proposal has been sent to the admin.', [
+        { text: 'OK', onPress: () => typeof onSuccess === 'function' && onSuccess() },
+      ]);
+    } catch (error) {
+      const msg = error?.response?.data?.message || error?.message || 'Failed to send.';
+      Alert.alert('Error', msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // Cancel booking (during admin proposal)
+  // ------------------------------------------------------------
+  const handleCancelDuringAdmin = async () => {
+    const bookingId = safeBookingId();
+    if (!bookingId) {
+      Alert.alert('Error', 'Invalid booking reference.');
+      return;
+    }
+
+    Alert.alert(
+      'Cancel Booking?',
+      'The admin proposed a new date. Cancelling will cancel the entire booking. Continue?',
+      [
+        { text: 'Keep Booking', style: 'cancel' },
+        {
+          text: 'Yes, Cancel',
+          style: 'destructive',
+          onPress: async () => {
+            setSubmitting(true);
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+            try {
+              const res = await bookingService.customerRescheduleResponse(bookingId, {
+                action: 'cancel',
+                reason: cancelReason.trim() || 'Customer declined reschedule.',
+              });
+
+              if (res?.success === false) {
+                Alert.alert('Error', res.message || 'Failed to cancel.');
+                setSubmitting(false);
                 return;
+              }
+
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Cancelled', 'Your booking has been cancelled.', [
+                { text: 'OK', onPress: () => typeof onSuccess === 'function' && onSuccess() },
+              ]);
+            } catch (error) {
+              const msg =
+                error?.response?.data?.message || error?.message || 'Failed to cancel.';
+              Alert.alert('Error', msg);
+            } finally {
+              setSubmitting(false);
             }
-            
-            if (!reason.trim()) {
-                Alert.alert('Required', 'Please provide a reason for rescheduling.');
-                return;
-            }
-            
-            const dateStr = newDate.toISOString().split('T')[0];
-            const timeStr = newTime.toLocaleTimeString('en-US', { 
-                hour: '2-digit', 
-                minute: '2-digit', 
-                hour12: true 
-            });
-            
-            onRescheduleConfirmed(dateStr, timeStr);
-        };
+          },
+        },
+      ]
+    );
+  };
 
-        const handleCancelBooking = () => {
-            Alert.alert(
-                'Cancel Booking',
-                'Are you sure you want to cancel this booking? This action cannot be undone.',
-                [
-                    { text: 'No', style: 'cancel' },
-                    { 
-                        text: 'Yes, Cancel', 
-                        style: 'destructive',
-                        onPress: onCancelConfirmed
-                    }
-                ]
-            );
-        };
+  // ------------------------------------------------------------
+  // Post-rejection decision
+  // ------------------------------------------------------------
+  const handlePostRejection = async () => {
+    const bookingId = safeBookingId();
+    if (!bookingId) {
+      Alert.alert('Error', 'Invalid booking reference.');
+      return;
+    }
 
-        const formatDateDisplay = (date) => {
-            const options = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
-            return date.toLocaleDateString('en-US', options);
-        };
+    if (postRejectionAction === 'cancel') {
+      Alert.alert(
+        'Cancel Booking?',
+        'This will cancel the entire booking. Continue?',
+        [
+          { text: 'Keep Booking', style: 'cancel' },
+          {
+            text: 'Yes, Cancel',
+            style: 'destructive',
+            onPress: () => submitPostRejection('cancel', bookingId),
+          },
+        ]
+      );
+      return;
+    }
 
-        const formatTimeDisplay = (date) => {
-            return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
-        };
+    submitPostRejection('continue', bookingId);
+  };
 
-        return (
-            <Modal
-                visible={visible}
-                transparent
-                animationType="slide"
-                onRequestClose={onClose}
+  const submitPostRejection = async (action, bookingId) => {
+    setSubmitting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const res = await bookingService.customerPostRejectionDecision(bookingId, {
+        action,
+        reason: postRejectionReason.trim() || null,
+      });
+
+      if (res?.success === false) {
+        Alert.alert('Error', res.message || 'Failed to submit decision.');
+        setSubmitting(false);
+        return;
+      }
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        action === 'continue' ? 'Continued' : 'Cancelled',
+        action === 'continue'
+          ? 'You will keep the original schedule.'
+          : 'Your booking has been cancelled.',
+        [{ text: 'OK', onPress: () => typeof onSuccess === 'function' && onSuccess() }]
+      );
+    } catch (error) {
+      const msg = error?.response?.data?.message || error?.message || 'Failed to submit.';
+      Alert.alert('Error', msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ------------------------------------------------------------
+  // Field renderers
+  // ------------------------------------------------------------
+  const renderDateField = (value, onChange, label = 'New Date') => (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        style={styles.input}
+        placeholder="YYYY-MM-DD"
+        placeholderTextColor="#B0B0B0"
+        value={value}
+        onChangeText={onChange}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!submitting}
+      />
+      <Text style={styles.fieldHint}>Format: 2026-03-15</Text>
+    </View>
+  );
+
+  const renderTimeField = (value, onChange, label = 'New Time') => (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <View style={styles.timeGrid}>
+        {TIME_OPTIONS.map((t) => (
+          <TouchableOpacity
+            key={t}
+            style={[styles.timeChip, value === t && styles.timeChipActive]}
+            onPress={() => onChange(t)}
+            disabled={submitting}
+          >
+            <Text style={[styles.timeChipText, value === t && styles.timeChipTextActive]}>
+              {t}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
+
+  // ------------------------------------------------------------
+  // Section renderers
+  // ------------------------------------------------------------
+  const renderCustomerRequest = () => (
+    <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
+      <View style={styles.noticeBox}>
+        <Feather name="info" size={14} color="#0D47A1" />
+        <Text style={styles.noticeText}>
+          Your request will be sent to the admin for approval. You can choose any available
+          date and time.
+        </Text>
+      </View>
+
+      {renderDateField(requestedDate, setRequestedDate, 'Requested Date')}
+      {renderTimeField(requestedTime, setRequestedTime, 'Requested Time')}
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Reason *</Text>
+        <TextInput
+          style={[styles.input, styles.textarea]}
+          placeholder="Explain why you want to reschedule..."
+          placeholderTextColor="#B0B0B0"
+          value={reason}
+          onChangeText={setReason}
+          multiline
+          numberOfLines={4}
+          maxLength={500}
+          editable={!submitting}
+          textAlignVertical="top"
+        />
+        <Text style={styles.fieldHint}>{reason.length}/500</Text>
+      </View>
+
+      <TouchableOpacity
+        style={[styles.primaryBtn, submitting && styles.btnDisabled]}
+        onPress={handlePropose}
+        disabled={submitting}
+      >
+        <LinearGradient colors={['#FF6B9D', '#FF8FB1']} style={styles.primaryBtnGradient}>
+          {submitting ? (
+            <ActivityIndicator color="#FFF" size="small" />
+          ) : (
+            <>
+              <Feather name="send" size={16} color="#FFF" />
+              <Text style={styles.primaryBtnText}>Send Request</Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+
+  const renderAdminProposal = () => (
+    <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
+      <View style={styles.noticeBoxPurple}>
+        <Feather name="bell" size={14} color="#6A1B9A" />
+        <Text style={styles.noticeTextPurple}>
+          Admin proposed a new schedule. Please choose how to respond.
+        </Text>
+      </View>
+
+      <View style={styles.proposalCard}>
+        <View style={styles.proposalRow}>
+          <Text style={styles.proposalLabel}>Original</Text>
+          <Text style={styles.proposalValue}>
+            {booking?.date} · {booking?.timeSlot}
+          </Text>
+        </View>
+        <View style={styles.proposalRow}>
+          <Text style={styles.proposalLabel}>Proposed</Text>
+          <Text style={[styles.proposalValue, { color: '#9C27B0', fontWeight: '700' }]}>
+            {booking?.requested_date} · {booking?.requested_time}
+          </Text>
+        </View>
+        {booking?.reschedule_reason ? (
+          <View style={styles.proposalRow}>
+            <Text style={styles.proposalLabel}>Reason</Text>
+            <Text style={styles.proposalValue}>{booking.reschedule_reason}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.choiceRow}>
+        <TouchableOpacity
+          style={[styles.choiceBtn, adminAction === 'accept' && styles.choiceBtnActive]}
+          onPress={() => setAdminAction('accept')}
+          disabled={submitting}
+        >
+          <Feather
+            name="check-circle"
+            size={18}
+            color={adminAction === 'accept' ? '#FFF' : '#4CAF50'}
+          />
+          <Text
+            style={[styles.choiceBtnText, adminAction === 'accept' && styles.choiceBtnTextActive]}
+          >
+            Accept
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.choiceBtn, adminAction === 'counter' && styles.choiceBtnActive]}
+          onPress={() => setAdminAction('counter')}
+          disabled={submitting}
+        >
+          <Feather
+            name="refresh-cw"
+            size={18}
+            color={adminAction === 'counter' ? '#FFF' : '#2196F3'}
+          />
+          <Text
+            style={[styles.choiceBtnText, adminAction === 'counter' && styles.choiceBtnTextActive]}
+          >
+            Counter
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.choiceBtn, adminAction === 'cancel' && styles.choiceBtnActiveDanger]}
+          onPress={() => setAdminAction('cancel')}
+          disabled={submitting}
+        >
+          <Feather
+            name="x-circle"
+            size={18}
+            color={adminAction === 'cancel' ? '#FFF' : '#F44336'}
+          />
+          <Text
+            style={[styles.choiceBtnText, adminAction === 'cancel' && styles.choiceBtnTextActive]}
+          >
+            Cancel
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {adminAction === 'accept' ? (
+        <View style={styles.sectionBox}>
+          <Text style={styles.sectionText}>
+            You will be moved to the proposed date and time.
+          </Text>
+        </View>
+      ) : null}
+
+      {adminAction === 'counter' ? (
+        <>
+          {renderDateField(counterDate, setCounterDate, 'Your Proposed Date')}
+          {renderTimeField(counterTime, setCounterTime, 'Your Proposed Time')}
+          <View style={styles.fieldGroup}>
+            <Text style={styles.fieldLabel}>Reason (optional)</Text>
+            <TextInput
+              style={[styles.input, styles.textarea]}
+              placeholder="Why is this time better for you?"
+              placeholderTextColor="#B0B0B0"
+              value={reason}
+              onChangeText={setReason}
+              multiline
+              numberOfLines={3}
+              maxLength={500}
+              editable={!submitting}
+              textAlignVertical="top"
+            />
+          </View>
+        </>
+      ) : null}
+
+      {adminAction === 'cancel' ? (
+        <View style={styles.sectionBoxDanger}>
+          <Text style={styles.sectionTextDanger}>
+            Cancelling will remove your booking entirely. This action cannot be undone.
+          </Text>
+          <TextInput
+            style={[styles.input, styles.textarea, { marginTop: 10 }]}
+            placeholder="Reason for cancellation (optional)"
+            placeholderTextColor="#B0B0B0"
+            value={cancelReason}
+            onChangeText={setCancelReason}
+            multiline
+            numberOfLines={3}
+            maxLength={500}
+            editable={!submitting}
+            textAlignVertical="top"
+          />
+        </View>
+      ) : null}
+
+      <TouchableOpacity
+        style={[
+          styles.primaryBtn,
+          adminAction === 'cancel' && styles.primaryBtnDanger,
+          submitting && styles.btnDisabled,
+        ]}
+        onPress={
+          adminAction === 'accept'
+            ? handleAcceptAdmin
+            : adminAction === 'counter'
+            ? handleCounterAdmin
+            : handleCancelDuringAdmin
+        }
+        disabled={submitting}
+      >
+        <LinearGradient
+          colors={adminAction === 'cancel' ? ['#F44336', '#E53935'] : ['#FF6B9D', '#FF8FB1']}
+          style={styles.primaryBtnGradient}
+        >
+          {submitting ? (
+            <ActivityIndicator color="#FFF" size="small" />
+          ) : (
+            <>
+              <Feather
+                name={
+                  adminAction === 'accept'
+                    ? 'check-circle'
+                    : adminAction === 'counter'
+                    ? 'refresh-cw'
+                    : 'x-circle'
+                }
+                size={16}
+                color="#FFF"
+              />
+              <Text style={styles.primaryBtnText}>
+                {adminAction === 'accept'
+                  ? 'Accept Proposal'
+                  : adminAction === 'counter'
+                  ? 'Send Counter Proposal'
+                  : 'Cancel Booking'}
+              </Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+
+  const renderAfterRejection = () => (
+    <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
+      <View style={styles.noticeBoxDanger}>
+        <Feather name="alert-circle" size={14} color="#B71C1C" />
+        <Text style={styles.noticeTextDanger}>
+          Your reschedule request was declined. You can continue with the original schedule,
+          or cancel the booking.
+        </Text>
+      </View>
+
+      <View style={styles.proposalCard}>
+        <View style={styles.proposalRow}>
+          <Text style={styles.proposalLabel}>Original Schedule</Text>
+          <Text style={styles.proposalValue}>
+            {booking?.date} · {booking?.timeSlot}
+          </Text>
+        </View>
+        {booking?.reschedule_reason ? (
+          <View style={styles.proposalRow}>
+            <Text style={styles.proposalLabel}>Admin's Reason</Text>
+            <Text style={styles.proposalValue}>{booking.reschedule_reason}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.choiceRow}>
+        <TouchableOpacity
+          style={[
+            styles.choiceBtn,
+            postRejectionAction === 'continue' && styles.choiceBtnActive,
+          ]}
+          onPress={() => setPostRejectionAction('continue')}
+          disabled={submitting}
+        >
+          <Feather
+            name="check-circle"
+            size={18}
+            color={postRejectionAction === 'continue' ? '#FFF' : '#4CAF50'}
+          />
+          <Text
+            style={[
+              styles.choiceBtnText,
+              postRejectionAction === 'continue' && styles.choiceBtnTextActive,
+            ]}
+          >
+            Continue
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.choiceBtn,
+            postRejectionAction === 'cancel' && styles.choiceBtnActiveDanger,
+          ]}
+          onPress={() => setPostRejectionAction('cancel')}
+          disabled={submitting}
+        >
+          <Feather
+            name="x-circle"
+            size={18}
+            color={postRejectionAction === 'cancel' ? '#FFF' : '#F44336'}
+          />
+          <Text
+            style={[
+              styles.choiceBtnText,
+              postRejectionAction === 'cancel' && styles.choiceBtnTextActive,
+            ]}
+          >
+            Cancel Booking
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Reason (optional)</Text>
+        <TextInput
+          style={[styles.input, styles.textarea]}
+          placeholder="Any additional note..."
+          placeholderTextColor="#B0B0B0"
+          value={postRejectionReason}
+          onChangeText={setPostRejectionReason}
+          multiline
+          numberOfLines={3}
+          maxLength={500}
+          editable={!submitting}
+          textAlignVertical="top"
+        />
+      </View>
+
+      <TouchableOpacity
+        style={[
+          styles.primaryBtn,
+          postRejectionAction === 'cancel' && styles.primaryBtnDanger,
+          submitting && styles.btnDisabled,
+        ]}
+        onPress={handlePostRejection}
+        disabled={submitting}
+      >
+        <LinearGradient
+          colors={
+            postRejectionAction === 'cancel'
+              ? ['#F44336', '#E53935']
+              : ['#FF6B9D', '#FF8FB1']
+          }
+          style={styles.primaryBtnGradient}
+        >
+          {submitting ? (
+            <ActivityIndicator color="#FFF" size="small" />
+          ) : (
+            <>
+              <Feather
+                name={postRejectionAction === 'cancel' ? 'x-circle' : 'check-circle'}
+                size={16}
+                color="#FFF"
+              />
+              <Text style={styles.primaryBtnText}>
+                {postRejectionAction === 'cancel' ? 'Confirm Cancellation' : 'Continue'}
+              </Text>
+            </>
+          )}
+        </LinearGradient>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+
+  const getTitle = () => {
+    if (mode === 'customer-admin-proposal') return 'Admin Proposed New Date';
+    if (mode === 'customer-after-rejection') return 'Reschedule Declined';
+    return 'Request Reschedule';
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={closeIfNotBusy}
+    >
+      <View style={styles.overlay}>
+        <TouchableOpacity
+          style={styles.backdrop}
+          activeOpacity={1}
+          onPress={closeIfNotBusy}
+        />
+        <View style={styles.sheet}>
+          <View style={styles.header}>
+            <View style={styles.headerIcon}>
+              <MaterialCommunityIcons name="calendar-edit" size={22} color="#FFF" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.headerTitle}>{getTitle()}</Text>
+              <Text style={styles.headerSubtitle}>Booking {booking?.id || '—'}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.headerClose}
+              onPress={closeIfNotBusy}
+              disabled={submitting}
             >
-                <View style={styles.modalOverlay}>
-                    <TouchableOpacity 
-                        style={styles.modalBackdrop} 
-                        activeOpacity={1} 
-                        onPress={onClose} 
-                    />
-                    <View style={styles.modalContent}>
-                        <LinearGradient
-                            colors={['#2196F3', '#64B5F6']}
-                            style={styles.modalHeader}
-                        >
-                            <Text style={styles.modalTitle}>
-                                {step === 1 ? 'Reschedule Booking' : 'Confirm Reschedule'}
-                            </Text>
-                            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                                <Feather name="x" size={22} color="#FFF" />
-                            </TouchableOpacity>
-                        </LinearGradient>
+              <Feather name="x" size={20} color="#FFF" />
+            </TouchableOpacity>
+          </View>
 
-                        <View style={styles.modalBody}>
-                            {/* Booking Info */}
-                            <View style={styles.bookingInfo}>
-                                <Text style={styles.bookingId}>{booking.id}</Text>
-                                <Text style={styles.bookingType}>{booking.eventType}</Text>
-                                <View style={styles.bookingDetails}>
-                                    <Text style={styles.bookingDetail}>
-                                        📅 {booking.date} at {booking.timeSlot}
-                                    </Text>
-                                    <Text style={styles.bookingDetail}>
-                                        👥 {booking.pax} guests · ₱{booking.total.toLocaleString()}
-                                    </Text>
-                                </View>
-                            </View>
+          {mode === 'customer-admin-proposal'
+            ? renderAdminProposal()
+            : mode === 'customer-after-rejection'
+            ? renderAfterRejection()
+            : renderCustomerRequest()}
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
-                            {step === 1 ? (
-                                // Step 1: Select New Date & Time
-                                <View>
-                                    <Text style={styles.stepLabel}>Select New Date & Time</Text>
-                                    
-                                    <TouchableOpacity 
-                                        style={styles.dateTimeSelector}
-                                        onPress={() => setShowDatePicker(true)}
-                                    >
-                                        <MaterialCommunityIcons name="calendar-today" size={22} color="#2196F3" />
-                                        <Text style={styles.dateTimeText}>{formatDateDisplay(newDate)}</Text>
-                                        <Feather name="chevron-down" size={18} color="#B0B0B0" />
-                                    </TouchableOpacity>
+const styles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  backdrop: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+  },
+  sheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '90%',
+    overflow: 'hidden',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    backgroundColor: '#FF6B9D',
+  },
+  headerIcon: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  headerTitle: { fontSize: 16, fontWeight: '700', color: '#FFF' },
+  headerSubtitle: { fontSize: 12, color: 'rgba(255,255,255,0.85)', marginTop: 2 },
+  headerClose: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  body: { padding: 18, maxHeight: 600 },
 
-                                    <TouchableOpacity 
-                                        style={styles.dateTimeSelector}
-                                        onPress={() => setShowTimePicker(true)}
-                                    >
-                                        <MaterialCommunityIcons name="clock-outline" size={22} color="#2196F3" />
-                                        <Text style={styles.dateTimeText}>{formatTimeDisplay(newTime)}</Text>
-                                        <Feather name="chevron-down" size={18} color="#B0B0B0" />
-                                    </TouchableOpacity>
+  noticeBox: {
+    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
+    backgroundColor: '#E3F2FD', borderRadius: 12,
+    padding: 12, marginBottom: 14,
+  },
+  noticeText: { flex: 1, fontSize: 12, color: '#0D47A1', lineHeight: 17 },
 
-                                    <Text style={styles.noteText}>
-                                        <MaterialCommunityIcons name="information" size={14} color="#2196F3" />
-                                        {' '}The new date/time is subject to availability confirmation.
-                                    </Text>
-                                </View>
-                            ) : (
-                                // Step 2: Provide Reason
-                                <View>
-                                    <Text style={styles.stepLabel}>Reason for Reschedule</Text>
-                                    <TextInput
-                                        style={styles.reasonInput}
-                                        placeholder="Please explain why you need to reschedule..."
-                                        placeholderTextColor="#B0B0B0"
-                                        value={reason}
-                                        onChangeText={setReason}
-                                        multiline
-                                        numberOfLines={4}
-                                        textAlignVertical="top"
-                                    />
-                                    
-                                    <View style={styles.confirmationDetails}>
-                                        <Text style={styles.confirmationLabel}>New Schedule:</Text>
-                                        <Text style={styles.confirmationValue}>
-                                            {formatDateDisplay(newDate)} at {formatTimeDisplay(newTime)}
-                                        </Text>
-                                    </View>
+  noticeBoxPurple: {
+    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
+    backgroundColor: '#F3E5F5', borderRadius: 12,
+    padding: 12, marginBottom: 14,
+  },
+  noticeTextPurple: { flex: 1, fontSize: 12, color: '#4A148C', lineHeight: 17 },
 
-                                    <Text style={styles.warningText}>
-                                        <Feather name="alert-triangle" size={14} color="#FF9800" />
-                                        {' '}Once confirmed, your booking will be updated to the new schedule.
-                                    </Text>
-                                </View>
-                            )}
-                        </View>
+  noticeBoxDanger: {
+    flexDirection: 'row', gap: 8, alignItems: 'flex-start',
+    backgroundColor: '#FFEBEE', borderRadius: 12,
+    padding: 12, marginBottom: 14,
+  },
+  noticeTextDanger: { flex: 1, fontSize: 12, color: '#B71C1C', lineHeight: 17 },
 
-                        <View style={styles.modalFooter}>
-                            {step === 2 && (
-                                <TouchableOpacity 
-                                    style={styles.backButton}
-                                    onPress={() => setStep(1)}
-                                >
-                                    <Feather name="arrow-left" size={18} color="#8E8E93" />
-                                    <Text style={styles.backButtonText}>Back</Text>
-                                </TouchableOpacity>
-                            )}
-                            
-                            <TouchableOpacity 
-                                style={[styles.cancelButton, step === 1 && styles.cancelButtonFull]}
-                                onPress={handleCancelBooking}
-                                disabled={loading}
-                            >
-                                <Feather name="x" size={18} color="#F44336" />
-                                <Text style={styles.cancelButtonText}>Cancel</Text>
-                            </TouchableOpacity>
+  proposalCard: {
+    backgroundColor: '#F8F9FA', borderRadius: 14, padding: 14,
+    marginBottom: 14, borderWidth: 1, borderColor: '#EEE',
+  },
+  proposalRow: {
+    flexDirection: 'row', justifyContent: 'space-between',
+    alignItems: 'flex-start', marginBottom: 8,
+  },
+  proposalLabel: { fontSize: 12, color: '#8E8E93', flexShrink: 0, marginRight: 8 },
+  proposalValue: { fontSize: 13, color: '#1C1C1E', flexShrink: 1, textAlign: 'right' },
 
-                            <TouchableOpacity 
-                                style={[styles.confirmButton, step === 1 && styles.confirmButtonFull]}
-                                onPress={handleConfirmReschedule}
-                                disabled={loading}
-                            >
-                                <LinearGradient
-                                    colors={['#2196F3', '#64B5F6']}
-                                    style={styles.confirmGradient}
-                                >
-                                    {loading ? (
-                                        <ActivityIndicator color="#FFF" size="small" />
-                                    ) : (
-                                        <>
-                                            <Text style={styles.confirmButtonText}>
-                                                {step === 1 ? 'Next' : 'Confirm Reschedule'}
-                                            </Text>
-                                            <Feather name="arrow-right" size={18} color="#FFF" />
-                                        </>
-                                    )}
-                                </LinearGradient>
-                            </TouchableOpacity>
-                        </View>
+  fieldGroup: { marginBottom: 14 },
+  fieldLabel: { fontSize: 12, fontWeight: '600', color: '#5A5A5E', marginBottom: 6 },
+  fieldHint: { fontSize: 11, color: '#B0B0B0', marginTop: 4 },
+  input: {
+    backgroundColor: '#F8F9FA', borderRadius: 12,
+    borderWidth: 1, borderColor: '#E5E5EA',
+    paddingHorizontal: 14, paddingVertical: 12,
+    fontSize: 14, color: '#1C1C1E',
+  },
+  textarea: { minHeight: 80 },
 
-                        {/* Date/Time Pickers */}
-                        {showDatePicker && (
-                            <DateTimePicker
-                                value={newDate}
-                                mode="date"
-                                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                                onChange={(event, selectedDate) => {
-                                    setShowDatePicker(false);
-                                    if (selectedDate) setNewDate(selectedDate);
-                                }}
-                                minimumDate={new Date()}
-                            />
-                        )}
-                        {showTimePicker && (
-                            <DateTimePicker
-                                value={newTime}
-                                mode="time"
-                                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                                onChange={(event, selectedTime) => {
-                                    setShowTimePicker(false);
-                                    if (selectedTime) setNewTime(selectedTime);
-                                }}
-                            />
-                        )}
-                    </View>
-                </View>
-            </Modal>
-        );
-    };
+  timeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  timeChip: {
+    paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: 14, backgroundColor: '#F8F9FA',
+    borderWidth: 1, borderColor: '#E5E5EA',
+  },
+  timeChipActive: { backgroundColor: '#FF6B9D', borderColor: '#FF6B9D' },
+  timeChipText: { fontSize: 12, color: '#5A5A5E', fontWeight: '500' },
+  timeChipTextActive: { color: '#FFF' },
 
-    const styles = StyleSheet.create({
-        modalOverlay: {
-            flex: 1,
-            justifyContent: 'flex-end',
-        },
-        modalBackdrop: {
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.5)',
-        },
-        modalContent: {
-            backgroundColor: '#FFF',
-            borderTopLeftRadius: 24,
-            borderTopRightRadius: 24,
-            maxHeight: '85%',
-            overflow: 'hidden',
-        },
-        modalHeader: {
-            flexDirection: 'row',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            paddingHorizontal: 20,
-            paddingVertical: 16,
-        },
-        modalTitle: {
-            fontSize: 18,
-            fontWeight: '700',
-            color: '#FFF',
-        },
-        closeButton: {
-            width: 36,
-            height: 36,
-            borderRadius: 18,
-            backgroundColor: 'rgba(255,255,255,0.2)',
-            justifyContent: 'center',
-            alignItems: 'center',
-        },
-        modalBody: {
-            padding: 20,
-            maxHeight: 400,
-        },
-        bookingInfo: {
-            backgroundColor: '#F5F9FF',
-            borderRadius: 16,
-            padding: 16,
-            marginBottom: 20,
-        },
-        bookingId: {
-            fontSize: 12,
-            color: '#2196F3',
-            fontWeight: '600',
-        },
-        bookingType: {
-            fontSize: 16,
-            fontWeight: '700',
-            color: '#2D2D2D',
-            marginTop: 2,
-        },
-        bookingDetails: {
-            marginTop: 8,
-        },
-        bookingDetail: {
-            fontSize: 13,
-            color: '#5A5A5E',
-            marginTop: 2,
-        },
-        stepLabel: {
-            fontSize: 14,
-            fontWeight: '600',
-            color: '#2D2D2D',
-            marginBottom: 12,
-        },
-        dateTimeSelector: {
-            flexDirection: 'row',
-            alignItems: 'center',
-            backgroundColor: '#F5F5F5',
-            borderRadius: 12,
-            paddingHorizontal: 14,
-            paddingVertical: 12,
-            marginBottom: 10,
-            gap: 10,
-        },
-        dateTimeText: {
-            flex: 1,
-            fontSize: 14,
-            color: '#2D2D2D',
-        },
-        noteText: {
-            fontSize: 12,
-            color: '#8A8A8E',
-            marginTop: 8,
-            lineHeight: 18,
-        },
-        reasonInput: {
-            backgroundColor: '#F5F5F5',
-            borderRadius: 12,
-            paddingHorizontal: 14,
-            paddingVertical: 12,
-            fontSize: 14,
-            color: '#2D2D2D',
-            minHeight: 80,
-            textAlignVertical: 'top',
-        },
-        confirmationDetails: {
-            flexDirection: 'row',
-            backgroundColor: '#E3F2FD',
-            borderRadius: 12,
-            padding: 12,
-            marginTop: 12,
-            gap: 8,
-        },
-        confirmationLabel: {
-            fontSize: 13,
-            fontWeight: '600',
-            color: '#1565C0',
-        },
-        confirmationValue: {
-            fontSize: 13,
-            fontWeight: '500',
-            color: '#0D47A1',
-            flex: 1,
-        },
-        warningText: {
-            fontSize: 12,
-            color: '#FF9800',
-            marginTop: 12,
-            lineHeight: 18,
-            backgroundColor: '#FFF3E0',
-            padding: 10,
-            borderRadius: 10,
-        },
-        modalFooter: {
-            flexDirection: 'row',
-            paddingHorizontal: 20,
-            paddingVertical: 16,
-            borderTopWidth: 1,
-            borderTopColor: '#F0F0F0',
-            gap: 10,
-        },
-        backButton: {
-            flexDirection: 'row',
-            alignItems: 'center',
-            paddingHorizontal: 12,
-            gap: 4,
-        },
-        backButtonText: {
-            fontSize: 14,
-            color: '#8E8E93',
-        },
-        cancelButton: {
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            backgroundColor: '#FFEBEE',
-            paddingVertical: 12,
-            paddingHorizontal: 16,
-            borderRadius: 28,
-            gap: 6,
-            flex: 1,
-        },
-        cancelButtonFull: {
-            flex: 1,
-        },
-        cancelButtonText: {
-            fontSize: 14,
-            fontWeight: '600',
-            color: '#F44336',
-        },
-        confirmButton: {
-            borderRadius: 28,
-            overflow: 'hidden',
-            flex: 2,
-        },
-        confirmButtonFull: {
-            flex: 2,
-        },
-        confirmGradient: {
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            paddingVertical: 12,
-            gap: 8,
-        },
-        confirmButtonText: {
-            fontSize: 14,
-            fontWeight: '600',
-            color: '#FFF',
-        },
-    });
+  choiceRow: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  choiceBtn: {
+    flex: 1, flexDirection: 'row', gap: 6,
+    alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12, borderRadius: 14,
+    backgroundColor: '#F8F9FA',
+    borderWidth: 2, borderColor: 'transparent',
+  },
+  choiceBtnActive: { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
+  choiceBtnActiveDanger: { backgroundColor: '#F44336', borderColor: '#F44336' },
+  choiceBtnText: { fontSize: 13, fontWeight: '600', color: '#5A5A5E' },
+  choiceBtnTextActive: { color: '#FFF' },
 
-    export default RescheduleModal;
+  sectionBox: {
+    backgroundColor: '#E8F5E9', borderRadius: 12,
+    padding: 14, marginBottom: 14,
+  },
+  sectionText: { fontSize: 13, color: '#1B5E20', lineHeight: 18 },
+
+  sectionBoxDanger: {
+    backgroundColor: '#FFEBEE', borderRadius: 12,
+    padding: 14, marginBottom: 14,
+  },
+  sectionTextDanger: { fontSize: 13, color: '#B71C1C', lineHeight: 18 },
+
+  primaryBtn: { borderRadius: 28, overflow: 'hidden', marginTop: 6 },
+  primaryBtnDanger: {},
+  primaryBtnGradient: {
+    flexDirection: 'row', gap: 8,
+    alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 14,
+  },
+  primaryBtnText: { fontSize: 15, fontWeight: '700', color: '#FFF' },
+  btnDisabled: { opacity: 0.6 },
+});

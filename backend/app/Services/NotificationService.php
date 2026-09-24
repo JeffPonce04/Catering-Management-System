@@ -2,932 +2,870 @@
 
 namespace App\Services;
 
+use App\Models\Booking;
+use App\Models\Customer;
+use App\Models\Employee;
+use App\Models\Equipment;
 use App\Models\Notification;
+use App\Models\Order;
+use App\Models\PurchaseRequest;
+use App\Models\Schedule;
+use App\Models\BookingPayment;
 use App\Models\User;
-use App\Models\Role;
-use App\Models\AuditLog;
-use App\Support\NotificationCatalog;
+use App\Models\LeaveRequest;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 class NotificationService
 {
-    /**
-     * Send notification to a specific user
-     */
-    public function notifyUser($userId, $type, $title, $message, $priority = Notification::PRIORITY_MEDIUM, $data = null, $actionUrl = null)
-    {
-        $type = NotificationCatalog::normalizeType($type);
-        $payload = is_array($data) ? $data : ((array) $data);
-        $definition = NotificationCatalog::definition($type);
-        $title = $title ?: ($definition['title'] ?? '📢 System Notification');
-        $priority = $priority ?: ($definition['priority'] ?? Notification::PRIORITY_MEDIUM);
-        $actionUrl = NotificationCatalog::destination($type, $payload, $actionUrl);
+    /* ============================================================
+       CORE DISPATCH
+       ============================================================ */
 
-        if ($this->shouldSkipDuplicate($userId, $type, $payload, $title)) {
-            return null;
+    public function notifyUser(
+        int $userId,
+        string $type,
+        string $title,
+        string $message,
+        string $priority = 'medium',
+        array $data = [],
+        ?string $actionUrl = null
+    ): Notification {
+        $notification = Notification::create([
+            'user_id'    => $userId,
+            'type'       => $type,
+            'title'      => $title,
+            'message'    => $message,
+            'priority'   => $priority,
+            'data'       => $data,
+            'action_url' => $actionUrl,
+            'is_sent'    => true,
+            'sent_at'    => now(),
+        ]);
+
+        if (in_array($priority, [Notification::PRIORITY_HIGH, 'critical'])) {
+            try {
+                $user = User::find($userId);
+                if ($user && $user->fcm_token) {
+                    app(\App\Http\Controllers\Api\BookingController::class)
+                        ->sendMobilePushNotificationPublic($user, $title, $message, $data);
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Push notification failed: ' . $e->getMessage());
+            }
         }
-
-        $notification = Notification::createNotification($userId, $type, $title, $message, $priority, $payload, $actionUrl);
-        $this->logNotificationAction('notification_sent', $notification);
 
         return $notification;
     }
 
-    /**
-     * Send notification to all users with a specific role
-     */
-    public function notifyRole($roleSlug, $type, $title, $message, $priority = Notification::PRIORITY_MEDIUM, $data = null, $actionUrl = null)
-    {
-        $users = User::whereHas('roles', function ($query) use ($roleSlug) {
-            $query->where('slug', $roleSlug);
-        })->get();
-
-        // Keep notifications functional even when optional roles like inventory_staff
-        // or operations_staff do not exist in older databases. Critical system
-        // notifications must still reach admins.
-        if ($users->isEmpty() && $roleSlug !== 'admin') {
-            $users = User::whereHas('roles', function ($query) {
-                $query->where('slug', 'admin');
-            })->get();
-        }
-
-        foreach ($users as $user) {
-            $this->notifyUser($user->user_id, $type, $title, $message, $priority, $data, $actionUrl);
-        }
-    }
-
-    /**
-     * Send notification to multiple roles
-     */
-    public function notifyRoles($roleSlugs, $type, $title, $message, $priority = Notification::PRIORITY_MEDIUM, $data = null, $actionUrl = null)
-    {
-        $roleSlugs = collect((array) $roleSlugs)->filter()->unique()->values();
-        $users = User::whereHas('roles', function ($query) use ($roleSlugs) {
-            $query->whereIn('slug', $roleSlugs);
-        })->get()->unique('user_id');
-
-        if ($users->isEmpty()) {
-            $users = User::whereHas('roles', function ($query) {
-                $query->where('slug', 'admin');
-            })->get()->unique('user_id');
-        }
-
-        foreach ($users as $user) {
-            $this->notifyUser($user->user_id, $type, $title, $message, $priority, $data, $actionUrl);
-        }
-    }
-
-    /**
-     * Create a notification from the functional catalog.
-     * Use this for new system events so all destinations, priorities and categories stay consistent.
-     */
-    public function notifySystemEvent($type, string $message, array $data = [], ?array $roles = null, ?string $title = null, ?string $priority = null, ?string $actionUrl = null): void
-    {
-        $type = NotificationCatalog::normalizeType($type);
-        $definition = NotificationCatalog::definition($type);
-        $roles = $roles ?: ($definition['roles'] ?? ['admin']);
-        $title = $title ?: ($definition['title'] ?? '📢 System Notification');
-        $priority = $priority ?: ($definition['priority'] ?? Notification::PRIORITY_MEDIUM);
-        $actionUrl = NotificationCatalog::destination($type, $data, $actionUrl);
-
-        $this->notifyRoles($roles, $type, $title, $message, $priority, $data, $actionUrl);
-    }
-
-    public function notificationCatalog(): array
-    {
-        return NotificationCatalog::all();
-    }
-
-    private function shouldSkipDuplicate($userId, string $type, array $data, string $title): bool
-    {
-        $reference = $data['reference_id']
-            ?? $data['ingredient_id']
-            ?? $data['equipment_id']
-            ?? $data['booking_id']
-            ?? $data['purchase_request_id']
-            ?? $data['attendance_id']
-            ?? $data['invoice_id']
-            ?? null;
-
-        if (!$reference) {
-            return false;
-        }
-
-        return Notification::where('user_id', $userId)
-            ->where('type', $type)
-            ->where('title', $title)
-            ->where('created_at', '>=', now()->subHours(12))
-            ->where(function ($query) use ($reference) {
-                $query->where('data->reference_id', $reference)
-                    ->orWhere('data->ingredient_id', $reference)
-                    ->orWhere('data->equipment_id', $reference)
-                    ->orWhere('data->booking_id', $reference)
-                    ->orWhere('data->purchase_request_id', $reference)
-                    ->orWhere('data->attendance_id', $reference)
-                    ->orWhere('data->invoice_id', $reference);
+    public function notifyRole(
+        string $roleSlug,
+        string $type,
+        string $title,
+        string $message,
+        string $priority = 'medium',
+        array $data = [],
+        ?string $actionUrl = null
+    ): void {
+        $users = User::query()
+            ->whereHas('roles', function ($q) use ($roleSlug) {
+                $q->where('slug', $roleSlug);
             })
-            ->exists();
+            ->where('is_active', true)
+            ->get();
+
+        foreach ($users as $user) {
+            try {
+                $this->notifyUser($user->user_id, $type, $title, $message, $priority, $data, $actionUrl);
+            } catch (\Throwable $e) {
+                Log::warning("Failed to notify user {$user->user_id} of role {$roleSlug}: " . $e->getMessage());
+            }
+        }
     }
 
-    private function logNotificationAction(string $action, ?Notification $notification): void
+    public function notifySystemEvent(
+        string $eventType,
+        string $message,
+        array $data = [],
+        array $roles = ['admin']
+    ): void {
+        foreach ($roles as $roleSlug) {
+            try {
+                $this->notifyRole(
+                    $roleSlug,
+                    $eventType,
+                    '📢 System Notification',
+                    $message,
+                    Notification::PRIORITY_MEDIUM,
+                    $data
+                );
+            } catch (\Throwable $e) {
+                Log::warning("System notification to role {$roleSlug} failed: " . $e->getMessage());
+            }
+        }
+    }
+
+    /* ============================================================
+       BOOKING LIFECYCLE
+       ============================================================ */
+
+    public function bookingRequestReceived(Booking $booking): void
     {
-        if (!$notification) {
+        $customer = $booking->serviceEvent?->customer?->person;
+        $event    = $booking->serviceEvent;
+
+        try {
+            $this->notifyRole(
+                'admin',
+                'booking_request',
+                '📥 New Booking Request',
+                "New booking request {$booking->booking_no} from " . ($customer?->full_name ?? 'Unknown') . ".\n" .
+                    "Event: " . ($event?->eventType?->name ?? 'Event') . "\n" .
+                    "Date: " . ($event?->event_date?->format('F d, Y') ?? 'TBD') . "\n" .
+                    "Guests: " . ($event?->guests_count ?? 0),
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                "/admin/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('bookingRequestReceived failed: ' . $e->getMessage());
+        }
+    }
+
+    public function bookingApproved(Booking $booking): void
+    {
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
             return;
         }
 
         try {
-            AuditLog::log(
-                $action,
-                'notifications',
-                $notification->notification_id,
-                null,
+            $this->notifyUser(
+                $customer->user_id,
+                'booking_approved',
+                '✅ Booking Approved',
+                "Great news! Your booking {$booking->booking_no} has been approved.\n\n" .
+                    "Please pay the deposit to lock in your date.",
+                Notification::PRIORITY_HIGH,
                 [
-                    'type' => $notification->type,
-                    'title' => $notification->title,
-                    'user_id' => $notification->user_id,
-                    'priority' => $notification->priority,
-                    'destination' => $notification->action_url,
+                    'booking_id' => $booking->booking_id,
+                    'booking_no' => $booking->booking_no,
+                    'type'       => 'booking_approved',
                 ],
-                'Notification ' . str_replace('_', ' ', $action)
+                "/customer/bookings/{$booking->booking_id}"
             );
         } catch (\Throwable $e) {
-            Log::warning('Notification audit log failed: ' . $e->getMessage());
+            Log::warning('bookingApproved notification failed: ' . $e->getMessage());
         }
     }
 
-    // ==================== 📅 BOOKING NOTIFICATIONS ====================
-    
-    public function bookingSubmitted($booking)
+    public function depositRequired(Booking $booking): void
     {
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-        
-        $this->notifyRole('admin', 
-            Notification::TYPE_BOOKING_SUBMITTED,
-            '📅 New Booking Request',
-            "New booking request from {$customerName} for {$eventDate}.",
-            Notification::PRIORITY_HIGH,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
-            "/admin/bookings/{$booking->booking_id}"
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
+            return;
+        }
+
+        $total    = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
+        $required = round($total * 0.3, 2);
+
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'deposit_required',
+                '💰 Deposit Required',
+                "Your booking {$booking->booking_no} has been approved!\n\n" .
+                    "Please pay the 30% deposit of ₱" . number_format($required, 2) . " to lock in your date.\n\n" .
+                    "You can pay via the Orders page.",
+                Notification::PRIORITY_HIGH,
+                [
+                    'booking_id'       => $booking->booking_id,
+                    'booking_no'       => $booking->booking_no,
+                    'required_deposit' => $required,
+                    'type'             => 'deposit_required',
+                ],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('depositRequired notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function bookingRequestReceived($booking)
+    public function bookingCancelled(Booking $booking, ?string $reason = null): void
     {
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $bookingNo = $booking->booking_no;
-        $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_BOOKING_REQUEST,
-            '🆕 New Booking',
-            "New booking request received ({$bookingNo}) from {$customerName} for {$eventDate}.",
-            Notification::PRIORITY_HIGH,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $bookingNo],
-            "/admin/bookings/{$booking->booking_id}"
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
+            return;
+        }
+
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'booking_cancelled',
+                'Booking Cancelled',
+                "Your booking {$booking->booking_no} has been cancelled." .
+                    ($reason ? "\n\nReason: {$reason}" : ''),
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('bookingCancelled notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function quotationRequested($quotation)
+    public function bookingRescheduleRequested(Booking $booking, string $newDate, string $newTime, string $reason): void
     {
-        $customerName = $quotation->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_QUOTATION_REQUEST,
-            '📋 New Quotation Request',
-            "Quotation request received from {$customerName}.",
-            Notification::PRIORITY_HIGH,
-            ['quotation_id' => $quotation->quotation_id, 'quote_no' => $quotation->quote_no],
-            "/admin/quotations/{$quotation->quotation_id}"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'reschedule_requested',
+                '🔄 Reschedule Requested',
+                "Customer requested a reschedule for {$booking->booking_no}.\n\n" .
+                    "New date: {$newDate}\n" .
+                    "New time: {$newTime}\n" .
+                    "Reason: {$reason}",
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                "/admin/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('bookingRescheduleRequested notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function quotationAccepted($quotation, $booking)
+    public function rescheduleProposedByAdmin(Booking $booking, Carbon $newDate, ?string $newTime, ?string $reason): void
     {
-        $customerName = $quotation->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_QUOTATION_ACCEPTED,
-            '✅ Quotation Accepted',
-            "Quotation {$quotation->quote_no} accepted by customer {$customerName}.",
-            Notification::PRIORITY_HIGH,
-            ['quotation_id' => $quotation->quotation_id, 'booking_id' => $booking->booking_id],
-            "/admin/bookings/{$booking->booking_id}"
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
+            return;
+        }
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'reschedule_proposed',
+                '📅 New Date Proposed',
+                "Our team proposed a new date for booking {$booking->booking_no}.\n\n" .
+                    "📅 New date: " . $newDate->format('F d, Y') . "\n" .
+                    ($newTime ? "⏰ Time: {$newTime}\n" : '') .
+                    ($reason ? "📝 Reason: {$reason}\n" : '') .
+                    "\nPlease review and choose an action.",
+                Notification::PRIORITY_HIGH,
+                [
+                    'booking_id' => $booking->booking_id,
+                    'booking_no' => $booking->booking_no,
+                    'type'       => 'reschedule_proposed',
+                ],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('rescheduleProposedByAdmin notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function scheduleConflictWarning($date, $conflictingBookings)
+    public function rescheduleCounterProposed(Booking $booking, Carbon $newDate, ?string $reason): void
     {
-        $conflictCount = count($conflictingBookings);
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_SCHEDULE_CONFLICT,
-            '⚠️ Schedule Conflict Warning',
-            "Booking conflict detected on {$date}. {$conflictCount} overlapping booking(s).",
-            Notification::PRIORITY_HIGH,
-            ['date' => $date, 'conflicts' => $conflictingBookings],
-            "/admin/booking-calendar"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'reschedule_counter_proposed',
+                '🔄 Counter Reschedule',
+                "Customer proposed a new date for {$booking->booking_no}: " .
+                    $newDate->format('F d, Y') . ($reason ? "\nReason: {$reason}" : ''),
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                "/admin/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('rescheduleCounterProposed notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function bookingCancelled($booking, $reason = null)
+    public function depositCutoffWarning(Booking $booking, int $daysUntilEvent): void
     {
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_BOOKING_CANCELLED,
-            '🚫 Booking Cancellation Request',
-            "Booking {$booking->booking_no} has been cancelled by {$customerName}." . ($reason ? " Reason: {$reason}" : ''),
-            Notification::PRIORITY_MEDIUM,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no, 'reason' => $reason],
-            "/admin/bookings/{$booking->booking_id}"
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
+            return;
+        }
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'deposit_cutoff',
+                '⚠️ Deposit Cutoff Warning',
+                "Your event is in {$daysUntilEvent} day(s) but the deposit is still unpaid.\n\n" .
+                    "Please settle the deposit to keep your booking confirmed.",
+                Notification::PRIORITY_HIGH,
+                [
+                    'booking_id' => $booking->booking_id,
+                    'booking_no' => $booking->booking_no,
+                    'type'       => 'deposit_cutoff',
+                ],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('depositCutoffWarning notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function bookingRescheduleRequested($booking, $newDate, $newTime, $reason)
+    public function eventReminderThreeDays(Booking $booking): void
     {
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_BOOKING_RESCHEDULED,
-            '🔄 Booking Reschedule Request',
-            "Booking {$booking->booking_no} requested a new schedule for {$newDate} at {$newTime}. Reason: {$reason}",
-            Notification::PRIORITY_HIGH,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no, 'new_date' => $newDate, 'new_time' => $newTime],
-            "/admin/bookings/{$booking->booking_id}"
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if (!$customer?->user_id) {
+            return;
+        }
+
+        $eventDate = $booking->serviceEvent?->event_date?->format('F d, Y') ?? 'TBD';
+        $eventTime = $booking->serviceEvent?->event_time ?? 'TBD';
+        $venue     = $booking->serviceEvent?->venue ?? 'TBD';
+
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'event_reminder_3d',
+                '🎉 Event in 3 Days!',
+                "Just a reminder that your event {$booking->booking_no} is 3 days away.\n\n" .
+                    "📅 Date: {$eventDate}\n" .
+                    "⏰ Time: {$eventTime}\n" .
+                    "📍 Venue: {$venue}\n\n" .
+                    "We can't wait to serve you!",
+                Notification::PRIORITY_HIGH,
+                [
+                    'booking_id' => $booking->booking_id,
+                    'booking_no' => $booking->booking_no,
+                    'type'       => 'event_reminder_3d',
+                ],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('eventReminderThreeDays notification failed: ' . $e->getMessage());
+        }
     }
 
-public function bookingConvertedToOrder($order)
-{
-    $bookingNo = $order->booking?->booking_no ?? 'Unknown';
-    $eventDate = $order->booking?->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-    $customerName = $order->booking?->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-    
-    // Send to ADMIN instead of operations_staff
-    $this->notifyRole('admin',
-        Notification::TYPE_ORDER_READY,
-        '✅ Booking Approved & Order Created',
-        "Booking {$bookingNo} for {$customerName} on {$eventDate} has been approved. Order #{$order->order_number} has been created and is ready for processing.",
-        Notification::PRIORITY_HIGH,
-        ['order_id' => $order->order_id, 'order_number' => $order->order_number, 'booking_id' => $order->booking_id],
-        "/admin/orders/{$order->order_id}"
-    );
-}
-
-
-public function bookingApprovedNotification($booking)
-{
-    $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-    $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-    $eventTime = $booking->serviceEvent?->event_time ?? 'TBD';
-    $venue = $booking->serviceEvent?->venue ?? 'TBD';
-    $totalAmount = $booking->quotation?->total_amount ?? 0;
-    
-    $this->notifyRole('admin',
-        'booking_approved',
-        '✅ Booking Approval',
-        "Booking {$booking->booking_no} for {$customerName} has been APPROVED.\n\n" .
-        "📅 Event: {$eventDate} at {$eventTime}\n" .
-        "📍 Venue: {$venue}\n" .
-        "💰 Amount: ₱" . number_format($totalAmount, 2) . "\n\n" .
-        "✅ Order created\n" .
-        "✅ Invoice generated\n" .
-        "✅ Ingredients reserved\n" .
-        "✅ Equipment reserved",
-        \App\Models\Notification::PRIORITY_HIGH,
-        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
-        "/admin/bookings/{$booking->booking_id}"
-    );
-}
-
-
-
-    // ==================== 📦 INVENTORY NOTIFICATIONS ====================
-    
-    public function lowStockWarning($ingredient, $currentStock, $reorderPoint)
+    public function paymentReceived(BookingPayment $payment, Customer $customer): void
     {
-        $this->notifySystemEvent(
-            Notification::TYPE_LOW_STOCK,
-            "{$ingredient->name} is low. Current: {$currentStock} {$ingredient->unit}, Reorder point: {$reorderPoint} {$ingredient->unit}.",
-            ['ingredient_id' => $ingredient->ingredient_id, 'reference_id' => $ingredient->ingredient_id, 'name' => $ingredient->name, 'current_stock' => $currentStock, 'reorder_point' => $reorderPoint]
-        );
+        if (!$customer?->user_id) {
+            return;
+        }
+
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'payment_received',
+                '💰 Payment Received',
+                "We have received your payment of ₱" . number_format($payment->amount, 2) .
+                    " for booking " . ($payment->booking?->booking_no ?? 'N/A') . ".",
+                Notification::PRIORITY_HIGH,
+                [
+                    'payment_id' => $payment->payment_id,
+                    'booking_id' => $payment->booking_id,
+                    'amount'     => $payment->amount,
+                ],
+                "/customer/bookings/{$payment->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('paymentReceived notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function criticalStockLevel($ingredient, $currentStock)
+    public function balanceReminder(Booking $booking, Customer $customer, float $balance): void
     {
-        $this->notifySystemEvent(
-            Notification::TYPE_CRITICAL_STOCK,
-            "{$ingredient->name} stock is critically low. Only {$currentStock} {$ingredient->unit} remaining.",
-            ['ingredient_id' => $ingredient->ingredient_id, 'reference_id' => $ingredient->ingredient_id, 'name' => $ingredient->name, 'current_stock' => $currentStock]
-        );
+        if (!$customer?->user_id) {
+            return;
+        }
+
+        try {
+            $this->notifyUser(
+                $customer->user_id,
+                'balance_reminder',
+                '⚠️ Balance Reminder',
+                "Reminder: You still have an outstanding balance of ₱" .
+                    number_format($balance, 2) . " for booking {$booking->booking_no}.",
+                Notification::PRIORITY_MEDIUM,
+                ['booking_id' => $booking->booking_id, 'balance' => $balance],
+                "/customer/bookings/{$booking->booking_id}"
+            );
+        } catch (\Throwable $e) {
+            Log::warning('balanceReminder notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function outOfStock($ingredient)
+    /* ============================================================
+       EVENTS + EQUIPMENT
+       ============================================================ */
+
+    public function eventStartsTomorrow(Booking $booking): void
     {
-        $this->notifySystemEvent(
-            Notification::TYPE_OUT_OF_STOCK,
-            "{$ingredient->name} is currently out of stock and needs immediate action.",
-            ['ingredient_id' => $ingredient->ingredient_id, 'reference_id' => $ingredient->ingredient_id, 'name' => $ingredient->name]
-        );
+        $customer = $booking->serviceEvent?->customer;
+        if ($customer?->user_id) {
+            try {
+                $this->notifyUser(
+                    $customer->user_id,
+                    'event_tomorrow',
+                    '🎉 Event Tomorrow!',
+                    "Your event {$booking->booking_no} is tomorrow. We'll see you there!",
+                    Notification::PRIORITY_HIGH,
+                    ['booking_id' => $booking->booking_id],
+                    "/customer/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $e) {
+                Log::warning('eventStartsTomorrow customer notification failed: ' . $e->getMessage());
+            }
+        }
+
+        try {
+            $this->notifyRole(
+                'admin',
+                'event_tomorrow',
+                '🎉 Event Tomorrow',
+                "Event {$booking->booking_no} is scheduled for tomorrow.",
+                Notification::PRIORITY_MEDIUM,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('eventStartsTomorrow admin notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function purchaseRequestGenerated($purchaseRequest)
+    public function equipmentPreparationNeeded(Booking $booking, Equipment $equipment): void
     {
-        $ingredientName = $purchaseRequest->ingredient?->name ?? 'Unknown';
-        $this->notifySystemEvent(
-            Notification::TYPE_PURCHASE_REQUEST_GENERATED,
-            "Purchase Request {$purchaseRequest->pr_number} generated for {$ingredientName}. Quantity: {$purchaseRequest->quantity}.",
-            ['purchase_request_id' => $purchaseRequest->purchase_request_id, 'reference_id' => $purchaseRequest->purchase_request_id, 'pr_number' => $purchaseRequest->pr_number]
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'equipment_prep',
+                '🛠️ Equipment Preparation Needed',
+                "Equipment '{$equipment->name}' needs preparation for booking {$booking->booking_no}.",
+                Notification::PRIORITY_MEDIUM,
+                ['booking_id' => $booking->booking_id, 'equipment_id' => $equipment->equipment_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('equipmentPreparationNeeded notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function insufficientInventory($booking, $shortages)
+    public function deliveryPreparationReady(Booking $booking): void
     {
-        $shortageList = collect($shortages)->take(3)->map(fn($shortage) => "• {$shortage['name']}: {$shortage['shortage']} {$shortage['unit']}")->implode("\n");
-        $moreCount = count($shortages) - 3;
-
-        $this->notifySystemEvent(
-            Notification::TYPE_INVENTORY_SHORTAGE,
-            "Insufficient stock for booking {$booking->booking_no}.\n{$shortageList}" . ($moreCount > 0 ? "\n+ {$moreCount} more items" : ''),
-            ['booking_id' => $booking->booking_id, 'reference_id' => $booking->booking_id, 'shortages' => $shortages]
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'delivery_prep_ready',
+                '🚚 Delivery Preparation Ready',
+                "Delivery preparation for booking {$booking->booking_no} is ready.",
+                Notification::PRIORITY_MEDIUM,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('deliveryPreparationReady notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function equipmentShortageAlert($booking, $equipmentShortages)
+    public function equipmentReserved(\App\Models\BookingEquipment $equipment, Booking $booking): void
     {
-        $shortageList = collect($equipmentShortages)->map(fn($equipment) => "• {$equipment['name']}: Need {$equipment['required']}, Available {$equipment['available']}")->implode("\n");
-
-        $this->notifySystemEvent(
-            Notification::TYPE_EQUIPMENT_SHORTAGE,
-            "Equipment shortage detected for booking {$booking->booking_no}.\n{$shortageList}",
-            ['booking_id' => $booking->booking_id, 'reference_id' => $booking->booking_id, 'shortages' => $equipmentShortages]
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'equipment_reserved',
+                '📦 Equipment Reserved',
+                "Equipment reserved for booking {$booking->booking_no}.",
+                Notification::PRIORITY_LOW,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('equipmentReserved notification failed: ' . $e->getMessage());
+        }
     }
 
-    // ==================== 👨‍🍳 OPERATIONS STAFF NOTIFICATIONS ====================
-    
-    public function ingredientComputationCompleted($order)
+    public function equipmentDamaged(\App\Models\BookingEquipment $equipment, Booking $booking, int $quantity): void
     {
-        $bookingNo = $order->booking?->booking_no ?? 'Unknown';
-        
-        $this->notifyRole('operations_staff',
-            Notification::TYPE_INGREDIENT_COMPUTED,
-            '🧮 Ingredient Computation Completed',
-            "Ingredient computation completed for Booking {$bookingNo}. Check shopping list for purchase requirements.",
-            Notification::PRIORITY_MEDIUM,
-            ['order_id' => $order->order_id, 'booking_no' => $bookingNo],
-            "/admin/orders/{$order->order_id}/ingredients"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'equipment_damaged',
+                '⚠️ Equipment Damaged',
+                "{$quantity} unit(s) of equipment were damaged after booking {$booking->booking_no}.",
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('equipmentDamaged notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function kitchenPreparationCreated($order)
+    public function equipmentMissing(\App\Models\BookingEquipment $equipment, Booking $booking, int $quantity): void
     {
-        $bookingNo = $order->booking?->booking_no ?? 'Unknown';
-        
-        $this->notifyRole('operations_staff',
-            Notification::TYPE_KITCHEN_PREPARATION,
-            '👨‍🍳 Kitchen Preparation List Generated',
-            "Kitchen preparation list generated for Booking {$bookingNo}. Total items: {$order->items->count()}",
-            Notification::PRIORITY_HIGH,
-            ['order_id' => $order->order_id, 'booking_no' => $bookingNo],
-            "/admin/kitchen/orders/{$order->order_id}"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'equipment_missing',
+                '❌ Equipment Missing',
+                "{$quantity} unit(s) of equipment are missing after booking {$booking->booking_no}.",
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('equipmentMissing notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function kitchenPreparationReminder($order)
+    public function equipmentReturnOverdue(\App\Models\BookingEquipment $equipment, Booking $booking): void
     {
-        $bookingNo = $order->booking?->booking_no ?? 'Unknown';
-        $eventDate = $order->booking?->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-        $eventTime = $order->booking?->serviceEvent?->event_time ?? 'TBD';
-        $itemCount = $order->items->count();
-
-        $this->notifySystemEvent(
-            Notification::TYPE_KITCHEN_PREPARATION_REMINDER,
-            "Kitchen preparation required for Booking {$bookingNo} on {$eventDate} at {$eventTime}. Total items: {$itemCount}.",
-            ['order_id' => $order->order_id, 'reference_id' => $order->order_id, 'booking_no' => $bookingNo]
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'equipment_overdue',
+                '⏰ Equipment Return Overdue',
+                "Equipment return for booking {$booking->booking_no} is overdue.",
+                Notification::PRIORITY_HIGH,
+                ['booking_id' => $booking->booking_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('equipmentReturnOverdue notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function deliveryPreparationReady($booking)
+    /* ============================================================
+       SCHEDULE + INVENTORY
+       ============================================================ */
+
+    public function scheduleAssigned(Schedule $schedule, Employee $employee): void
     {
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        
-        $this->notifyRole('event_coordinator',
-            Notification::TYPE_DELIVERY_READY,
-            '🚚 Delivery Preparation Ready',
-            "Delivery preparation checklist is ready for {$eventName}.",
-            Notification::PRIORITY_HIGH,
-            ['booking_id' => $booking->booking_id],
-            "/admin/events/{$booking->booking_id}/deliveries"
-        );
+        if (!$employee->user_id) {
+            return;
+        }
+        try {
+            $this->notifyUser(
+                $employee->user_id,
+                'schedule_assigned',
+                '📅 New Schedule Assigned',
+                "You have been assigned to a schedule on " .
+                    ($schedule->work_date instanceof Carbon ? $schedule->work_date->format('F d, Y') : (string) $schedule->work_date) . ".",
+                Notification::PRIORITY_MEDIUM,
+                ['schedule_id' => $schedule->schedule_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('scheduleAssigned notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function deliveryPreparationReminder($order)
+    public function scheduleUpdated(Schedule $schedule, Employee $employee, array $changes = []): void
     {
-        $bookingNo = $order->booking?->booking_no ?? 'Unknown';
-        $deliveryAddress = $order->booking?->serviceEvent?->delivery_address ?? $order->booking?->serviceEvent?->venue ?? 'N/A';
-
-        $this->notifySystemEvent(
-            Notification::TYPE_DELIVERY_PREPARATION_REMINDER,
-            "Delivery preparation required for Booking {$bookingNo} to: {$deliveryAddress}.",
-            ['order_id' => $order->order_id, 'reference_id' => $order->order_id, 'booking_no' => $bookingNo]
-        );
+        if (!$employee->user_id) {
+            return;
+        }
+        try {
+            $changesText = !empty($changes) ? "\nChanges: " . implode(', ', $changes) : '';
+            $this->notifyUser(
+                $employee->user_id,
+                'schedule_updated',
+                '📅 Schedule Updated',
+                "Your schedule on " .
+                    ($schedule->work_date instanceof Carbon ? $schedule->work_date->format('F d, Y') : (string) $schedule->work_date) .
+                    " has been updated." . $changesText,
+                Notification::PRIORITY_MEDIUM,
+                ['schedule_id' => $schedule->schedule_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('scheduleUpdated notification failed: ' . $e->getMessage());
+        }
     }
 
-    // ==================== 🎯 EVENT COORDINATOR NOTIFICATIONS ====================
-    
-    public function eventStartsTomorrow($booking)
+    public function scheduleCancelled(Schedule $schedule, Employee $employee): void
     {
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-
-        $this->notifySystemEvent(
-            Notification::TYPE_EVENT_STARTS_TOMORROW,
-            "{$eventName} for {$customerName} begins tomorrow, {$eventDate}. Please ensure all preparations are complete.",
-            ['booking_id' => $booking->booking_id, 'reference_id' => $booking->booking_id, 'event_name' => $eventName, 'event_date' => $eventDate]
-        );
+        if (!$employee->user_id) {
+            return;
+        }
+        try {
+            $this->notifyUser(
+                $employee->user_id,
+                'schedule_cancelled',
+                '📅 Schedule Cancelled',
+                "Your schedule on " .
+                    ($schedule->work_date instanceof Carbon ? $schedule->work_date->format('F d, Y') : (string) $schedule->work_date) .
+                    " has been cancelled.",
+                Notification::PRIORITY_HIGH,
+                ['schedule_id' => $schedule->schedule_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('scheduleCancelled notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function upcomingEventReminder($booking, $daysBefore = 3)
+    public function scheduleConflictWarning(string $date, array $bookings): void
     {
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-
-        $this->notifySystemEvent(
-            Notification::TYPE_UPCOMING_EVENT_REMINDER,
-            "Event \"{$eventName}\" for {$customerName} starts in {$daysBefore} days on {$eventDate}.",
-            ['booking_id' => $booking->booking_id, 'reference_id' => $booking->booking_id, 'days_before' => $daysBefore]
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'schedule_conflict',
+                '⚠️ Schedule Conflict',
+                "Multiple bookings found on {$date} (" . count($bookings) . "). Please review.",
+                Notification::PRIORITY_HIGH,
+                ['date' => $date, 'booking_count' => count($bookings)]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('scheduleConflictWarning notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function equipmentPreparationNeeded($booking, $equipment)
+    public function lowStockWarning(\App\Models\Ingredient $ingredient, float $current, float $reorder): void
     {
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        
-        $this->notifyRole('event_coordinator',
-            Notification::TYPE_EQUIPMENT_PREPARATION,
-            '🔧 Equipment Preparation Needed',
-            "Prepare event equipment for {$eventName}: {$equipment->name} ({$equipment->pivot->quantity_reserved} units)",
-            Notification::PRIORITY_MEDIUM,
-            ['booking_id' => $booking->booking_id, 'equipment' => $equipment->name],
-            "/admin/events/{$booking->booking_id}/equipment"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'low_stock',
+                '⚠️ Low Stock',
+                "Ingredient '{$ingredient->name}' is low on stock ({$current} left, reorder at {$reorder}).",
+                Notification::PRIORITY_HIGH,
+                ['ingredient_id' => $ingredient->ingredient_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('lowStockWarning notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function eventStarted($booking)
+    public function outOfStock(\App\Models\Ingredient $ingredient): void
     {
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $venue = $booking->serviceEvent?->venue ?? 'TBD';
-        
-        $this->notifyRole('event_coordinator',
-            Notification::TYPE_EVENT_STARTED,
-            '🎉 Event Started',
-            "Event \"{$eventName}\" for {$customerName} at {$venue} is now ongoing.",
-            Notification::PRIORITY_LOW,
-            ['booking_id' => $booking->booking_id, 'event_name' => $eventName],
-            "/admin/events/{$booking->booking_id}"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'out_of_stock',
+                '❌ Out of Stock',
+                "Ingredient '{$ingredient->name}' is out of stock.",
+                Notification::PRIORITY_HIGH,
+                ['ingredient_id' => $ingredient->ingredient_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('outOfStock notification failed: ' . $e->getMessage());
+        }
     }
 
-    // ==================== 👥 EMPLOYEE NOTIFICATIONS ====================
-    
-    public function scheduleAssigned($schedule, $employee)
+    public function ingredientComputationCompleted(Order $order): void
     {
-        $eventName = $schedule->assignmentPayload()['placement'] ?? 'Event';
-        $workDate = $schedule->work_date->format('M d, Y');
-        $shiftTime = "{$schedule->start_time} - {$schedule->end_time}";
-        
-        $this->notifyUser($employee->user_id,
-            Notification::TYPE_SCHEDULE_ASSIGNED,
-            '📅 Schedule Assigned',
-            "You have been assigned to {$eventName} on {$workDate} ({$shiftTime}).",
-            Notification::PRIORITY_MEDIUM,
-            ['schedule_id' => $schedule->schedule_id, 'event_name' => $eventName, 'work_date' => $workDate],
-            "/employee/schedules"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'ingredient_computation_done',
+                '✅ Ingredient Computation Completed',
+                "Ingredient computation for order {$order->order_number} is done.",
+                Notification::PRIORITY_LOW,
+                ['order_id' => $order->order_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('ingredientComputationCompleted notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function scheduleUpdated($schedule, $employee, $changes)
+    /* ============================================================
+       ⭐ LEAVE REQUESTS — FIX #8 (was throwing 500 error)
+       ============================================================ */
+
+    public function dayOffRequestSubmitted(LeaveRequest $leaveRequest): void
     {
-        $eventName = $schedule->assignmentPayload()['placement'] ?? 'Event';
-        
-        $this->notifyUser($employee->user_id,
-            Notification::TYPE_SCHEDULE_UPDATED,
-            '📅 Schedule Updated',
-            "Your schedule for {$eventName} has been updated. Please review the changes.",
-            Notification::PRIORITY_MEDIUM,
-            ['schedule_id' => $schedule->schedule_id, 'changes' => $changes],
-            "/employee/schedules"
-        );
+        try {
+            $employee = $leaveRequest->employee;
+            $name = $employee?->full_name ?? 'An employee';
+
+            $this->notifyRole(
+                'admin',
+                'leave_request',
+                '🌴 New Day Off Request',
+                "{$name} submitted a day-off request.\n\n" .
+                    "📅 Date: " . $this->formatLeaveRange($leaveRequest) . "\n" .
+                    "📝 Reason: " . ($leaveRequest->reason ?? 'No reason provided'),
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'employee_id' => $leaveRequest->employee_id,
+                    'type' => 'day_off_request',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('dayOffRequestSubmitted notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function scheduleCancelled($schedule, $employee)
+    public function sickLeaveRequestSubmitted(LeaveRequest $leaveRequest): void
     {
-        $eventName = $schedule->assignmentPayload()['placement'] ?? 'Event';
-        $workDate = $schedule->work_date->format('M d, Y');
-        
-        $this->notifyUser($employee->user_id,
-            Notification::TYPE_SCHEDULE_CANCELLED,
-            '📅 Schedule Cancelled',
-            "Your schedule assignment for {$eventName} on {$workDate} has been removed.",
-            Notification::PRIORITY_MEDIUM,
-            ['schedule_id' => $schedule->schedule_id],
-            "/employee/schedules"
-        );
+        try {
+            $employee = $leaveRequest->employee;
+            $name = $employee?->full_name ?? 'An employee';
+
+            $this->notifyRole(
+                'admin',
+                'leave_request',
+                '🤒 New Sick Leave Request',
+                "{$name} submitted a sick leave request.\n\n" .
+                    "📅 Date: " . $this->formatLeaveRange($leaveRequest) . "\n" .
+                    "📝 Reason: " . ($leaveRequest->reason ?? 'No reason provided'),
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'employee_id' => $leaveRequest->employee_id,
+                    'type' => 'sick_leave_request',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('sickLeaveRequestSubmitted notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function staffScheduleConflict($employee, $date, $existingShift, $newShift)
+    public function shiftSwapRequestSubmitted(LeaveRequest $leaveRequest): void
     {
-        $this->notifyRole('admin',
-            Notification::TYPE_STAFF_SCHEDULE_CONFLICT,
-            '👥 Staff Scheduling Conflict',
-            "Employee {$employee->full_name} already assigned to a shift on {$date} from {$existingShift->start_time} to {$existingShift->end_time}.",
-            Notification::PRIORITY_HIGH,
-            ['employee_id' => $employee->employee_id, 'date' => $date],
-            "/admin/schedules"
-        );
+        try {
+            $employee = $leaveRequest->employee;
+            $name = $employee?->full_name ?? 'An employee';
+
+            $from = $leaveRequest->swap_from_time ?? $leaveRequest->swap_shift_time ?? '—';
+            $to   = $leaveRequest->swap_to_time ?? '—';
+
+            $this->notifyRole(
+                'admin',
+                'leave_request',
+                '🔄 New Shift Swap Request',
+                "{$name} submitted a shift swap request.\n\n" .
+                    "📅 Date: " . $this->formatLeaveRange($leaveRequest) . "\n" .
+                    "⏰ From: {$from} → To: {$to}\n" .
+                    "📝 Reason: " . ($leaveRequest->reason ?? 'No reason provided'),
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'employee_id' => $leaveRequest->employee_id,
+                    'type' => 'shift_swap_request',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('shiftSwapRequestSubmitted notification failed: ' . $e->getMessage());
+        }
     }
 
-    // ==================== 📋 LEAVE REQUEST NOTIFICATIONS ====================
-    
-    public function leaveRequestSubmitted($leaveRequest)
+    public function leaveRequestSubmitted(LeaveRequest $leaveRequest): void
     {
-        $employeeName = $leaveRequest->employee?->full_name ?? 'Employee';
-        $dates = "{$leaveRequest->start_date->format('M d, Y')} to {$leaveRequest->end_date->format('M d, Y')}";
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_LEAVE_REQUEST,
-            '📋 New Leave Request',
-            "New leave request submitted by {$employeeName}. Dates: {$dates}.",
-            Notification::PRIORITY_MEDIUM,
-            ['leave_request_id' => $leaveRequest->leave_request_id, 'employee_name' => $employeeName],
-            "/admin/employee-requests/{$leaveRequest->leave_request_id}"
-        );
+        try {
+            $employee = $leaveRequest->employee;
+            $name = $employee?->full_name ?? 'An employee';
+
+            $this->notifyRole(
+                'admin',
+                'leave_request',
+                '📆 New Leave Request',
+                "{$name} submitted a leave request.\n\n" .
+                    "📅 Date: " . $this->formatLeaveRange($leaveRequest) . "\n" .
+                    "📝 Reason: " . ($leaveRequest->reason ?? 'No reason provided'),
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'employee_id' => $leaveRequest->employee_id,
+                    'type' => 'leave_request',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('leaveRequestSubmitted notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function sickLeaveSubmitted($leaveRequest)
+    public function leaveRequestApproved(LeaveRequest $leaveRequest): void
     {
-        $employeeName = $leaveRequest->employee?->full_name ?? 'Employee';
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_SICK_LEAVE,
-            '🤒 New Sick Leave Request',
-            "New sick leave request submitted by {$employeeName}.",
-            Notification::PRIORITY_MEDIUM,
-            ['leave_request_id' => $leaveRequest->leave_request_id, 'employee_name' => $employeeName],
-            "/admin/employee-requests/{$leaveRequest->leave_request_id}"
-        );
+        $employee = $leaveRequest->employee;
+        if (!$employee?->user_id) {
+            return;
+        }
+
+        try {
+            $this->notifyUser(
+                $employee->user_id,
+                'leave_request_approved',
+                '✅ Leave Request Approved',
+                "Your leave request for " . $this->formatLeaveRange($leaveRequest) . " has been approved.",
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'type' => 'leave_request_approved',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('leaveRequestApproved notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function dayOffRequestSubmitted($leaveRequest)
+    public function leaveRequestRejected(LeaveRequest $leaveRequest, ?string $reason = null): void
     {
-        $employeeName = $leaveRequest->employee?->full_name ?? 'Employee';
-        $date = $leaveRequest->start_date->format('M d, Y');
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_DAY_OFF_REQUEST,
-            '📅 New Day-Off Request',
-            "New day-off request submitted by {$employeeName} on {$date}.",
-            Notification::PRIORITY_LOW,
-            ['leave_request_id' => $leaveRequest->leave_request_id, 'employee_name' => $employeeName],
-            "/admin/employee-requests/{$leaveRequest->leave_request_id}"
-        );
+        $employee = $leaveRequest->employee;
+        if (!$employee?->user_id) {
+            return;
+        }
+
+        try {
+            $this->notifyUser(
+                $employee->user_id,
+                'leave_request_rejected',
+                '❌ Leave Request Rejected',
+                "Your leave request for " . $this->formatLeaveRange($leaveRequest) . " was rejected." .
+                    ($reason ? "\n\nReason: {$reason}" : ''),
+                Notification::PRIORITY_HIGH,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'type' => 'leave_request_rejected',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('leaveRequestRejected notification failed: ' . $e->getMessage());
+        }
     }
 
-    // ==================== 💰 PAYROLL NOTIFICATIONS ====================
-    
-    public function payrollReadyForProcessing($payroll)
+    public function leaveRequestCancelled(LeaveRequest $leaveRequest): void
     {
-        $this->notifyRole('admin',
-            Notification::TYPE_PAYROLL_READY,
-            '💰 Payroll Ready for Processing',
-            "Payroll period {$payroll->cutoff_start->format('M d')} - {$payroll->cutoff_end->format('M d, Y')} is ready for processing.",
-            Notification::PRIORITY_HIGH,
-            ['payroll_id' => $payroll->payroll_id, 'payroll_number' => $payroll->payroll_number],
-            "/admin/payroll/{$payroll->payroll_id}"
-        );
+        try {
+            $employee = $leaveRequest->employee;
+            $name = $employee?->full_name ?? 'An employee';
+
+            $this->notifyRole(
+                'admin',
+                'leave_request_cancelled',
+                '🚫 Leave Request Cancelled',
+                "{$name} cancelled their leave request for " . $this->formatLeaveRange($leaveRequest) . ".",
+                Notification::PRIORITY_MEDIUM,
+                [
+                    'leave_request_id' => $leaveRequest->leave_request_id ?? $leaveRequest->id,
+                    'type' => 'leave_request_cancelled',
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('leaveRequestCancelled notification failed: ' . $e->getMessage());
+        }
     }
 
-    public function overtimePendingApproval($attendance, $employee)
+    public function missingTimeoutAlert(Employee $employee, \App\Models\AttendanceLog $attendance): void
     {
-        $date = $attendance->attendance_date->format('M d, Y');
-        $hours = $attendance->overtime_hours;
-        
-        $this->notifyRole('admin',
-            Notification::TYPE_OVERTIME_PENDING,
-            '⏰ Overtime Approval Required',
-            "Overtime request from {$employee->full_name} for {$date} ({$hours} hours) is pending approval.",
-            Notification::PRIORITY_HIGH,
-            ['attendance_id' => $attendance->attendance_id, 'employee_name' => $employee->full_name],
-            "/admin/attendance/{$attendance->attendance_id}"
-        );
+        try {
+            $this->notifyRole(
+                'admin',
+                'missing_timeout',
+                '⚠️ Missing Time-Out',
+                "{$employee->full_name} did not record a time-out for " .
+                    ($attendance->attendance_date?->format('M d, Y') ?? 'their last shift') . ".",
+                Notification::PRIORITY_HIGH,
+                ['attendance_id' => $attendance->attendance_id, 'employee_id' => $employee->employee_id]
+            );
+        } catch (\Throwable $e) {
+            Log::warning('missingTimeoutAlert failed: ' . $e->getMessage());
+        }
     }
 
-    public function overtimeApproved($attendance, $employee)
+    /* ============================================================
+       HELPERS
+       ============================================================ */
+
+    private function formatLeaveRange(LeaveRequest $leaveRequest): string
     {
-        $date = $attendance->attendance_date->format('M d, Y');
-        $hours = $attendance->overtime_hours;
-        
-        $this->notifyUser($employee->user_id,
-            Notification::TYPE_OVERTIME_APPROVED,
-            '✅ Overtime Approved',
-            "Your overtime request for {$date} ({$hours} hours) has been approved.",
-            Notification::PRIORITY_MEDIUM,
-            ['attendance_id' => $attendance->attendance_id],
-            "/employee/attendance"
-        );
+        $start = $leaveRequest->start_date
+            ? Carbon::parse($leaveRequest->start_date)->format('M d, Y')
+            : '—';
+        $end = $leaveRequest->end_date
+            ? Carbon::parse($leaveRequest->end_date)->format('M d, Y')
+            : null;
+
+        if (!$end || $end === $start) {
+            return $start;
+        }
+
+        return "{$start} to {$end}";
     }
-
-    public function overtimeRejected($attendance, $employee, $reason = null)
-    {
-        $date = $attendance->attendance_date->format('M d, Y');
-        
-        $this->notifyUser($employee->user_id,
-            Notification::TYPE_OVERTIME_REJECTED,
-            '❌ Overtime Rejected',
-            "Your overtime request for {$date} has been rejected." . ($reason ? " Reason: {$reason}" : ''),
-            Notification::PRIORITY_MEDIUM,
-            ['attendance_id' => $attendance->attendance_id],
-            "/employee/attendance"
-        );
-    }
-
-    // ==================== 👤 CUSTOMER NOTIFICATIONS ====================
-    
-    public function paymentReceived($payment, $customer)
-    {
-        $amount = number_format($payment->amount, 2);
-        $bookingNo = $payment->booking?->booking_no ?? 'Unknown';
-        
-        $this->notifyUser($customer->user_id,
-            Notification::TYPE_PAYMENT_RECEIVED,
-            '✅ Payment Received',
-            "Payment of ₱{$amount} for booking {$bookingNo} has been successfully received.",
-            Notification::PRIORITY_HIGH,
-            ['payment_id' => $payment->payment_id, 'booking_no' => $bookingNo, 'amount' => $payment->amount],
-            "/customer/bookings/{$payment->booking_id}"
-        );
-    }
-
-    public function paymentProofUploaded($payment, $customer)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_PAYMENT_PROOF_UPLOADED,
-            '💳 Payment Proof Uploaded',
-            "Customer {$customer->person?->full_name} uploaded payment proof for ₱" . number_format($payment->amount, 2) . ".",
-            Notification::PRIORITY_HIGH,
-            ['payment_id' => $payment->payment_id, 'amount' => $payment->amount],
-            "/admin/payments/{$payment->payment_id}"
-        );
-    }
-
-    public function balanceReminder($booking, $customer, $balance)
-    {
-        $bookingNo = $booking->booking_no;
-        $balanceAmount = number_format($balance, 2);
-        
-        $this->notifyUser($customer->user_id,
-            Notification::TYPE_BALANCE_REMINDER,
-            '💰 Balance Reminder',
-            "Remaining balance due: ₱{$balanceAmount} for booking {$bookingNo}.",
-            Notification::PRIORITY_MEDIUM,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $bookingNo, 'balance' => $balance],
-            "/customer/bookings/{$booking->booking_id}/payments"
-        );
-    }
-
-    public function balanceDueReminder($invoice, $customer, $daysLeft)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_BALANCE_DUE_REMINDER,
-            '💰 Balance Due Reminder',
-            "Customer {$customer->person?->full_name} has balance of ₱" . number_format($invoice->balance, 2) . " due in {$daysLeft} days.",
-            Notification::PRIORITY_HIGH,
-            ['invoice_id' => $invoice->invoice_id, 'balance' => $invoice->balance, 'days_left' => $daysLeft],
-            "/admin/invoices/{$invoice->invoice_id}"
-        );
-    }
-
-    public function overdueAccountAlert($customer, $overdueAmount, $overdueDays)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_OVERDUE_ACCOUNT,
-            '🚨 Overdue Credit Account',
-            "Customer {$customer->person?->full_name} has overdue balance of ₱" . number_format($overdueAmount, 2) . " for {$overdueDays} days.",
-            Notification::PRIORITY_HIGH,
-            ['customer_id' => $customer->customer_id, 'overdue_amount' => $overdueAmount, 'overdue_days' => $overdueDays],
-            "/admin/customers/{$customer->customer_id}"
-        );
-    }
-
-    public function paymentDueReminder($booking, $customer, $dueDate)
-    {
-        $bookingNo = $booking->booking_no;
-        $daysLeft = now()->diffInDays($dueDate, false);
-        
-        $this->notifyUser($customer->user_id,
-            Notification::TYPE_PAYMENT_DUE,
-            '⏰ Payment Due Soon',
-            "Payment for booking {$bookingNo} is due in {$daysLeft} days. Due date: {$dueDate->format('M d, Y')}",
-            Notification::PRIORITY_HIGH,
-            ['booking_id' => $booking->booking_id, 'booking_no' => $bookingNo, 'due_date' => $dueDate],
-            "/customer/bookings/{$booking->booking_id}/payments"
-        );
-    }
-
-    // ==================== 🔧 EQUIPMENT NOTIFICATIONS ====================
-    
-    public function equipmentReserved($bookingEquipment, $booking)
-    {
-        $equipmentName = $bookingEquipment->equipment?->name ?? 'Equipment';
-        $eventName = $booking->serviceEvent?->eventType?->name ?? 'Event';
-        
-        $this->notifyRole('operations_staff',
-            Notification::TYPE_EQUIPMENT_RESERVED,
-            '🔧 Equipment Reserved',
-            "Equipment reserved for {$eventName}: {$equipmentName} ({$bookingEquipment->quantity_reserved} units)",
-            Notification::PRIORITY_MEDIUM,
-            ['booking_equipment_id' => $bookingEquipment->booking_equipment_id, 'equipment_name' => $equipmentName],
-            "/admin/events/{$booking->booking_id}/equipment"
-        );
-    }
-
-    public function equipmentReturnOverdue($bookingEquipment, $booking)
-    {
-        $equipmentName = $bookingEquipment->equipment?->name ?? 'Equipment';
-        $expectedReturn = $bookingEquipment->rental_end_date->format('M d, Y');
-        
-        $this->notifyRole('operations_staff',
-            Notification::TYPE_EQUIPMENT_OVERDUE,
-            '⚠️ Equipment Return Overdue',
-            "Equipment {$equipmentName} return is overdue. Expected return date: {$expectedReturn}",
-            Notification::PRIORITY_HIGH,
-            ['booking_equipment_id' => $bookingEquipment->booking_equipment_id, 'equipment_name' => $equipmentName],
-            "/admin/events/{$booking->booking_id}/equipment"
-        );
-    }
-
-    public function equipmentReturnPending($booking)
-    {
-        $eventDate = $booking->serviceEvent?->event_date?->format('M d, Y') ?? 'TBD';
-        $equipmentCount = $booking->equipment->where('status', 'checked_out')->count();
-
-        $this->notifySystemEvent(
-            Notification::TYPE_EQUIPMENT_RETURN_PENDING,
-            "Equipment return verification required for event on {$eventDate}. {$equipmentCount} item(s) pending return.",
-            ['booking_id' => $booking->booking_id, 'reference_id' => $booking->booking_id, 'equipment_count' => $equipmentCount]
-        );
-    }
-
-    public function equipmentDamaged($bookingEquipment, $booking, $quantity)
-    {
-        $equipmentName = $bookingEquipment->equipment?->name ?? 'Equipment';
-
-        $this->notifySystemEvent(
-            Notification::TYPE_DAMAGED_EQUIPMENT_REPORTED,
-            "Damaged equipment reported: {$quantity} units of {$equipmentName} from event {$booking->booking_no}.",
-            ['booking_equipment_id' => $bookingEquipment->booking_equipment_id, 'reference_id' => $bookingEquipment->booking_equipment_id, 'equipment_name' => $equipmentName, 'quantity' => $quantity]
-        );
-    }
-
-    public function equipmentMissing($bookingEquipment, $booking, $quantity)
-    {
-        $equipmentName = $bookingEquipment->equipment?->name ?? 'Equipment';
-
-        $this->notifySystemEvent(
-            Notification::TYPE_MISSING_EQUIPMENT,
-            "Missing equipment detected: {$quantity} units of {$equipmentName} from event {$booking->booking_no}.",
-            ['booking_equipment_id' => $bookingEquipment->booking_equipment_id, 'reference_id' => $bookingEquipment->booking_equipment_id, 'equipment_name' => $equipmentName, 'quantity' => $quantity]
-        );
-    }
-
-    // ==================== ⭐ REVIEW & FEEDBACK NOTIFICATIONS ====================
-    
-    public function newCustomerReview($review)
-    {
-        $customerName = $review->booking?->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $rating = $review->overall_rating;
-
-        $this->notifySystemEvent(
-            Notification::TYPE_CUSTOMER_REVIEW,
-            "New customer feedback received from {$customerName}. Rating: {$rating} stars.",
-            ['review_id' => $review->review_id, 'reference_id' => $review->review_id, 'customer_name' => $customerName, 'rating' => $rating]
-        );
-    }
-
-    public function lowRatingAlert($review)
-    {
-        $customerName = $review->booking?->serviceEvent?->customer?->person?->full_name ?? 'Customer';
-        $rating = $review->overall_rating;
-
-        $this->notifySystemEvent(
-            Notification::TYPE_LOW_RATING,
-            "Customer {$customerName} rated event {$rating} stars. Please review feedback.",
-            ['review_id' => $review->review_id, 'reference_id' => $review->review_id, 'customer_name' => $customerName, 'rating' => $rating]
-        );
-    }
-
-    // ==================== 🔒 SECURITY NOTIFICATIONS ====================
-    
-    public function failedLoginAttempt($email, $ip, $attempts)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_FAILED_LOGIN,
-            '🚫 Multiple Failed Login Attempts',
-            "Multiple failed login attempts detected for {$email} from IP {$ip}. Attempts: {$attempts}",
-            Notification::PRIORITY_HIGH,
-            ['email' => $email, 'ip' => $ip, 'attempts' => $attempts]
-        );
-    }
-
-    public function adminAccountCreated($newAdmin, $createdBy)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_ADMIN_CREATED,
-            '👤 New Admin Account Created',
-            "New administrator account created for {$newAdmin->email} by {$createdBy->email}.",
-            Notification::PRIORITY_HIGH,
-            ['new_admin_id' => $newAdmin->user_id, 'new_admin_email' => $newAdmin->email, 'created_by' => $createdBy->email]
-        );
-    }
-
-    public function permissionChanged($user, $changedBy, $permissions)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_PERMISSION_CHANGED,
-            '🔒 Permission Changed',
-            "User permissions updated for {$user->email} by {$changedBy->email}.",
-            Notification::PRIORITY_MEDIUM,
-            ['user_id' => $user->user_id, 'user_email' => $user->email, 'changed_by' => $changedBy->email, 'permissions' => $permissions]
-        );
-    }
-
-    // ==================== ⏰ ATTENDANCE NOTIFICATIONS ====================
-    
-    public function attendancePendingVerification($pendingCount)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_ATTENDANCE_PENDING,
-            '📊 Attendance Waiting for Verification',
-            "{$pendingCount} attendance record(s) are waiting for verification.",
-            Notification::PRIORITY_HIGH,
-            ['pending_count' => $pendingCount],
-            "/admin/attendance/needs-approval"
-        );
-    }
-
-    public function missingTimeoutAlert($employee, $attendance)
-    {
-        $this->notifyRole('admin',
-            Notification::TYPE_MISSING_TIMEOUT,
-            '⏳ Missing Time-Out Reminder',
-            "Employee {$employee->full_name} has no recorded time-out for {$attendance->attendance_date->format('M d, Y')}.",
-            Notification::PRIORITY_MEDIUM,
-            ['attendance_id' => $attendance->attendance_id, 'employee_name' => $employee->full_name],
-            "/admin/attendance/{$attendance->attendance_id}"
-        );
-    }
-
-    // ==================== GENERIC REQUESTED NOTIFICATION EVENTS ====================
-
-    public function notifyLowStockAlert($ingredient, $currentStock, $reorderPoint = null): void
-    {
-        $unit = $ingredient->unit ?? '';
-        $name = $ingredient->name ?? 'Inventory item';
-        $this->notifySystemEvent(
-            'low_stock',
-            "{$name} is low. Current stock: {$currentStock} {$unit}" . ($reorderPoint !== null ? ", reorder point: {$reorderPoint} {$unit}." : '.'),
-            ['ingredient_id' => $ingredient->ingredient_id ?? null, 'reference_id' => $ingredient->ingredient_id ?? null, 'current_stock' => $currentStock, 'reorder_point' => $reorderPoint]
-        );
-    }
-
-    public function notifyOutOfStockAlert($ingredient): void
-    {
-        $name = $ingredient->name ?? 'Inventory item';
-        $this->notifySystemEvent(
-            'out_of_stock',
-            "{$name} is out of stock and needs immediate action.",
-            ['ingredient_id' => $ingredient->ingredient_id ?? null, 'reference_id' => $ingredient->ingredient_id ?? null]
-        );
-    }
-
-    public function notifyAuditLogAlert(string $message, array $data = []): void
-    {
-        $this->notifySystemEvent('audit_log_alert', $message, $data, ['admin']);
-    }
-
-    public function notifySecurityAlert(string $message, array $data = []): void
-    {
-        $this->notifySystemEvent('security_alert', $message, $data, ['admin']);
-    }
-
-    public function notifyOperationalEvent(string $type, string $message, array $data = []): void
-    {
-        $this->notifySystemEvent($type, $message, $data);
-    }
-
 }

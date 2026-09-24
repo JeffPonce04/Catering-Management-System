@@ -18,9 +18,9 @@ export const NotificationProvider = ({ children }) => {
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(Date.now());
   const { isAuthenticated, user } = useAuth();
 
-  // Load notifications when authenticated
   useEffect(() => {
     if (isAuthenticated) {
       loadNotifications();
@@ -29,20 +29,32 @@ export const NotificationProvider = ({ children }) => {
     }
   }, [isAuthenticated, user?.id]);
 
-  const loadNotifications = async () => {
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const interval = setInterval(() => {
+      loadNotifications(true);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  const loadNotifications = async (silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) setIsLoading(true);
       const response = await notificationAPI.getNotifications({ per_page: 50 });
       if (response.data.success) {
-        const data = response.data.data;
-        setNotifications(data.data || []);
-        setUnreadCount(data.unread_count || 0);
+        const payload = response.data.data;
+        const items = payload.data || payload || [];
+        setNotifications(items);
+        setUnreadCount(
+          payload.unread_count ?? items.filter((n) => !n.read_at && !n.read).length
+        );
+        setLastRefresh(Date.now());
       }
     } catch (error) {
       console.log('Error loading notifications:', error);
-      loadLocalNotifications();
+      if (!silent) loadLocalNotifications();
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
   };
 
@@ -52,7 +64,7 @@ export const NotificationProvider = ({ children }) => {
       if (saved) {
         const parsed = JSON.parse(saved);
         setNotifications(parsed);
-        setUnreadCount(parsed.filter(n => !n.read).length);
+        setUnreadCount(parsed.filter((n) => !n.read).length);
       }
     } catch (error) {
       console.error('Failed to load local notifications:', error);
@@ -74,10 +86,9 @@ export const NotificationProvider = ({ children }) => {
       created_at: new Date().toISOString(),
       ...notification,
     };
-    
     const updated = [newNotification, ...notifications];
     setNotifications(updated);
-    setUnreadCount(prev => prev + 1);
+    setUnreadCount((prev) => prev + 1);
     saveLocalNotifications(updated);
   };
 
@@ -86,12 +97,11 @@ export const NotificationProvider = ({ children }) => {
       if (isAuthenticated) {
         await notificationAPI.markAsRead(notificationId);
       }
-      
-      const updated = notifications.map(n => 
+      const updated = notifications.map((n) =>
         n.id === notificationId ? { ...n, read: true, read_at: new Date().toISOString() } : n
       );
       setNotifications(updated);
-      setUnreadCount(updated.filter(n => !n.read).length);
+      setUnreadCount(updated.filter((n) => !n.read && !n.read_at).length);
       saveLocalNotifications(updated);
     } catch (error) {
       console.log('Error marking as read:', error);
@@ -103,11 +113,10 @@ export const NotificationProvider = ({ children }) => {
       if (isAuthenticated) {
         await notificationAPI.markAllAsRead();
       }
-      
-      const updated = notifications.map(n => ({ 
-        ...n, 
-        read: true, 
-        read_at: new Date().toISOString() 
+      const updated = notifications.map((n) => ({
+        ...n,
+        read: true,
+        read_at: new Date().toISOString(),
       }));
       setNotifications(updated);
       setUnreadCount(0);
@@ -122,10 +131,9 @@ export const NotificationProvider = ({ children }) => {
       if (isAuthenticated) {
         await notificationAPI.deleteNotification(notificationId);
       }
-      
-      const updated = notifications.filter(n => n.id !== notificationId);
+      const updated = notifications.filter((n) => n.id !== notificationId);
       setNotifications(updated);
-      setUnreadCount(updated.filter(n => !n.read).length);
+      setUnreadCount(updated.filter((n) => !n.read && !n.read_at).length);
       saveLocalNotifications(updated);
     } catch (error) {
       console.log('Error deleting notification:', error);
@@ -151,18 +159,30 @@ export const NotificationProvider = ({ children }) => {
     }
   };
 
+  const priorityNotifications = notifications.filter(
+    (n) => n.priority === 'high' || n.priority === 'critical'
+  );
+  const priorityUnreadCount = priorityNotifications.filter(
+    (n) => !n.read && !n.read_at
+  ).length;
+
   return (
-    <NotificationContext.Provider value={{
-      notifications,
-      unreadCount,
-      isLoading,
-      addNotification,
-      markAsRead,
-      markAllAsRead,
-      deleteNotification,
-      clearAll,
-      refreshNotifications,
-    }}>
+    <NotificationContext.Provider
+      value={{
+        notifications,
+        unreadCount,
+        priorityNotifications,
+        priorityUnreadCount,
+        isLoading,
+        lastRefresh,
+        addNotification,
+        markAsRead,
+        markAllAsRead,
+        deleteNotification,
+        clearAll,
+        refreshNotifications,
+      }}
+    >
       {children}
     </NotificationContext.Provider>
   );

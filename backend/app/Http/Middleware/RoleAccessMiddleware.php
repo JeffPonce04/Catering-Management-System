@@ -29,13 +29,63 @@ class RoleAccessMiddleware
         'cashier',
         'inventory-manager',
         'staff-manager',
-        // Kept only so existing installations using this legacy role do not break.
         'head-chef',
     ];
 
     private const NON_ADMIN_PORTAL_ROLES = [
         'customer',
         'employee',
+    ];
+
+    /**
+     * Human-readable message for each restricted action.
+     */
+    private const ACTION_MESSAGES = [
+        'approve'  => 'You cannot approve please contact super admin!',
+        'reject'   => 'You cannot reject please contact super admin!',
+        'create'   => 'You cannot create please contact super admin!',
+        'edit'     => 'You cannot edit please contact super admin!',
+        'delete'   => 'You cannot delete please contact super admin!',
+        'view'     => 'You cannot view please contact super admin!',
+        'export'   => 'You cannot export please contact super admin!',
+        'settings' => 'You cannot access settings please contact super admin!',
+    ];
+
+    private const APPROVE_ACTION_SEGMENTS = [
+        'confirm',
+        'approve',
+        'approve-refund',
+        'approve-reschedule',
+        'approve-overtime',
+        'approve-undertime',
+        'approve-unscheduled',
+        'approve-all',
+        'approve-selected',
+        'verify',
+        'mark-paid',
+        'send',
+        'release',
+    ];
+
+    private const REJECT_ACTION_SEGMENTS = [
+        'reject',
+        'decline',
+        'reject-refund',
+        'reject-reschedule',
+        'reject-overtime',
+        'reject-undertime',
+        'cancel',
+        'cancel-with-reason',
+        'unverify',
+        'undecline',
+        'unapprove',
+    ];
+
+    private const EXPORT_ACTION_SEGMENTS = [
+        'export',
+        'download',
+        'download-receipt',
+        'payslip',
     ];
 
     public function handle(Request $request, Closure $next): Response
@@ -52,15 +102,13 @@ class RoleAccessMiddleware
         $roles = $user->roles()
             ->where('is_active', true)
             ->pluck('slug')
-            ->map(fn ($role) => $this->normalizeRole((string) $role))
+            ->map(fn($role) => $this->normalizeRole((string) $role))
             ->unique()
             ->values()
             ->all();
 
         $controlledRoles = array_values(array_intersect($roles, self::CONTROLLED_ROLES));
 
-        // Preserve the existing customer and employee portals, but never let an
-        // unknown/custom role bypass the operational authorization matrix.
         if ($controlledRoles === []) {
             $unexpectedRoles = array_values(array_diff($roles, self::NON_ADMIN_PORTAL_ROLES));
             if ($unexpectedRoles === []) {
@@ -85,6 +133,25 @@ class RoleAccessMiddleware
         }
 
         foreach ($controlledRoles as $role) {
+            $restrictions = $this->getRestrictions($role);
+
+            if (empty($restrictions)) {
+                continue;
+            }
+
+            $deniedFlag = $this->detectDeniedFlag($restrictions, $path, $method);
+
+            if ($deniedFlag !== null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $this->messageForAction($deniedFlag),
+                    'error_code' => 'ROLE_ACTION_RESTRICTED',
+                    'restricted_action' => $deniedFlag,
+                ], 403);
+            }
+        }
+
+        foreach ($controlledRoles as $role) {
             if ($this->roleCanAccess($role, $path, $method)) {
                 return $next($request);
             }
@@ -95,6 +162,89 @@ class RoleAccessMiddleware
             'message' => 'Forbidden. Your assigned role cannot perform this action.',
             'required_module' => $this->moduleForPath($path),
         ], 403);
+    }
+
+    private function messageForAction(string $flag): string
+    {
+        return self::ACTION_MESSAGES[$flag]
+            ?? 'You cannot perform this action please contact super admin!';
+    }
+
+    private function getRestrictions(string $role): array
+    {
+        try {
+            $stored = \App\Models\Setting::getValue('system_role_restrictions', 'role_' . $role, []);
+
+            if (is_string($stored)) {
+                $stored = json_decode($stored, true) ?: [];
+            }
+
+            return is_array($stored) ? $stored : [];
+        } catch (\Throwable $e) {
+            return [];
+        }
+    }
+
+    private function detectDeniedFlag(array $restrictions, string $path, string $method): ?string
+    {
+        if (! ($restrictions['settings'] ?? true) && $this->startsWithAny($path, ['settings'])) {
+            return 'settings';
+        }
+
+        $segments = explode('/', trim($path, '/'));
+
+        foreach ($segments as $segment) {
+            if (in_array($segment, self::APPROVE_ACTION_SEGMENTS, true)) {
+                if (! ($restrictions['approve'] ?? true)) {
+                    return 'approve';
+                }
+                return null;
+            }
+
+            if (in_array($segment, self::REJECT_ACTION_SEGMENTS, true)) {
+                if (! ($restrictions['reject'] ?? true)) {
+                    return 'reject';
+                }
+                return null;
+            }
+
+            if (in_array($segment, self::EXPORT_ACTION_SEGMENTS, true)) {
+                if (! ($restrictions['export'] ?? true)) {
+                    return 'export';
+                }
+                return null;
+            }
+        }
+
+        if ($method === 'GET') {
+            if (! ($restrictions['view'] ?? true)) {
+                return 'view';
+            }
+            return null;
+        }
+
+        if ($method === 'POST') {
+            if (! ($restrictions['create'] ?? true)) {
+                return 'create';
+            }
+            return null;
+        }
+
+        if ($method === 'PUT' || $method === 'PATCH') {
+            if (! ($restrictions['edit'] ?? true)) {
+                return 'edit';
+            }
+            return null;
+        }
+
+        if ($method === 'DELETE') {
+            if (! ($restrictions['delete'] ?? true)) {
+                return 'delete';
+            }
+            return null;
+        }
+
+        return null;
     }
 
     private function roleCanAccess(string $role, string $path, string $method): bool
@@ -111,16 +261,32 @@ class RoleAccessMiddleware
 
     private function adminCanAccess(string $path, string $method): bool
     {
-        // Role design and system-wide configuration are Super Admin responsibilities.
         if ($this->startsWithAny($path, ['roles']) && $method !== 'GET') {
             return false;
         }
 
         if ($this->startsWithAny($path, ['settings'])) {
-            return false;
+            return $this->adminCanAccessBookingSettings($path, $method);
+        }
+
+        if ($this->startsWithAny($path, ['refunds'])) {
+            return true;
         }
 
         return true;
+    }
+
+    private function adminCanAccessBookingSettings(string $path, string $method): bool
+    {
+        if ($path === 'settings' && $method === 'GET') {
+            return true;
+        }
+
+        if ($path === 'settings/booking') {
+            return in_array($method, ['GET', 'PUT', 'POST', 'PATCH'], true);
+        }
+
+        return false;
     }
 
     private function cashierCanAccess(string $path, string $method): bool
@@ -129,22 +295,37 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Company identity used on invoices and receipts; no configuration write access.
+        if ($this->startsWithAny($path, ['refunds'])) {
+            return false;
+        }
+
         if ($method === 'GET' && $path === 'settings/business') {
             return true;
         }
-
         if ($method === 'GET' && $this->startsWithAny($path, [
-            'bookings', 'bookings-statistics', 'booking-calendar', 'calendar-events',
-            'quotations', 'customers', 'customer-messages', 'invoices', 'debts',
-            'payments', 'deposits', 'financial-reports/sales', 'reports/sales',
-            'menu-items', 'packages', 'promotions', 'meal-categories', 'event-types',
+            'bookings',
+            'bookings-statistics',
+            'booking-calendar',
+            'calendar-events',
+            'quotations',
+            'customers',
+            'customer-messages',
+            'invoices',
+            'debts',
+            'payments',
+            'deposits',
+            'financial-reports/sales',
+            'reports/sales',
+            'menu-items',
+            'packages',
+            'promotions',
+            'meal-categories',
+            'event-types',
             'delivery-zones',
         ])) {
             return true;
         }
 
-        // Cashiers create and revise quotations, but approval/rejection/deletion belongs to Admin.
         if ($this->matches($path, '#^quotations(?:/[^/]+)?$#') && in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
             return true;
         }
@@ -152,8 +333,6 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Cashiers create booking requests and may update pending requests. Status-sensitive
-        // restrictions are additionally enforced in the controller.
         if ($this->matches($path, '#^bookings(?:/[^/]+)?$#') && in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
             return true;
         }
@@ -161,7 +340,10 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Customer registration and ordinary profile maintenance.
+        if ($method === 'POST' && $this->matches($path, '#^bookings/[^/]+/request-refund$#')) {
+            return true;
+        }
+
         if ($this->matches($path, '#^customers(?:/[^/]+)?$#') && in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
             return true;
         }
@@ -172,8 +354,6 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Invoice creation/update/reminders and payment collection. Destructive or approval
-        // actions (refund, verify, reject, confirmed-payment deletion) remain Admin-only.
         if ($this->matches($path, '#^invoices(?:/[^/]+)?$#') && in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
             return true;
         }
@@ -189,28 +369,42 @@ class RoleAccessMiddleware
 
     private function inventoryManagerCanAccess(string $path, string $method): bool
     {
+        if ($this->startsWithAny($path, ['refunds'])) {
+            return false;
+        }
+
         if ($this->inventoryDashboardCanAccess($path, $method)) {
             return true;
         }
 
         if ($method === 'GET' && $this->startsWithAny($path, [
-            'inventory', 'inventory-history', 'ingredients', 'products', 'equipment',
-            'suppliers', 'shopping-list', 'reports/inventory', 'bookings', 'events',
+            'inventory',
+            'inventory-history',
+            'ingredients',
+            'products',
+            'equipment',
+            'suppliers',
+            'shopping-list',
+            'reports/inventory',
+            'bookings',
+            'events',
+            'delivery-zones',
         ])) {
             return true;
         }
 
-        // Inventory operations, stock movement, receiving, reservations, waste and maintenance.
         if ($this->startsWithAny($path, [
-            'inventory', 'inventory-history', 'ingredients', 'products', 'equipment',
-            'suppliers', 'shopping-list',
+            'inventory',
+            'inventory-history',
+            'ingredients',
+            'products',
+            'equipment',
+            'suppliers',
+            'shopping-list',
         ]) && in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-            // An Inventory Manager may create/update a request but may not approve/reject it.
-            // The controller validates status transitions and ownership as a second layer.
             return true;
         }
 
-        // Booking ingredient requirements are part of inventory preparation.
         if ($method === 'POST' && $this->matches(
             $path,
             '#^bookings/[^/]+/ingredients-mark-(?:purchased|all-purchased)$#'
@@ -218,9 +412,10 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Confirmed event requirements are read-only; equipment-specific event actions are allowed.
-        if ($this->matches($path, '#^events/[^/]+/equipment(?:/.*)?$#')
-            && in_array($method, ['POST', 'PUT', 'PATCH'], true)) {
+        if (
+            $this->matches($path, '#^events/[^/]+/equipment(?:/.*)?$#')
+            && in_array($method, ['POST', 'PUT', 'PATCH'], true)
+        ) {
             return true;
         }
         if ($method === 'POST' && $this->matches($path, '#^events/[^/]+/return-equipment$#')) {
@@ -232,26 +427,39 @@ class RoleAccessMiddleware
 
     private function staffManagerCanAccess(string $path, string $method): bool
     {
+        if ($this->startsWithAny($path, ['refunds'])) {
+            return false;
+        }
+
         if ($this->staffDashboardCanAccess($path, $method)) {
             return true;
         }
 
         if ($this->startsWithAny($path, [
-            'employees', 'departments', 'positions', 'salary-grades', 'schedules',
-            'attendance', 'daily-attendance', 'employee-requests', 'leave-requests',
+            'employees',
+            'departments',
+            'positions',
+            'salary-grades',
+            'schedules',
+            'attendance',
+            'daily-attendance',
+            'employee-requests',
+            'leave-requests',
             'shift-types',
         ])) {
             return true;
         }
 
         if ($method === 'GET' && $this->startsWithAny($path, [
-            'payroll', 'payslips', 'reports/payroll', 'events', 'event-calendar',
+            'payroll',
+            'payslips',
+            'reports/payroll',
+            'events',
+            'event-calendar',
         ])) {
             return true;
         }
 
-        // Payroll preparation is permitted, while final approval/payment/destructive lifecycle
-        // actions are blocked here and in the user interface.
         if ($method === 'POST' && in_array($path, ['payroll/preview', 'payroll/process', 'payroll/bulk-deductions'], true)) {
             return true;
         }
@@ -266,9 +474,10 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // Staff assignment and work-status updates for catering events.
-        if ($this->matches($path, '#^events/[^/]+/staff(?:/[^/]+(?:/status)?)?$#')
-            && in_array($method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        if (
+            $this->matches($path, '#^events/[^/]+/staff(?:/[^/]+(?:/status)?)?$#')
+            && in_array($method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], true)
+        ) {
             return true;
         }
 
@@ -277,12 +486,21 @@ class RoleAccessMiddleware
 
     private function headChefCanAccess(string $path, string $method): bool
     {
+        if ($this->startsWithAny($path, ['refunds'])) {
+            return false;
+        }
+
         if ($this->isDashboardRead($path, $method)) {
             return true;
         }
 
         if ($this->startsWithAny($path, [
-            'menu-items', 'menu-statistics', 'meal-categories', 'recipes', 'ingredients', 'products',
+            'menu-items',
+            'menu-statistics',
+            'meal-categories',
+            'recipes',
+            'ingredients',
+            'products',
         ])) {
             return true;
         }
@@ -293,8 +511,13 @@ class RoleAccessMiddleware
     private function cashierDashboardCanAccess(string $path, string $method): bool
     {
         return $method === 'GET' && in_array($path, [
-            'dashboard', 'dashboard/stats', 'dashboard/charts', 'dashboard/monthly-summary',
-            'dashboard/recent-bookings', 'dashboard/upcoming-events', 'dashboard/revenue-chart',
+            'dashboard',
+            'dashboard/stats',
+            'dashboard/charts',
+            'dashboard/monthly-summary',
+            'dashboard/recent-bookings',
+            'dashboard/upcoming-events',
+            'dashboard/revenue-chart',
             'dashboard/event-distribution',
         ], true);
     }
@@ -302,16 +525,24 @@ class RoleAccessMiddleware
     private function inventoryDashboardCanAccess(string $path, string $method): bool
     {
         return $method === 'GET' && in_array($path, [
-            'dashboard', 'dashboard/stats', 'dashboard/charts', 'dashboard/monthly-summary',
-            'dashboard/upcoming-events', 'dashboard/low-stock',
+            'dashboard',
+            'dashboard/stats',
+            'dashboard/charts',
+            'dashboard/monthly-summary',
+            'dashboard/upcoming-events',
+            'dashboard/low-stock',
         ], true);
     }
 
     private function staffDashboardCanAccess(string $path, string $method): bool
     {
         return $method === 'GET' && in_array($path, [
-            'dashboard', 'dashboard/stats', 'dashboard/charts', 'dashboard/monthly-summary',
-            'dashboard/upcoming-events', 'dashboard/today-attendance',
+            'dashboard',
+            'dashboard/stats',
+            'dashboard/charts',
+            'dashboard/monthly-summary',
+            'dashboard/upcoming-events',
+            'dashboard/today-attendance',
         ], true);
     }
 
@@ -326,8 +557,6 @@ class RoleAccessMiddleware
             return true;
         }
 
-        // All roles may manage their own notifications. Creating a notification for
-        // another user is a system-wide action reserved for Super Admin.
         if ($this->startsWithAny($path, ['notifications'])) {
             return ! ($path === 'notifications' && $method === 'POST');
         }
@@ -342,8 +571,9 @@ class RoleAccessMiddleware
             $this->startsWithAny($path, ['settings', 'audit-logs']) => 'system-administration',
             $this->startsWithAny($path, ['bookings', 'booking-calendar', 'quotations', 'calendar-events']) => 'orders-and-events',
             $this->startsWithAny($path, ['payments', 'invoices', 'deposits', 'financial-reports']) => 'billing-and-payments',
+            $this->startsWithAny($path, ['refunds']) => 'refund-management',
             $this->startsWithAny($path, ['customers', 'customer-messages']) => 'customer-management',
-            $this->startsWithAny($path, ['inventory', 'inventory-history', 'ingredients', 'products', 'equipment', 'suppliers', 'shopping-list']) => 'inventory-management',
+            $this->startsWithAny($path, ['inventory', 'inventory-history', 'ingredients', 'products', 'equipment', 'suppliers', 'shopping-list', 'delivery-zones']) => 'inventory-management',
             $this->startsWithAny($path, ['employees', 'departments', 'positions', 'salary-grades', 'schedules', 'attendance', 'daily-attendance', 'employee-requests', 'leave-requests', 'shift-types']) => 'people-and-staff-management',
             $this->startsWithAny($path, ['payroll', 'payslips']) => 'payroll',
             $this->startsWithAny($path, ['reports']) => 'reports',

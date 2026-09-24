@@ -1,4 +1,5 @@
 // src/features/reports/pages/ReportsAnalyticsPage.jsx - COMPLETE PREMIUM VERSION
+// Includes enhanced Profitability Analytics with per-booking / weekly / monthly / yearly views
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -23,6 +24,10 @@ import {
   Card,
   Divider,
   Badge,
+  Row,
+  Col,
+  Statistic,
+  Progress,
   theme as antdTheme,
   ConfigProvider,
 } from 'antd';
@@ -66,12 +71,25 @@ import {
   ThunderboltOutlined,
   PieChartOutlined,
   BarChartOutlined,
+  RiseOutlined,
+  FallOutlined,
+  WalletOutlined,
+  PercentageOutlined,
+  FundProjectionScreenOutlined,
+  LineChartOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
+  ScheduleOutlined,
+  EnvironmentOutlined,
+  FileDoneOutlined,
+  TruckOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
 import { useReportsData } from '../../../hooks/useReportQueries';
 import { useAuth } from '../../../contexts/AuthContext';
 import { getUserRoles } from '../../../utils/roleRoutes';
+import api from '../../../services/api';
 import '../../reports/styles/Reports.css';
 
 const { RangePicker } = DatePicker;
@@ -96,6 +114,7 @@ const ACCESS = {
   inventory: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'inventory', 'warehouse', 'kitchen', 'operations', 'operations_staff', 'inventory_staff', 'staff', 'employee', 'user'],
   purchasing: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'purchasing', 'purchasing_staff', 'procurement', 'inventory', 'inventory_staff', 'finance', 'accountant', 'accounting'],
   financial: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'accountant', 'accounting'],
+  profitability: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'accountant', 'accounting', 'finance'],
   customers: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'sales', 'sales_staff', 'customer_service'],
   menu: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'kitchen', 'chef', 'kitchen_staff', 'sales', 'sales_staff', 'staff', 'employee', 'user'],
   labor: ['admin', 'administrator', 'super_admin', 'superadmin', 'owner', 'manager', 'hr', 'human_resources', 'hr_staff', 'payroll', 'staff', 'employee', 'user'],
@@ -186,8 +205,28 @@ export const REPORT_CATEGORIES = [
       report('net-profit-report', 'Net Profit Report', ['period', 'revenue', 'expenses', 'profit', 'margin']),
       report('cash-flow-statement', 'Cash Flow Statement', ['period', 'cash_in', 'cash_out', 'net_cash_flow', 'closing_balance']),
       report('accounts-receivable-aging', 'Accounts Receivable Aging', ['invoice_number', 'customer', 'total_amount', 'paid_amount', 'balance', 'due_date', 'aging_bucket', 'status']),
-      report('accounts-payable-aging', 'Accounts Payable Aging', ['reference', 'supplier', 'total_amount', 'paid_amount', 'balance', 'due_date', 'aging_bucket', 'status']),
+      report('accounts-payable-aging', 'Accounts Payable Aging', ['invoice_number', 'supplier', 'total_amount', 'paid_amount', 'balance', 'due_date', 'aging_bucket', 'status']),
       report('tax-summary', 'Tax Summary', ['period', 'taxable_sales', 'tax_amount', 'withholding_tax', 'net_tax_due', 'status']),
+    ],
+  },
+  // ============================================================
+  // ⭐ PROFITABILITY ANALYTICS — ENHANCED WITH TIME PERIODS
+  // ============================================================
+  {
+    key: 'profitability',
+    label: 'Profitability Analytics',
+    icon: RiseOutlined,
+    color: '#059669',
+    gradient: 'linear-gradient(135deg, #2563EB, #1D4ED8)',
+    reports: [
+      report('profitability-overview', 'Profitability Overview', ['period', 'revenue', 'cost', 'profit', 'margin', 'food_cost_percentage']),
+      report('booking-profitability', 'Booking Profitability', ['reference', 'customer', 'event', 'event_date', 'guest_count', 'revenue', 'cost', 'profit', 'margin', 'status']),
+      report('booking-profitability-weekly', 'Booking Profitability — Weekly', ['period', 'bookings', 'revenue', 'cost', 'profit', 'margin', 'avg_profit_per_booking']),
+      report('booking-profitability-monthly', 'Booking Profitability — Monthly', ['period', 'bookings', 'revenue', 'cost', 'profit', 'margin', 'avg_profit_per_booking']),
+      report('booking-profitability-yearly', 'Booking Profitability — Yearly', ['year', 'bookings', 'revenue', 'cost', 'profit', 'margin', 'avg_profit_per_booking']),
+      report('menu-profitability-analytics', 'Menu Profitability', ['menu_item', 'orders', 'quantity', 'revenue', 'cost', 'profit', 'margin', 'rank']),
+      report('ingredient-cost-breakdown', 'Ingredient Cost Breakdown', ['ingredient', 'menu_item', 'quantity', 'unit', 'unit_cost', 'cost', 'revenue', 'profit', 'margin']),
+      report('revenue-vs-cost-trend', 'Revenue vs Cost Trend', ['period', 'revenue', 'cost', 'profit', 'margin']),
     ],
   },
   {
@@ -262,6 +301,9 @@ export const getReportTitle = (categorySlug, reportSlug) => (
   getReportConfig(categorySlug, reportSlug)?.label || 'Report'
 );
 
+// ============================================================
+// COLUMN META — extended with new profitability fields
+// ============================================================
 const COLUMN_META = {
   period: { label: 'Period', width: 130 }, year: { label: 'Year', width: 90, type: 'number' },
   reference: { label: 'Reference No.', width: 145, type: 'reference' }, invoice_number: { label: 'Invoice No.', width: 145, type: 'reference' },
@@ -323,10 +365,11 @@ const COLUMN_META = {
   attendance_rate: { label: 'Attendance Rate', width: 130, type: 'percent' }, productivity_rate: { label: 'Productivity Rate', width: 135, type: 'percent' },
   on_time_rate: { label: 'On-time Rate', width: 115, type: 'percent' }, quality_rate: { label: 'Quality Rate', width: 110, type: 'percent' },
   waste_rate: { label: 'Waste Rate', width: 105, type: 'percent' },
+  avg_profit_per_booking: { label: 'Avg Profit / Booking', width: 150, type: 'currency' },
 };
 
 // ============================================================
-// HELPER FUNCTIONS
+// HELPERS
 // ============================================================
 const safeNumber = (value) => {
   const parsed = Number(value);
@@ -380,9 +423,9 @@ const escapeHtml = (value) => String(value ?? '')
 
 const statusColor = (status) => {
   const value = String(status || '').toLowerCase();
-  if (['completed', 'paid', 'active', 'available', 'healthy', 'received', 'returned', 'confirmed', 'approved', 'on_time'].some((word) => value.includes(word))) return 'success';
+  if (['completed', 'paid', 'active', 'available', 'healthy', 'received', 'returned', 'confirmed', 'approved', 'on_time', 'profitable'].some((word) => value.includes(word))) return 'success';
   if (['pending', 'partial', 'low', 'warning', 'scheduled', 'in_progress', 'ongoing', 'due'].some((word) => value.includes(word))) return 'warning';
-  if (['cancelled', 'failed', 'overdue', 'out_of_stock', 'damaged', 'expired', 'critical', 'inactive'].some((word) => value.includes(word))) return 'error';
+  if (['cancelled', 'failed', 'overdue', 'out_of_stock', 'damaged', 'expired', 'critical', 'inactive', 'loss'].some((word) => value.includes(word))) return 'error';
   return 'processing';
 };
 
@@ -404,7 +447,7 @@ const groupRows = (rows, field, options = {}) => {
 };
 
 // ============================================================
-// NORMALIZE FUNCTIONS
+// NORMALIZERS
 // ============================================================
 const normalizeEvents = (reports) => {
   const profitability = asArray(reports?.events?.profitability);
@@ -641,9 +684,139 @@ const normalizeOutstanding = (reports) => asArray(reports?.financial?.outstandin
 });
 
 // ============================================================
-// BUILD REPORT ROWS - MAIN FUNCTION
+// PROFITABILITY NORMALIZERS
 // ============================================================
-const buildReportRows = (reportKey, reports) => {
+const normalizeProfitabilityReport = (profitabilityRaw) => {
+  const summary = profitabilityRaw?.summary || {};
+  const bookings = asArray(profitabilityRaw?.bookings);
+  return {
+    summary: {
+      total_revenue: safeNumber(summary.total_revenue),
+      total_cost: safeNumber(summary.total_cost),
+      total_profit: safeNumber(summary.total_profit),
+      profit_margin: safeNumber(summary.profit_margin),
+      food_cost_percentage: safeNumber(summary.food_cost_percentage),
+      ingredient_cost: safeNumber(summary.ingredient_cost),
+      labor_cost: safeNumber(summary.labor_cost),
+      delivery_cost: safeNumber(summary.delivery_cost),
+      equipment_cost: safeNumber(summary.equipment_cost),
+      other_cost: safeNumber(summary.other_cost),
+      food_revenue: safeNumber(summary.food_revenue),
+      service_fee: safeNumber(summary.service_fee),
+      delivery_fee: safeNumber(summary.delivery_fee),
+      extras_revenue: safeNumber(summary.extras_revenue),
+      completed_bookings: safeNumber(summary.completed_bookings),
+      total_bookings: safeNumber(summary.total_bookings),
+      average_booking_value: safeNumber(summary.average_booking_value),
+    },
+    bookings: bookings.map((row, index) => ({
+      key: `pb-${firstValue(row.booking_id, index)}`,
+      raw: row,
+      booking_id: row.booking_id,
+      reference: firstValue(row.booking_no, `BK-${row.booking_id || index}`),
+      customer: firstValue(row.customer_name, 'Unknown Customer'),
+      event: firstValue(row.event_type, 'Event'),
+      event_date: row.event_date,
+      guest_count: safeNumber(row.pax),
+      revenue: safeNumber(row.total_revenue),
+      cost: safeNumber(row.total_cost),
+      profit: safeNumber(row.profit),
+      margin: safeNumber(row.profit_margin),
+      food_cost_percentage: safeNumber(row.food_cost_percentage),
+      paid_amount: safeNumber(row.paid_amount),
+      balance: safeNumber(row.balance),
+      payment_status: firstValue(row.payment_status, 'unpaid'),
+      status: firstValue(row.booking_status, 'completed'),
+    })),
+  };
+};
+
+const normalizeMenuProfitability = (menuRaw) => {
+  const rows = Array.isArray(menuRaw) ? menuRaw : asArray(menuRaw?.data);
+  return rows.map((row, index) => ({
+    key: `menu-profit-${firstValue(row.menu_item_id, index)}`,
+    raw: row,
+    menu_item: firstValue(row.menu_name, 'Unknown Menu'),
+    category: firstValue(row.category, 'Uncategorized'),
+    orders: safeNumber(row.orders),
+    quantity: safeNumber(row.total_pax),
+    revenue: safeNumber(row.total_revenue),
+    cost: safeNumber(row.total_ingredient_cost),
+    profit: safeNumber(row.total_profit),
+    margin: safeNumber(row.profit_margin),
+    food_cost_percentage: safeNumber(row.total_revenue) > 0 ? (safeNumber(row.total_ingredient_cost) / safeNumber(row.total_revenue)) * 100 : 0,
+    rank: safeNumber(row.revenue_rank, index + 1),
+    profit_rank: safeNumber(row.profit_rank, index + 1),
+    status: safeNumber(row.profit_margin) >= 40 ? 'healthy' : safeNumber(row.profit_margin) >= 20 ? 'review' : 'low_margin',
+  }));
+};
+
+// ============================================================
+// Aggregate bookings into periods
+// ============================================================
+const aggregateProfitabilityByPeriod = (bookings, granularity = 'month') => {
+  const getKey = (dateStr) => {
+    if (!dateStr) return 'Unknown';
+    const d = dayjs(dateStr);
+    if (!d.isValid()) return 'Unknown';
+    if (granularity === 'week') return `${d.year()}-W${String(d.week()).padStart(2, '0')}`;
+    if (granularity === 'year') return String(d.year());
+    return d.format('YYYY-MM');
+  };
+  const getLabel = (dateStr, fallbackKey) => {
+    if (!dateStr) return fallbackKey;
+    const d = dayjs(dateStr);
+    if (!d.isValid()) return fallbackKey;
+    if (granularity === 'week') {
+      const start = d.startOf('week');
+      const end = d.endOf('week');
+      return `${start.format('MMM D')} – ${end.format('MMM D, YYYY')}`;
+    }
+    if (granularity === 'year') return d.format('YYYY');
+    return d.format('MMMM YYYY');
+  };
+
+  const grouped = new Map();
+  bookings.forEach((booking) => {
+    const key = getKey(booking.event_date);
+    const current = grouped.get(key) || {
+      key,
+      period: getLabel(booking.event_date, key),
+      year: booking.event_date ? dayjs(booking.event_date).year() : '',
+      bookings: 0,
+      revenue: 0,
+      cost: 0,
+      profit: 0,
+      paid: 0,
+      balance: 0,
+      raw_bookings: [],
+    };
+    current.bookings += 1;
+    current.revenue += safeNumber(booking.revenue);
+    current.cost += safeNumber(booking.cost);
+    current.profit += safeNumber(booking.profit);
+    current.paid += safeNumber(booking.paid_amount);
+    current.balance += safeNumber(booking.balance);
+    current.raw_bookings.push(booking);
+    grouped.set(key, current);
+  });
+
+  return Array.from(grouped.values())
+    .map((row) => ({
+      ...row,
+      margin: row.revenue > 0 ? (row.profit / row.revenue) * 100 : 0,
+      avg_profit_per_booking: row.bookings > 0 ? row.profit / row.bookings : 0,
+      food_cost_percentage: row.revenue > 0 ? (safeNumber(
+        row.raw_bookings.reduce((sum, b) => sum + safeNumber(b.cost), 0)
+      ) / row.revenue) * 100 : 0,
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+};
+
+// ============================================================
+// BUILD REPORT ROWS
+// ============================================================
+const buildReportRows = (reportKey, reports, profitabilityData = {}) => {
   const eventRows = normalizeEvents(reports);
   const stockRows = normalizeInventory(reports);
   const menuRows = normalizeMenu(reports);
@@ -652,6 +825,9 @@ const buildReportRows = (reportKey, reports) => {
   const financialRows = normalizeFinancial(reports);
   const outstandingRows = normalizeOutstanding(reports);
   const today = dayjs().startOf('day');
+
+  const profReport = normalizeProfitabilityReport(profitabilityData.report || {});
+  const profMenus = normalizeMenuProfitability(profitabilityData.menus || []);
 
   const salesSeries = (key) => asArray(reports?.sales?.[key]).map((item, index) => ({
     key: `${key}-${index}`,
@@ -706,6 +882,7 @@ const buildReportRows = (reportKey, reports) => {
   }));
 
   switch (reportKey) {
+    // ============ SALES ============
     case 'daily-sales': return salesSeries('daily');
     case 'weekly-sales': return salesSeries('weekly');
     case 'monthly-sales': return salesSeries('monthly');
@@ -741,6 +918,7 @@ const buildReportRows = (reportKey, reports) => {
     case 'cancelled-events-sales': return eventRows.filter((row) => String(row.status).toLowerCase().includes('cancel'));
     case 'revenue-by-menu-package': return packageRows;
 
+    // ============ EVENTS ============
     case 'event-schedule': return [...eventRows].sort((a, b) => dayjs(a.event_date).valueOf() - dayjs(b.event_date).valueOf());
     case 'upcoming-events': return eventRows.filter((row) => row.event_date && !dayjs(row.event_date).startOf('day').isBefore(today) && !String(row.status).toLowerCase().includes('cancel'));
     case 'completed-events': return eventRows.filter((row) => String(row.status).toLowerCase().includes('complete'));
@@ -750,6 +928,7 @@ const buildReportRows = (reportKey, reports) => {
     case 'event-cost-analysis': return eventRows;
     case 'event-profitability': return eventRows;
 
+    // ============ KITCHEN ============
     case 'kitchen-production-sheet':
     case 'production-schedule': return eventRows.filter((row) => !String(row.status).toLowerCase().includes('cancel'));
     case 'daily-production-report': return groupRows(eventRows, 'event_date', { sum: ['guest_count'] }).map((row, index) => ({ key: `production-${index}`, event_date: row.event_date, events: row.records, guest_count: row.guest_count, items_required: undefined, production_status: 'scheduled', raw: row }));
@@ -757,6 +936,7 @@ const buildReportRows = (reportKey, reports) => {
     case 'kitchen-recipe-cost-analysis': return menuRows;
     case 'menu-production-summary': return packageRows;
 
+    // ============ INVENTORY ============
     case 'current-inventory': return stockRows;
     case 'stock-movement': return inventoryMovements;
     case 'inventory-consumption': return stockRows.filter((row) => row.used_quantity > 0);
@@ -766,6 +946,7 @@ const buildReportRows = (reportKey, reports) => {
     case 'stock-adjustments': return [];
     case 'physical-inventory-variance': return stockRows.filter((row) => row.raw?.physical_quantity !== undefined || row.raw?.variance !== undefined);
 
+    // ============ PURCHASING ============
     case 'purchase-orders':
     case 'supplier-purchases':
     case 'purchase-history':
@@ -773,6 +954,7 @@ const buildReportRows = (reportKey, reports) => {
     case 'goods-received':
     case 'supplier-performance': return [];
 
+    // ============ FINANCIAL ============
     case 'profit-and-loss': return financialRows;
     case 'revenue-report': return financialRows;
     case 'expense-report': return financialRows;
@@ -783,6 +965,84 @@ const buildReportRows = (reportKey, reports) => {
     case 'accounts-payable-aging': return outstandingRows.filter((row) => row.supplier);
     case 'tax-summary': return financialRows;
 
+    // ============ PROFITABILITY ANALYTICS ============
+    case 'profitability-overview': {
+      const s = profReport.summary;
+      return [{
+        key: 'profitability-overview',
+        raw: s,
+        period: 'All Periods',
+        revenue: s.total_revenue,
+        cost: s.total_cost,
+        profit: s.total_profit,
+        margin: s.profit_margin,
+        food_cost_percentage: s.food_cost_percentage,
+      }];
+    }
+    case 'booking-profitability': return profReport.bookings;
+    case 'booking-profitability-weekly': return aggregateProfitabilityByPeriod(profReport.bookings, 'week');
+    case 'booking-profitability-monthly': return aggregateProfitabilityByPeriod(profReport.bookings, 'month');
+    case 'booking-profitability-yearly': return aggregateProfitabilityByPeriod(profReport.bookings, 'year');
+    case 'menu-profitability-analytics': return profMenus;
+    case 'ingredient-cost-breakdown': {
+      const rows = [];
+      profMenus.forEach((menu) => {
+        const breakdown = asArray(menu.raw?.ingredient_breakdown);
+        breakdown.forEach((ing, idx) => {
+          const unitCost = safeNumber(ing.unit_cost);
+          const qty = safeNumber(ing.quantity);
+          const cost = safeNumber(ing.total_cost, unitCost * qty);
+          rows.push({
+            key: `ing-${menu.key}-${idx}`,
+            raw: ing,
+            ingredient: firstValue(ing.name, 'Unknown Ingredient'),
+            menu_item: menu.menu_item,
+            quantity: qty,
+            unit: firstValue(ing.unit, ''),
+            unit_cost: unitCost,
+            cost,
+            revenue: 0,
+            profit: -cost,
+            margin: 0,
+          });
+        });
+      });
+      if (rows.length === 0) {
+        return profMenus.map((menu) => ({
+          key: `ing-menu-${menu.key}`,
+          raw: menu.raw,
+          ingredient: menu.menu_item,
+          menu_item: menu.menu_item,
+          quantity: menu.quantity,
+          unit: '',
+          unit_cost: 0,
+          cost: menu.cost,
+          revenue: menu.revenue,
+          profit: menu.profit,
+          margin: menu.margin,
+        }));
+      }
+      return rows;
+    }
+    case 'revenue-vs-cost-trend': {
+      const grouped = new Map();
+      profReport.bookings.forEach((row) => {
+        const period = row.event_date ? dayjs(row.event_date).format('YYYY-MM') : 'Unspecified';
+        const current = grouped.get(period) || { period, revenue: 0, cost: 0, profit: 0 };
+        current.revenue += safeNumber(row.revenue);
+        current.cost += safeNumber(row.cost);
+        current.profit += safeNumber(row.profit);
+        grouped.set(period, current);
+      });
+      const rows = Array.from(grouped.values()).sort((a, b) => a.period.localeCompare(b.period));
+      return rows.map((row, index) => ({
+        ...row,
+        key: `trend-${index}`,
+        margin: row.revenue > 0 ? (row.profit / row.revenue) * 100 : 0,
+      }));
+    }
+
+    // ============ CUSTOMERS ============
     case 'customer-list': return customerRows;
     case 'customer-booking-history': return eventRows;
     case 'customer-revenue-analysis': return groupEventRows('customer');
@@ -790,29 +1050,34 @@ const buildReportRows = (reportKey, reports) => {
     case 'customer-payment-history': return [];
     case 'customer-preferences': return customerRows;
 
+    // ============ MENU ============
     case 'best-selling-menu-packages': return [...packageRows].sort((a, b) => b.orders - a.orders).map((row, index) => ({ ...row, rank: index + 1 }));
     case 'least-selling-menu-packages': return [...packageRows].sort((a, b) => a.orders - b.orders).map((row, index) => ({ ...row, rank: index + 1 }));
     case 'menu-profitability': return menuRows;
     case 'menu-recipe-cost-analysis': return menuRows;
     case 'food-cost-percentage': return menuRows;
 
+    // ============ LABOR ============
     case 'staff-attendance': return payrollRows.filter((row) => row.raw?.days_present !== undefined || row.raw?.present_days !== undefined || row.raw?.attendance_rate !== undefined);
     case 'staff-schedule': return payrollRows.filter((row) => row.shift_date || row.shift);
     case 'labor-cost-by-event': return eventRows.filter((row) => row.raw?.staff_count !== undefined || row.raw?.labor_hours !== undefined || row.raw?.labor_cost !== undefined).map((row) => ({ ...row, staff_count: safeNumber(row.raw?.staff_count), labor_hours: safeNumber(row.raw?.labor_hours), labor_cost: safeNumber(row.raw?.labor_cost) }));
     case 'overtime-report': return payrollRows.filter((row) => row.overtime_hours > 0 || row.overtime_cost > 0);
     case 'staff-productivity': return payrollRows.filter((row) => row.raw?.productivity_rate !== undefined || row.raw?.events_assigned !== undefined || row.raw?.labor_hours !== undefined);
 
+    // ============ LOGISTICS ============
     case 'delivery-schedule': return eventRows.filter((row) => row.has_delivery_data);
     case 'vehicle-assignment': return eventRows.filter((row) => row.has_delivery_data);
     case 'equipment-delivery': return eventRows.filter((row) => row.has_equipment_data);
     case 'equipment-return': return eventRows.filter((row) => row.has_return_data);
     case 'equipment-damage': return eventRows.filter((row) => row.has_damage_data);
 
+    // ============ WASTE ============
     case 'food-waste': return inventoryMovements.filter((row) => row.wastage > 0).map((row) => ({ ...row, ingredient: 'Food Inventory', quantity: row.wastage, unit: '', waste_reason: 'Recorded wastage', waste_cost: row.total_amount, status: 'recorded' }));
     case 'inventory-waste': return inventoryMovements.filter((row) => row.wastage > 0).map((row) => ({ ...row, ingredient: 'Inventory Items', quantity: row.wastage, unit: '', waste_cost: row.total_amount, status: 'recorded' }));
     case 'spoilage-report': return stockRows.filter((row) => row.expiry_date && row.days_remaining <= 0).map((row) => ({ ...row, period: row.expiry_date, quantity: row.current_quantity, waste_cost: row.stock_value }));
     case 'waste-cost-analysis': return inventoryMovements.filter((row) => row.wastage > 0).map((row) => ({ ...row, waste_cost: row.total_amount, waste_rate: row.incoming > 0 ? (row.wastage / row.incoming) * 100 : 0 }));
 
+    // ============ MANAGEMENT ============
     case 'daily-operations': return salesSeries('daily').map((row) => ({ ...row, events: row.orders, revenue: row.collected, expenses: undefined, profit: undefined, status: 'revenue_data_only' }));
     case 'weekly-operations': return salesSeries('weekly').map((row) => ({ ...row, events: row.orders, revenue: row.collected, expenses: undefined, profit: undefined, status: 'revenue_data_only' }));
     case 'monthly-operations': return financialRows.map((row) => ({ ...row, events: safeNumber(eventRows.filter((event) => event.event_date && dayjs(event.event_date).format('MMM') === row.period).length), orders: row.invoice_count }));
@@ -844,13 +1109,76 @@ const rowMatchesDateRange = (row, dateRange) => {
 };
 
 // ============================================================
+// PERIOD PRESETS
+// ============================================================
+const PERIOD_PRESETS = [
+  { key: 'this-week', label: 'This Week', getRange: () => [dayjs().startOf('week'), dayjs().endOf('week')] },
+  { key: 'last-week', label: 'Last Week', getRange: () => [dayjs().subtract(1, 'week').startOf('week'), dayjs().subtract(1, 'week').endOf('week')] },
+  { key: 'this-month', label: 'This Month', getRange: () => [dayjs().startOf('month'), dayjs().endOf('month')] },
+  { key: 'last-month', label: 'Last Month', getRange: () => [dayjs().subtract(1, 'month').startOf('month'), dayjs().subtract(1, 'month').endOf('month')] },
+  { key: 'this-quarter', label: 'This Quarter', getRange: () => [dayjs().startOf('quarter'), dayjs().endOf('quarter')] },
+  { key: 'this-year', label: 'This Year', getRange: () => [dayjs().startOf('year'), dayjs().endOf('year')] },
+  { key: 'last-year', label: 'Last Year', getRange: () => [dayjs().subtract(1, 'year').startOf('year'), dayjs().subtract(1, 'year').endOf('year')] },
+];
+
+// ============================================================
+// PROFITABILITY SUMMARY CARDS (rendered above profitability tables)
+// ============================================================
+const ProfitabilitySummaryCards = ({ rows, reportKey, loading }) => {
+  const summary = useMemo(() => {
+    const totalRevenue = rows.reduce((sum, r) => sum + safeNumber(r.revenue), 0);
+    const totalCost = rows.reduce((sum, r) => sum + safeNumber(r.cost), 0);
+    const totalProfit = rows.reduce((sum, r) => sum + safeNumber(r.profit), 0);
+    const totalBookings = rows.reduce((sum, r) => sum + (safeNumber(r.bookings) || safeNumber(r.orders) || 0), 0);
+    const margin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
+    const avgProfit = totalBookings > 0 ? totalProfit / totalBookings : 0;
+    const avgRevenue = totalBookings > 0 ? totalRevenue / totalBookings : 0;
+    return { totalRevenue, totalCost, totalProfit, totalBookings, margin, avgProfit, avgRevenue };
+  }, [rows]);
+
+  const isBooking = ['booking-profitability', 'booking-profitability-weekly', 'booking-profitability-monthly', 'booking-profitability-yearly'].includes(reportKey);
+
+  const cards = [
+    { key: 'revenue', label: 'Total Revenue', value: formatCurrency(summary.totalRevenue), icon: <DollarOutlined />, tone: 'blue' },
+    { key: 'cost', label: 'Total Cost', value: formatCurrency(summary.totalCost), icon: <CalculatorOutlined />, tone: 'rose' },
+    { key: 'profit', label: 'Total Profit', value: formatCurrency(summary.totalProfit), icon: <RiseOutlined />, tone: summary.totalProfit >= 0 ? 'green' : 'red' },
+    { key: 'margin', label: 'Profit Margin', value: `${summary.margin.toFixed(1)}%`, icon: <PercentageOutlined />, tone: 'violet' },
+  ];
+
+  if (isBooking) {
+    cards.push({ key: 'bookings', label: 'Total Bookings', value: formatNumber(summary.totalBookings), icon: <FileDoneOutlined />, tone: 'indigo' });
+    cards.push({ key: 'avg-profit', label: 'Avg Profit / Booking', value: formatCurrency(summary.avgProfit), icon: <LineChartOutlined />, tone: 'cyan' });
+  }
+
+  return (
+    <div className="rp-profit-kpi-grid" data-cards={cards.length}>
+      <Spin spinning={loading}>
+        <Row gutter={[12, 12]}>
+          {cards.map((card) => (
+            <Col key={card.key} xs={12} md={isBooking ? 8 : 6} lg={isBooking ? 4 : 6}>
+              <div className={`rp-profit-kpi rp-profit-kpi-${card.tone}`}>
+                <div className="rp-profit-kpi-icon">{card.icon}</div>
+                <div className="rp-profit-kpi-body">
+                  <span className="rp-profit-kpi-label">{card.label}</span>
+                  <span className="rp-profit-kpi-value">{card.value}</span>
+                </div>
+              </div>
+            </Col>
+          ))}
+        </Row>
+      </Spin>
+    </div>
+  );
+};
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 const ReportsAnalyticsPage = () => {
   const { message } = AntdApp.useApp();
   const { user } = useAuth();
   const [isDarkMode, setIsDarkMode] = useState(false);
-  
+
   useEffect(() => {
     const detectTheme = () => {
       setIsDarkMode(document.body.classList.contains('dark-mode'));
@@ -879,6 +1207,11 @@ const ReportsAnalyticsPage = () => {
   const [emailAddress, setEmailAddress] = useState('');
   const [pageSize, setPageSize] = useState(20);
   const [isFilterExpanded, setIsFilterExpanded] = useState(false);
+  const [activePreset, setActivePreset] = useState('this-month');
+
+  // Profitability data fetched separately from the profitability endpoints
+  const [profitabilityData, setProfitabilityData] = useState({ report: null, menus: null });
+  const [profitabilityLoading, setProfitabilityLoading] = useState(false);
 
   const defaultRange = useMemo(() => [dayjs().startOf('month'), dayjs().endOf('month')], []);
   const emptyFilters = useMemo(() => ({
@@ -918,12 +1251,57 @@ const ReportsAnalyticsPage = () => {
     refetch,
   } = useReportsData(queryParams, { salesOnly: !canSeeAll });
 
+  // ============================================================
+  // LOAD PROFITABILITY DATA (only when the profitability category is active)
+  // ============================================================
+  useEffect(() => {
+    if (selectedCategoryKey !== 'profitability') return;
+    if (profitabilityData.report && profitabilityData.menus) return; // cached
+
+    let cancelled = false;
+    const load = async () => {
+      setProfitabilityLoading(true);
+      try {
+        const params = {
+          date_from: queryParams.start_date,
+          date_to: queryParams.end_date,
+        };
+        const [reportRes, menusRes] = await Promise.all([
+          api.get('/profitability/report', { params }),
+          api.get('/profitability/menus', { params }),
+        ]);
+        const pick = (res) => {
+          if (!res) return null;
+          if (res.success !== undefined) return res.data ?? res;
+          if (res.data?.success !== undefined) return res.data.data ?? res.data;
+          if (res.data?.data !== undefined) return res.data.data ?? res.data;
+          return res.data ?? res;
+        };
+        if (!cancelled) {
+          setProfitabilityData({
+            report: pick(reportRes) || {},
+            menus: pick(menusRes) || [],
+          });
+        }
+      } catch (err) {
+        console.error('Failed to load profitability data', err);
+        if (!cancelled) {
+          message.error(err?.response?.data?.message || 'Failed to load profitability data');
+        }
+      } finally {
+        if (!cancelled) setProfitabilityLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [selectedCategoryKey, queryParams.start_date, queryParams.end_date, profitabilityData.report, profitabilityData.menus, message]);
+
   const selectedCategory = visibleCategories.find((category) => category.key === selectedCategoryKey) || initialCategory;
   const activeReport = selectedCategory?.reports.find((item) => item.key === selectedReportKey) || selectedCategory?.reports[0];
 
   const baseRows = useMemo(() => (
-    activeReport ? buildReportRows(activeReport.key, reports) : []
-  ), [activeReport, reports]);
+    activeReport ? buildReportRows(activeReport.key, reports, profitabilityData) : []
+  ), [activeReport, reports, profitabilityData]);
 
   const filteredRows = useMemo(() => baseRows.filter((row) => {
     if (!rowMatchesDateRange(row, appliedFilters.dateRange)) return false;
@@ -934,6 +1312,9 @@ const ReportsAnalyticsPage = () => {
     const needle = searchText.trim().toLowerCase();
     return activeReport.fields.some((field) => String(row[field] ?? '').toLowerCase().includes(needle));
   }), [activeReport, appliedFilters, baseRows, searchText]);
+
+  const isProfitability = selectedCategoryKey === 'profitability';
+  const isBookingProfitability = ['booking-profitability', 'booking-profitability-weekly', 'booking-profitability-monthly', 'booking-profitability-yearly'].includes(activeReport?.key);
 
   const filterFields = useMemo(() => ['customer', 'event', 'venue', 'branch', 'salesperson', 'supplier', 'status']
     .filter((field) => activeReport?.fields.includes(field)), [activeReport]);
@@ -960,7 +1341,15 @@ const ReportsAnalyticsPage = () => {
           if (value === undefined || value === null || value === '') return <span className="rp-empty-value">—</span>;
           if (meta.type === 'currency') return <Text className="rp-number-cell" style={{ fontFamily: 'monospace', fontWeight: 500, color: '#1F2937' }}>{formatCurrency(value)}</Text>;
           if (meta.type === 'number') return <Text className="rp-number-cell" style={{ fontFamily: 'monospace', color: '#374151' }}>{formatNumber(value)}</Text>;
-          if (meta.type === 'percent') return <Text className="rp-number-cell" style={{ fontFamily: 'monospace', color: value > 0 ? '#059669' : '#DC2626' }}>{formatNumber(value)}%</Text>;
+          if (meta.type === 'percent') {
+            const isPositive = safeNumber(value) >= 0;
+            return (
+              <span className={`rp-percent-chip ${isPositive ? 'positive' : 'negative'}`}>
+                {isPositive ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
+                {formatNumber(Math.abs(safeNumber(value)))}%
+              </span>
+            );
+          }
           if (meta.type === 'date') return <span style={{ color: '#6B7280', fontSize: '13px' }}>{formatDate(value)}</span>;
           if (meta.type === 'status') return value ? <Tag color={statusColor(value)} className="rp-status-tag" style={{ borderRadius: '6px', fontWeight: 500, padding: '2px 12px', fontSize: '12px' }}>{humanize(value)}</Tag> : '—';
           if (meta.type === 'reference') return value ? <Tag color="blue" className="rp-reference-tag" style={{ borderRadius: '6px', background: '#EEF2FF', border: 'none', color: '#4F46E5', fontWeight: 500, padding: '2px 12px' }}>{value}</Tag> : '—';
@@ -977,11 +1366,11 @@ const ReportsAnalyticsPage = () => {
       align: 'center',
       render: (_, record) => (
         <Tooltip title="View details">
-          <Button 
-            type="text" 
-            icon={<EyeOutlined />} 
-            onClick={() => setDrawerRecord(record)} 
-            size="small" 
+          <Button
+            type="text"
+            icon={<EyeOutlined />}
+            onClick={() => setDrawerRecord(record)}
+            size="small"
             className="rp-view-btn"
             style={{ color: '#6B7280' }}
           />
@@ -993,17 +1382,17 @@ const ReportsAnalyticsPage = () => {
 
   const menuItems = useMemo(() => visibleCategories.map((category) => ({
     key: category.key,
-    icon: React.createElement(category.icon, { 
-      style: { 
-        color: '#4F46E5', 
-        fontSize: '16px' 
-      } 
+    icon: React.createElement(category.icon, {
+      style: {
+        color: category.key === 'profitability' ? '#2563EB' : '#4F46E5',
+        fontSize: '16px',
+      },
     }),
     label: (
-      <span style={{ 
+      <span style={{
         fontSize: '13px',
-        fontWeight: 500,
-        color: '#1F2937'
+        fontWeight: category.key === 'profitability' ? 600 : 500,
+        color: category.key === 'profitability' ? '#1D4ED8' : '#1F2937',
       }}>
         {category.label}
       </span>
@@ -1012,10 +1401,10 @@ const ReportsAnalyticsPage = () => {
       key: item.key,
       icon: <FileTextOutlined style={{ fontSize: '12px', color: '#9CA3AF' }} />,
       label: (
-        <span style={{ 
-          fontSize: '13px', 
+        <span style={{
+          fontSize: '13px',
           color: '#4B5563',
-          fontWeight: 400
+          fontWeight: 400,
         }}>
           {item.label}
         </span>
@@ -1032,10 +1421,26 @@ const ReportsAnalyticsPage = () => {
     setSearchText('');
     setDraftFilters(emptyFilters);
     setAppliedFilters(emptyFilters);
+    if (category.key === 'profitability') {
+      setProfitabilityData({ report: null, menus: null });
+    }
+  };
+
+  const handlePresetClick = (preset) => {
+    const range = preset.getRange();
+    setActivePreset(preset.key);
+    setDraftFilters((prev) => ({ ...prev, dateRange: range }));
+    setAppliedFilters((prev) => ({ ...prev, dateRange: range }));
+    if (isProfitability) {
+      setProfitabilityData({ report: null, menus: null });
+    }
   };
 
   const handleGenerate = () => {
     setAppliedFilters({ ...draftFilters });
+    if (isProfitability) {
+      setProfitabilityData({ report: null, menus: null });
+    }
     message.success({
       content: `${activeReport.label} generated successfully.`,
       duration: 2,
@@ -1046,6 +1451,7 @@ const ReportsAnalyticsPage = () => {
     setDraftFilters(emptyFilters);
     setAppliedFilters(emptyFilters);
     setSearchText('');
+    setActivePreset('this-month');
   };
 
   const exportPayload = () => filteredRows.map((row) => Object.fromEntries(
@@ -1117,9 +1523,8 @@ const ReportsAnalyticsPage = () => {
     }).join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(activeReport.label)}</title><style>
       @page{size:A4 landscape;margin:12mm} body{font-family:'Segoe UI',Arial,sans-serif;color:#0f172a;margin:0;font-size:10px}
-      .header{text-align:center;border-bottom:2px solid #4F46E5;padding-bottom:10px;margin-bottom:12px}.header h1{font-size:20px;margin:0;color:#4F46E5}.header h2{font-size:15px;margin:5px 0;color:#1e293b}.meta{color:#64748b}
-      .summary{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid #e2e8f0;margin-bottom:12px}.summary div{padding:8px;border-right:1px solid #e2e8f0}.summary div:last-child{border-right:0}.summary small{display:block;color:#64748b;text-transform:uppercase;font-size:8px}.summary strong{font-size:13px}
-      table{width:100%;border-collapse:collapse;table-layout:auto}th{background:#4F46E5;color:white;text-align:left;padding:7px;border:1px solid #4338CA;white-space:nowrap;font-size:8px;text-transform:uppercase;letter-spacing:.05em}td{padding:6px;border:1px solid #e2e8f0;vertical-align:top}tbody tr:nth-child(even){background:#f8fafc}.number{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tfoot{background:#EEF2FF;font-weight:600}.footer{margin-top:12px;display:flex;justify-content:space-between;color:#64748b;font-size:8px}.no-print{margin:15px 0;text-align:center}
+      .header{text-align:center;border-bottom:2px solid #2563EB;padding-bottom:10px;margin-bottom:12px}.header h1{font-size:20px;margin:0;color:#2563EB}.header h2{font-size:15px;margin:5px 0;color:#1e293b}.meta{color:#64748b}
+      table{width:100%;border-collapse:collapse;table-layout:auto}th{background:#2563EB;color:white;text-align:left;padding:7px;border:1px solid #1D4ED8;white-space:nowrap;font-size:8px;text-transform:uppercase;letter-spacing:.05em}td{padding:6px;border:1px solid #e2e8f0;vertical-align:top}tbody tr:nth-child(even){background:#f8fafc}.number{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}tfoot{background:#EFF6FF;font-weight:600}.footer{margin-top:12px;display:flex;justify-content:space-between;color:#64748b;font-size:8px}.no-print{margin:15px 0;text-align:center}
       @media print{.no-print{display:none}}
     </style></head><body>
       <div class="header"><h1>CATERING MANAGEMENT SYSTEM</h1><h2>${escapeHtml(activeReport.label)}</h2><div class="meta">${escapeHtml(selectedCategory.label)} · ${escapeHtml(appliedFilters.dateRange?.[0]?.format('MMM D, YYYY') || 'All Dates')} to ${escapeHtml(appliedFilters.dateRange?.[1]?.format('MMM D, YYYY') || 'All Dates')}</div></div>
@@ -1184,7 +1589,7 @@ const ReportsAnalyticsPage = () => {
       theme={{
         algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
-          colorPrimary: '#4F46E5',
+          colorPrimary: '#2563EB',
           borderRadius: 8,
           fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
           colorBgContainer: '#FFFFFF',
@@ -1202,20 +1607,13 @@ const ReportsAnalyticsPage = () => {
             cellPaddingInline: 16,
             borderColor: '#F3F4F6',
           },
-          Card: {
-            borderRadius: 12,
-          },
-          Button: {
-            borderRadius: 8,
-          },
-          Menu: {
-            itemBorderRadius: 8,
-          },
+          Card: { borderRadius: 12 },
+          Button: { borderRadius: 8 },
+          Menu: { itemBorderRadius: 8 },
         },
       }}
     >
       <div className={`rp-premium-page ${isDarkMode ? 'rp-dark-mode' : ''}`}>
-        {/* Premium Header */}
         <header className="rp-premium-header">
           <div className="rp-header-left">
             <div className="rp-header-brand">
@@ -1252,7 +1650,6 @@ const ReportsAnalyticsPage = () => {
         </header>
 
         <div className={`rp-premium-workspace ${sidebarCollapsed ? 'rp-sidebar-collapsed' : ''}`}>
-          {/* Sidebar - Formal & Clean */}
           <aside className="rp-premium-sidebar">
             <div className="rp-sidebar-header">
               {!sidebarCollapsed && (
@@ -1277,10 +1674,7 @@ const ReportsAnalyticsPage = () => {
               onClick={({ key }) => selectReport(key)}
               items={menuItems}
               className="rp-category-menu"
-              style={{
-                background: 'transparent',
-                borderRight: 'none',
-              }}
+              style={{ background: 'transparent', borderRight: 'none' }}
             />
             {!sidebarCollapsed && (
               <div className="rp-sidebar-footer">
@@ -1293,7 +1687,6 @@ const ReportsAnalyticsPage = () => {
             )}
           </aside>
 
-          {/* Main Content */}
           <main className="rp-main-panel">
             {reports.warning && (
               <Alert className="rp-warning" type="warning" showIcon message={reports.warning} />
@@ -1302,8 +1695,7 @@ const ReportsAnalyticsPage = () => {
               <Alert className="rp-warning" type="error" showIcon message="Unable to load data" description={error.message} />
             )}
 
-            {/* Toolbar */}
-            <div className="rp-premium-toolbar">
+            <div className={`rp-premium-toolbar ${isProfitability ? 'rp-toolbar-profitability' : ''}`}>
               <div className="rp-toolbar-left">
                 <div className="rp-toolbar-icon" style={{ background: selectedCategory.gradient || selectedCategory.color }}>
                   {React.createElement(selectedCategory.icon)}
@@ -1314,7 +1706,7 @@ const ReportsAnalyticsPage = () => {
                 </div>
               </div>
               <div className="rp-toolbar-right">
-                <Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate} loading={isFetching} className="rp-btn-primary">
+                <Button type="primary" icon={<RocketOutlined />} onClick={handleGenerate} loading={isFetching || profitabilityLoading} className="rp-btn-primary">
                   Generate Report
                 </Button>
                 <Button icon={<PrinterOutlined />} onClick={() => openPrintWindow('print')} className="rp-btn-outline">
@@ -1329,15 +1721,54 @@ const ReportsAnalyticsPage = () => {
                   Email
                 </Button>
                 <Tooltip title="Refresh data">
-                  <Button icon={<ReloadOutlined spin={isFetching} />} onClick={() => refetch()} className="rp-btn-icon" />
+                  <Button
+                    icon={<ReloadOutlined spin={isFetching || profitabilityLoading} />}
+                    onClick={() => {
+                      refetch();
+                      if (isProfitability) {
+                        setProfitabilityData({ report: null, menus: null });
+                      }
+                    }}
+                    className="rp-btn-icon"
+                  />
                 </Tooltip>
               </div>
             </div>
 
-            {/* Filters */}
+            {/* ============================================================
+                PROFITABILITY KPI STRIP + PERIOD PRESETS
+                ============================================================ */}
+            {isProfitability && (
+              <div className="rp-profit-strip">
+                <div className="rp-profit-strip-top">
+                  <div className="rp-profit-strip-title">
+                    <RiseOutlined />
+                    <span>Profitability Snapshot</span>
+                  </div>
+                  <div className="rp-period-presets">
+                    {PERIOD_PRESETS.map((preset) => (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        className={`rp-period-chip ${activePreset === preset.key ? 'active' : ''}`}
+                        onClick={() => handlePresetClick(preset)}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <ProfitabilitySummaryCards
+                  rows={filteredRows}
+                  reportKey={activeReport?.key}
+                  loading={profitabilityLoading}
+                />
+              </div>
+            )}
+
             <div className="rp-premium-filters">
               <div className="rp-filters-header" onClick={() => setIsFilterExpanded(!isFilterExpanded)}>
-                <FilterOutlined /> 
+                <FilterOutlined />
                 <span style={{ fontWeight: 600 }}>Advanced Filters</span>
                 <Badge count={filterFields.length + 1} size="small" className="rp-filter-badge" />
                 <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#6B7280' }}>
@@ -1394,13 +1825,12 @@ const ReportsAnalyticsPage = () => {
               )}
             </div>
 
-            {/* Report Content - Without Summary Cards */}
-            <div className="rp-premium-report">
+            <div className={`rp-premium-report ${isProfitability ? 'rp-premium-report-profit' : ''}`}>
               <div className="rp-table-wrapper">
                 <div className="rp-table-header">
                   <div className="rp-table-title">
-                    <FileTextOutlined style={{ color: '#4F46E5' }} />
-                    <strong>Detailed Records</strong>
+                    <FileTextOutlined style={{ color: isProfitability ? '#2563EB' : '#4F46E5' }} />
+                    <strong>{isBookingProfitability ? 'Per-Booking Profitability Breakdown' : 'Detailed Records'}</strong>
                     <span className="rp-record-count">{filteredRows.length} records</span>
                   </div>
                   <Space>
@@ -1416,7 +1846,7 @@ const ReportsAnalyticsPage = () => {
                   </Space>
                 </div>
 
-                <Spin spinning={isLoading && !reports?.sales} tip="Loading records...">
+                <Spin spinning={(isLoading && !reports?.sales) || profitabilityLoading} tip="Loading records...">
                   <Table
                     className="rp-premium-table"
                     rowKey={(row) => row.key}
@@ -1481,7 +1911,6 @@ const ReportsAnalyticsPage = () => {
           </main>
         </div>
 
-        {/* Drawer */}
         <Drawer
           title={
             <div className="rp-drawer-title">
@@ -1524,7 +1953,6 @@ const ReportsAnalyticsPage = () => {
           )}
         </Drawer>
 
-        {/* Email Modal */}
         <Modal
           title={
             <div className="rp-modal-title">

@@ -172,24 +172,25 @@
    ============================================================ */
 .bi-kpi-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    padding: 16px 32px;
-    flex-shrink: 0;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 20px;
+    padding: 20px 32px 4px;
+    margin-bottom: 20px;
 }
 
 .bi-kpi-card {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 16px 20px;
+    gap: 18px;
+    padding: 20px 24px;
     background: var(--bi-surface);
     border: 1px solid var(--bi-border);
     border-radius: var(--bi-radius);
     box-shadow: var(--bi-shadow);
     transition: var(--bi-transition);
+    min-height: 88px;
+    min-width: 0;
 }
-
 .bi-kpi-card:hover {
     border-color: var(--bi-primary);
     transform: translateY(-2px);
@@ -964,7 +965,7 @@
         gap: 12px;
         padding: 12px 20px;
     }
-    
+
     .bi-main-card {
         margin: 0 20px 20px;
     }
@@ -974,55 +975,55 @@
     .bi-kpi-grid {
         grid-template-columns: 1fr 1fr;
     }
-    
+
     .bi-header {
         flex-direction: column;
         align-items: flex-start;
         gap: 10px;
         padding: 12px 16px;
     }
-    
+
     .bi-header-right {
         flex-wrap: wrap;
         width: 100%;
         gap: 8px;
     }
-    
+
     .bi-main-card {
         margin: 0 16px 16px;
     }
-    
+
     .bi-filters {
         flex-direction: column;
         align-items: stretch;
         gap: 8px;
         padding: 12px;
     }
-    
+
     .bi-filter-group {
         width: 100%;
     }
-    
+
     .bi-search {
         max-width: 100%;
     }
-    
+
     .bi-filters .ant-btn {
         width: 100%;
         justify-content: center;
     }
-    
+
     .bi-modal-body-enhanced {
         padding: 16px;
         max-height: 60vh;
     }
-    
+
     .bi-modal-header-enhanced {
         flex-wrap: wrap;
         gap: 8px;
         padding: 12px 16px;
     }
-    
+
     .bi-pdf-controls {
         margin-left: 0;
         width: 100%;
@@ -1036,76 +1037,76 @@
         gap: 8px;
         padding: 8px 12px;
     }
-    
+
     .bi-kpi-card {
         padding: 12px 14px;
     }
-    
+
     .bi-kpi-value {
         font-size: 17px;
     }
-    
+
     .bi-header {
         padding: 8px 12px;
     }
-    
+
     .bi-header-info h1 {
         font-size: 14px;
     }
-    
+
     .bi-main-card {
         margin: 0 12px 12px;
     }
-    
+
     .bi-date-display {
         font-size: 11px;
         padding: 4px 10px;
     }
-    
+
     .bi-filters {
         padding: 8px;
     }
-    
+
     .bi-filter-group {
         min-height: 32px;
         padding: 0 8px;
     }
-    
+
     .bi-table .ant-table-thead > tr > th {
         padding: 8px 10px;
         font-size: 9px;
     }
-    
+
     .bi-table .ant-table-tbody > tr > td {
         padding: 8px 10px;
         font-size: 12px;
     }
-    
+
     .bi-modal-body-enhanced {
         padding: 12px;
     }
-    
+
     .bi-modal-footer-enhanced {
         flex-wrap: wrap;
         gap: 8px;
     }
-    
+
     .bi-modal-footer-enhanced .ant-btn {
         flex: 1;
         justify-content: center;
     }
-    
+
     .bi-pdf-footer {
         flex-wrap: wrap;
         gap: 8px;
     }
-    
+
     .bi-pdf-footer > div {
         width: 100%;
         display: flex;
         justify-content: center;
     }
-    
+
     .bi-pdf-footer > div .ant-btn {
         flex: 1;
         justify-content: center;
@@ -1124,36 +1125,36 @@
     .bi-modal-footer-enhanced .ant-btn {
         display: none !important;
     }
-    
+
     .bi-main-card {
         margin: 0 !important;
         border: none !important;
         box-shadow: none !important;
     }
-    
+
     .bi-kpi-grid {
         display: none !important;
     }
-    
+
     .bi-tabs .ant-tabs-nav {
         display: none !important;
     }
-    
+
     .bi-modal .ant-modal-content {
         border-radius: 0 !important;
         box-shadow: none !important;
     }
-    
+
     .bi-modal-body-enhanced {
         max-height: none !important;
         overflow: visible !important;
         padding: 16px !important;
     }
-    
+
     .bi-table .ant-table {
         font-size: 10px !important;
     }
-    
+
     .bi-table .ant-table-thead > tr > th {
         background: #f0f0f0 !important;
         -webkit-print-color-adjust: exact !important;
@@ -1248,7 +1249,6 @@
    ENHANCED MODAL STYLES
    ============================================================ */
 
-/* Modal Header Enhancements */
 .bi-modal-title-group {
     flex: 1;
 }
@@ -1273,37 +1273,6 @@
     gap: 8px;
 }
 
-/* Search Wrapper */
-.bi-search-wrapper {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: var(--bi-surface);
-    border: 1px solid var(--bi-border);
-    border-radius: 10px;
-    padding: 0 12px;
-    height: 36px;
-    transition: var(--bi-transition);
-}
-
-.bi-search-wrapper:hover {
-    border-color: var(--bi-primary);
-}
-
-.bi-search-wrapper .ant-input {
-    border: none !important;
-    box-shadow: none !important;
-    background: transparent !important;
-    padding: 4px 0 !important;
-}
-
-.bi-search-wrapper .ant-input:focus,
-.bi-search-wrapper .ant-input:hover {
-    border: none !important;
-    box-shadow: none !important;
-}
-
-/* Invoice Summary Cards */
 .bi-invoice-summary-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -1349,7 +1318,6 @@
     color: var(--bi-text);
 }
 
-/* Info Sections */
 .bi-info-section {
     margin-bottom: 20px;
 }
@@ -1395,7 +1363,6 @@
     color: var(--bi-text);
 }
 
-/* Financial Grid */
 .bi-financial-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1432,7 +1399,6 @@
     color: var(--bi-text);
 }
 
-/* Notes */
 .bi-notes-content {
     padding: 12px 16px;
     background: var(--bi-page);
@@ -1442,10 +1408,6 @@
     color: var(--bi-text);
     line-height: 1.6;
 }
-
-/* ============================================================
-   ENHANCED PAYMENT MODAL
-   ============================================================ */
 
 .bi-payment-header .bi-modal-icon {
     background: linear-gradient(135deg, #52c41a, #45a817) !important;
@@ -1519,10 +1481,6 @@
     color: var(--bi-text);
     margin-bottom: 12px;
 }
-
-/* ============================================================
-   ENHANCED RECEIPT MODAL
-   ============================================================ */
 
 .bi-receipt-header-modal .bi-modal-icon {
     background: linear-gradient(135deg, #722ed1, #531dab) !important;
@@ -1654,9 +1612,6 @@
     color: var(--bi-muted);
 }
 
-/* ============================================================
-   FOOTER BUTTONS
-   ============================================================ */
 .bi-footer-btn {
     border-radius: 10px !important;
     font-weight: 500 !important;
@@ -1728,62 +1683,41 @@
 }
 
 /* ============================================================
-   MODAL SCROLL FIX
-   ============================================================ */
-.bi-pdf-viewer-modal .ant-modal-wrap {
-    overflow: hidden !important;
-}
-
-.bi-pdf-viewer-modal .ant-modal-body {
-    overflow-y: auto !important;
-    max-height: 80vh !important;
-}
-
-.bi-receipt-preview-modal .ant-modal-wrap {
-    overflow: hidden !important;
-}
-
-.bi-receipt-preview-modal .ant-modal-body {
-    overflow-y: auto !important;
-    max-height: 80vh !important;
-}
-
-/* ============================================================
-   RESPONSIVE
+   RESPONSIVE (Modal grids)
    ============================================================ */
 @media (max-width: 820px) {
     .bi-invoice-summary-grid {
         grid-template-columns: 1fr 1fr;
     }
-    
+
     .bi-payment-summary-grid {
         grid-template-columns: 1fr 1fr;
     }
-    
+
     .bi-receipt-meta-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-payment-details-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-info-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-financial-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-payment-form .bi-form-row {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-modal-badge-group {
         flex-wrap: wrap;
     }
-    
+
     .bi-receipt-header-content {
         flex-direction: column;
         text-align: center;
@@ -1794,12 +1728,695 @@
     .bi-invoice-summary-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-payment-summary-grid {
         grid-template-columns: 1fr;
     }
-    
+
     .bi-summary-card {
         padding: 10px 12px;
+    }
+}
+
+/* ============================================================
+   ⭐⭐⭐ REFUND MODULE — PROFESSIONAL WHITE-BLUE THEME ⭐⭐⭐
+   ============================================================ */
+
+/* ---- Refund Tab Container ---- */
+.bi-refund-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ---- Refund Insight Row (top stats) ---- */
+.bi-refund-insights {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    flex-shrink: 0;
+}
+
+.bi-refund-insight-card {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 18px;
+    background: var(--bi-surface);
+    border: 1px solid var(--bi-border);
+    border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+    transition: all 0.2s ease;
+    overflow: hidden;
+}
+
+.bi-refund-insight-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    border-radius: 14px 0 0 14px;
+}
+
+.bi-refund-insight-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    border-color: #dbe7f0;
+}
+
+.bi-refund-insight-card.pending::before { background: linear-gradient(180deg, #faad14, #d48806); }
+.bi-refund-insight-card.approved::before { background: linear-gradient(180deg, #1a7ab5, #1565a0); }
+.bi-refund-insight-card.released::before { background: linear-gradient(180deg, #52c41a, #389e0d); }
+.bi-refund-insight-card.total::before { background: linear-gradient(180deg, #722ed1, #531dab); }
+
+.bi-refund-insight-icon {
+    display: grid;
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+    place-items: center;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.bi-refund-insight-card.pending .bi-refund-insight-icon {
+    background: linear-gradient(135deg, #fff7e6, #ffe7ba);
+    color: #d48806;
+}
+.bi-refund-insight-card.approved .bi-refund-insight-icon {
+    background: linear-gradient(135deg, #e8f0fe, #cfe2f3);
+    color: #1a7ab5;
+}
+.bi-refund-insight-card.released .bi-refund-insight-icon {
+    background: linear-gradient(135deg, #f6ffed, #d9f7be);
+    color: #389e0d;
+}
+.bi-refund-insight-card.total .bi-refund-insight-icon {
+    background: linear-gradient(135deg, #f9f0ff, #efdbff);
+    color: #531dab;
+}
+
+.bi-refund-insight-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.bi-refund-insight-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.bi-refund-insight-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f172a;
+    line-height: 1.1;
+}
+
+.bi-refund-insight-sub {
+    font-size: 11px;
+    color: #94a3b8;
+    font-weight: 500;
+}
+
+/* ---- Refund Filters Bar ---- */
+.bi-refund-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: #ffffff;
+    border: 1px solid var(--bi-border);
+    border-radius: 12px;
+    flex-shrink: 0;
+}
+
+.bi-refund-filters .bi-search-wrapper {
+    flex: 1;
+    min-width: 220px;
+    max-width: 360px;
+    height: 38px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    transition: all 0.2s ease;
+}
+
+.bi-refund-filters .bi-search-wrapper:hover,
+.bi-refund-filters .bi-search-wrapper:focus-within {
+    border-color: #1a7ab5;
+    background: #ffffff;
+}
+
+.bi-refund-filters .bi-search-wrapper .ant-input {
+    color: #0f172a;
+    font-size: 13px;
+}
+
+.bi-refund-filters .bi-filter-group {
+    height: 38px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    transition: all 0.2s ease;
+}
+
+.bi-refund-filters .bi-filter-group:hover {
+    border-color: #1a7ab5;
+    background: #ffffff;
+}
+
+.bi-refund-filters .bi-filter-group .ant-select-selector,
+.bi-refund-filters .bi-filter-group .ant-picker {
+    background: transparent !important;
+}
+
+/* ---- Refund Table Wrapper ---- */
+.bi-refund-table-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+    border: 1px solid var(--bi-border);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.bi-refund-table-wrapper .ant-table-wrapper,
+.bi-refund-table-wrapper .ant-spin-nested-loading,
+.bi-refund-table-wrapper .ant-spin-container,
+.bi-refund-table-wrapper .ant-table,
+.bi-refund-table-wrapper .ant-table-container {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.bi-refund-table-wrapper .ant-table-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto !important;
+}
+
+/* Refund table header — cleaner, professional blue */
+.bi-refund-table .ant-table-thead > tr > th {
+    background: #f1f6fb !important;
+    color: #475569 !important;
+    border-bottom: 2px solid #1a7ab5 !important;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    padding: 14px 16px !important;
+}
+
+.bi-refund-table .ant-table-tbody > tr > td {
+    padding: 14px 16px !important;
+    border-bottom: 1px solid #f1f5f9;
+    vertical-align: middle;
+    font-size: 13px;
+}
+
+.bi-refund-table .ant-table-tbody > tr:hover > td {
+    background: #f8fbff !important;
+}
+
+/* ---- Refund Number Cell ---- */
+.bi-refund-number {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: #e8f0fe;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #1a7ab5;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    letter-spacing: 0.3px;
+}
+
+/* ---- Refund Status Pills ---- */
+.bi-refund-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+}
+
+.bi-refund-status.pending {
+    background: #fff7e6;
+    color: #d48806;
+    border: 1px solid #ffe7ba;
+}
+
+.bi-refund-status.approved {
+    background: #e8f0fe;
+    color: #1565a0;
+    border: 1px solid #cfe2f3;
+}
+
+.bi-refund-status.released {
+    background: #f6ffed;
+    color: #389e0d;
+    border: 1px solid #d9f7be;
+}
+
+.bi-refund-status.rejected {
+    background: #fff1f0;
+    color: #cf1322;
+    border: 1px solid #ffccc7;
+}
+
+.bi-refund-status.cancelled {
+    background: #f5f5f5;
+    color: #595959;
+    border: 1px solid #e0e0e0;
+}
+
+/* ---- Refund Amount Cell ---- */
+.bi-refund-amount {
+    font-weight: 700;
+    color: #0f172a;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bi-refund-amount-released {
+    color: #389e0d;
+    font-weight: 700;
+}
+
+/* ---- Refund Action Buttons ---- */
+.bi-refund-btn {
+    height: 30px !important;
+    padding: 0 12px !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    transition: all 0.15s ease !important;
+}
+
+.bi-refund-btn.approve {
+    background: linear-gradient(135deg, #1a7ab5, #1565a0) !important;
+    border-color: #1565a0 !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 6px rgba(26, 122, 181, 0.25) !important;
+}
+
+.bi-refund-btn.approve:hover {
+    background: linear-gradient(135deg, #1565a0, #0d4f7f) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(26, 122, 181, 0.35) !important;
+}
+
+.bi-refund-btn.release {
+    background: linear-gradient(135deg, #52c41a, #389e0d) !important;
+    border-color: #389e0d !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 6px rgba(82, 196, 26, 0.25) !important;
+}
+
+.bi-refund-btn.release:hover {
+    background: linear-gradient(135deg, #389e0d, #237804) !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(82, 196, 26, 0.35) !important;
+}
+
+.bi-refund-btn.reject {
+    background: #ffffff !important;
+    border: 1px solid #ffccc7 !important;
+    color: #cf1322 !important;
+}
+
+.bi-refund-btn.reject:hover {
+    background: #fff1f0 !important;
+    border-color: #ff4d4f !important;
+    color: #a8071a !important;
+}
+
+.bi-refund-btn.view {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    color: #64748b !important;
+}
+
+.bi-refund-btn.view:hover {
+    background: #f8fafc !important;
+    border-color: #1a7ab5 !important;
+    color: #1a7ab5 !important;
+}
+
+/* ---- Refund Empty State ---- */
+.bi-refund-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 24px;
+    text-align: center;
+}
+
+.bi-refund-empty-icon {
+    display: grid;
+    width: 72px;
+    height: 72px;
+    background: #f1f6fb;
+    border-radius: 20px;
+    place-items: center;
+    font-size: 32px;
+    color: #94a3b8;
+    margin-bottom: 16px;
+}
+
+.bi-refund-empty-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 4px;
+}
+
+.bi-refund-empty-desc {
+    font-size: 13px;
+    color: #94a3b8;
+    max-width: 320px;
+}
+
+/* ---- Refund Modal Enhancements ---- */
+.bi-refund-modal .ant-modal-content {
+    border-radius: 16px !important;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.15) !important;
+}
+
+.bi-refund-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 20px 26px;
+    background: linear-gradient(135deg, #f8fafc 0%, #e8f0fe 100%);
+    border-bottom: 1px solid #dbe7f0;
+}
+
+.bi-refund-modal-header-icon {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    background: linear-gradient(135deg, #1a7ab5, #1565a0);
+    color: #ffffff;
+    border-radius: 12px;
+    place-items: center;
+    font-size: 22px;
+    flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(26, 122, 181, 0.25);
+}
+
+.bi-refund-modal-header-icon.warning {
+    background: linear-gradient(135deg, #faad14, #d48806);
+    box-shadow: 0 4px 12px rgba(250, 173, 20, 0.25);
+}
+
+.bi-refund-modal-header-icon.success {
+    background: linear-gradient(135deg, #52c41a, #389e0d);
+    box-shadow: 0 4px 12px rgba(82, 196, 26, 0.25);
+}
+
+.bi-refund-modal-header-icon.danger {
+    background: linear-gradient(135deg, #ff4d4f, #cf1322);
+    box-shadow: 0 4px 12px rgba(255, 77, 79, 0.25);
+}
+
+.bi-refund-modal-header-text {
+    flex: 1;
+}
+
+.bi-refund-modal-eyebrow {
+    font-size: 10px;
+    font-weight: 700;
+    color: #1a7ab5;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 2px;
+}
+
+.bi-refund-modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #0f172a;
+    margin: 0;
+    letter-spacing: -0.3px;
+}
+
+.bi-refund-modal-subtitle {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 2px;
+}
+
+.bi-refund-modal-badge {
+    padding: 6px 14px;
+    background: #ffffff;
+    border: 1px solid #dbe7f0;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #1a7ab5;
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    letter-spacing: 0.4px;
+}
+
+.bi-refund-modal-body {
+    padding: 24px 26px;
+    background: #ffffff;
+    max-height: 65vh;
+    overflow-y: auto;
+}
+
+.bi-refund-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 16px 26px;
+    background: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+}
+
+/* ---- Refund Summary Panel (inside modals) ---- */
+.bi-refund-summary {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 16px 18px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+
+.bi-refund-summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.bi-refund-summary-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.bi-refund-summary-value {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0f172a;
+}
+
+.bi-refund-summary-value.highlight {
+    color: #1a7ab5;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.bi-refund-summary-value.money {
+    color: #d48806;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+/* ---- Refund Amount Highlight Box ---- */
+.bi-refund-amount-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    background: linear-gradient(135deg, #e8f0fe, #d4e6f7);
+    border: 1px solid #cfe2f3;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+
+.bi-refund-amount-box-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #1565a0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.bi-refund-amount-box-value {
+    font-size: 26px;
+    font-weight: 800;
+    color: #1a7ab5;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+/* ---- Refund Timeline (details modal) ---- */
+.bi-refund-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 8px 4px;
+    position: relative;
+}
+
+.bi-refund-timeline-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 12px 0;
+    position: relative;
+}
+
+.bi-refund-timeline-item:not(:last-child)::before {
+    content: '';
+    position: absolute;
+    left: 15px;
+    top: 42px;
+    bottom: -8px;
+    width: 2px;
+    background: #e2e8f0;
+}
+
+.bi-refund-timeline-dot {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    place-items: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    z-index: 1;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
+}
+
+.bi-refund-timeline-dot.requested { background: #fff7e6; color: #d48806; }
+.bi-refund-timeline-dot.approved { background: #e8f0fe; color: #1a7ab5; }
+.bi-refund-timeline-dot.released { background: #f6ffed; color: #389e0d; }
+.bi-refund-timeline-dot.rejected { background: #fff1f0; color: #cf1322; }
+
+.bi-refund-timeline-body {
+    flex: 1;
+    padding-top: 2px;
+}
+
+.bi-refund-timeline-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 2px;
+}
+
+.bi-refund-timeline-meta {
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.5;
+}
+
+.bi-refund-timeline-meta strong {
+    color: #1a7ab5;
+    font-weight: 600;
+}
+
+/* ---- Refund Reason Block ---- */
+.bi-refund-reason {
+    padding: 14px 18px;
+    background: #f8fafc;
+    border-left: 3px solid #1a7ab5;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #334155;
+    margin-bottom: 20px;
+}
+
+.bi-refund-reason-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    margin-bottom: 6px;
+}
+
+/* ---- Responsive Refund ---- */
+@media (max-width: 1200px) {
+    .bi-refund-insights {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+@media (max-width: 820px) {
+    .bi-refund-insights {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .bi-refund-summary {
+        grid-template-columns: 1fr;
+    }
+
+    .bi-refund-amount-box-value {
+        font-size: 22px;
+    }
+}
+
+@media (max-width: 480px) {
+    .bi-refund-insights {
+        grid-template-columns: 1fr;
+    }
+
+    .bi-refund-filters {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .bi-refund-filters .bi-search-wrapper {
+        max-width: 100%;
     }
 }

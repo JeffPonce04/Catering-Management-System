@@ -34,35 +34,34 @@ class EmployeeController extends Controller
     /**
      * Generic sequential number generator
      */
-   private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
-{
-    try {
-        if (!class_exists($modelClass)) {
-            throw new \Exception("Model class {$modelClass} not found");
-        }
+    private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
+    {
+        try {
+            if (!class_exists($modelClass)) {
+                throw new \Exception("Model class {$modelClass} not found");
+            }
 
-        // Create a new instance to get the key name
-        $instance = new $modelClass();
-        $keyName = $instance->getKeyName();
+            $instance = new $modelClass();
+            $keyName = $instance->getKeyName();
 
-        $lastRecord = $modelClass::withTrashed()
-            ->where($column, 'LIKE', $prefix . '%')
-            ->orderBy($keyName, 'desc')
-            ->first();
-        
-        if ($lastRecord && isset($lastRecord->$column)) {
-            $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
-            $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
-        } else {
-            $newNumber = str_repeat('0', $padding - 1) . '1';
+            $lastRecord = $modelClass::withTrashed()
+                ->where($column, 'LIKE', $prefix . '%')
+                ->orderBy($keyName, 'desc')
+                ->first();
+
+            if ($lastRecord && isset($lastRecord->$column)) {
+                $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
+                $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
+            } else {
+                $newNumber = str_repeat('0', $padding - 1) . '1';
+            }
+
+            return $prefix . $newNumber;
+        } catch (\Exception $e) {
+            Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
+            return $prefix . str_pad((string) (time() % 10000), $padding, '0', STR_PAD_LEFT);
         }
-        
-        return $prefix . $newNumber;
-    } catch (\Exception $e) {
-        Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
-        return $prefix . str_pad((string) (time() % 10000), $padding, '0', STR_PAD_LEFT);
     }
-}   
 
     public function index(Request $request)
     {
@@ -196,7 +195,7 @@ class EmployeeController extends Controller
         return $this->ok($employee);
     }
 
-    public function update(EmployeeRequest $request, Employee $employee)
+        public function update(EmployeeRequest $request, Employee $employee)
     {
         $oldPhotoPath = null;
         $newPhotoPath = null;
@@ -268,6 +267,27 @@ class EmployeeController extends Controller
 
                 $employee->update($employeeData);
 
+                // ⭐ #2 — Block the linked user account whenever the employee
+                //    status becomes inactive or terminated. This prevents them
+                //    from logging into Attendance Tracking.
+                if ($employee->user && isset($employeeData['status'])) {
+                    $isActive = in_array($employeeData['status'], ['active', 'on_leave'], true);
+                    $employee->user->update(['is_active' => $isActive]);
+
+                    // Force logout any existing Sanctum sessions so the mobile
+                    // app's cached token is invalidated immediately.
+                    if (! $isActive) {
+                        try {
+                            $employee->user->tokens()->delete();
+                        } catch (Throwable $e) {
+                            Log::warning('Failed to revoke tokens on employee deactivation', [
+                                'user_id' => $employee->user->user_id,
+                                'exception' => $e->getMessage(),
+                            ]);
+                        }
+                    }
+                }
+
                 return $this->ok(
                     $employee->fresh(['person', 'department', 'position.salaryGrade']),
                     'Employee updated'
@@ -286,17 +306,42 @@ class EmployeeController extends Controller
 
         return $response;
     }
-
-    public function destroy(Employee $employee)
+       public function destroy(Employee $employee)
     {
-        $employee->delete();
+        DB::transaction(function () use ($employee) {
+            // ⭐ #2 — Block the linked user account when archived.
+            $employee->loadMissing('user');
+            if ($employee->user) {
+                $employee->user->update(['is_active' => false]);
+                try {
+                    $employee->user->tokens()->delete();
+                } catch (Throwable $e) {
+                    Log::warning('Failed to revoke tokens on archive', [
+                        'user_id' => $employee->user->user_id,
+                        'exception' => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            $employee->delete();
+        });
+
         return $this->ok(null, 'Employee archived');
     }
-
-    public function restore($id)
+        public function restore($id)
     {
         $employee = Employee::withTrashed()->findOrFail($id);
-        $employee->restore();
+
+        DB::transaction(function () use ($employee) {
+            $employee->restore();
+            $employee->loadMissing('user');
+
+            // ⭐ #2 — Reactivate the linked user account.
+            if ($employee->user && $employee->status === 'active') {
+                $employee->user->update(['is_active' => true]);
+            }
+        });
+
         return $this->ok($employee->fresh(['person', 'department', 'position.salaryGrade']), 'Employee restored');
     }
 
@@ -398,7 +443,7 @@ class EmployeeController extends Controller
         ]);
     }
 
-    public function bulkStatus(Request $request)
+       public function bulkStatus(Request $request)
     {
         $data = $request->validate([
             'ids' => 'required|array|min:1',
@@ -406,13 +451,50 @@ class EmployeeController extends Controller
             'status' => 'required|string',
         ]);
 
-        Employee::whereIn('employee_id', $data['ids'])->update([
-            'status' => $this->normalizeStatus($data['status']),
-        ]);
+        $normalizedStatus = $this->normalizeStatus($data['status']);
+        $isActive = in_array($normalizedStatus, ['active', 'on_leave'], true);
+
+        DB::transaction(function () use ($data, $normalizedStatus, $isActive) {
+            Employee::whereIn('employee_id', $data['ids'])->update([
+                'status' => $normalizedStatus,
+            ]);
+
+            // ⭐ #2 — Sync the linked user accounts so they can / cannot log in.
+            $employees = Employee::with('user')
+                ->whereIn('employee_id', $data['ids'])
+                ->get();
+
+            foreach ($employees as $emp) {
+                if (! $emp->user) {
+                    continue;
+                }
+
+                $emp->user->update(['is_active' => $isActive]);
+
+                // Force logout active sessions when deactivated.
+                if (! $isActive) {
+                    try {
+                        $emp->user->tokens()->delete();
+                    } catch (Throwable $e) {
+                        Log::warning('Failed to revoke tokens during bulk status', [
+                            'user_id' => $emp->user->user_id,
+                            'exception' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            }
+        });
 
         return $this->ok(null, 'Employee status updated');
     }
 
+    /**
+     * Eligible employees for payroll.
+     *
+     * FIX: Admins / HR / Payroll / Manager roles can process payroll at any time.
+     * The "attendance saved as payroll ready" gate is bypassed for those roles.
+     * Non-admin users still see the blocker.
+     */
     public function eligibleForPayroll(Request $request, AttendanceService $attendanceService)
     {
         $data = $request->validate([
@@ -428,7 +510,13 @@ class EmployeeController extends Controller
             $query->where('department_id', $data['department_id']);
         }
 
-        $employees = $query->get()->map(function (Employee $employee) use ($data, $attendanceService) {
+        // FIX: Determine whether the current user can bypass the payroll-ready gate
+        $user = auth()->user();
+        $isAdmin = $user && method_exists($user, 'hasAnyRole')
+            ? $user->hasAnyRole(['admin', 'super_admin', 'hr', 'manager', 'payroll'])
+            : false;
+
+        $employees = $query->get()->map(function (Employee $employee) use ($data, $attendanceService, $isAdmin) {
             $allAttendance = AttendanceLog::with(['schedule', 'overtimeRequest'])
                 ->where('employee_id', $employee->employee_id)
                 ->whereBetween('attendance_date', [$data['start_date'], $data['end_date']])
@@ -452,16 +540,23 @@ class EmployeeController extends Controller
                 ->exists();
 
             $blockers = collect();
-            $incomplete = $allAttendance->first(fn (AttendanceLog $row) => ! $row->time_in || ! $row->time_out);
+            $softNotes = collect();
+
+            // Missing time-in / time-out is always a hard blocker
+            $incomplete = $allAttendance->first(
+                fn (AttendanceLog $row) => $row->status !== 'absent' && (! $row->time_in || ! $row->time_out)
+            );
             if ($incomplete) {
                 $blockers->push('Missing time-in/time-out on ' . $incomplete->attendance_date?->toDateString());
             }
 
-            $pending = $allAttendance->first(fn (AttendanceLog $row) => $row->approval_status !== 'approved');
+            // Pending attendance decision is a hard blocker
+            $pending = $allAttendance->first(fn (AttendanceLog $row) => $row->approval_status === 'pending');
             if ($pending) {
-                $blockers->push('Attendance not approved on ' . $pending->attendance_date?->toDateString());
+                $blockers->push('Attendance decision pending on ' . $pending->attendance_date?->toDateString());
             }
 
+            // Unresolved overtime is a hard blocker
             $unresolvedOvertime = $allAttendance->first(function (AttendanceLog $row) {
                 return (float) $row->overtime_hours > 0
                     && ! (bool) $row->overtime_approved
@@ -471,9 +566,22 @@ class EmployeeController extends Controller
                 $blockers->push('Overtime decision pending on ' . $unresolvedOvertime->attendance_date?->toDateString());
             }
 
+            // No attendance
             if ($allAttendance->isEmpty()) {
                 $blockers->push('No attendance records');
             }
+
+            // Payroll-ready gate — bypass for admins
+            $notFinalized = $allAttendance->first(fn (AttendanceLog $row) => ! $row->payroll_ready_at);
+            if ($notFinalized) {
+                if ($isAdmin) {
+                    $softNotes->push('Attendance was not finalized for payroll; admin override applied.');
+                } else {
+                    $blockers->push('Attendance has not been saved as payroll ready');
+                }
+            }
+
+            // Already processed
             if ($hasPayroll) {
                 $blockers->push('Already processed');
             }
@@ -495,7 +603,12 @@ class EmployeeController extends Controller
             $employee->payroll_ready = $eligible;
             $employee->eligible = $eligible;
             $employee->eligibility_blockers = $blockers->values();
-            $employee->eligibility_status = $eligible ? 'Eligible' : $blockers->implode('; ');
+            $employee->soft_notes = $softNotes->values();
+            $employee->eligibility_status = $eligible
+                ? 'Eligible'
+                : ($isAdmin && $blockers->count() === 1 && $softNotes->isNotEmpty() && ! $hasPayroll
+                    ? 'Eligible (Admin Override)'
+                    : $blockers->implode('; '));
 
             return $employee;
         });
@@ -514,7 +627,6 @@ class EmployeeController extends Controller
             ],
         ]);
     }
-
 
     private function bookmarkedEmployeeIds()
     {
@@ -627,8 +739,7 @@ class EmployeeController extends Controller
         ?Person $person = null,
         ?string $profilePhotoPath = null,
         bool $replaceProfilePhoto = false
-    ): array
-    {
+    ): array {
         $gender = $request->input('gender', $person?->gender);
         if ($gender === 'prefer_not_to_say' || $gender === '') {
             $gender = null;

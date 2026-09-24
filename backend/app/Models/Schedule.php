@@ -131,7 +131,7 @@ class Schedule extends Model
      * Get the assignment payload from assignment_details field
      * This method is used by the getPlacementAttribute and getNotesAttribute accessors
      */
-    private function assignmentPayload(): array
+    public function assignmentPayload(): array
     {
         if (!$this->assignment_details) {
             return [];

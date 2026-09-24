@@ -48,8 +48,7 @@ class MenuItemController extends Controller
         }
 
         $menuItems = $query->latest('menu_item_id')->paginate($this->perPage($request));
-        
-        // Transform to include full image URLs
+
         $menuItems->getCollection()->transform(function ($item) {
             return $this->formatMenuItem($item);
         });
@@ -70,6 +69,14 @@ class MenuItemController extends Controller
             $data = Arr::except($validated, ['image', 'ingredients']);
             $data['slug'] = $this->uniqueSlug($data['slug'] ?? $data['name']);
             $data['is_available'] = $data['is_available'] ?? true;
+
+            // Set default pricing type if not provided
+            $data['pricing_type'] = $data['pricing_type'] ?? 'both';
+            $data['tray_price'] = $data['tray_price'] ?? 0;
+            $data['tray_servings'] = $data['tray_servings'] ?? 25;
+            $data['tray_min_pax'] = $data['tray_min_pax'] ?? 20;
+            $data['tray_max_pax'] = $data['tray_max_pax'] ?? 25;
+            $data['tray_description'] = $data['tray_description'] ?? null;
 
             if ($request->hasFile('image')) {
                 $data['image_url'] = $this->storeImage($request);
@@ -114,6 +121,26 @@ class MenuItemController extends Controller
                     $data['slug'] ?? $data['name'] ?? $menuItem->name,
                     $menuItem->menu_item_id
                 );
+            }
+
+            // Handle pricing fields
+            if ($request->has('pricing_type')) {
+                $data['pricing_type'] = $validated['pricing_type'];
+            }
+            if ($request->has('tray_price')) {
+                $data['tray_price'] = $validated['tray_price'];
+            }
+            if ($request->has('tray_servings')) {
+                $data['tray_servings'] = $validated['tray_servings'];
+            }
+            if ($request->has('tray_min_pax')) {
+                $data['tray_min_pax'] = $validated['tray_min_pax'];
+            }
+            if ($request->has('tray_max_pax')) {
+                $data['tray_max_pax'] = $validated['tray_max_pax'];
+            }
+            if ($request->has('tray_description')) {
+                $data['tray_description'] = $validated['tray_description'];
             }
 
             if ($request->hasFile('image')) {
@@ -171,119 +198,119 @@ class MenuItemController extends Controller
 
     // ==================== HELPER METHODS ====================
 
-  private function formatMenuItem($item): array
-{
-    // Get the full image URL using the helper
-    $imageUrl = $this->getFullImageUrl($item->image_url);
-    $ratingStats = $this->ratingStatsForMenuItem($item->menu_item_id);
+    private function formatMenuItem($item): array
+    {
+        $imageUrl = $this->getFullImageUrl($item->image_url);
+        $ratingStats = $this->ratingStatsForMenuItem($item->menu_item_id);
 
-    return [
-        'menu_item_id' => $item->menu_item_id,
-        'id' => $item->menu_item_id,
-        'category_id' => $item->category_id,
-        'name' => $item->name,
-        'slug' => $item->slug,
-        'description' => $item->description,
-        'price' => (float) $item->price,
-        'cost_to_make' => (float) $item->cost_to_make,
-        'prep_time_minutes' => (int) $item->prep_time_minutes,
-        'serving_size' => (int) $item->serving_size,
-        'is_available' => (bool) $item->is_available,
-        'is_popular' => (bool) $item->is_popular,
-        'is_vegetarian' => (bool) $item->is_vegetarian,
-        'is_vegan' => (bool) $item->is_vegan,
-        'is_gluten_free' => (bool) $item->is_gluten_free,
-        'is_halal' => (bool) $item->is_halal,
-        'rating' => $ratingStats['average'],
-        'average_rating' => $ratingStats['average'],
-        'rating_count' => $ratingStats['count'],
-        'allergens' => $item->allergens,
-        'nutritional_info' => $item->nutritional_info,
-        'ingredients_list' => $item->ingredients_list,
-        'image_url' => $imageUrl,
-        'image' => $imageUrl,
-        'category' => $item->category ? [
-            'id' => $item->category->category_id,
-            'name' => $item->category->name,
-        ] : null,
-        'recipe_ingredients' => $item->recipeIngredients,
-        'created_at' => $item->created_at,
-        'updated_at' => $item->updated_at,
-    ];
-}
+        return [
+            'menu_item_id' => $item->menu_item_id,
+            'id' => $item->menu_item_id,
+            'category_id' => $item->category_id,
+            'name' => $item->name,
+            'slug' => $item->slug,
+            'description' => $item->description,
+            'price' => (float) $item->price,
+            'cost_to_make' => (float) $item->cost_to_make,
+            'prep_time_minutes' => (int) $item->prep_time_minutes,
+            'serving_size' => (int) $item->serving_size,
+            'is_available' => (bool) $item->is_available,
+            'is_popular' => (bool) $item->is_popular,
+            'is_vegetarian' => (bool) $item->is_vegetarian,
+            'is_vegan' => (bool) $item->is_vegan,
+            'is_gluten_free' => (bool) $item->is_gluten_free,
+            'is_halal' => (bool) $item->is_halal,
 
-   private function getFullImageUrl(?string $imagePath): string
-{
-    // If no image, return placeholder
-    if (empty($imagePath)) {
+            // ==================== NEW PRICING FIELDS ====================
+            'pricing_type' => $item->pricing_type ?? 'both',
+            'tray_price' => (float) ($item->tray_price ?? 0),
+            'tray_servings' => (int) ($item->tray_servings ?? 25),
+            'tray_min_pax' => (int) ($item->tray_min_pax ?? 20),
+            'tray_max_pax' => (int) ($item->tray_max_pax ?? 25),
+            'tray_description' => $item->tray_description ?? null,
+            'tray_display_description' => $item->tray_display_description,
+            'has_tray_pricing' => $item->hasTrayPricing(),
+            'has_per_pax_pricing' => $item->hasPerPaxPricing(),
+
+            'rating' => $ratingStats['average'],
+            'average_rating' => $ratingStats['average'],
+            'rating_count' => $ratingStats['count'],
+            'allergens' => $item->allergens,
+            'nutritional_info' => $item->nutritional_info,
+            'ingredients_list' => $item->ingredients_list,
+            'image_url' => $imageUrl,
+            'image' => $imageUrl,
+            'category' => $item->category ? [
+                'id' => $item->category->category_id,
+                'name' => $item->category->name,
+            ] : null,
+            'recipe_ingredients' => $item->recipeIngredients,
+            'created_at' => $item->created_at,
+            'updated_at' => $item->updated_at,
+        ];
+    }
+
+    private function getFullImageUrl(?string $imagePath): string
+    {
+        if (empty($imagePath)) {
+            return $this->placeholderImageUrl('No Image');
+        }
+
+        if (str_starts_with($imagePath, 'data:image/')) {
+            return $imagePath;
+        }
+
+        if (filter_var($imagePath, FILTER_VALIDATE_URL)) {
+            return $imagePath;
+        }
+
+        $cleanPath = ltrim($imagePath, '/');
+
+        if (str_starts_with($cleanPath, 'storage/')) {
+            $cleanPath = substr($cleanPath, 8);
+        }
+
+        if (Storage::disk('public')->exists($cleanPath)) {
+            return Storage::disk('public')->url($cleanPath);
+        }
+
+        if (Storage::disk('public')->exists('storage/' . $cleanPath)) {
+            return Storage::disk('public')->url('storage/' . $cleanPath);
+        }
+
+        if (Storage::disk('public')->exists($imagePath)) {
+            return Storage::disk('public')->url($imagePath);
+        }
+
+        try {
+            $url = Storage::disk('public')->url($cleanPath);
+            if (filter_var($url, FILTER_VALIDATE_URL)) {
+                return $url;
+            }
+        } catch (\Exception $e) {
+            // Fall through to placeholder
+        }
+
         return $this->placeholderImageUrl('No Image');
     }
 
-    // Inline SVG/data placeholders are already complete image sources
-    if (str_starts_with($imagePath, 'data:image/')) {
-        return $imagePath;
+    private function storeImage(Request $request): string
+    {
+        $file = $request->file('image');
+        $path = $file->store('menu-items', 'public');
+
+        \Log::info('Image stored at: ' . $path);
+        \Log::info('Full URL: ' . Storage::disk('public')->url($path));
+
+        return $path;
     }
 
-    // If it's already a full URL, return it
-    if (filter_var($imagePath, FILTER_VALIDATE_URL)) {
-        return $imagePath;
-    }
-
-    // Remove leading slashes for storage path
-    $cleanPath = ltrim($imagePath, '/');
-    
-    // If it starts with storage/ without leading slash
-    if (str_starts_with($cleanPath, 'storage/')) {
-        $cleanPath = substr($cleanPath, 8); // Remove 'storage/'
-    }
-
-    // Check if file exists in storage
-    if (Storage::disk('public')->exists($cleanPath)) {
-        return Storage::disk('public')->url($cleanPath);
-    }
-
-    // Try with storage/ prefix
-    if (Storage::disk('public')->exists('storage/' . $cleanPath)) {
-        return Storage::disk('public')->url('storage/' . $cleanPath);
-    }
-
-    // Try the original path
-    if (Storage::disk('public')->exists($imagePath)) {
-        return Storage::disk('public')->url($imagePath);
-    }
-
-    // Final fallback - use the storage URL even if file doesn't exist
-    try {
-        $url = Storage::disk('public')->url($cleanPath);
-        if (filter_var($url, FILTER_VALIDATE_URL)) {
-            return $url;
-        }
-    } catch (\Exception $e) {
-        // Fall through to placeholder
-    }
-
-    return $this->placeholderImageUrl('No Image');
-}
-
-  private function storeImage(Request $request): string
-{
-    $file = $request->file('image');
-    // Store directly in menu-items folder (not with storage/ prefix)
-    $path = $file->store('menu-items', 'public');
-    
-    // Log for debugging
-    \Log::info('Image stored at: ' . $path);
-    \Log::info('Full URL: ' . Storage::disk('public')->url($path));
-    
-    return $path;
-}
     private function deleteStoredImage(?string $imagePath): void
     {
         if (empty($imagePath)) {
             return;
         }
 
-        // Extract path from URL if needed
         if (filter_var($imagePath, FILTER_VALIDATE_URL)) {
             $parsed = parse_url($imagePath);
             $path = ltrim($parsed['path'] ?? '', '/');
@@ -294,7 +321,6 @@ class MenuItemController extends Controller
             return;
         }
 
-        // Direct path
         if (Storage::disk('public')->exists($imagePath)) {
             Storage::disk('public')->delete($imagePath);
         }
@@ -330,6 +356,15 @@ class MenuItemController extends Controller
             'nutritional_info' => ['nullable', 'string'],
             'ingredients_list' => ['nullable', 'string'],
             'image' => ['nullable', 'image', 'max:2048'],
+
+            // ==================== NEW PRICING VALIDATION ====================
+            'pricing_type' => ['nullable', 'in:per_pax,per_tray,both'],
+            'tray_price' => ['nullable', 'numeric', 'min:0'],
+            'tray_servings' => ['nullable', 'integer', 'min:1'],
+            'tray_min_pax' => ['nullable', 'integer', 'min:1'],
+            'tray_max_pax' => ['nullable', 'integer', 'min:1', 'gte:tray_min_pax'],
+            'tray_description' => ['nullable', 'string', 'max:255'],
+
             'ingredients' => ['nullable', 'array'],
             'ingredients.*.ingredient_id' => ['required', 'integer', 'distinct', 'exists:ingredients,ingredient_id'],
             'ingredients.*.quantity_per_pax' => ['required', 'numeric', 'min:0.001'],
@@ -391,9 +426,9 @@ class MenuItemController extends Controller
 
         while (
             MenuItem::withTrashed()
-                ->where('slug', $slug)
-                ->when($ignoreId, fn($query) => $query->where('menu_item_id', '!=', $ignoreId))
-                ->exists()
+            ->where('slug', $slug)
+            ->when($ignoreId, fn($query) => $query->where('menu_item_id', '!=', $ignoreId))
+            ->exists()
         ) {
             $suffix = '-' . $counter++;
             $slug = Str::limit($base, 120 - strlen($suffix), '') . $suffix;
@@ -428,5 +463,4 @@ class MenuItemController extends Controller
         $svg = '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400"><rect width="400" height="400" fill="#FF6B9D"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" font-family="Arial, sans-serif" font-size="32" fill="#FFFFFF">' . $label . '</text></svg>';
         return 'data:image/svg+xml;base64,' . base64_encode($svg);
     }
-
 }

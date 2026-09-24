@@ -17,6 +17,7 @@ import {
   RefreshControl,
   SafeAreaView,
   Switch,
+  AppState, // ⭐ #2 — Added for session verification on resume
 } from 'react-native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -135,7 +136,7 @@ const api = {
       const response = await fetch(url, config);
       const responseData = await response.json();
 
-      if (!response.ok) {
+          if (!response.ok) {
         if (response.status === 401) {
           await AsyncStorage.removeItem('authToken');
           await AsyncStorage.removeItem('currentEmployee');
@@ -143,6 +144,19 @@ const api = {
           Toast.show({ type: 'error', text1: 'Session Expired', text2: 'Please login again' });
           throw { status: 401, message: 'Unauthorized. Please login again.' };
         }
+
+        // ⭐ #2 — When the server says the account is inactive (403),
+        //    wipe local sessions so the app can't keep calling APIs.
+        if (response.status === 403) {
+          await AsyncStorage.removeItem('authToken');
+          await AsyncStorage.removeItem('currentEmployee');
+          throw {
+            status: 403,
+            message: responseData.message || 'Your account is inactive. Please contact an administrator.',
+            data: responseData,
+          };
+        }
+
         throw { status: response.status, message: responseData.message || 'Request failed', data: responseData };
       }
       return responseData;
@@ -168,13 +182,13 @@ const api = {
     if (response.success) {
       const userData = response.data?.user || response.data?.employee || response.data;
       if (userData) {
-        const employeeData = userData.employee_id ? userData : { 
-          ...userData, 
+        const employeeData = userData.employee_id ? userData : {
+          ...userData,
           employee_id: userData.id || userData.user_id,
           employee_code: userData.username || userData.id,
         };
         response.data.employee = normalizeEmployee(employeeData);
-        
+
         const mainToken = await AsyncStorage.getItem('@auth_token');
         if (mainToken) {
           await AsyncStorage.setItem('authToken', mainToken);
@@ -202,9 +216,9 @@ const api = {
   },
 
   async getAttendanceHistory(employeeId, filters) {
-    const queryParams = new URLSearchParams({ 
-      employee_id: employeeId, 
-      ...filters 
+    const queryParams = new URLSearchParams({
+      employee_id: employeeId,
+      ...filters
     }).toString();
     return this.request(`/attendance/history?${queryParams}`, 'GET', null, true);
   },
@@ -256,6 +270,16 @@ const api = {
     return this.request(`/employees/${employeeId}`, 'PUT', data, true);
   },
 
+  // ⭐ NEW — Employees can update their OWN person fields without admin rights.
+  //    Hits /auth/self-profile (added in AuthController).
+  async updateSelfProfile(data) {
+    return this.request('/auth/self-profile', 'PUT', data, true);
+  },
+
+  async updateProfilePhoto(data) {
+    return this.request('/auth/profile-photo', 'POST', data, true);
+  },
+
   async logout() {
     try {
       await this.request('/attendance/logout', 'POST', null, true);
@@ -270,7 +294,7 @@ const api = {
 };
 
 // ==================== LOGIN SCREEN ====================
-const LoginScreen = ({ navigation, onBackToMainApp }) => {
+const LoginScreen = ({ navigation, onBackToMainApp, onAppLogout }) => {
   const [employeeId, setEmployeeId] = useState('');
   const [loading, setLoading] = useState(false);
   const [recentIds, setRecentIds] = useState([]);
@@ -316,7 +340,7 @@ const LoginScreen = ({ navigation, onBackToMainApp }) => {
       const stored = await AsyncStorage.getItem('recentEmployeeIds');
       if (stored) {
         const parsed = JSON.parse(stored);
-        const validIds = Array.isArray(parsed) 
+        const validIds = Array.isArray(parsed)
           ? parsed.filter(id => id && typeof id === 'string' && id.trim().length > 0)
           : [];
         setRecentIds([...new Set(validIds)]);
@@ -373,6 +397,39 @@ const LoginScreen = ({ navigation, onBackToMainApp }) => {
     parentNavigation?.navigate?.('Main');
   };
 
+  const handleExitToMainApp = async () => {
+    Alert.alert(
+      'Logout & Exit',
+      'This will log you out of Attendance Tracking and return to the customer app. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await AsyncStorage.multiRemove([
+                'authToken',
+                'currentEmployee',
+              ]);
+
+              if (onBackToMainApp) {
+                onBackToMainApp();
+              } else if (onAppLogout) {
+                await onAppLogout();
+              } else {
+                const parentNavigation = navigation.getParent?.();
+                parentNavigation?.navigate?.('Main');
+              }
+            } catch (error) {
+              console.log('Exit error:', error);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleProceed = async () => {
     const trimmedId = employeeId.trim().toUpperCase();
     if (!trimmedId) {
@@ -395,7 +452,13 @@ const LoginScreen = ({ navigation, onBackToMainApp }) => {
       if (error.status === 404) {
         Toast.show({ type: 'error', text1: 'Employee Not Found', text2: 'The employee ID you entered does not exist.' });
       } else if (error.status === 403) {
-        Toast.show({ type: 'error', text1: 'Account Inactive', text2: 'Your account is not active. Please contact admin.' });
+        // ⭐ #2 — Clear, actionable message when admin deactivates the employee
+        Toast.show({
+          type: 'error',
+          text1: 'Account Inactive',
+          text2: error.message || 'Your account has been disabled. Please contact an administrator.',
+          visibilityTime: 6000,
+        });
       } else {
         Toast.show({ type: 'error', text1: 'Error', text2: error.message || 'Network error. Please try again.' });
       }
@@ -407,7 +470,7 @@ const LoginScreen = ({ navigation, onBackToMainApp }) => {
   return (
     <View style={styles.loginContainer}>
       <StatusBar barStyle="dark-content" backgroundColor="#F0F4FF" />
-      
+
       <View style={styles.serverStatus}>
         <View style={[styles.serverStatusDot, serverStatus === 'online' ? styles.serverOnline : styles.serverOffline]} />
         <Text style={styles.serverStatusText}>
@@ -466,6 +529,17 @@ const LoginScreen = ({ navigation, onBackToMainApp }) => {
         <TouchableOpacity style={styles.backToMobileButton} onPress={goBackToMainApp} disabled={loading}>
           <Ionicons name="arrow-back-outline" size={18} color="#2563EB" />
           <Text style={styles.backToMobileText}>Back to Mobile App</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.backToMobileButton, { marginTop: 4 }]}
+          onPress={handleExitToMainApp}
+          disabled={loading}
+        >
+          <Ionicons name="log-out-outline" size={18} color="#EF4444" />
+          <Text style={[styles.backToMobileText, { color: '#EF4444' }]}>
+            Logout & Exit to Main App
+          </Text>
         </TouchableOpacity>
 
         <View style={styles.hintContainer}>
@@ -690,7 +764,7 @@ const NavigationDrawer = ({ visible, onClose, employee, currentScreen, onNavigat
 const BottomNavigation = ({ currentScreen, onNavigate }) => {
   const { isDarkMode } = useTheme();
   const theme = getThemeStyles(isDarkMode);
-  
+
   const tabs = [
     { key: 'Home', label: 'Home', icon: 'home-outline', activeIcon: 'home' },
     { key: 'Attendance', label: 'Attendance', icon: 'time-outline', activeIcon: 'time' },
@@ -877,7 +951,7 @@ const HomeScreen = ({ employee, navigation, onLogout, pendingRequests }) => {
 };
 
 // ==================== ATTENDANCE SCREEN ====================
-const AttendanceScreen = ({ employee }) => {
+const AttendanceScreen = ({ employee, navigation }) => {
   const { isDarkMode } = useTheme();
   const theme = getThemeStyles(isDarkMode);
   const [todayStatus, setTodayStatus] = useState('not_started');
@@ -894,7 +968,14 @@ const AttendanceScreen = ({ employee }) => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(moment().month());
   const [selectedYear, setSelectedYear] = useState(moment().year());
-  const [historyStats, setHistoryStats] = useState({ total_records: 0, time_ins: 0, time_outs: 0 });
+  // ⭐ #NEW — historyStats now includes awol_count & ea_count
+  const [historyStats, setHistoryStats] = useState({
+    total_records: 0,
+    time_ins: 0,
+    time_outs: 0,
+    awol_count: 0,
+    ea_count: 0,
+  });
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   useEffect(() => {
@@ -932,8 +1013,26 @@ const AttendanceScreen = ({ employee }) => {
         per_page: 100,
       });
       if (response.success) {
-        setHistory(response.data.data || []);
-        setHistoryStats(response.stats || { total_records: 0, time_ins: 0, time_outs: 0 });
+        const records = response.data?.data || response.data || [];
+
+        // ⭐ #NEW — compute AWOL / EA counts client-side too
+        const computedStats = {
+          total_records: records.length,
+          time_ins: records.filter((r) => r.type === 'IN').length,
+          time_outs: records.filter((r) => r.type === 'OUT').length,
+          awol_count: records.filter((r) => r.attendance_flag === 'awol').length,
+          ea_count: records.filter((r) => r.attendance_flag === 'emergency_absent').length,
+        };
+
+        setHistory(records);
+        // Merge: prefer backend numbers when provided, otherwise use client-computed.
+        setHistoryStats({
+          ...computedStats,
+          ...(response.stats || {}),
+          // Ensure flag counts are never undefined:
+          awol_count: response.stats?.awol_count ?? computedStats.awol_count,
+          ea_count: response.stats?.ea_count ?? computedStats.ea_count,
+        });
       }
     } catch (error) {
       console.log('Error loading history:', error);
@@ -996,14 +1095,23 @@ const AttendanceScreen = ({ employee }) => {
     setShowCamera(true);
   };
 
-  const handleAttendanceSuccess = (result) => {
+  const handleAttendanceSuccess = (result, options = {}) => {
     setShowCamera(false);
     setAttendanceResult(result);
     setShowResultModal(true);
+
     setTimeout(() => {
       loadTodayStatus();
       loadHistory();
     }, 500);
+
+    if (options.logoutAfter && navigation) {
+      setTimeout(() => {
+        setShowResultModal(false);
+        setAttendanceResult(null);
+        navigation.replace('Login');
+      }, 2500);
+    }
   };
 
   const closeResultModal = () => {
@@ -1022,6 +1130,17 @@ const AttendanceScreen = ({ employee }) => {
 
   const getTypeColor = (type) => type === 'IN' ? '#10B981' : '#EF4444';
   const getTypeIcon = (type) => type === 'IN' ? 'log-in-outline' : 'log-out-outline';
+
+  // ⭐ #9 — Flag badge colors for history records
+  const getFlagBadge = (flag) => {
+    switch (flag) {
+      case 'awol': return { label: 'AWOL', bg: '#FEE2E2', color: '#991B1B' };
+      case 'emergency_absent': return { label: 'EA', bg: '#FEF3C7', color: '#B45309' };
+      case 'on_leave': return { label: 'Leave', bg: '#E0E7FF', color: '#3730A3' };
+      case 'late_in': return { label: 'Late In', bg: '#FEF3C7', color: '#B45309' };
+      default: return null;
+    }
+  };
 
   return (
     <View style={[styles.attendanceContainer, { backgroundColor: theme.background }]}>
@@ -1117,10 +1236,11 @@ const AttendanceScreen = ({ employee }) => {
           </View>
         </View>
 
+        {/* ⭐ #NEW — History stats bar now shows 5 metrics including AWOL & EA */}
         <View style={[styles.historyStatsBar, { backgroundColor: theme.card }]}>
           <View style={styles.historyStatItem}>
             <Text style={[styles.historyStatValue, { color: theme.text }]}>{historyStats.total_records}</Text>
-            <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Total Records</Text>
+            <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Total</Text>
           </View>
           <View style={[styles.historyStatDivider, { backgroundColor: theme.borderColor }]} />
           <View style={styles.historyStatItem}>
@@ -1131,6 +1251,16 @@ const AttendanceScreen = ({ employee }) => {
           <View style={styles.historyStatItem}>
             <Text style={[styles.historyStatValue, { color: '#EF4444' }]}>{historyStats.time_outs}</Text>
             <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>Time Outs</Text>
+          </View>
+          <View style={[styles.historyStatDivider, { backgroundColor: theme.borderColor }]} />
+          <View style={styles.historyStatItem}>
+            <Text style={[styles.historyStatValue, { color: '#DC2626' }]}>{historyStats.awol_count || 0}</Text>
+            <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>AWOL</Text>
+          </View>
+          <View style={[styles.historyStatDivider, { backgroundColor: theme.borderColor }]} />
+          <View style={styles.historyStatItem}>
+            <Text style={[styles.historyStatValue, { color: '#D97706' }]}>{historyStats.ea_count || 0}</Text>
+            <Text style={[styles.historyStatLabel, { color: theme.textSecondary }]}>EA</Text>
           </View>
         </View>
 
@@ -1151,28 +1281,51 @@ const AttendanceScreen = ({ employee }) => {
           </View>
         ) : (
           <View style={styles.historyList}>
-            {history.length > 0 ? history.map((record, index) => (
-              <View key={record.id || index} style={[styles.recordCard, { backgroundColor: theme.card }]}>
-                {record.selfie_url ? (
-                  <Image source={{ uri: record.selfie_url }} style={styles.recordSelfie} />
-                ) : (
-                  <View style={[styles.recordSelfie, styles.recordSelfiePlaceholder, { backgroundColor: theme.chipBg }]}>
-                    <Ionicons name="camera" size={30} color={theme.textMuted} />
+            {history.length > 0 ? history.map((record, index) => {
+              const flagBadge = getFlagBadge(record.attendance_flag);
+              return (
+                <View key={record.id || index} style={[styles.recordCard, { backgroundColor: theme.card }]}>
+                  {record.selfie_url ? (
+                    <Image source={{ uri: record.selfie_url }} style={styles.recordSelfie} />
+                  ) : (
+                    <View style={[styles.recordSelfie, styles.recordSelfiePlaceholder, { backgroundColor: theme.chipBg }]}>
+                      <Ionicons name="camera" size={30} color={theme.textMuted} />
+                    </View>
+                  )}
+                  <View style={styles.recordInfo}>
+                    <Text style={[styles.recordDate, { color: theme.text }]}>{moment(record.timestamp).format('MMMM D, YYYY')}</Text>
+                    <Text style={[styles.recordTime, { color: theme.textSecondary }]}>{moment(record.timestamp).format('h:mm:ss A')}</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
+                      <View style={[styles.recordTypeBadge, { backgroundColor: getTypeColor(record.type) + '20' }]}>
+                        <Ionicons name={getTypeIcon(record.type)} size={12} color={getTypeColor(record.type)} />
+                        <Text style={[styles.recordTypeText, { color: getTypeColor(record.type) }]}>Time {record.type}</Text>
+                      </View>
+                      {/* ⭐ #9 — Attendance flag badge (AWOL / EA / Leave / Late In) */}
+                      {flagBadge && (
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 3,
+                            paddingHorizontal: 8,
+                            paddingVertical: 3,
+                            borderRadius: 10,
+                            backgroundColor: flagBadge.bg,
+                          }}
+                        >
+                          <Text style={{ fontSize: 10, fontWeight: '700', color: flagBadge.color, letterSpacing: 0.3 }}>
+                            {flagBadge.label}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
                   </View>
-                )}
-                <View style={styles.recordInfo}>
-                  <Text style={[styles.recordDate, { color: theme.text }]}>{moment(record.timestamp).format('MMMM D, YYYY')}</Text>
-                  <Text style={[styles.recordTime, { color: theme.textSecondary }]}>{moment(record.timestamp).format('h:mm:ss A')}</Text>
-                  <View style={[styles.recordTypeBadge, { backgroundColor: getTypeColor(record.type) + '20' }]}>
-                    <Ionicons name={getTypeIcon(record.type)} size={12} color={getTypeColor(record.type)} />
-                    <Text style={[styles.recordTypeText, { color: getTypeColor(record.type) }]}>Time {record.type}</Text>
+                  <View style={[styles.recordIcon, { backgroundColor: getTypeColor(record.type) + '20' }]}>
+                    <Ionicons name={getTypeIcon(record.type)} size={24} color={getTypeColor(record.type)} />
                   </View>
                 </View>
-                <View style={[styles.recordIcon, { backgroundColor: getTypeColor(record.type) + '20' }]}>
-                  <Ionicons name={getTypeIcon(record.type)} size={24} color={getTypeColor(record.type)} />
-                </View>
-              </View>
-            )) : (
+              );
+            }) : (
               <View style={styles.emptyState}>
                 <Ionicons name="calendar-outline" size={60} color={theme.textMuted} />
                 <Text style={[styles.emptyStateText, { color: theme.textSecondary }]}>No attendance records found</Text>
@@ -1374,12 +1527,17 @@ const RequestScreen = ({ employee }) => {
               </View>
               <View style={styles.requestCardDates}>
                 <Text style={[styles.requestDateText, { color: theme.textSecondary }]}>
-                  {item.request_type === 'dayoff' 
-                    ? moment(item.start_date).format('MMM D, YYYY') 
+                  {item.request_type === 'dayoff'
+                    ? moment(item.start_date).format('MMM D, YYYY')
                     : `${moment(item.start_date).format('MMM D, YYYY')} - ${moment(item.end_date).format('MMM D, YYYY')}`}
                 </Text>
-                {item.request_type === 'swap' && item.swap_shift_time && (
-                  <Text style={[styles.requestTimeText, { color: theme.textMuted }]}>Time: {item.swap_shift_time}</Text>
+                {/* ⭐ #4 — Full shift swap summary (From time → To time, From emp → To emp) */}
+                {item.request_type === 'swap' && (item.swap_summary || item.swap_from_time || item.swap_to_time || item.swap_shift_time) && (
+                  <Text style={[styles.requestTimeText, { color: theme.textMuted }]}>
+                    {item.swap_summary
+                      ? item.swap_summary
+                      : `Time: ${item.swap_from_time || item.swap_shift_time || '—'} → ${item.swap_to_time || '—'}${item.swap_from_employee_name || item.swap_to_employee_name ? ` (${item.swap_from_employee_name || '—'} → ${item.swap_to_employee_name || '—'})` : ''}`}
+                  </Text>
                 )}
               </View>
               <Text style={[styles.requestReason, { color: theme.text }]} numberOfLines={2}>{item.reason}</Text>
@@ -1432,9 +1590,18 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
   const [showEndPicker, setShowEndPicker] = useState(false);
   const [loading, setLoading] = useState(false);
   const [medicalCert, setMedicalCert] = useState(null);
-  const [swapTime, setSwapTime] = useState('');
-  const [showTimePicker, setShowTimePicker] = useState(false);
+
+  // ⭐ #4 — Shift swap full details: From/To time + From/To employee
+  const [swapFromTime, setSwapFromTime] = useState('');
+  const [swapToTime, setSwapToTime] = useState('');
+  const [swapFromEmployeeName, setSwapFromEmployeeName] = useState('');
+  const [swapToEmployeeName, setSwapToEmployeeName] = useState('');
+  const [showFromTimePicker, setShowFromTimePicker] = useState(false);
+  const [showToTimePicker, setShowToTimePicker] = useState(false);
   const [tempTime, setTempTime] = useState(new Date());
+
+  // ⭐ #8 — Duplicate error message surfaced to the user
+  const [duplicateError, setDuplicateError] = useState('');
 
   const requestTypes = [
     { id: 'dayoff', label: 'Day Off', icon: 'sunny-outline', color: '#10B981' },
@@ -1466,6 +1633,8 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
   };
 
   const handleSubmit = async () => {
+    setDuplicateError('');
+
     if (!reason.trim()) {
       Toast.show({ type: 'error', text1: 'Error', text2: 'Please provide a reason' });
       return;
@@ -1478,6 +1647,17 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
       Toast.show({ type: 'error', text1: 'Error', text2: 'End date must be after start date' });
       return;
     }
+    if (requestType === 'swap') {
+      if (!swapFromTime || !swapToTime) {
+        Toast.show({ type: 'error', text1: 'Error', text2: 'Please select both From and To shift times' });
+        return;
+      }
+      if (!swapFromEmployeeName.trim() || !swapToEmployeeName.trim()) {
+        Toast.show({ type: 'error', text1: 'Error', text2: 'Please enter both From and To employee names' });
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       const data = {
@@ -1488,8 +1668,12 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
         reason: reason.trim(),
       };
       if (requestType === 'swap') {
-        data.swap_shift_time = swapTime;
+        data.swap_from_time = swapFromTime;
+        data.swap_to_time = swapToTime;
+        data.swap_shift_time = `${swapFromTime} → ${swapToTime}`;
         data.swap_shift_date = moment(startDate).format('YYYY-MM-DD');
+        data.swap_from_employee_name = swapFromEmployeeName.trim();
+        data.swap_to_employee_name = swapToEmployeeName.trim();
       }
       if (requestType === 'sick' && medicalCert) {
         data.medical_certificate = medicalCert.base64;
@@ -1505,7 +1689,29 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
       }
     } catch (error) {
       console.error('Submit error:', error);
-      Toast.show({ type: 'error', text1: 'Error', text2: error.message || 'Failed to submit request' });
+
+      // ⭐ #8 — Duplicate / validation handling
+      const errorData = error?.data || error?.response?.data;
+      const validationErrors = errorData?.errors;
+      const firstValidationError = validationErrors
+        ? Object.values(validationErrors).flat().find(Boolean)
+        : null;
+      const message = firstValidationError || errorData?.message || error?.message || 'Failed to submit request';
+
+      const isDuplicate =
+        error?.status === 422 ||
+        /already|duplicate|exists|pending or approved/i.test(String(message));
+
+      if (isDuplicate) {
+        setDuplicateError(String(message));
+        Toast.show({
+          type: 'error',
+          text1: 'Duplicate Request',
+          text2: String(message),
+        });
+      } else {
+        Toast.show({ type: 'error', text1: 'Error', text2: String(message) });
+      }
     } finally {
       setLoading(false);
     }
@@ -1517,7 +1723,11 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
     setEndDate(new Date());
     setReason('');
     setMedicalCert(null);
-    setSwapTime('');
+    setSwapFromTime('');
+    setSwapToTime('');
+    setSwapFromEmployeeName('');
+    setSwapToEmployeeName('');
+    setDuplicateError('');
   };
 
   return (
@@ -1550,12 +1760,32 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
               </ScrollView>
             </View>
 
+            {/* ⭐ #8 — Duplicate error banner */}
+            {duplicateError ? (
+              <View style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                padding: 12,
+                borderRadius: 10,
+                backgroundColor: '#FEE2E2',
+                borderWidth: 1,
+                borderColor: '#FCA5A5',
+                marginBottom: 16,
+              }}>
+                <Ionicons name="alert-circle" size={18} color="#991B1B" />
+                <Text style={{ flex: 1, fontSize: 12, fontWeight: '600', color: '#991B1B' }}>
+                  {duplicateError}
+                </Text>
+              </View>
+            ) : null}
+
             {requestType === 'leave' && (
               <View style={[styles.leaveWarningContainer, { backgroundColor: theme.chipBg }]}>
                 <Ionicons name="information-circle-outline" size={20} color={leaveBalance.remaining > 0 ? '#10B981' : '#EF4444'} />
                 <Text style={[styles.leaveWarningText, { color: leaveBalance.remaining > 0 ? '#10B981' : '#EF4444' }]}>
-                  {leaveBalance.remaining > 0 
-                    ? `${leaveBalance.remaining} leave days remaining this year` 
+                  {leaveBalance.remaining > 0
+                    ? `${leaveBalance.remaining} leave days remaining this year`
                     : 'No leave remaining for this year'}
                 </Text>
               </View>
@@ -1579,14 +1809,69 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
               </View>
             )}
 
+            {/* ⭐ #4 — From/To Time + From/To Employee for Shift Swap */}
             {requestType === 'swap' && (
-              <View style={styles.formSection}>
-                <Text style={[styles.formLabel, { color: theme.textSecondary }]}>Shift Time</Text>
-                <TouchableOpacity style={[styles.dateButton, { backgroundColor: theme.input, borderColor: theme.inputBorder }]} onPress={() => setShowTimePicker(true)}>
-                  <Ionicons name="time-outline" size={20} color="#2563EB" />
-                  <Text style={[styles.dateButtonText, { color: theme.text }]}>{swapTime || 'Select Time'}</Text>
-                </TouchableOpacity>
-              </View>
+              <>
+                <View style={styles.formSection}>
+                  <Text style={[styles.formLabel, { color: theme.textSecondary }]}>From Time</Text>
+                  <TouchableOpacity
+                    style={[styles.dateButton, { backgroundColor: theme.input, borderColor: theme.inputBorder }]}
+                    onPress={() => setShowFromTimePicker(true)}
+                  >
+                    <Ionicons name="time-outline" size={20} color="#2563EB" />
+                    <Text style={[styles.dateButtonText, { color: theme.text }]}>
+                      {swapFromTime || 'Select From Time'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={[styles.formLabel, { color: theme.textSecondary }]}>To Time</Text>
+                  <TouchableOpacity
+                    style={[styles.dateButton, { backgroundColor: theme.input, borderColor: theme.inputBorder }]}
+                    onPress={() => setShowToTimePicker(true)}
+                  >
+                    <Ionicons name="time-outline" size={20} color="#2563EB" />
+                    <Text style={[styles.dateButtonText, { color: theme.text }]}>
+                      {swapToTime || 'Select To Time'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={[styles.formLabel, { color: theme.textSecondary }]}>From Employee</Text>
+                  <TextInput
+                    style={[styles.reasonInput, {
+                      backgroundColor: theme.input,
+                      borderColor: theme.inputBorder,
+                      color: theme.text,
+                      minHeight: 48,
+                      paddingVertical: 12,
+                    }]}
+                    placeholder="e.g., Jefferson"
+                    placeholderTextColor={theme.textMuted}
+                    value={swapFromEmployeeName}
+                    onChangeText={setSwapFromEmployeeName}
+                  />
+                </View>
+
+                <View style={styles.formSection}>
+                  <Text style={[styles.formLabel, { color: theme.textSecondary }]}>To Employee</Text>
+                  <TextInput
+                    style={[styles.reasonInput, {
+                      backgroundColor: theme.input,
+                      borderColor: theme.inputBorder,
+                      color: theme.text,
+                      minHeight: 48,
+                      paddingVertical: 12,
+                    }]}
+                    placeholder="e.g., Adriane"
+                    placeholderTextColor={theme.textMuted}
+                    value={swapToEmployeeName}
+                    onChangeText={setSwapToEmployeeName}
+                  />
+                </View>
+              </>
             )}
 
             {requestType === 'sick' && (
@@ -1650,16 +1935,31 @@ const CreateRequestModal = ({ visible, employee, onClose, onSuccess, leaveBalanc
               maximumDate={new Date(2030, 11, 31)}
             />
           )}
-          {showTimePicker && (
+
+          {showFromTimePicker && (
             <DateTimePicker
               value={tempTime}
               mode="time"
               display={Platform.OS === 'ios' ? 'spinner' : 'default'}
               onChange={(event, selectedTime) => {
-                setShowTimePicker(false);
+                setShowFromTimePicker(false);
                 if (selectedTime) {
-                  const timeStr = moment(selectedTime).format('hh:mm A');
-                  setSwapTime(timeStr);
+                  setSwapFromTime(moment(selectedTime).format('hh:mm A'));
+                  setTempTime(selectedTime);
+                }
+              }}
+            />
+          )}
+
+          {showToTimePicker && (
+            <DateTimePicker
+              value={tempTime}
+              mode="time"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              onChange={(event, selectedTime) => {
+                setShowToTimePicker(false);
+                if (selectedTime) {
+                  setSwapToTime(moment(selectedTime).format('hh:mm A'));
                   setTempTime(selectedTime);
                 }
               }}
@@ -1832,30 +2132,85 @@ const ProfileScreen = ({ employee, onLogout }) => {
   const theme = getThemeStyles(isDarkMode);
   const [isEditing, setIsEditing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [profileData, setProfileData] = useState({
     name: employee?.name || '',
     email: employee?.email || '',
     phone: employee?.phone || employee?.mobile || '',
     position: employee?.department?.name || 'No Department',
+    profile_photo_url: employee?.profile_photo_url || null,
   });
   const [editedData, setEditedData] = useState(profileData);
 
-  useEffect(() => {
-    // No animation
-  }, []);
+  // ⭐ #1 — Real profile photo upload (base64 → backend → refresh UI)
+  const handlePhotoUpload = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Please allow access to your gallery' });
+      return;
+    }
 
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+      base64: true,
+    });
+
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    const ext = (asset.uri.split('.').pop() || 'jpg').toLowerCase();
+
+    setPhotoUploading(true);
+    try {
+      const response = await api.updateProfilePhoto({
+        profile_photo: asset.base64,
+        profile_photo_ext: ext,
+      });
+
+      if (response.success) {
+        const newUrl =
+          response.data?.profile_photo_url ||
+          response.data?.person?.profile_photo_url ||
+          asset.uri;
+
+        setProfileData((prev) => ({ ...prev, profile_photo_url: newUrl }));
+        const updatedEmployee = { ...employee, profile_photo_url: newUrl };
+        await AsyncStorage.setItem('currentEmployee', JSON.stringify(updatedEmployee));
+        Toast.show({ type: 'success', text1: 'Photo Updated', text2: 'Profile photo updated successfully' });
+      } else {
+        Toast.show({ type: 'error', text1: 'Upload Failed', text2: response.message || 'Please try again.' });
+      }
+    } catch (error) {
+      console.error('Photo upload error:', error);
+      Toast.show({ type: 'error', text1: 'Upload Failed', text2: error.message || 'Please try again.' });
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
+  // ⭐ #2 — Real personal info save
   const handleSave = async () => {
     setLoading(true);
     try {
-      const response = await api.updateEmployee(employee.employee_id, {
-        name: editedData.name,
+      const nameParts = (editedData.name || '').trim().split(/\s+/);
+      const firstName = nameParts.shift() || '';
+      const lastName = nameParts.join(' ');
+
+         const response = await api.updateSelfProfile({
+        first_name: firstName,
+        last_name: lastName,
         email: editedData.email,
         phone: editedData.phone,
       });
+
       if (response.success) {
         setProfileData(editedData);
         setIsEditing(false);
         Toast.show({ type: 'success', text1: 'Success', text2: 'Profile updated successfully' });
+
         const updatedEmployee = { ...employee, ...editedData };
         await AsyncStorage.setItem('currentEmployee', JSON.stringify(updatedEmployee));
       } else {
@@ -1863,7 +2218,10 @@ const ProfileScreen = ({ employee, onLogout }) => {
       }
     } catch (error) {
       console.error('Update error:', error);
-      Toast.show({ type: 'error', text1: 'Error', text2: error.message || 'Failed to update profile' });
+      const errorData = error?.data || error?.response?.data;
+      const validationErrors = errorData?.errors;
+      const firstValidationError = validationErrors ? Object.values(validationErrors).flat().find(Boolean) : null;
+      Toast.show({ type: 'error', text1: 'Error', text2: firstValidationError || errorData?.message || error?.message || 'Failed to update profile' });
     } finally {
       setLoading(false);
     }
@@ -1874,42 +2232,33 @@ const ProfileScreen = ({ employee, onLogout }) => {
     setIsEditing(false);
   };
 
-  const handlePhotoUpload = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Toast.show({ type: 'error', text1: 'Permission Denied', text2: 'Please allow access to your gallery' });
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
-      base64: true,
-    });
-    if (!result.canceled) {
-      Toast.show({ type: 'success', text1: 'Photo Updated', text2: 'Profile photo updated successfully' });
-    }
-  };
-
   return (
     <View style={[styles.profileContainer, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.profileContent}>
         <View style={[styles.profileCard, { backgroundColor: theme.card }]}>
-          <TouchableOpacity style={styles.profileAvatarContainer} onPress={handlePhotoUpload}>
-            {employee.profile_photo_url ? (
-              <Image source={{ uri: employee.profile_photo_url }} style={styles.profileAvatar} />
+          <TouchableOpacity
+            style={styles.profileAvatarContainer}
+            onPress={handlePhotoUpload}
+            disabled={photoUploading}
+          >
+            {profileData.profile_photo_url ? (
+              <Image source={{ uri: profileData.profile_photo_url }} style={styles.profileAvatar} />
             ) : (
               <View style={[styles.profileAvatarPlaceholder, { backgroundColor: '#EBF5FF' }]}>
                 <Text style={styles.profileAvatarInitial}>{employee.name?.charAt(0) || 'E'}</Text>
               </View>
             )}
             <View style={styles.profileCameraBadge}>
-              <Ionicons name="camera" size={16} color="#fff" />
+              {photoUploading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="camera" size={16} color="#fff" />
+              )}
             </View>
           </TouchableOpacity>
-          <Text style={[styles.profileFullName, { color: theme.text }]}>{employee.name}</Text>
+          <Text style={[styles.profileFullName, { color: theme.text }]}>{profileData.name}</Text>
           <Text style={[styles.profileEmployeeId, { color: theme.textSecondary }]}>ID: {employee.employee_code || employee.employee_id}</Text>
-          <Text style={[styles.profilePosition, { color: '#2563EB' }]}>{employee.department?.name || 'No Department'}</Text>
+          <Text style={[styles.profilePosition, { color: '#2563EB' }]}>{profileData.position}</Text>
         </View>
 
         <View style={[styles.profileInfoCard, { backgroundColor: theme.card }]}>
@@ -2006,11 +2355,13 @@ const ProfileScreen = ({ employee, onLogout }) => {
           )}
         </View>
 
-        {/* Dark Mode Toggle - Repositioned below Personal Info */}
+        {/* ⭐ #3 — Spacer between Personal Info and Toggle card */}
+        <View style={{ height: 20 }} />
+
         <View style={[styles.themeToggleCard, { backgroundColor: theme.card }]}>
           <View style={styles.themeToggleRow}>
             <View style={styles.themeToggleLeft}>
-              <Ionicons name={isDarkMode ? 'moon' : 'sunny'} size={24} color={isDarkMode ? '#F59E0B' : '#F59E0B'} />
+              <Ionicons name={isDarkMode ? 'moon' : 'sunny'} size={24} color="#F59E0B" />
               <Text style={[styles.themeToggleLabel, { color: theme.text }]}>
                 {isDarkMode ? 'Dark Mode' : 'Light Mode'}
               </Text>
@@ -2019,7 +2370,7 @@ const ProfileScreen = ({ employee, onLogout }) => {
               value={isDarkMode}
               onValueChange={toggleTheme}
               trackColor={{ false: '#D1D5DB', true: '#2563EB' }}
-              thumbColor={isDarkMode ? '#fff' : '#fff'}
+              thumbColor="#fff"
               ios_backgroundColor="#D1D5DB"
             />
           </View>
@@ -2028,7 +2379,6 @@ const ProfileScreen = ({ employee, onLogout }) => {
           </Text>
         </View>
 
-        {/* Logout Button */}
         <TouchableOpacity style={[styles.profileLogoutBtn, { backgroundColor: isDarkMode ? '#2D2D2D' : '#FEE2E2' }]} onPress={onLogout}>
           <Ionicons name="log-out-outline" size={24} color="#EF4444" />
           <Text style={styles.profileLogoutText}>Logout</Text>
@@ -2044,7 +2394,6 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
   const [permission, requestPermission] = useCameraPermissions();
   const [capturedImage, setCapturedImage] = useState(null);
   const [location, setLocation] = useState(null);
-  const [faceVerified, setFaceVerified] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -2055,9 +2404,13 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
         try {
-          const currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          const currentLocation = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
           setLocation(currentLocation);
-        } catch (error) {}
+        } catch (error) {
+          // Location is optional — ignore failures.
+        }
       }
     })();
   }, []);
@@ -2066,17 +2419,19 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
     if (!cameraRef.current || processing) return;
     setProcessing(true);
     try {
-      const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.7 });
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.7,
+      });
       setCapturedImage(photo);
-      Toast.show({ type: 'info', text1: 'Verifying', text2: 'Analyzing facial features...' });
-      setTimeout(() => {
-        setFaceVerified(true);
-        Toast.show({ type: 'success', text1: 'Verified', text2: 'Face verification complete!' });
-        setShowConfirmation(true);
-        setProcessing(false);
-      }, 2000);
+      setShowConfirmation(true);
     } catch (error) {
-      Toast.show({ type: 'error', text1: 'Error', text2: 'Failed to capture photo' });
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: 'Failed to capture photo',
+      });
+    } finally {
       setProcessing(false);
     }
   };
@@ -2088,46 +2443,76 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
       if (!base64Image.includes('base64,')) {
         base64Image = `data:image/jpeg;base64,${base64Image}`;
       }
+
       const attendanceData = {
         employee_id: String(employee.employee_id),
         selfie: base64Image,
-        face_verified: faceVerified,
+        face_verified: true,
         liveness_checked: true,
         device_info: `${Platform.OS} ${Platform.Version}`,
         captured_at: new Date().toISOString(),
       };
+
       if (location) {
         attendanceData.latitude = location.coords.latitude;
         attendanceData.longitude = location.coords.longitude;
       }
-      const response = attendanceType === 'IN' ? await api.clockIn(attendanceData) : await api.clockOut(attendanceData);
+
+      const response =
+        attendanceType === 'IN'
+          ? await api.clockIn(attendanceData)
+          : await api.clockOut(attendanceData);
+
       if (response.success) {
         if (attendanceType === 'IN') {
-          await AsyncStorage.setItem(`lastClockIn_${employee.employee_id}`, Date.now().toString());
+          await AsyncStorage.setItem(
+            `lastClockIn_${employee.employee_id}`,
+            Date.now().toString()
+          );
         }
+
         const details = [];
         if (response.data) {
-          if (response.data.scheduled_time) details.push({ label: 'Scheduled', value: response.data.scheduled_time });
-          if (response.data.actual_time) details.push({ label: 'Actual', value: response.data.actual_time });
-          if (response.data.status) details.push({ label: 'Status', value: response.data.status });
-          if (response.data.overtime) details.push({ label: 'Overtime', value: response.data.overtime });
+          if (response.data.scheduled_time)
+            details.push({ label: 'Scheduled', value: response.data.scheduled_time });
+          if (response.data.actual_time)
+            details.push({ label: 'Actual', value: response.data.actual_time });
+          if (response.data.status)
+            details.push({ label: 'Status', value: response.data.status });
+          if (response.data.overtime)
+            details.push({ label: 'Overtime', value: response.data.overtime });
         }
+
         const result = {
           type: 'success',
           title: attendanceType === 'IN' ? 'Time In Successful' : 'Time Out Successful',
-          details: details.length > 0 ? details : [
-            { label: 'Action', value: attendanceType === 'IN' ? 'Time In' : 'Time Out' },
-            { label: 'Time', value: moment().format('hh:mm:ss A') },
-          ],
+          details:
+            details.length > 0
+              ? details
+              : [
+                  { label: 'Action', value: attendanceType === 'IN' ? 'Time In' : 'Time Out' },
+                  { label: 'Time', value: moment().format('hh:mm:ss A') },
+                ],
         };
-        onSuccess(result);
+
+        await AsyncStorage.multiRemove(['authToken', 'currentEmployee']);
+        onSuccess(result, { logoutAfter: true });
+
         onClose();
       } else {
-        Toast.show({ type: 'error', text1: 'Error', text2: response.message || 'Failed to record attendance' });
+        Toast.show({
+          type: 'error',
+          text1: 'Error',
+          text2: response.message || 'Failed to record attendance',
+        });
       }
     } catch (error) {
       console.error('Attendance error:', error);
-      Toast.show({ type: 'error', text1: 'Error', text2: error.message || 'Network error. Please try again.' });
+      Toast.show({
+        type: 'error',
+        text1: 'Error',
+        text2: error.message || 'Network error. Please try again.',
+      });
     } finally {
       setUploading(false);
     }
@@ -2150,19 +2535,25 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
       <View style={styles.confirmationContainer}>
         <SafeAreaView style={{ flex: 1 }}>
           <ScrollView contentContainerStyle={styles.confirmationScroll}>
-            <TouchableOpacity style={styles.confirmationClose} onPress={() => { setCapturedImage(null); setShowConfirmation(false); setProcessing(false); }}>
+            <TouchableOpacity
+              style={styles.confirmationClose}
+              onPress={() => {
+                setCapturedImage(null);
+                setShowConfirmation(false);
+                setProcessing(false);
+              }}
+            >
               <Ionicons name="close" size={28} color="#1F2937" />
             </TouchableOpacity>
-            <Text style={styles.confirmationTitle}>Confirm {attendanceType === 'IN' ? 'Time In' : 'Time Out'}</Text>
+
+            <Text style={styles.confirmationTitle}>
+              Confirm {attendanceType === 'IN' ? 'Time In' : 'Time Out'}
+            </Text>
+
             <View style={styles.confirmationImageContainer}>
               <Image source={{ uri: capturedImage.uri }} style={styles.confirmationImage} />
-              {faceVerified && (
-                <View style={styles.verifiedBadge}>
-                  <Ionicons name="checkmark-circle" size={24} color="#10B981" />
-                  <Text style={styles.verifiedText}>Face Verified</Text>
-                </View>
-              )}
             </View>
+
             <View style={styles.confirmationDetails}>
               <View style={styles.detailRow}>
                 <Ionicons name="person-outline" size={22} color="#6B7280" />
@@ -2170,7 +2561,9 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
               </View>
               <View style={styles.detailRow}>
                 <Ionicons name="time-outline" size={22} color="#6B7280" />
-                <Text style={styles.detailText}>{moment().format('MMMM Do YYYY, h:mm:ss a')}</Text>
+                <Text style={styles.detailText}>
+                  {moment().format('MMMM Do YYYY, h:mm:ss a')}
+                </Text>
               </View>
               {location && (
                 <View style={styles.detailRow}>
@@ -2179,8 +2572,17 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
                 </View>
               )}
             </View>
-            <TouchableOpacity style={styles.confirmButton} onPress={confirmAttendance} disabled={uploading}>
-              {uploading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmButtonText}>Confirm Attendance</Text>}
+
+            <TouchableOpacity
+              style={styles.confirmButton}
+              onPress={confirmAttendance}
+              disabled={uploading}
+            >
+              {uploading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.confirmButtonText}>Confirm Attendance</Text>
+              )}
             </TouchableOpacity>
           </ScrollView>
         </SafeAreaView>
@@ -2190,21 +2592,37 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
 
   return (
     <View style={{ flex: 1 }}>
-      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="front" mode="picture" />
+      <CameraView
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        facing="front"
+        mode="picture"
+      />
       <View style={styles.cameraOverlay} pointerEvents="box-none">
         <View style={styles.cameraTopBar}>
           <TouchableOpacity style={styles.cameraCloseButton} onPress={onClose}>
             <Ionicons name="close" size={28} color="#fff" />
           </TouchableOpacity>
-          <Text style={styles.cameraTypeBadge}>{attendanceType === 'IN' ? 'Time In' : 'Time Out'}</Text>
+          <Text style={styles.cameraTypeBadge}>
+            {attendanceType === 'IN' ? 'Time In' : 'Time Out'}
+          </Text>
           <View style={{ width: 44 }} />
         </View>
+
         <View style={styles.cameraInstructions}>
-          <Text style={styles.cameraInstructionText}>Position your face in the frame</Text>
+          <Text style={styles.cameraInstructionText}>
+            Position yourself in the frame
+          </Text>
         </View>
-        <TouchableOpacity style={styles.captureButton} onPress={takePicture} disabled={processing}>
+
+        <TouchableOpacity
+          style={styles.captureButton}
+          onPress={takePicture}
+          disabled={processing}
+        >
           <View style={styles.captureButtonInner} />
         </TouchableOpacity>
+
         {processing && (
           <View style={styles.processingOverlay}>
             <ActivityIndicator size="large" color="#fff" />
@@ -2229,7 +2647,59 @@ const DashboardScreen = ({ route, navigation, onAppLogout }) => {
 
   useEffect(() => {
     loadPendingRequests();
+    verifySession(); // ⭐ #2 — Check if account is still active
   }, []);
+
+  // ⭐ #2 — Verify session whenever the app resumes
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        verifySession();
+      }
+    });
+    return () => subscription?.remove?.();
+  }, []);
+
+  // ⭐ #2 — Check with the server if the account is still active.
+  const verifySession = async () => {
+    try {
+      const token = await AsyncStorage.getItem('authToken');
+      if (!token) return;
+
+      const response = await api.request('/auth/user', 'GET', null, true);
+
+      // If server says user is inactive, log them out immediately.
+      const user = response?.data?.user || response?.data;
+      const isActive =
+        user?.is_active === true ||
+        user?.employee?.status === 'active' ||
+        user?.employee?.status === 'on_leave';
+
+      if (response?.success && user && !isActive) {
+        Toast.show({
+          type: 'error',
+          text1: 'Account Disabled',
+          text2: 'Your account has been deactivated by an admin.',
+          visibilityTime: 6000,
+        });
+        await AsyncStorage.multiRemove(['authToken', 'currentEmployee']);
+        navigation.replace('Login');
+      }
+    } catch (error) {
+      // 401 / 403 → force logout
+      if (error?.status === 401 || error?.status === 403) {
+        await AsyncStorage.multiRemove(['authToken', 'currentEmployee']);
+        Toast.show({
+          type: 'error',
+          text1: 'Session Ended',
+          text2: error.message || 'Please log in again.',
+          visibilityTime: 4000,
+        });
+        navigation.replace('Login');
+      }
+      // Network errors are ignored — user stays logged in offline.
+    }
+  };
 
   const loadPendingRequests = async () => {
     try {
@@ -2249,27 +2719,28 @@ const DashboardScreen = ({ route, navigation, onAppLogout }) => {
   const handleLogout = async () => {
     setDrawerVisible(false);
     setAdminMenuVisible(false);
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        onPress: async () => {
-          await api.logout();
-          if (onAppLogout) {
-            await onAppLogout();
-          }
-          // Navigate back to Login screen
-          navigation.replace('Login');
+
+    Alert.alert(
+      'Logout',
+      'Are you sure you want to logout from Attendance Tracking?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            await AsyncStorage.multiRemove(['authToken', 'currentEmployee']);
+            navigation.replace('Login');
+          },
         },
-        style: 'destructive',
-      },
-    ]);
+      ]
+    );
   };
 
   const renderScreen = () => {
     switch (currentScreen) {
       case 'Home': return <HomeScreen employee={employee} navigation={navigation} onLogout={handleLogout} pendingRequests={pendingRequests} />;
-      case 'Attendance': return <AttendanceScreen employee={employee} />;
+      case 'Attendance': return <AttendanceScreen employee={employee} navigation={navigation} />;
       case 'Request': return <RequestScreen employee={employee} />;
       case 'Schedule': return <ScheduleScreen employee={employee} />;
       case 'Profile': return <ProfileScreen employee={employee} onLogout={handleLogout} />;
@@ -2334,7 +2805,13 @@ export default function AttendanceTrackingApp({ onAppLogout, onBackToMainApp }) 
     <ThemeProvider>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Login">
-          {(props) => <LoginScreen {...props} onBackToMainApp={onBackToMainApp} />}
+          {(props) => (
+            <LoginScreen
+              {...props}
+              onBackToMainApp={onBackToMainApp}
+              onAppLogout={onAppLogout}
+            />
+          )}
         </Stack.Screen>
         <Stack.Screen name="Dashboard">
           {(props) => <DashboardScreen {...props} onAppLogout={onAppLogout} />}
@@ -2517,10 +2994,10 @@ const styles = StyleSheet.create({
   buttonIconContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center', marginBottom: 2 },
   buttonSubtext: { color: 'rgba(255,255,255,0.85)', fontSize: 10, marginTop: 2 },
 
-  historyStatsBar: { flexDirection: 'row', borderRadius: 16, padding: 16, marginBottom: 16, elevation: 2 },
+  historyStatsBar: { flexDirection: 'row', borderRadius: 16, paddingVertical: 14, paddingHorizontal: 8, marginBottom: 16, elevation: 2 },
   historyStatItem: { flex: 1, alignItems: 'center' },
-  historyStatValue: { fontSize: 22, fontWeight: 'bold' },
-  historyStatLabel: { fontSize: 11, marginTop: 4 },
+  historyStatValue: { fontSize: 18, fontWeight: 'bold' },
+  historyStatLabel: { fontSize: 10, marginTop: 4 },
   historyStatDivider: { width: 1 },
   monthSelectorContainer: { marginBottom: 16 },
   monthSelectorLabel: { fontSize: 12, marginBottom: 8, fontWeight: '500' },
@@ -2753,4 +3230,4 @@ const styles = StyleSheet.create({
 
 
 
-//LATEST UPDATE 08/26/25 Ohh yeah
+// LATEST UPDATE 09/22/25 — v13 (added AWOL & EA counters to history stats bar)

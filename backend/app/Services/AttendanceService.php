@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Illuminate\Validation\ValidationException;
 
 class AttendanceService
 {
@@ -26,6 +27,12 @@ class AttendanceService
 
             if ($open) {
                 throw new RuntimeException('Employee already has an open attendance record.');
+            }
+
+            if (AttendanceLog::where('employee_id', $employee->employee_id)->whereDate('attendance_date', $date)->exists()) {
+                throw ValidationException::withMessages([
+                    'employee_id' => 'An attendance record already exists for this employee and date.',
+                ]);
             }
 
             $schedule = Schedule::where('employee_id', $employee->employee_id)
@@ -46,6 +53,8 @@ class AttendanceService
                 'ip_address' => request()?->ip(),
                 'status' => $status,
                 'approval_status' => 'pending',
+                // ⭐ FIX #9: Auto-tag as 'late_in' when the mobile app flagged it or when late.
+                'attendance_flag' => $status === 'late' ? 'late_in' : null,
             ]);
 
             return $log->fresh(['employee.person', 'employee.department', 'employee.position.salaryGrade', 'schedule']);
@@ -81,7 +90,6 @@ class AttendanceService
         $overtimeHours = $hours['overtime'];
         $overtimeApproved = false;
 
-        // Preserve an administrator's overtime decision when hours are recalculated.
         if ($overtimeRequest?->status === 'rejected') {
             $overtimeHours = 0;
         } elseif ($overtimeRequest?->status === 'approved') {
@@ -103,6 +111,13 @@ class AttendanceService
             $updates['status'] = $this->initialStatus($log->time_in, $log->schedule);
         }
 
+        // ⭐ FIX #9: Keep late_in flag in sync when recalculated.
+        if (($updates['status'] ?? $log->status) === 'late' && ! $log->attendance_flag) {
+            $updates['attendance_flag'] = 'late_in';
+        } elseif (($updates['status'] ?? $log->status) !== 'late' && $log->attendance_flag === 'late_in') {
+            $updates['attendance_flag'] = null;
+        }
+
         $log->update($updates);
 
         return $log->fresh([
@@ -112,6 +127,36 @@ class AttendanceService
             'schedule',
             'overtimeRequest',
         ]);
+    }
+
+    /**
+     * ⭐ FIX #6: Auto-tag scheduled absences as AWOL.
+     */
+    public function materializeScheduledAbsences(int $employeeId, string $start, string $end): void
+    {
+        Schedule::where('employee_id', $employeeId)
+            ->whereBetween('work_date', [$start, $end])
+            ->whereNotIn('status', ['cancelled'])
+            ->each(function (Schedule $schedule) use ($employeeId) {
+                AttendanceLog::firstOrCreate(
+                    [
+                        'employee_id' => $employeeId,
+                        'attendance_date' => $schedule->work_date->toDateString(),
+                    ],
+                    [
+                        'schedule_id' => $schedule->schedule_id,
+                        'status' => 'absent',
+                        'approval_status' => 'approved',
+                        'attendance_flag' => 'awol',   // ⭐ auto-tag AWOL
+                        'approved_by' => auth()->id(),
+                        'approved_at' => now(),
+                        'approval_notes' => 'System-generated AWOL from employee schedule.',
+                        'regular_hours' => 0,
+                        'overtime_hours' => 0,
+                        'undertime_hours' => (float) $schedule->duration_hours,
+                    ]
+                );
+            });
     }
 
     public function computeHours(AttendanceLog $log): array
@@ -132,8 +177,6 @@ class AttendanceService
         $workedHours = max(0, ($workedMinutes - $breakMinutes) / 60);
         $scheduledHours = $this->scheduledHours($log->schedule) ?: 8;
 
-        // Overtime begins only after more than nine elapsed hours. For schedules
-        // longer than eight paid hours, respect the scheduled hours plus break.
         $overtimeThresholdMinutes = max(9 * 60, (int) round(($scheduledHours * 60) + $breakMinutes));
         $overtimeHours = $workedMinutes > $overtimeThresholdMinutes
             ? max(0, $workedHours - $scheduledHours)
@@ -187,8 +230,12 @@ class AttendanceService
             return null;
         }
 
-        if (str_starts_with($selfie, 'http://') || str_starts_with($selfie, 'https://') || str_starts_with($selfie, '/storage/')) {
+        if (str_starts_with($selfie, 'http://') || str_starts_with($selfie, 'https://')) {
             return $selfie;
+        }
+
+        if (str_starts_with($selfie, '/storage/')) {
+            return ltrim(str_replace('/storage/', '', $selfie), '/');
         }
 
         if (! str_contains($selfie, 'base64,')) {
@@ -202,9 +249,16 @@ class AttendanceService
             return null;
         }
 
-        $extension = str_contains($meta, 'png') ? 'png' : 'jpg';
+        $extension = 'jpg';
+        if (str_contains($meta, 'png')) {
+            $extension = 'png';
+        } elseif (str_contains($meta, 'webp')) {
+            $extension = 'webp';
+        }
+
         $directory = 'attendance-selfies/' . now()->format('Y-m-d');
-        $path = $directory . '/employee-' . $employeeId . '-' . $direction . '-' . Str::uuid() . '.' . $extension;
+        $filename = 'employee-' . $employeeId . '-' . $direction . '-' . Str::uuid() . '.' . $extension;
+        $path = $directory . '/' . $filename;
 
         Storage::disk('public')->put($path, $binary);
 

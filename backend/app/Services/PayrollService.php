@@ -7,6 +7,7 @@ use App\Models\Employee;
 use App\Models\OvertimeRequest;
 use App\Models\Payroll;
 use App\Models\PayrollItem;
+use App\Models\Setting;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -25,6 +26,14 @@ class PayrollService
                 'employee_name' => $employee->full_name,
                 'department' => $employee->department?->name,
                 'position' => $employee->position?->title ?? $employee->position?->name,
+                'employee' => [
+                    'employee_id' => $employee->employee_id,
+                    'employee_code' => $employee->employee_code,
+                    'full_name' => $employee->full_name,
+                    'department' => $employee->department?->name,
+                    'position' => $employee->position?->title ?? $employee->position?->name,
+                    'employee_type' => $employee->employee_type ?? $employee->employment_type,
+                ],
                 'calculation' => $calculation,
             ];
         })->values();
@@ -33,6 +42,7 @@ class PayrollService
             'period_start' => $start,
             'period_end' => $end,
             'items' => $items,
+            'preview' => $items,
             'summary' => [
                 'total_employees' => $items->count(),
                 'total_regular_hours' => round((float) $items->sum('calculation.regular_hours'), 2),
@@ -159,7 +169,8 @@ class PayrollService
         $overtimeHours = round((float) $approvedOvertime->sum('overtime_hours'), 2);
         $hourlyRate = round((float) $employee->calculated_hourly_rate, 2);
         $regularPay = round($regularHours * $hourlyRate, 2);
-        $overtimePay = round($overtimeHours * $hourlyRate * 1.25, 2);
+        $overtimeRate = max(1, (float) Setting::getValue('payroll', 'overtime_rate', 1.25));
+        $overtimePay = round($overtimeHours * $hourlyRate * $overtimeRate, 2);
         $grossPay = round($regularPay + $overtimePay, 2);
         $deductions = $this->standardDeductions($employee, $grossPay);
         $totalDeductions = round(array_sum($deductions), 2);
@@ -172,6 +183,7 @@ class PayrollService
             'hourly_rate' => $hourlyRate,
             'regular_pay' => $regularPay,
             'overtime_pay' => $overtimePay,
+            'overtime_rate' => $overtimeRate,
             'gross_pay' => $grossPay,
             'sss_deduction' => $deductions['SSS'] ?? 0,
             'philhealth_deduction' => $deductions['PhilHealth'] ?? 0,
@@ -191,7 +203,7 @@ class PayrollService
             ]);
         }
 
-        $incomplete = $attendance->first(fn (AttendanceLog $row) => ! $row->time_in || ! $row->time_out);
+        $incomplete = $attendance->first(fn (AttendanceLog $row) => $row->status !== 'absent' && (! $row->time_in || ! $row->time_out));
         if ($incomplete) {
             $missingPart = ! $incomplete->time_in ? 'time-in' : 'time-out';
             throw ValidationException::withMessages([
@@ -199,10 +211,17 @@ class PayrollService
             ]);
         }
 
-        $notApproved = $attendance->first(fn (AttendanceLog $row) => $row->approval_status !== 'approved');
-        if ($notApproved) {
+        $pending = $attendance->first(fn (AttendanceLog $row) => $row->approval_status === 'pending');
+        if ($pending) {
             throw ValidationException::withMessages([
-                'employee_ids' => "{$employee->full_name} has attendance awaiting approval on {$notApproved->attendance_date?->toDateString()}.",
+                'employee_ids' => "{$employee->full_name} has attendance awaiting a decision on {$pending->attendance_date?->toDateString()}.",
+            ]);
+        }
+
+        $notFinalized = $attendance->first(fn (AttendanceLog $row) => ! $row->payroll_ready_at);
+        if ($notFinalized) {
+            throw ValidationException::withMessages([
+                'employee_ids' => "{$employee->full_name}'s attendance has not been saved as payroll ready for {$start} to {$end}.",
             ]);
         }
 
@@ -259,11 +278,17 @@ class PayrollService
             return ['SSS' => 0, 'PhilHealth' => 0, 'Pag-IBIG' => 0, 'Withholding Tax' => 0];
         }
 
+        $sssRate = (float) Setting::getValue('payroll', 'sss_employee_rate', 0.045);
+        $philHealthRate = (float) Setting::getValue('payroll', 'philhealth_employee_rate', 0.025);
+        $pagIbigRate = (float) Setting::getValue('payroll', 'pagibig_employee_rate', 0.02);
+        $taxThreshold = (float) Setting::getValue('payroll', 'withholding_tax_threshold', 10417);
+        $taxRate = (float) Setting::getValue('payroll', 'withholding_tax_rate', 0.10);
+
         return [
-            'SSS' => min(200, round($grossPay * 0.045, 2)),
-            'PhilHealth' => min(150, round($grossPay * 0.025, 2)),
-            'Pag-IBIG' => min(100, round($grossPay * 0.02, 2)),
-            'Withholding Tax' => $grossPay > 10417 ? round(($grossPay - 10417) * 0.10, 2) : 0,
+            'SSS' => min((float) Setting::getValue('payroll', 'sss_cutoff_cap', 200), round($grossPay * $sssRate, 2)),
+            'PhilHealth' => min((float) Setting::getValue('payroll', 'philhealth_cutoff_cap', 150), round($grossPay * $philHealthRate, 2)),
+            'Pag-IBIG' => min((float) Setting::getValue('payroll', 'pagibig_cutoff_cap', 100), round($grossPay * $pagIbigRate, 2)),
+            'Withholding Tax' => $grossPay > $taxThreshold ? round(($grossPay - $taxThreshold) * $taxRate, 2) : 0,
         ];
     }
 
@@ -284,6 +309,15 @@ class PayrollService
 
     private function makePayrollNumber(int $employeeId, string $start, string $end): string
     {
-        return 'PR-' . str_replace('-', '', $start) . '-' . str_replace('-', '', $end) . '-' . str_pad((string) $employeeId, 4, '0', STR_PAD_LEFT);
+        $lastNumber = Payroll::withTrashed()
+            ->where('payroll_number', 'like', 'PR-%')
+            ->lockForUpdate()
+            ->pluck('payroll_number')
+            ->map(function ($number) {
+                return preg_match('/^PR-(\d+)$/', (string) $number, $matches) ? (int) $matches[1] : 0;
+            })
+            ->max();
+
+        return 'PR-' . str_pad((string) ((int) $lastNumber + 1), 4, '0', STR_PAD_LEFT);
     }
 }

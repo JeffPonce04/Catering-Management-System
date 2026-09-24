@@ -3290,3 +3290,153 @@ body {
     min-height: 200px;
   }
 }
+
+/* Add to StaffAttendance.css */
+
+/* Cutoff Warning Modal */
+.cutoff-warning-modal {
+  max-width: 520px;
+  width: 94%;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.cutoff-warning-modal .modal-header.warning-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 24px;
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border-bottom: 1px solid #f59e0b;
+}
+
+.cutoff-warning-modal .warning-icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(245, 158, 11, 0.2);
+  flex-shrink: 0;
+}
+
+.cutoff-warning-modal .warning-icon-large {
+  font-size: 28px;
+  color: #d97706;
+}
+
+.cutoff-warning-modal .modal-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.cutoff-warning-modal .modal-body {
+  padding: 24px;
+}
+
+.cutoff-warning-modal .warning-message p {
+  margin: 0 0 12px 0;
+  color: #374151;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.cutoff-warning-modal .warning-details {
+  background: #f9fafb;
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin: 16px 0;
+  border: 1px solid #e5e7eb;
+}
+
+.cutoff-warning-modal .detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  font-size: 14px;
+}
+
+.cutoff-warning-modal .detail-row .detail-label {
+  color: #6b7280;
+}
+
+.cutoff-warning-modal .detail-row .detail-value {
+  color: #111827;
+}
+
+.cutoff-warning-modal .warning-checklist {
+  margin: 16px 0 0 0;
+  padding: 16px 20px;
+  background: #ecfdf5;
+  border-radius: 10px;
+  border: 1px solid #a7f3d0;
+}
+
+.cutoff-warning-modal .warning-checklist h4 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #065f46;
+}
+
+.cutoff-warning-modal .warning-checklist ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cutoff-warning-modal .warning-checklist ul li {
+  padding: 3px 0;
+  font-size: 13px;
+  color: #065f46;
+}
+
+.cutoff-warning-modal .modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px 24px;
+  background: #f9fafb;
+  border-top: 1px solid #e5e7eb;
+}
+
+.cutoff-warning-modal .modal-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.cutoff-warning-modal .modal-btn.secondary {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.cutoff-warning-modal .modal-btn.secondary:hover {
+  background: #e5e7eb;
+}
+
+.cutoff-warning-modal .modal-btn.success {
+  background: linear-gradient(135deg, #10b981, #059669);
+  color: white;
+}
+
+.cutoff-warning-modal .modal-btn.success:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
+}
+
+.cutoff-warning-modal .modal-btn.success:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}

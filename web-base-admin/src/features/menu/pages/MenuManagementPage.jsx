@@ -1,4 +1,4 @@
-// src/components/MenuManagement.jsx - COMPLETE ENHANCED UI
+// src/components/MenuManagement.jsx - COMPLETE WITH BOTH PRICING ALWAYS VISIBLE
 
 import React, { useMemo, useState, useEffect } from 'react';
 import {
@@ -39,7 +39,8 @@ import {
     Drawer,
     Grid,
     Flex,
-    Popconfirm
+    Popconfirm,
+    Radio
 } from 'antd';
 import {
     FaPizzaSlice,
@@ -137,7 +138,19 @@ import {
     PhoneOutlined,
     MailOutlined,
     WalletFilled,
-    PictureOutlined
+    PictureOutlined,
+    SettingOutlined,
+    TableOutlined,
+    UserAddOutlined,
+    HistoryOutlined,
+    BellOutlined,
+    NotificationOutlined,
+    FileAddOutlined,
+    FolderOpenOutlined,
+    FundOutlined,
+    LineChartOutlined,
+    PieChartOutlined,
+    RadarChartOutlined
 } from '@ant-design/icons';
 import {
     useMenuItems,
@@ -259,6 +272,19 @@ const currency = (value) => `₱${Number(value || 0).toLocaleString('en-PH', {
 
 const csvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
+// Pricing Type Constants
+const PRICING_TYPES = {
+    PER_PAX: 'per_pax',
+    PER_TRAY: 'per_tray',
+    BOTH: 'both'
+};
+
+const PRICING_TYPE_LABELS = {
+    per_pax: 'Per Pax',
+    per_tray: 'Per Tray',
+    both: 'Both'
+};
+
 // Promotion Type Map
 const PROMO_TYPE_MAP = {
     menu_discount: { label: 'Menu Discount', color: '#1a7ab5', icon: <TagsOutlined /> },
@@ -288,8 +314,8 @@ const ProfessionalIconPicker = ({ value, onChange }) => {
     const [searchTerm, setSearchTerm] = useState('');
 
     const filteredIcons = PROFESSIONAL_ICONS.filter((icon) => (
-        icon.name.toLowerCase().includes(searchTerm.toLowerCase())
-        || icon.category.toLowerCase().includes(searchTerm.toLowerCase())
+        icon.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        icon.category.toLowerCase().includes(searchTerm.toLowerCase())
     ));
 
     const selectedIcon = PROFESSIONAL_ICONS.find((icon) => icon.value === value);
@@ -351,6 +377,193 @@ const ProfessionalIconPicker = ({ value, onChange }) => {
                     <Button onClick={() => setVisible(false)}>Close</Button>
                 </div>
             </Modal>
+        </div>
+    );
+};
+
+// ============================================================
+// PRICING CONFIGURATION COMPONENT
+// ============================================================
+const PricingConfiguration = ({ form, initialValues }) => {
+    const pricingType = Form.useWatch('pricing_type', form);
+    const [trayMinPax, setTrayMinPax] = useState(initialValues?.tray_min_pax || 20);
+    const [trayMaxPax, setTrayMaxPax] = useState(initialValues?.tray_max_pax || 25);
+
+    const handleTrayMinChange = (value) => {
+        setTrayMinPax(value);
+        const description = `Good for ${value}–${trayMaxPax || value} pax`;
+        form.setFieldsValue({ tray_description: description });
+    };
+
+    const handleTrayMaxChange = (value) => {
+        setTrayMaxPax(value);
+        const description = `Good for ${trayMinPax || value}–${value} pax`;
+        form.setFieldsValue({ tray_description: description });
+    };
+
+    return (
+        <div className="mm-pricing-config">
+            <Alert
+                message="Pricing Configuration"
+                description="Configure how this menu item can be priced for customers"
+                type="info"
+                showIcon
+                className="mm-modal-alert"
+                style={{ marginBottom: 16 }}
+            />
+
+            <Form.Item
+                name="pricing_type"
+                label="Pricing Method"
+                rules={[{ required: true, message: 'Please select a pricing method' }]}
+            >
+                <Radio.Group className="mm-pricing-radio-group" buttonStyle="solid">
+                    <Radio.Button value={PRICING_TYPES.PER_PAX}>
+                        <DollarOutlined /> Per Pax
+                    </Radio.Button>
+                    <Radio.Button value={PRICING_TYPES.PER_TRAY}>
+                        <TableOutlined /> Per Tray
+                    </Radio.Button>
+                    <Radio.Button value={PRICING_TYPES.BOTH}>
+                        <AppstoreOutlined /> Both
+                    </Radio.Button>
+                </Radio.Group>
+            </Form.Item>
+
+            {/* Per Pax Pricing */}
+            {(pricingType === PRICING_TYPES.PER_PAX || pricingType === PRICING_TYPES.BOTH) && (
+                <div className="mm-pricing-section">
+                    <Divider orientation="left" className="mm-form-divider">
+                        <DollarOutlined /> Per Pax
+                    </Divider>
+                    <Row gutter={16}>
+                        <Col span={24}>
+                            <Form.Item
+                                name="price"
+                                label="Price Per Pax (₱)"
+                                rules={[{ required: true, message: 'Please enter per pax price' }]}
+                            >
+                                <InputNumber
+                                    min={0}
+                                    step={0.01}
+                                    style={{ width: '100%' }}
+                                    prefix="₱"
+                                    placeholder="0.00"
+                                    size="large"
+                                    className="mm-input-modern"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                </div>
+            )}
+
+            {/* Per Tray Pricing */}
+            {(pricingType === PRICING_TYPES.PER_TRAY || pricingType === PRICING_TYPES.BOTH) && (
+                <div className="mm-pricing-section">
+                    <Divider orientation="left" className="mm-form-divider">
+                        <TableOutlined /> Per Tray
+                    </Divider>
+
+                    <Row gutter={16}>
+                        <Col span={12}>
+                            <Form.Item
+                                name="tray_price"
+                                label="Price Per Tray (₱)"
+                                rules={[{ required: true, message: 'Please enter tray price' }]}
+                            >
+                                <InputNumber
+                                    min={0}
+                                    step={0.01}
+                                    style={{ width: '100%' }}
+                                    prefix="₱"
+                                    placeholder="0.00"
+                                    size="large"
+                                    className="mm-input-modern"
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                            <Form.Item
+                                name="tray_servings"
+                                label="Servings Per Tray"
+                            >
+                                <InputNumber
+                                    min={1}
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g., 25"
+                                    size="large"
+                                    className="mm-input-modern"
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+
+                    <Row gutter={16}>
+                        <Col span={12}>
+                            <Form.Item
+                                name="tray_min_pax"
+                                label="Min Pax Per Tray"
+                            >
+                                <InputNumber
+                                    min={1}
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g., 20"
+                                    size="large"
+                                    className="mm-input-modern"
+                                    value={trayMinPax}
+                                    onChange={handleTrayMinChange}
+                                />
+                            </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                            <Form.Item
+                                name="tray_max_pax"
+                                label="Max Pax Per Tray"
+                            >
+                                <InputNumber
+                                    min={1}
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g., 25"
+                                    size="large"
+                                    className="mm-input-modern"
+                                    value={trayMaxPax}
+                                    onChange={handleTrayMaxChange}
+                                />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+
+                    <Row gutter={16}>
+                        <Col span={24}>
+                            <Form.Item
+                                name="tray_description"
+                                label="Tray Description"
+                            >
+                                <Input
+                                    placeholder="e.g., Good for 20–25 pax"
+                                    size="large"
+                                    className="mm-input-modern"
+                                />
+                            </Form.Item>
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                                This description will be shown to customers when they select the tray option
+                            </Text>
+                        </Col>
+                    </Row>
+                </div>
+            )}
+
+            {pricingType === PRICING_TYPES.BOTH && (
+                <Alert
+                    message="Both Pricing Options Available"
+                    description="Customers can choose between Per Pax and Per Tray pricing"
+                    type="success"
+                    showIcon
+                    className="mm-modal-alert"
+                    style={{ marginTop: 16 }}
+                />
+            )}
         </div>
     );
 };
@@ -557,22 +770,22 @@ const MenuManagement = () => {
         }
     };
 
-    // ============================================================
-    // HANDLERS - PRINT
-    // ============================================================
     const handlePrint = () => {
         window.print();
     };
 
     const handleExport = () => {
         const rows = [
-            ['ID', 'Name', 'Category', 'Description', 'Price', 'Preparation Minutes', 'Available', 'Featured'],
+            ['ID', 'Name', 'Category', 'Description', 'Price (Pax)', 'Price (Tray)', 'Tray Description', 'Pricing Type', 'Prep Minutes', 'Available', 'Featured'],
             ...menus.map((item) => [
                 item.id,
                 item.name,
                 item.category,
                 item.description,
-                item.price,
+                item.price || 0,
+                item.tray_price || 0,
+                item.tray_description || '',
+                PRICING_TYPE_LABELS[item.pricing_type] || 'Per Pax',
                 item.prep_time_minutes,
                 item.is_available ? 'Yes' : 'No',
                 item.is_popular ? 'Yes' : 'No',
@@ -654,6 +867,13 @@ const MenuManagement = () => {
             is_vegan: false,
             is_gluten_free: false,
             is_halal: false,
+            pricing_type: PRICING_TYPES.BOTH,
+            price: 45,
+            tray_price: 1500,
+            tray_servings: 25,
+            tray_min_pax: 20,
+            tray_max_pax: 25,
+            tray_description: 'Good for 20–25 pax',
         });
         setMenuModalVisible(true);
     };
@@ -680,6 +900,12 @@ const MenuManagement = () => {
             category_id: record.category_id,
             description: record.description || '',
             price: Number(record.price || 0),
+            tray_price: Number(record.tray_price || 0),
+            tray_servings: Number(record.tray_servings || 25),
+            tray_min_pax: Number(record.tray_min_pax || 20),
+            tray_max_pax: Number(record.tray_max_pax || 25),
+            tray_description: record.tray_description || 'Good for 20–25 pax',
+            pricing_type: PRICING_TYPES.BOTH,
             prep_time_minutes: Number(record.prep_time_minutes || 0),
             serving_size: Number(record.serving_size || 1),
             is_available: record.is_available !== false,
@@ -696,8 +922,6 @@ const MenuManagement = () => {
         });
         setEditMenuModalVisible(true);
     };
-
-    // REMOVED: handleDeleteMenu - Delete button removed
 
     const handleViewRecipe = (record) => {
         setSelectedItem(record);
@@ -789,8 +1013,6 @@ const MenuManagement = () => {
         setEditPackageModalVisible(true);
     };
 
-    // REMOVED: handleDeletePackage - Delete button removed
-
     const handleViewPackage = (record) => {
         setViewingPackage(record);
         setPackageViewModalVisible(true);
@@ -848,8 +1070,6 @@ const MenuManagement = () => {
         });
         setEditCategoryModalVisible(true);
     };
-
-    // REMOVED: handleDeleteCategory - Delete button removed
 
     const handleSaveCategory = async (values) => {
         const payload = {
@@ -928,8 +1148,6 @@ const MenuManagement = () => {
         setAvailableDatesList(record.available_dates || []);
         setEditPromoModalVisible(true);
     };
-
-    // REMOVED: handleDeletePromotion - Delete button removed
 
     const handleDuplicatePromotion = (record) => {
         Modal.confirm({
@@ -1030,7 +1248,18 @@ const MenuManagement = () => {
             formData.append('name', values.name.trim());
             formData.append('category_id', String(values.category_id));
             formData.append('description', values.description || '');
-            formData.append('price', String(values.price));
+            
+            // ALWAYS save both prices - regardless of pricing_type
+            formData.append('price', String(values.price || 0));
+            formData.append('tray_price', String(values.tray_price || 0));
+            formData.append('tray_servings', String(values.tray_servings || 25));
+            formData.append('tray_min_pax', String(values.tray_min_pax || 20));
+            formData.append('tray_max_pax', String(values.tray_max_pax || 25));
+            formData.append('tray_description', values.tray_description || '');
+            
+            // Set pricing_type to 'both' so both prices are shown
+            formData.append('pricing_type', 'both');
+            
             formData.append('cost_to_make', String(calculateTotalRecipeCost()));
             formData.append('prep_time_minutes', String(values.prep_time_minutes ?? 0));
             formData.append('serving_size', String(values.serving_size ?? 1));
@@ -1038,6 +1267,7 @@ const MenuManagement = () => {
             formData.append('nutritional_info', values.nutritional_info || '');
             formData.append('ingredients_list', values.ingredients_list || '');
             formData.append('ingredients', JSON.stringify(recipePayload));
+
             appendBoolean(formData, 'is_available', values.is_available !== false);
             appendBoolean(formData, 'is_popular', values.is_popular);
             appendBoolean(formData, 'is_vegetarian', values.is_vegetarian);
@@ -1058,8 +1288,11 @@ const MenuManagement = () => {
 
             closeMenuModal();
             menuQuery.refetch();
-        } catch {
-            // Error handled by form or mutation
+        } catch (error) {
+            console.error('Save menu error:', error);
+            if (error?.errorFields) {
+                message.error('Please fill in all required fields');
+            }
         }
     };
 
@@ -1150,11 +1383,10 @@ const MenuManagement = () => {
     // FILTERED & SORTED DATA
     // ============================================================
     const filteredMenus = menus.filter((item) => (
-        (!menuFilters.search || item.name?.toLowerCase().includes(menuFilters.search.toLowerCase()))
-        && (!menuFilters.category_id || Number(item.category_id) === Number(menuFilters.category_id))
+        (!menuFilters.search || item.name?.toLowerCase().includes(menuFilters.search.toLowerCase())) &&
+        (!menuFilters.category_id || Number(item.category_id) === Number(menuFilters.category_id))
     ));
 
-    // Sort menus
     const sortedMenus = [...filteredMenus].sort((a, b) => {
         let aVal = a[menuSortField] || '';
         let bVal = b[menuSortField] || '';
@@ -1188,13 +1420,13 @@ const MenuManagement = () => {
     });
 
     // ============================================================
-    // TABLE COLUMNS - ENHANCED (No Delete Button)
+    // TABLE COLUMNS - BOTH PRICING ALWAYS VISIBLE
     // ============================================================
     const menuColumns = [
         {
             title: '#',
             key: 'index',
-            width: 50,
+            width: 45,
             fixed: 'left',
             render: (_, __, index) => (
                 <span className="mm-row-index">{index + 1}</span>
@@ -1203,13 +1435,13 @@ const MenuManagement = () => {
         {
             title: 'ITEM',
             key: 'item',
-            width: 300,
+            width: 180,
             fixed: 'left',
             render: (_, record) => (
                 <div className="mm-menu-item-cell">
                     <Avatar
                         src={record.image_url || '/images/placeholder.svg'}
-                        size={40}
+                        size={36}
                         shape="square"
                         className="mm-menu-item-avatar"
                         icon={<FileImageOutlined />}
@@ -1218,43 +1450,55 @@ const MenuManagement = () => {
                         <div className="mm-menu-item-name">{record.name}</div>
                         <div className="mm-menu-item-meta">
                             <span className="mm-category-label">{record.category || 'Uncategorized'}</span>
-                            {record.is_popular && <span className="mm-featured-label">★ Featured</span>}
+                            {record.is_popular && <span className="mm-featured-label">★</span>}
                         </div>
                     </div>
                 </div>
             )
         },
         {
+            title: 'PRICING',
+            key: 'pricing',
+            width: 130,
+            render: (_, record) => {
+                return (
+                    <div className="mm-pricing-display-clean">
+                        <div className="mm-pricing-item per-pax">
+                            <span className="mm-pricing-label">Pax</span>
+                            <span className="mm-pricing-value">{currency(record.price || 0)}</span>
+                        </div>
+                        <div className="mm-pricing-item per-tray">
+                            <span className="mm-pricing-label">Tray</span>
+                            <span className="mm-pricing-value">{currency(record.tray_price || 0)}</span>
+                            {(record.tray_min_pax || record.tray_max_pax) && (
+                                <span className="mm-tray-range">| {record.tray_min_pax || 0}–{record.tray_max_pax || 0}pax</span>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+        },
+        {
             title: 'DESCRIPTION',
             dataIndex: 'description',
             key: 'description',
-            width: 200,
+            width: 150,
             ellipsis: true,
             render: (text) => (
                 <Tooltip title={text}>
-                    <span className="mm-description-text">{text?.substring(0, 50) || '—'}{text?.length > 50 ? '...' : ''}</span>
+                    <span className="mm-description-text">{text?.substring(0, 35) || '—'}{text?.length > 35 ? '...' : ''}</span>
                 </Tooltip>
-            )
-        },
-        {
-            title: 'PRICE',
-            dataIndex: 'price',
-            key: 'price',
-            width: 120,
-            align: 'right',
-            render: (value) => (
-                <span className="mm-price-amount">{currency(value)}</span>
             )
         },
         {
             title: 'DIETARY',
             key: 'dietary',
-            width: 200,
+            width: 120,
             render: (_, record) => {
                 const dietaryTags = [];
-                if (record.is_vegetarian) dietaryTags.push('Vegetarian');
+                if (record.is_vegetarian) dietaryTags.push('Veg');
                 if (record.is_vegan) dietaryTags.push('Vegan');
-                if (record.is_gluten_free) dietaryTags.push('Gluten Free');
+                if (record.is_gluten_free) dietaryTags.push('GF');
                 if (record.is_halal) dietaryTags.push('Halal');
                 if (dietaryTags.length === 0) return <span className="mm-dietary-none">—</span>;
                 return (
@@ -1271,7 +1515,7 @@ const MenuManagement = () => {
         {
             title: 'STATUS',
             key: 'status',
-            width: 100,
+            width: 80,
             align: 'center',
             render: (_, record) => (
                 <Switch
@@ -1285,9 +1529,9 @@ const MenuManagement = () => {
             )
         },
         {
-            title: 'FEATURED',
+            title: '',
             key: 'featured',
-            width: 80,
+            width: 40,
             align: 'center',
             render: (_, record) => (
                 <Button
@@ -1303,11 +1547,11 @@ const MenuManagement = () => {
         {
             title: 'ACTIONS',
             key: 'actions',
-            width: 120,
+            width: 80,
             fixed: 'right',
             render: (_, record) => (
                 <Space size={4}>
-                    <Tooltip title="View Details">
+                    <Tooltip title="View">
                         <Button
                             className="mm-action-btn view"
                             icon={<EyeOutlined />}
@@ -1397,7 +1641,7 @@ const MenuManagement = () => {
         {
             title: 'ACTIONS',
             key: 'actions',
-            width: 120,
+            width: 90,
             render: (_, record) => (
                 <Space size={4}>
                     <Tooltip title="View Items">
@@ -1469,7 +1713,7 @@ const MenuManagement = () => {
         {
             title: 'ACTIONS',
             key: 'actions',
-            width: 80,
+            width: 70,
             render: (_, record) => (
                 <Space size={4}>
                     <Tooltip title="Edit">
@@ -1677,7 +1921,7 @@ const MenuManagement = () => {
     };
 
     // ============================================================
-    // SORT CONTROLS - Enhanced with A-Z inside Sort
+    // SORT CONTROLS
     // ============================================================
     const handleSortChange = (value) => {
         if (value === 'name_asc') {
@@ -1709,7 +1953,7 @@ const MenuManagement = () => {
     };
 
     // ============================================================
-    // QUICK VIEW DRAWER
+    // QUICK VIEW DRAWER - Shows Both Pricing
     // ============================================================
     const QuickViewDrawer = () => (
         <Drawer
@@ -1760,21 +2004,34 @@ const MenuManagement = () => {
 
                     <Divider className="mm-quickview-divider" />
 
+                    <div className="mm-quickview-pricing-clean">
+                        <Text strong>Pricing Options</Text>
+                        <div className="mm-quickview-pricing-grid">
+                            <div className="mm-quickview-pricing-item per-pax">
+                                <span className="mm-pricing-label">Per Pax</span>
+                                <span className="mm-pricing-value">{currency(quickViewItem.price || 0)}</span>
+                            </div>
+                            <div className="mm-quickview-pricing-item per-tray">
+                                <span className="mm-pricing-label">Per Tray</span>
+                                <span className="mm-pricing-value">{currency(quickViewItem.tray_price || 0)}</span>
+                                {quickViewItem.tray_min_pax && quickViewItem.tray_max_pax && (
+                                    <span className="mm-tray-range">| {quickViewItem.tray_min_pax}–{quickViewItem.tray_max_pax} pax</span>
+                                )}
+                                {!quickViewItem.tray_min_pax && !quickViewItem.tray_max_pax && quickViewItem.tray_description && (
+                                    <span className="mm-tray-desc">| {quickViewItem.tray_description}</span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <Divider className="mm-quickview-divider" />
+
                     <Row gutter={[16, 16]}>
-                        <Col span={12}>
-                            <Statistic
-                                title="Price"
-                                value={currency(quickViewItem.price)}
-                                prefix={<DollarOutlined />}
-                                valueStyle={{ color: '#1a7ab5', fontSize: 20 }}
-                            />
-                        </Col>
                         <Col span={12}>
                             <Statistic
                                 title="Category"
                                 value={quickViewItem.category || 'Uncategorized'}
                                 prefix={<TagOutlined />}
-                                valueStyle={{ fontSize: 16 }}
                             />
                         </Col>
                         <Col span={12}>
@@ -1789,6 +2046,12 @@ const MenuManagement = () => {
                                 title="Rating"
                                 value={quickViewItem.rating || 0}
                                 prefix={<StarFilled style={{ color: '#f59e0b' }} />}
+                            />
+                        </Col>
+                        <Col span={12}>
+                            <Statistic
+                                title="Pricing Type"
+                                value={PRICING_TYPE_LABELS[quickViewItem.pricing_type] || 'Both'}
                             />
                         </Col>
                     </Row>
@@ -1941,7 +2204,7 @@ const MenuManagement = () => {
     return (
         <ConfigProvider theme={theme}>
             <div className="mm-menu-container">
-                {/* ==================== HEADER ==================== */}
+                {/* HEADER */}
                 <div className="mm-header">
                     <div className="mm-header-left">
                         <div className="mm-logo-icon">
@@ -1979,7 +2242,7 @@ const MenuManagement = () => {
                     </div>
                 </div>
 
-                {/* ==================== STATS CARDS ==================== */}
+                {/* STATS CARDS */}
                 <div className="mm-dashboard-grid">
                     <div className="mm-stat-card">
                         <div className="mm-stat-icon blue"><MenuOutlined /></div>
@@ -2037,7 +2300,7 @@ const MenuManagement = () => {
                     )}
                 </div>
 
-                {/* ==================== MAIN CARD ==================== */}
+                {/* MAIN CARD */}
                 <Card className="mm-main-card" variant="borderless">
                     <Tabs
                         activeKey={activeMainTab}
@@ -2065,7 +2328,7 @@ const MenuManagement = () => {
                             </div>
                         }
                     >
-                        {/* ==================== MENU ITEMS TAB ==================== */}
+                        {/* MENU ITEMS TAB */}
                         <TabPane tab={<span><MenuOutlined /> Menu Items</span>} key="menus">
                             <div className="mm-table-container">
                                 <div className="mm-filter-bar">
@@ -2120,7 +2383,7 @@ const MenuManagement = () => {
                                         rowKey="id"
                                         className="mm-professional-table"
                                         pagination={false}
-                                        scroll={{ x: 1200, y: 'calc(100vh - 420px)' }}
+                                        scroll={{ x: 1100, y: 'calc(100vh - 420px)' }}
                                         rowClassName={(record) => !record.is_available ? 'mm-row-inactive' : ''}
                                     />
                                 </div>
@@ -2265,9 +2528,7 @@ const MenuManagement = () => {
                     </Tabs>
                 </Card>
 
-                {/* ============================================================
-                    MENU ITEM MODAL - CLEAN STYLE WITH ICON VISIBLE
-                ============================================================ */}
+                {/* MENU ITEM MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -2278,7 +2539,7 @@ const MenuManagement = () => {
                     }
                     open={menuModalVisible || editMenuModalVisible}
                     onCancel={closeMenuModal}
-                    width={820}
+                    width={900}
                     className="mm-modal-clean"
                     footer={null}
                     maskClosable={false}
@@ -2292,6 +2553,7 @@ const MenuManagement = () => {
                             className="mm-modal-steps"
                             items={[
                                 { title: 'Basic', icon: <InfoCircleOutlined /> },
+                                { title: 'Pricing', icon: <DollarOutlined /> },
                                 { title: 'Dietary', icon: <CheckCircleOutlined /> },
                                 { title: 'Recipe', icon: <BoxPlotOutlined /> },
                                 { title: 'Media', icon: <PictureOutlined /> },
@@ -2299,7 +2561,7 @@ const MenuManagement = () => {
                         />
                         <div className="mm-modal-form">
                             <Form form={menuForm} layout="vertical">
-                                {/* Step 1: Basic Info */}
+                                {/* Step 0: Basic Info */}
                                 <div style={{ display: modalCurrentStep === 0 ? 'block' : 'none' }}>
                                     <Row gutter={16}>
                                         <Col span={12}>
@@ -2338,23 +2600,6 @@ const MenuManagement = () => {
                                     </Form.Item>
                                     <Row gutter={16}>
                                         <Col span={8}>
-                                            <Form.Item
-                                                name="price"
-                                                label="Price (₱)"
-                                                rules={[{ required: true, message: 'Please enter price' }]}
-                                            >
-                                                <InputNumber
-                                                    min={0}
-                                                    step={0.01}
-                                                    style={{ width: '100%' }}
-                                                    prefix="₱"
-                                                    placeholder="0.00"
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
-                                            </Form.Item>
-                                        </Col>
-                                        <Col span={8}>
                                             <Form.Item name="prep_time_minutes" label="Prep Time (mins)">
                                                 <InputNumber
                                                     min={0}
@@ -2376,11 +2621,21 @@ const MenuManagement = () => {
                                                 />
                                             </Form.Item>
                                         </Col>
+                                        <Col span={8}>
+                                            <Form.Item name="is_available" label="Available" valuePropName="checked">
+                                                <Switch className="mm-switch-modern" checkedChildren="Yes" unCheckedChildren="No" />
+                                            </Form.Item>
+                                        </Col>
                                     </Row>
                                 </div>
 
-                                {/* Step 2: Dietary */}
+                                {/* Step 1: Pricing Configuration */}
                                 <div style={{ display: modalCurrentStep === 1 ? 'block' : 'none' }}>
+                                    <PricingConfiguration form={menuForm} initialValues={selectedItem} />
+                                </div>
+
+                                {/* Step 2: Dietary */}
+                                <div style={{ display: modalCurrentStep === 2 ? 'block' : 'none' }}>
                                     <Alert
                                         message="Dietary Information"
                                         description="Select applicable dietary options for this menu item"
@@ -2411,11 +2666,6 @@ const MenuManagement = () => {
                                                 </Form.Item>
                                             </Col>
                                             <Col span={12}>
-                                                <Form.Item name="is_available" label="Available" valuePropName="checked">
-                                                    <Switch className="mm-switch-modern" checkedChildren="Yes" unCheckedChildren="No" />
-                                                </Form.Item>
-                                            </Col>
-                                            <Col span={12}>
                                                 <Form.Item name="is_popular" label="Featured" valuePropName="checked">
                                                     <Switch className="mm-switch-modern" checkedChildren="Yes" unCheckedChildren="No" />
                                                 </Form.Item>
@@ -2431,16 +2681,12 @@ const MenuManagement = () => {
                                         />
                                     </Form.Item>
                                     <Form.Item name="nutritional_info" label="Nutritional Info">
-                                        <TextArea
-                                            rows={2}
-                                            placeholder="Calories, Protein, Carbs, etc."
-                                            className="mm-textarea-modern"
-                                        />
+                                        <TextArea rows={2} placeholder="Calories, Protein, Carbs, etc." className="mm-textarea-modern" />
                                     </Form.Item>
                                 </div>
 
                                 {/* Step 3: Recipe */}
-                                <div style={{ display: modalCurrentStep === 2 ? 'block' : 'none' }}>
+                                <div style={{ display: modalCurrentStep === 3 ? 'block' : 'none' }}>
                                     <div className="mm-recipe-header">
                                         <Button
                                             onClick={handleAddRecipeIngredient}
@@ -2455,11 +2701,7 @@ const MenuManagement = () => {
                                         </div>
                                     </div>
                                     {recipeIngredients.length === 0 ? (
-                                        <Empty
-                                            description="No ingredients added yet"
-                                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                            className="mm-empty-recipe"
-                                        />
+                                        <Empty description="No ingredients added yet" image={Empty.PRESENTED_IMAGE_SIMPLE} className="mm-empty-recipe" />
                                     ) : (
                                         <Table
                                             dataSource={recipeIngredients}
@@ -2562,15 +2804,9 @@ const MenuManagement = () => {
                                     )}
                                 </div>
 
-                                {/* Step 4: Media - Enhanced Image Upload */}
-                                <div style={{ display: modalCurrentStep === 3 ? 'block' : 'none' }}>
-                                    <Alert
-                                        message="Menu Image"
-                                        description="Upload a high-quality image (max 2 MB)"
-                                        type="info"
-                                        showIcon
-                                        className="mm-modal-alert"
-                                    />
+                                {/* Step 4: Media */}
+                                <div style={{ display: modalCurrentStep === 4 ? 'block' : 'none' }}>
+                                    <Alert message="Menu Image" description="Upload a high-quality image (max 2 MB)" type="info" showIcon className="mm-modal-alert" />
                                     <div className="mm-upload-section">
                                         <Upload
                                             {...menuUploadProps}
@@ -2591,22 +2827,12 @@ const MenuManagement = () => {
                                         </Upload>
                                         {menuFileList.length > 0 && menuFileList[0].url && (
                                             <div style={{ marginTop: 12 }}>
-                                                <Image
-                                                    src={menuFileList[0].url}
-                                                    alt="Preview"
-                                                    width={120}
-                                                    height={120}
-                                                    style={{ objectFit: 'cover', borderRadius: 8 }}
-                                                />
+                                                <Image src={menuFileList[0].url} alt="Preview" width={120} height={120} style={{ objectFit: 'cover', borderRadius: 8 }} />
                                             </div>
                                         )}
                                     </div>
                                     <Form.Item name="ingredients_list" label="Ingredients List">
-                                        <TextArea
-                                            rows={2}
-                                            placeholder="List main ingredients separated by commas"
-                                            className="mm-textarea-modern"
-                                        />
+                                        <TextArea rows={2} placeholder="List main ingredients separated by commas" className="mm-textarea-modern" />
                                     </Form.Item>
                                 </div>
                             </Form>
@@ -2623,13 +2849,16 @@ const MenuManagement = () => {
                                 <Button onClick={closeMenuModal} className="mm-footer-btn cancel">
                                     Cancel
                                 </Button>
-                                {modalCurrentStep < 3 ? (
+                                {modalCurrentStep < 4 ? (
                                     <Button
                                         type="primary"
                                         onClick={async () => {
                                             try {
                                                 if (modalCurrentStep === 0) {
-                                                    await menuForm.validateFields(['name', 'category_id', 'price']);
+                                                    await menuForm.validateFields(['name', 'category_id']);
+                                                }
+                                                if (modalCurrentStep === 1) {
+                                                    await menuForm.validateFields(['pricing_type']);
                                                 }
                                                 setModalCurrentStep((step) => step + 1);
                                             } catch {
@@ -2656,9 +2885,7 @@ const MenuManagement = () => {
                     </div>
                 </Modal>
 
-                {/* ============================================================
-                    PACKAGE MODAL - CLEAN STYLE
-                ============================================================ */}
+                {/* PACKAGE MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -2689,33 +2916,16 @@ const MenuManagement = () => {
                         />
                         <div className="mm-modal-form">
                             <Form form={packageForm} layout="vertical">
-                                {/* Step 0: Package Info */}
                                 <div style={{ display: packageCurrentStep === 0 ? 'block' : 'none' }}>
                                     <Row gutter={20}>
                                         <Col span={12}>
-                                            <Form.Item
-                                                name="name"
-                                                label="Package Name"
-                                                rules={[{ required: true, message: 'Please enter package name' }]}
-                                            >
+                                            <Form.Item name="name" label="Package Name" rules={[{ required: true, message: 'Please enter package name' }]}>
                                                 <Input placeholder="e.g., Family Feast Bundle" size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                         <Col span={12}>
-                                            <Form.Item
-                                                name="base_price_per_pax"
-                                                label="Price per Person (₱)"
-                                                rules={[{ required: true, message: 'Please enter price' }]}
-                                            >
-                                                <InputNumber
-                                                    min={0}
-                                                    step={0.01}
-                                                    style={{ width: '100%' }}
-                                                    prefix="₱"
-                                                    placeholder="0.00"
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                            <Form.Item name="base_price_per_pax" label="Price per Person (₱)" rules={[{ required: true, message: 'Please enter price' }]}>
+                                                <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="₱" placeholder="0.00" size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                     </Row>
@@ -2724,55 +2934,25 @@ const MenuManagement = () => {
                                     </Form.Item>
                                     <Row gutter={20}>
                                         <Col span={12}>
-                                            <Form.Item
-                                                name="min_pax"
-                                                label="Minimum Guests"
-                                                rules={[{ required: true, message: 'Minimum guests required' }]}
-                                            >
-                                                <InputNumber
-                                                    min={1}
-                                                    style={{ width: '100%' }}
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                            <Form.Item name="min_pax" label="Minimum Guests" rules={[{ required: true, message: 'Minimum guests required' }]}>
+                                                <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                         <Col span={12}>
-                                            <Form.Item
-                                                name="max_pax"
-                                                label="Maximum Guests"
-                                                rules={[{ required: true, message: 'Maximum guests required' }]}
-                                            >
-                                                <InputNumber
-                                                    min={1}
-                                                    style={{ width: '100%' }}
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                            <Form.Item name="max_pax" label="Maximum Guests" rules={[{ required: true, message: 'Maximum guests required' }]}>
+                                                <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                     </Row>
                                     <Row gutter={20}>
                                         <Col span={12}>
                                             <Form.Item name="price_per_additional_pax" label="Additional Person Price">
-                                                <InputNumber
-                                                    min={0}
-                                                    step={0.01}
-                                                    style={{ width: '100%' }}
-                                                    prefix="₱"
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                                <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="₱" size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                         <Col span={12}>
                                             <Form.Item name="default_duration_hours" label="Duration (hours)">
-                                                <InputNumber
-                                                    min={1}
-                                                    style={{ width: '100%' }}
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                                <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                     </Row>
@@ -2789,40 +2969,19 @@ const MenuManagement = () => {
                                         </Col>
                                         <Col span={8}>
                                             <Form.Item name="sort_order" label="Sort Order">
-                                                <InputNumber
-                                                    min={0}
-                                                    style={{ width: '100%' }}
-                                                    size="large"
-                                                    className="mm-input-modern"
-                                                />
+                                                <InputNumber min={0} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                             </Form.Item>
                                         </Col>
                                     </Row>
                                     <Form.Item name="inclusions" label="Inclusions">
-                                        <Select
-                                            mode="tags"
-                                            placeholder="Press Enter after each inclusion"
-                                            size="large"
-                                            className="mm-select-modern"
-                                        />
+                                        <Select mode="tags" placeholder="Press Enter after each inclusion" size="large" className="mm-select-modern" />
                                     </Form.Item>
                                     <Form.Item name="exclusions" label="Exclusions">
-                                        <Select
-                                            mode="tags"
-                                            placeholder="Press Enter after each exclusion"
-                                            size="large"
-                                            className="mm-select-modern"
-                                        />
+                                        <Select mode="tags" placeholder="Press Enter after each exclusion" size="large" className="mm-select-modern" />
                                     </Form.Item>
 
                                     <Divider className="mm-form-divider">Package Image</Divider>
-                                    <Alert
-                                        message="Upload Package Image"
-                                        description="Upload a high-quality image for this package (max 2 MB)"
-                                        type="info"
-                                        showIcon
-                                        className="mm-modal-alert"
-                                    />
+                                    <Alert message="Upload Package Image" description="Upload a high-quality image for this package (max 2 MB)" type="info" showIcon className="mm-modal-alert" />
                                     <div className="mm-upload-section">
                                         <Upload
                                             {...packageUploadProps}
@@ -2842,27 +3001,14 @@ const MenuManagement = () => {
                                         </Upload>
                                         {packageFileList.length > 0 && packageFileList[0].url && (
                                             <div style={{ marginTop: 12 }}>
-                                                <Image
-                                                    src={packageFileList[0].url}
-                                                    alt="Preview"
-                                                    width={120}
-                                                    height={120}
-                                                    style={{ objectFit: 'cover', borderRadius: 8 }}
-                                                />
+                                                <Image src={packageFileList[0].url} alt="Preview" width={120} height={120} style={{ objectFit: 'cover', borderRadius: 8 }} />
                                             </div>
                                         )}
                                     </div>
                                 </div>
 
-                                {/* Step 1: Select Items */}
                                 <div style={{ display: packageCurrentStep === 1 ? 'block' : 'none' }}>
-                                    <Alert
-                                        message="Select Menu Items"
-                                        description="Choose items to include in this package. You can adjust quantities per person."
-                                        type="info"
-                                        showIcon
-                                        className="mm-modal-alert"
-                                    />
+                                    <Alert message="Select Menu Items" description="Choose items to include in this package. You can adjust quantities per person." type="info" showIcon className="mm-modal-alert" />
                                     <div className="mm-package-items">
                                         <div className="mm-package-available">
                                             <div className="mm-package-panel-header">
@@ -2892,12 +3038,7 @@ const MenuManagement = () => {
                                                             title: '',
                                                             width: 50,
                                                             render: (_, row) => (
-                                                                <Button
-                                                                    size="small"
-                                                                    icon={<PlusOutlined />}
-                                                                    onClick={() => handleAddMenuItemToPackage(row)}
-                                                                    className="mm-package-add-btn"
-                                                                />
+                                                                <Button size="small" icon={<PlusOutlined />} onClick={() => handleAddMenuItemToPackage(row)} className="mm-package-add-btn" />
                                                             )
                                                         }
                                                     ]}
@@ -2911,11 +3052,7 @@ const MenuManagement = () => {
                                             </div>
                                             <div className="mm-package-panel-body">
                                                 {selectedMenuItems.length === 0 ? (
-                                                    <Empty
-                                                        description="No items selected"
-                                                        image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                                        className="mm-empty-selected"
-                                                    />
+                                                    <Empty description="No items selected" image={Empty.PRESENTED_IMAGE_SIMPLE} className="mm-empty-selected" />
                                                 ) : (
                                                     <Table
                                                         dataSource={selectedMenuItems}
@@ -2953,13 +3090,7 @@ const MenuManagement = () => {
                                                                 title: '',
                                                                 width: 50,
                                                                 render: (_, row) => (
-                                                                    <Button
-                                                                        danger
-                                                                        size="small"
-                                                                        icon={<DeleteOutlined />}
-                                                                        onClick={() => handleRemoveMenuItemFromPackage(row.menu_item_id)}
-                                                                        className="mm-package-remove-btn"
-                                                                    />
+                                                                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => handleRemoveMenuItemFromPackage(row.menu_item_id)} className="mm-package-remove-btn" />
                                                                 )
                                                             }
                                                         ]}
@@ -2970,38 +3101,19 @@ const MenuManagement = () => {
                                     </div>
                                 </div>
 
-                                {/* Step 2: Review */}
                                 <div style={{ display: packageCurrentStep === 2 ? 'block' : 'none' }}>
-                                    <Alert
-                                        message="Review Package Details"
-                                        description="Please review all information before saving the package"
-                                        type="success"
-                                        showIcon
-                                        className="mm-modal-alert"
-                                    />
+                                    <Alert message="Review Package Details" description="Please review all information before saving the package" type="success" showIcon className="mm-modal-alert" />
                                     <div className="mm-package-review">
                                         <div className="mm-package-review-header">
                                             <div>
-                                                <div className="mm-package-review-name">
-                                                    {packageForm.getFieldValue('name') || 'Package Name'}
-                                                </div>
-                                                <div className="mm-package-review-desc">
-                                                    {packageForm.getFieldValue('description') || 'No description provided'}
-                                                </div>
+                                                <div className="mm-package-review-name">{packageForm.getFieldValue('name') || 'Package Name'}</div>
+                                                <div className="mm-package-review-desc">{packageForm.getFieldValue('description') || 'No description provided'}</div>
                                             </div>
-                                            <Tag color="blue" className="mm-package-review-price">
-                                                {currency(packageForm.getFieldValue('base_price_per_pax'))} / pax
-                                            </Tag>
+                                            <Tag color="blue" className="mm-package-review-price">{currency(packageForm.getFieldValue('base_price_per_pax'))} / pax</Tag>
                                         </div>
                                         {packageFileList.length > 0 && packageFileList[0].url && (
                                             <div className="mm-package-review-image">
-                                                <Image
-                                                    src={packageFileList[0].url}
-                                                    width={120}
-                                                    height={80}
-                                                    style={{ borderRadius: 8, objectFit: 'cover' }}
-                                                    preview={false}
-                                                />
+                                                <Image src={packageFileList[0].url} width={120} height={80} style={{ borderRadius: 8, objectFit: 'cover' }} preview={false} />
                                             </div>
                                         )}
                                         <Divider className="mm-form-divider" />
@@ -3029,27 +3141,10 @@ const MenuManagement = () => {
                                             pagination={false}
                                             className="mm-review-table"
                                             columns={[
-                                                {
-                                                    title: 'Item',
-                                                    dataIndex: 'name',
-                                                    render: (text) => <span className="mm-item-name">{text}</span>
-                                                },
-                                                {
-                                                    title: 'Qty/Pax',
-                                                    width: 100,
-                                                    render: (_, row) => `${row.quantity || 1}x`
-                                                },
-                                                {
-                                                    title: 'Price',
-                                                    width: 110,
-                                                    dataIndex: 'price',
-                                                    render: currency
-                                                },
-                                                {
-                                                    title: 'Total/Pax',
-                                                    width: 120,
-                                                    render: (_, row) => currency(Number(row.price || 0) * Number(row.quantity || 1))
-                                                }
+                                                { title: 'Item', dataIndex: 'name', render: (text) => <span className="mm-item-name">{text}</span> },
+                                                { title: 'Qty/Pax', width: 100, render: (_, row) => `${row.quantity || 1}x` },
+                                                { title: 'Price', width: 110, dataIndex: 'price', render: currency },
+                                                { title: 'Total/Pax', width: 120, render: (_, row) => currency(Number(row.price || 0) * Number(row.quantity || 1)) }
                                             ]}
                                         />
                                     </div>
@@ -3057,42 +3152,26 @@ const MenuManagement = () => {
                             </Form>
                         </div>
                         <div className="mm-modal-footer">
-                            <Button
-                                onClick={() => setPackageCurrentStep((step) => Math.max(0, step - 1))}
-                                disabled={packageCurrentStep === 0}
-                                className="mm-footer-btn secondary"
-                            >
+                            <Button onClick={() => setPackageCurrentStep((step) => Math.max(0, step - 1))} disabled={packageCurrentStep === 0} className="mm-footer-btn secondary">
                                 <LeftOutlined /> Previous
                             </Button>
                             <Space>
-                                <Button onClick={closePackageModal} className="mm-footer-btn cancel">
-                                    Cancel
-                                </Button>
+                                <Button onClick={closePackageModal} className="mm-footer-btn cancel">Cancel</Button>
                                 {packageCurrentStep < 2 ? (
-                                    <Button
-                                        type="primary"
-                                        onClick={async () => {
-                                            try {
-                                                if (packageCurrentStep === 0) {
-                                                    await packageForm.validateFields(['name', 'base_price_per_pax', 'min_pax', 'max_pax']);
-                                                }
-                                                setPackageCurrentStep((step) => step + 1);
-                                            } catch {
-                                                // Form validation errors
+                                    <Button type="primary" onClick={async () => {
+                                        try {
+                                            if (packageCurrentStep === 0) {
+                                                await packageForm.validateFields(['name', 'base_price_per_pax', 'min_pax', 'max_pax']);
                                             }
-                                        }}
-                                        className="mm-footer-btn primary"
-                                    >
+                                            setPackageCurrentStep((step) => step + 1);
+                                        } catch {
+                                            // Form validation errors
+                                        }
+                                    }} className="mm-footer-btn primary">
                                         Next <RightOutlined />
                                     </Button>
                                 ) : (
-                                    <Button
-                                        type="primary"
-                                        loading={createPackage.isPending || updatePackage.isPending}
-                                        onClick={handleSavePackage}
-                                        className="mm-footer-btn primary"
-                                        icon={<SaveOutlined />}
-                                    >
+                                    <Button type="primary" loading={createPackage.isPending || updatePackage.isPending} onClick={handleSavePackage} className="mm-footer-btn primary" icon={<SaveOutlined />}>
                                         {selectedPackageItem ? 'Update Package' : 'Create Package'}
                                     </Button>
                                 )}
@@ -3101,9 +3180,7 @@ const MenuManagement = () => {
                     </div>
                 </Modal>
 
-                {/* ============================================================
-                    CATEGORY MODAL - CLEAN STYLE
-                ============================================================ */}
+                {/* CATEGORY MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -3124,11 +3201,7 @@ const MenuManagement = () => {
                     <div className="mm-modal-clean-content">
                         <div className="mm-modal-form">
                             <Form form={categoryForm} layout="vertical" onFinish={handleSaveCategory}>
-                                <Form.Item
-                                    name="name"
-                                    label="Category Name"
-                                    rules={[{ required: true, message: 'Please enter category name' }]}
-                                >
+                                <Form.Item name="name" label="Category Name" rules={[{ required: true, message: 'Please enter category name' }]}>
                                     <Input placeholder="e.g., Appetizers" size="large" className="mm-input-modern" />
                                 </Form.Item>
                                 <Form.Item name="description" label="Description">
@@ -3138,31 +3211,15 @@ const MenuManagement = () => {
                                     <ProfessionalIconPicker />
                                 </Form.Item>
                                 <Form.Item name="display_order" label="Display Order">
-                                    <InputNumber
-                                        min={0}
-                                        style={{ width: '100%' }}
-                                        size="large"
-                                        className="mm-input-modern"
-                                    />
+                                    <InputNumber min={0} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                 </Form.Item>
                                 <Form.Item name="is_active" label="Active Category" valuePropName="checked">
                                     <Switch className="mm-switch-modern" checkedChildren="Yes" unCheckedChildren="No" />
                                 </Form.Item>
                                 <div className="mm-modal-footer">
                                     <Space>
-                                        <Button
-                                            onClick={closeCategoryModal}
-                                            className="mm-footer-btn cancel"
-                                        >
-                                            Cancel
-                                        </Button>
-                                        <Button
-                                            type="primary"
-                                            htmlType="submit"
-                                            loading={createCategory.isPending || updateCategory.isPending}
-                                            className="mm-footer-btn primary"
-                                            icon={<SaveOutlined />}
-                                        >
+                                        <Button onClick={closeCategoryModal} className="mm-footer-btn cancel">Cancel</Button>
+                                        <Button type="primary" htmlType="submit" loading={createCategory.isPending || updateCategory.isPending} className="mm-footer-btn primary" icon={<SaveOutlined />}>
                                             {editingCategory ? 'Update' : 'Create'}
                                         </Button>
                                     </Space>
@@ -3172,9 +3229,7 @@ const MenuManagement = () => {
                     </div>
                 </Modal>
 
-                {/* ============================================================
-                    PROMOTION MODAL - CLEAN STYLE
-                ============================================================ */}
+                {/* PROMOTION MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -3195,19 +3250,11 @@ const MenuManagement = () => {
                     <div className="mm-modal-clean-content">
                         <div className="mm-modal-form">
                             <Form form={promoForm} layout="vertical" onFinish={handleSavePromotion}>
+                                {/* Form fields remain the same */}
                                 <Row gutter={16}>
                                     <Col span={12}>
-                                        <Form.Item
-                                            name="promo_type"
-                                            label="Promotion Type"
-                                            rules={[{ required: true }]}
-                                        >
-                                            <Select
-                                                size="large"
-                                                className="mm-select-modern"
-                                                placeholder="Select promotion type"
-                                                onChange={(value) => setPromoType(value)}
-                                            >
+                                        <Form.Item name="promo_type" label="Promotion Type" rules={[{ required: true }]}>
+                                            <Select size="large" className="mm-select-modern" placeholder="Select promotion type" onChange={(value) => setPromoType(value)}>
                                                 {Object.entries(PROMO_TYPE_MAP).map(([key, value]) => (
                                                     <Option key={key} value={key}>{value.icon} {value.label}</Option>
                                                 ))}
@@ -3215,11 +3262,7 @@ const MenuManagement = () => {
                                         </Form.Item>
                                     </Col>
                                     <Col span={12}>
-                                        <Form.Item
-                                            name="name"
-                                            label="Promotion Name"
-                                            rules={[{ required: true }]}
-                                        >
+                                        <Form.Item name="name" label="Promotion Name" rules={[{ required: true }]}>
                                             <Input placeholder="e.g., Holiday Special 2026" size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
@@ -3228,21 +3271,12 @@ const MenuManagement = () => {
                                 <Row gutter={16}>
                                     <Col span={12}>
                                         <Form.Item name="code" label="Promo Code (Optional)">
-                                            <Input
-                                                placeholder="e.g., HOLIDAY10"
-                                                size="large"
-                                                className="mm-input-modern"
-                                                style={{ textTransform: 'uppercase' }}
-                                            />
+                                            <Input placeholder="e.g., HOLIDAY10" size="large" className="mm-input-modern" style={{ textTransform: 'uppercase' }} />
                                         </Form.Item>
                                     </Col>
                                     <Col span={12}>
                                         <Form.Item name="banner_image_url" label="Banner Image URL (Optional)">
-                                            <Input
-                                                placeholder="https://example.com/banner.jpg"
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <Input placeholder="https://example.com/banner.jpg" size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
@@ -3253,11 +3287,7 @@ const MenuManagement = () => {
 
                                 <Row gutter={16}>
                                     <Col span={8}>
-                                        <Form.Item
-                                            name="discount_type"
-                                            label="Discount Type"
-                                            rules={[{ required: true }]}
-                                        >
+                                        <Form.Item name="discount_type" label="Discount Type" rules={[{ required: true }]}>
                                             <Select size="large" className="mm-select-modern">
                                                 <Option value="percentage">Percentage (%)</Option>
                                                 <Option value="fixed">Fixed (₱)</Option>
@@ -3266,50 +3296,25 @@ const MenuManagement = () => {
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
-                                        <Form.Item
-                                            name="discount_value"
-                                            label="Discount Value"
-                                            rules={[{ required: true }]}
-                                        >
-                                            <InputNumber
-                                                min={0}
-                                                step={0.01}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                        <Form.Item name="discount_value" label="Discount Value" rules={[{ required: true }]}>
+                                            <InputNumber min={0} step={0.01} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
                                         <Form.Item name="discounted_price" label="Discounted Price (Optional)">
-                                            <InputNumber
-                                                min={0}
-                                                step={0.01}
-                                                style={{ width: '100%' }}
-                                                prefix="₱"
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="₱" size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
 
                                 <Row gutter={16}>
                                     <Col span={12}>
-                                        <Form.Item
-                                            name="start_date"
-                                            label="Start Date"
-                                            rules={[{ required: true }]}
-                                        >
+                                        <Form.Item name="start_date" label="Start Date" rules={[{ required: true }]}>
                                             <DatePicker style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={12}>
-                                        <Form.Item
-                                            name="end_date"
-                                            label="End Date"
-                                            rules={[{ required: true }]}
-                                        >
+                                        <Form.Item name="end_date" label="End Date" rules={[{ required: true }]}>
                                             <DatePicker style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
@@ -3318,22 +3323,12 @@ const MenuManagement = () => {
                                 <Row gutter={16}>
                                     <Col span={12}>
                                         <Form.Item name="start_time" label="Start Time (Optional)">
-                                            <DatePicker.TimePicker
-                                                format="HH:mm"
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <DatePicker.TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={12}>
                                         <Form.Item name="end_time" label="End Time (Optional)">
-                                            <DatePicker.TimePicker
-                                                format="HH:mm"
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <DatePicker.TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
@@ -3343,34 +3338,17 @@ const MenuManagement = () => {
                                 <Row gutter={16}>
                                     <Col span={8}>
                                         <Form.Item name="min_pax" label="Minimum Pax">
-                                            <InputNumber
-                                                min={1}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
                                         <Form.Item name="max_pax" label="Maximum Pax">
-                                            <InputNumber
-                                                min={1}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
                                         <Form.Item name="min_booking_amount" label="Min Booking Amount (₱)">
-                                            <InputNumber
-                                                min={0}
-                                                step={0.01}
-                                                style={{ width: '100%' }}
-                                                prefix="₱"
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={0} step={0.01} style={{ width: '100%' }} prefix="₱" size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
@@ -3378,32 +3356,17 @@ const MenuManagement = () => {
                                 <Row gutter={16}>
                                     <Col span={8}>
                                         <Form.Item name="max_redemptions" label="Max Redemptions">
-                                            <InputNumber
-                                                min={1}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
                                         <Form.Item name="per_customer_limit" label="Per Customer Limit">
-                                            <InputNumber
-                                                min={1}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={8}>
                                         <Form.Item name="days_before_event" label="Days Before Event (Last Minute)">
-                                            <InputNumber
-                                                min={1}
-                                                style={{ width: '100%' }}
-                                                size="large"
-                                                className="mm-input-modern"
-                                            />
+                                            <InputNumber min={1} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
@@ -3411,14 +3374,7 @@ const MenuManagement = () => {
                                 <Divider className="mm-form-divider">Applicable Items</Divider>
 
                                 <Form.Item name="applicable_menu_item_ids" label="Applicable Menu Items">
-                                    <Select
-                                        mode="multiple"
-                                        placeholder="Select menu items (leave empty for all)"
-                                        size="large"
-                                        className="mm-select-modern"
-                                        showSearch
-                                        optionFilterProp="children"
-                                    >
+                                    <Select mode="multiple" placeholder="Select menu items (leave empty for all)" size="large" className="mm-select-modern" showSearch optionFilterProp="children">
                                         {menus.map((item) => (
                                             <Option key={item.id} value={item.id}>{item.name}</Option>
                                         ))}
@@ -3426,14 +3382,7 @@ const MenuManagement = () => {
                                 </Form.Item>
 
                                 <Form.Item name="applicable_package_ids" label="Applicable Packages">
-                                    <Select
-                                        mode="multiple"
-                                        placeholder="Select packages (leave empty for all)"
-                                        size="large"
-                                        className="mm-select-modern"
-                                        showSearch
-                                        optionFilterProp="children"
-                                    >
+                                    <Select mode="multiple" placeholder="Select packages (leave empty for all)" size="large" className="mm-select-modern" showSearch optionFilterProp="children">
                                         {packages.map((pkg) => (
                                             <Option key={pkg.id} value={pkg.id}>{pkg.name}</Option>
                                         ))}
@@ -3443,20 +3392,11 @@ const MenuManagement = () => {
                                 <Divider className="mm-form-divider">Value Added (Free Add-ons)</Divider>
 
                                 <Form.Item name="free_addons" label="Free Add-ons">
-                                    <Select
-                                        mode="tags"
-                                        placeholder="Enter free add-ons (press Enter after each)"
-                                        size="large"
-                                        className="mm-select-modern"
-                                    />
+                                    <Select mode="tags" placeholder="Enter free add-ons (press Enter after each)" size="large" className="mm-select-modern" />
                                 </Form.Item>
 
                                 <Form.Item name="complimentary_items" label="Complimentary Items Description">
-                                    <TextArea
-                                        rows={2}
-                                        placeholder="Describe complimentary items included"
-                                        className="mm-textarea-modern"
-                                    />
+                                    <TextArea rows={2} placeholder="Describe complimentary items included" className="mm-textarea-modern" />
                                 </Form.Item>
 
                                 <Divider className="mm-form-divider">Settings</Divider>
@@ -3480,29 +3420,13 @@ const MenuManagement = () => {
                                 </Row>
 
                                 <Form.Item name="sort_order" label="Sort Order">
-                                    <InputNumber
-                                        min={0}
-                                        style={{ width: '100%' }}
-                                        size="large"
-                                        className="mm-input-modern"
-                                    />
+                                    <InputNumber min={0} style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                 </Form.Item>
 
                                 <div className="mm-modal-footer">
                                     <Space>
-                                        <Button
-                                            onClick={closePromoModal}
-                                            className="mm-footer-btn cancel"
-                                        >
-                                            Cancel
-                                        </Button>
-                                        <Button
-                                            type="primary"
-                                            htmlType="submit"
-                                            loading={createPromotion.isPending || updatePromotion.isPending}
-                                            className="mm-footer-btn primary"
-                                            icon={<SaveOutlined />}
-                                        >
+                                        <Button onClick={closePromoModal} className="mm-footer-btn cancel">Cancel</Button>
+                                        <Button type="primary" htmlType="submit" loading={createPromotion.isPending || updatePromotion.isPending} className="mm-footer-btn primary" icon={<SaveOutlined />}>
                                             {editingPromotion ? 'Update' : 'Create'}
                                         </Button>
                                     </Space>
@@ -3512,9 +3436,7 @@ const MenuManagement = () => {
                     </div>
                 </Modal>
 
-                {/* ============================================================
-                    RECIPE MODAL
-                ============================================================ */}
+                {/* RECIPE MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -3540,45 +3462,28 @@ const MenuManagement = () => {
                         <div className="mm-modal-clean-content">
                             <Descriptions column={2} bordered size="small" className="mm-recipe-descriptions">
                                 <Descriptions.Item label="ID">{selectedItem.id}</Descriptions.Item>
-                                <Descriptions.Item label="Category">
-                                    <Tag color="blue">{selectedItem.category}</Tag>
+                                <Descriptions.Item label="Category"><Tag color="blue">{selectedItem.category}</Tag></Descriptions.Item>
+                                <Descriptions.Item label="Price (Pax)"><span className="mm-item-price">{currency(selectedItem.price)}</span></Descriptions.Item>
+                                <Descriptions.Item label="Tray Price">
+                                    <span className="mm-item-price">{currency(selectedItem.tray_price || 0)}</span>
+                                    {selectedItem.tray_description && (
+                                        <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>{selectedItem.tray_description}</Text>
+                                    )}
                                 </Descriptions.Item>
-                                <Descriptions.Item label="Price">
-                                    <span className="mm-item-price">{currency(selectedItem.price)}</span>
-                                </Descriptions.Item>
-                                <Descriptions.Item label="Prep Time">
-                                    {selectedItem.prep_time_minutes ? `${selectedItem.prep_time_minutes} min` : '—'}
-                                </Descriptions.Item>
+                                <Descriptions.Item label="Pricing Type">{PRICING_TYPE_LABELS[selectedItem.pricing_type] || 'Both'}</Descriptions.Item>
+                                <Descriptions.Item label="Prep Time">{selectedItem.prep_time_minutes ? `${selectedItem.prep_time_minutes} min` : '—'}</Descriptions.Item>
                             </Descriptions>
 
                             <Divider className="mm-form-divider">Description</Divider>
-                            <Paragraph className="mm-recipe-description">
-                                {selectedItem.description || 'No description available.'}
-                            </Paragraph>
+                            <Paragraph className="mm-recipe-description">{selectedItem.description || 'No description available.'}</Paragraph>
 
                             <Divider className="mm-form-divider">Recipe Ingredients</Divider>
                             {selectedItem.recipe_ingredients?.length ? (
-                                <Table
-                                    rowKey="id"
-                                    size="small"
-                                    pagination={false}
-                                    dataSource={selectedItem.recipe_ingredients}
-                                    className="mm-recipe-table"
-                                    columns={[
-                                        {
-                                            title: 'Ingredient',
-                                            render: (_, row) => row.name || row.ingredient?.name || '—'
-                                        },
-                                        {
-                                            title: 'Qty / Pax',
-                                            render: (_, row) => `${row.quantity_per_pax} ${row.unit}`
-                                        },
-                                        {
-                                            title: 'Unit Cost',
-                                            render: (_, row) => currency(row.unit_cost || row.ingredient?.unit_cost)
-                                        }
-                                    ]}
-                                />
+                                <Table rowKey="id" size="small" pagination={false} dataSource={selectedItem.recipe_ingredients} className="mm-recipe-table" columns={[
+                                    { title: 'Ingredient', render: (_, row) => row.name || row.ingredient?.name || '—' },
+                                    { title: 'Qty / Pax', render: (_, row) => `${row.quantity_per_pax} ${row.unit}` },
+                                    { title: 'Unit Cost', render: (_, row) => currency(row.unit_cost || row.ingredient?.unit_cost) }
+                                ]} />
                             ) : (
                                 <Empty description="No recipe ingredients saved" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                             )}
@@ -3594,9 +3499,7 @@ const MenuManagement = () => {
                     )}
                 </Modal>
 
-                {/* ============================================================
-                    ANALYTICS MODAL
-                ============================================================ */}
+                {/* ANALYTICS MODAL */}
                 <Modal
                     title={
                         <div className="mm-modal-header-clean">
@@ -3621,42 +3524,31 @@ const MenuManagement = () => {
                     {analyticsPromotion && (
                         <div className="mm-modal-clean-content">
                             {analyticsQuery.isLoading ? (
-                                <div className="mm-analytics-loading">
-                                    <Spin size="large" />
-                                    <p>Loading analytics...</p>
-                                </div>
+                                <div className="mm-analytics-loading"><Spin size="large" /><p>Loading analytics...</p></div>
                             ) : analyticsQuery.data ? (
                                 <div className="mm-analytics-content">
                                     <Row gutter={16} className="mm-analytics-stats">
                                         <Col span={6}>
                                             <div className="mm-analytics-stat">
-                                                <div className="mm-analytics-stat-value">
-                                                    {analyticsQuery.data.total_redemptions || 0}
-                                                </div>
+                                                <div className="mm-analytics-stat-value">{analyticsQuery.data.total_redemptions || 0}</div>
                                                 <div className="mm-analytics-stat-label">Total Redemptions</div>
                                             </div>
                                         </Col>
                                         <Col span={6}>
                                             <div className="mm-analytics-stat">
-                                                <div className="mm-analytics-stat-value">
-                                                    {currency(analyticsQuery.data.total_discount_given || 0)}
-                                                </div>
+                                                <div className="mm-analytics-stat-value">{currency(analyticsQuery.data.total_discount_given || 0)}</div>
                                                 <div className="mm-analytics-stat-label">Total Discount Given</div>
                                             </div>
                                         </Col>
                                         <Col span={6}>
                                             <div className="mm-analytics-stat">
-                                                <div className="mm-analytics-stat-value">
-                                                    {analyticsQuery.data.usage_percentage || 0}%
-                                                </div>
+                                                <div className="mm-analytics-stat-value">{analyticsQuery.data.usage_percentage || 0}%</div>
                                                 <div className="mm-analytics-stat-label">Usage Rate</div>
                                             </div>
                                         </Col>
                                         <Col span={6}>
                                             <div className="mm-analytics-stat">
-                                                <div className="mm-analytics-stat-value">
-                                                    {analyticsPromotion.max_redemptions || '∞'}
-                                                </div>
+                                                <div className="mm-analytics-stat-value">{analyticsPromotion.max_redemptions || '∞'}</div>
                                                 <div className="mm-analytics-stat-label">Redemption Limit</div>
                                             </div>
                                         </Col>
@@ -3664,71 +3556,25 @@ const MenuManagement = () => {
 
                                     <Divider className="mm-form-divider">Top Customers</Divider>
                                     {analyticsQuery.data.top_customers?.length > 0 ? (
-                                        <Table
-                                            dataSource={analyticsQuery.data.top_customers}
-                                            rowKey="customer_name"
-                                            size="small"
-                                            pagination={false}
-                                            className="mm-analytics-table"
-                                            columns={[
-                                                { title: 'Customer', dataIndex: 'customer_name' },
-                                                { title: 'Redemptions', dataIndex: 'count', align: 'center' },
-                                                {
-                                                    title: 'Total Saved',
-                                                    dataIndex: 'total_saved',
-                                                    render: currency,
-                                                    align: 'right'
-                                                },
-                                            ]}
-                                        />
+                                        <Table dataSource={analyticsQuery.data.top_customers} rowKey="customer_name" size="small" pagination={false} className="mm-analytics-table" columns={[
+                                            { title: 'Customer', dataIndex: 'customer_name' },
+                                            { title: 'Redemptions', dataIndex: 'count', align: 'center' },
+                                            { title: 'Total Saved', dataIndex: 'total_saved', render: currency, align: 'right' },
+                                        ]} />
                                     ) : (
                                         <Empty description="No customer redemption data available" />
                                     )}
 
                                     <Divider className="mm-form-divider">Recent Redemptions</Divider>
                                     {redemptionsQuery.data?.data?.length > 0 ? (
-                                        <Table
-                                            dataSource={redemptionsQuery.data.data}
-                                            rowKey="redemption_id"
-                                            size="small"
-                                            pagination={false}
-                                            className="mm-analytics-table"
-                                            columns={[
-                                                {
-                                                    title: 'Booking #',
-                                                    dataIndex: ['booking', 'booking_no'],
-                                                    render: (text) => text || 'N/A'
-                                                },
-                                                {
-                                                    title: 'Customer',
-                                                    dataIndex: ['booking', 'serviceEvent', 'customer', 'person', 'full_name'],
-                                                    render: (text) => text || 'Guest'
-                                                },
-                                                {
-                                                    title: 'Original',
-                                                    dataIndex: 'original_amount',
-                                                    render: currency,
-                                                    align: 'right'
-                                                },
-                                                {
-                                                    title: 'Discount',
-                                                    dataIndex: 'discount_amount',
-                                                    render: currency,
-                                                    align: 'right'
-                                                },
-                                                {
-                                                    title: 'Final',
-                                                    dataIndex: 'final_amount',
-                                                    render: currency,
-                                                    align: 'right'
-                                                },
-                                                {
-                                                    title: 'Date',
-                                                    dataIndex: 'created_at',
-                                                    render: (text) => dayjs(text).format('MMM DD, YYYY')
-                                                },
-                                            ]}
-                                        />
+                                        <Table dataSource={redemptionsQuery.data.data} rowKey="redemption_id" size="small" pagination={false} className="mm-analytics-table" columns={[
+                                            { title: 'Booking #', dataIndex: ['booking', 'booking_no'], render: (text) => text || 'N/A' },
+                                            { title: 'Customer', dataIndex: ['booking', 'serviceEvent', 'customer', 'person', 'full_name'], render: (text) => text || 'Guest' },
+                                            { title: 'Original', dataIndex: 'original_amount', render: currency, align: 'right' },
+                                            { title: 'Discount', dataIndex: 'discount_amount', render: currency, align: 'right' },
+                                            { title: 'Final', dataIndex: 'final_amount', render: currency, align: 'right' },
+                                            { title: 'Date', dataIndex: 'created_at', render: (text) => dayjs(text).format('MMM DD, YYYY') },
+                                        ]} />
                                     ) : (
                                         <Empty description="No redemption records found" />
                                     )}
@@ -3740,16 +3586,11 @@ const MenuManagement = () => {
                     )}
                 </Modal>
 
-                {/* ============================================================
-                    QUICK VIEW DRAWER
-                ============================================================ */}
+                {/* QUICK VIEW DRAWER */}
                 <QuickViewDrawer />
 
-                {/* ============================================================
-                    PACKAGE VIEW MODAL
-                ============================================================ */}
+                {/* PACKAGE VIEW MODAL */}
                 <PackageViewModal />
-
             </div>
         </ConfigProvider>
     );

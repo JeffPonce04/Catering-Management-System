@@ -175,6 +175,66 @@ export const attendanceKeys = {
 };
 
 // ============================================================
+// OPTIMISTIC HELPERS (frontend-only; no backend impact)
+// ============================================================
+
+/**
+ * Update the verification/approval status of a single attendance record
+ * in every cached "attendance" list without refetching.
+ * Used to make status changes appear instantly in the UI.
+ */
+export const patchAttendanceStatusInCache = (queryClient, attendanceId, status, notes) => {
+  const normalized = normalizeVerificationStatus(status);
+  const targets = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+
+  targets.forEach(([key, value]) => {
+    if (!value) return;
+
+    const patchRow = (row) => {
+      if (!row) return row;
+      const id = row.id ?? row.attendance_id;
+      if (String(id) !== String(attendanceId)) return row;
+      return {
+        ...row,
+        verification_status: normalized,
+        approval_status:
+          normalized === 'verified'
+            ? 'approved'
+            : normalized === 'rejected'
+              ? 'rejected'
+              : 'pending',
+        approval_notes: notes ?? row.approval_notes,
+      };
+    };
+
+    if (Array.isArray(value)) {
+      queryClient.setQueryData(key, value.map(patchRow));
+    } else if (Array.isArray(value?.data)) {
+      queryClient.setQueryData(key, { ...value, data: value.data.map(patchRow) });
+    } else if (Array.isArray(value?.data?.data)) {
+      queryClient.setQueryData(key, {
+        ...value,
+        data: { ...value.data, data: value.data.data.map(patchRow) },
+      });
+    }
+  });
+};
+
+/**
+ * In-place replace one attendance row (matched by attendance_id) inside an
+ * employee's record list, so the modal updates instantly without refetch.
+ */
+export const patchEmployeeRecordInPlace = (records, attendanceId, patch) => {
+  if (!Array.isArray(records)) return records;
+  return records.map((rec) => {
+    if (!rec) return rec;
+    const id = rec.id ?? rec.attendance_id;
+    if (String(id) !== String(attendanceId)) return rec;
+    return { ...rec, ...patch };
+  });
+};
+
+// ============================================================
 // ATTENDANCE QUERIES
 // ============================================================
 
@@ -229,7 +289,7 @@ export const useDepartmentsList = () =>
     staleTime: 5 * 60 * 1000,
   });
 
-// ==================== ADDED: TODAY ATTENDANCE QUERY ====================
+// ==================== TODAY ATTENDANCE QUERY ====================
 export const useTodayAttendance = (params = {}) =>
   useQuery({
     queryKey: attendanceKeys.today(),
@@ -242,7 +302,7 @@ export const useTodayAttendance = (params = {}) =>
     refetchInterval: 30 * 1000,
   });
 
-// ==================== ADDED: ATTENDANCE BY EMPLOYEE ====================
+// ==================== ATTENDANCE BY EMPLOYEE ====================
 export const useAttendanceByEmployee = (employeeId, params = {}) =>
   useQuery({
     queryKey: attendanceKeys.employee(employeeId),
@@ -255,7 +315,7 @@ export const useAttendanceByEmployee = (employeeId, params = {}) =>
     staleTime: 2 * 60 * 1000,
   });
 
-// ==================== ADDED: ATTENDANCE HISTORY ====================
+// ==================== ATTENDANCE HISTORY ====================
 export const useAttendanceHistory = (params = {}) =>
   useQuery({
     queryKey: attendanceKeys.list({ ...params, history: true }),
@@ -267,7 +327,7 @@ export const useAttendanceHistory = (params = {}) =>
     staleTime: 5 * 60 * 1000,
   });
 
-// ==================== ADDED: ATTENDANCE BY DATE RANGE ====================
+// ==================== ATTENDANCE BY DATE RANGE ====================
 export const useAttendanceByDateRange = (startDate, endDate, params = {}) =>
   useQuery({
     queryKey: attendanceKeys.list({ ...params, start_date: startDate, end_date: endDate }),
@@ -280,7 +340,7 @@ export const useAttendanceByDateRange = (startDate, endDate, params = {}) =>
     staleTime: 2 * 60 * 1000,
   });
 
-// ==================== ADDED: ATTENDANCE SUMMARY STATS ====================
+// ==================== ATTENDANCE SUMMARY STATS ====================
 export const useAttendanceSummaryStats = () =>
   useQuery({
     queryKey: attendanceKeys.summary(),
@@ -389,7 +449,7 @@ export const useUnverifyAttendance = () => {
   });
 };
 
-// ==================== ADDED: CLOCK IN MUTATION ====================
+// ==================== CLOCK IN MUTATION ====================
 export const useClockIn = () => {
   const queryClient = useQueryClient();
 
@@ -406,7 +466,7 @@ export const useClockIn = () => {
   });
 };
 
-// ==================== ADDED: CLOCK OUT MUTATION ====================
+// ==================== CLOCK OUT MUTATION ====================
 export const useClockOut = () => {
   const queryClient = useQueryClient();
 
@@ -423,7 +483,7 @@ export const useClockOut = () => {
   });
 };
 
-// ==================== ADDED: MOBILE LOGIN MUTATION ====================
+// ==================== MOBILE LOGIN MUTATION ====================
 export const useMobileLogin = () => {
   const queryClient = useQueryClient();
 
@@ -439,7 +499,7 @@ export const useMobileLogin = () => {
   });
 };
 
-// ==================== ADDED: MOBILE LOGOUT MUTATION ====================
+// ==================== MOBILE LOGOUT MUTATION ====================
 export const useMobileLogout = () => {
   const queryClient = useQueryClient();
 
@@ -561,4 +621,6 @@ export default {
   // Utilities
   normalizeAttendanceLog,
   expandAttendanceLogs,
+  patchAttendanceStatusInCache,
+  patchEmployeeRecordInPlace,
 };

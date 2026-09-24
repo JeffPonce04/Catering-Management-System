@@ -18,9 +18,7 @@ export const getBaseUrl = () => {
     if (Platform.OS === 'android') {
       // Android emulator reaches the host computer through 10.0.2.2.
       // For a real Android phone, set EXPO_PUBLIC_API_URL in mobile/.env.
-      // return 'http://10.178.77.129:8000/api';
-            return 'http://10.121.221.155:8000/api';
-
+      return 'http://10.121.221.155:8000/api';
     }
 
     if (Platform.OS === 'web') {
@@ -47,7 +45,7 @@ console.log('📱 Is Dev:', __DEV__);
 
 const api = axios.create({
   baseURL: API_URL,
-  timeout: 10000, // Reduced timeout for faster feedback
+  timeout: 15000,
   headers: {
     'Content-Type': 'application/json',
     'Accept': 'application/json',
@@ -71,7 +69,7 @@ api.interceptors.request.use(
       if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
-      
+
       console.log(`📤 ${config.method.toUpperCase()} ${config.baseURL}${config.url}`);
       return config;
     } catch (error) {
@@ -91,24 +89,25 @@ api.interceptors.response.use(
     return response;
   },
   async (error) => {
-    // Handle network errors gracefully
+    // Network errors
     if (error.code === 'ECONNABORTED' || !error.response) {
       console.error('Network error:', error.message);
-      // Return a formatted error instead of rejecting
-      return Promise.reject({
-        success: false,
-        message: 'Cannot connect to server. Please check your connection.',
-        networkError: true,
-        originalError: error
-      });
+      // Normalize to a consistent shape but still reject so callers
+      // can use try/catch to detect the failure
+      const normalized = new Error(
+        'Cannot connect to server. Please check your connection.'
+      );
+      normalized.networkError = true;
+      normalized.originalError = error;
+      return Promise.reject(normalized);
     }
-    
+
     console.error('API Error:', {
       status: error.response?.status,
       data: error.response?.data,
-      url: error.config?.url
+      url: error.config?.url,
     });
-    
+
     // Handle 401 Unauthorized
     if (error.response?.status === 401) {
       const isGuest = await AsyncStorage.getItem('@is_guest');
@@ -118,7 +117,7 @@ api.interceptors.response.use(
         await AsyncStorage.removeItem('@user_role');
       }
     }
-    
+
     return Promise.reject(error);
   }
 );
@@ -128,19 +127,45 @@ api.interceptors.response.use(
 // ============================================================
 
 export const apiHelpers = {
+  /**
+   * Normalize a successful Axios response into a consistent shape:
+   * { success: true, data: ..., message: '...' }
+   */
   formatResponse: (response) => {
     if (response && response.data) {
-      return {
-        success: true,
-        data: response.data.data || response.data,
-        message: response.data.message || 'Success',
-      };
+      const body = response.data;
+
+      // Laravel-style { success, data, message }
+      if (typeof body === 'object' && body !== null && 'success' in body) {
+        return {
+          success: body.success !== false,
+          data: body.data !== undefined ? body.data : body,
+          message: body.message || 'Success',
+        };
+      }
+
+      // Paginated responses { data: [...], meta: {...} }
+      if (body.data !== undefined) {
+        return {
+          success: true,
+          data: body.data,
+          meta: body.meta || body,
+          message: body.message || 'Success',
+        };
+      }
+
+      return { success: true, data: body, message: 'Success' };
     }
-    return { success: true, data: response };
+
+    return { success: true, data: response, message: 'Success' };
   },
-  
+
+  /**
+   * Normalize an error into a consistent shape:
+   * { success: false, message: '...', status: 4xx, errors: {...} }
+   */
   handleError: (error) => {
-    if (error.response?.data) {
+    if (error?.response?.data) {
       return {
         success: false,
         message: error.response.data.message || 'An error occurred',
@@ -148,30 +173,32 @@ export const apiHelpers = {
         status: error.response.status,
       };
     }
-    if (error.networkError) {
+
+    if (error?.networkError) {
       return {
         success: false,
         message: error.message || 'Network error',
         networkError: true,
       };
     }
+
     return {
       success: false,
-      message: error.message || 'An error occurred',
+      message: error?.message || 'An error occurred',
       networkError: true,
     };
   },
 };
 
 // ============================================================
-// AUTH API - WITH FALLBACKS
+// AUTH API
 // ============================================================
 
 export const authAPI = {
   login: (data) => {
-    console.log('🔐 Login API called with:', { 
+    console.log('🔐 Login API called with:', {
       email: data.emailOrUsername || data.email || data.username,
-      hasPassword: !!data.password 
+      hasPassword: !!data.password,
     });
     return api.post('/v1/auth/login', {
       userId: data.emailOrUsername || data.email || data.username,
@@ -179,11 +206,11 @@ export const authAPI = {
       role: data.role || 'customer',
     });
   },
-  
+
   register: (data) => {
-    console.log('📝 Register API called with:', { 
+    console.log('📝 Register API called with:', {
       email: data.email,
-      firstName: data.first_name 
+      firstName: data.first_name,
     });
     return api.post('/v1/register', {
       first_name: data.first_name,
@@ -195,7 +222,7 @@ export const authAPI = {
       address: data.address || null,
     });
   },
-  
+
   logout: () => api.post('/v1/auth/logout'),
   getUser: () => api.get('/v1/auth/user'),
   updateProfile: (data) => api.put('/v1/auth/profile', data),
@@ -212,15 +239,16 @@ export const authAPI = {
 };
 
 // ============================================================
-// CART API - REAL BACKEND CONNECTION
+// CART API
 // ============================================================
 
 export const cartAPI = {
   getCart: () => api.get('/v1/cart'),
-  addItem: (data) => api.post('/v1/cart/items', {
-    menu_item_id: data.menu_item_id || data.id,
-    quantity: data.quantity || 1,
-  }),
+  addItem: (data) =>
+    api.post('/v1/cart/items', {
+      menu_item_id: data.menu_item_id || data.id,
+      quantity: data.quantity || 1,
+    }),
   updateItem: (cartItemId, data) => api.put(`/v1/cart/items/${cartItemId}`, data),
   removeItem: (cartItemId) => api.delete(`/v1/cart/items/${cartItemId}`),
   clearCart: () => api.delete('/v1/cart'),
@@ -251,6 +279,30 @@ export const bookingAPI = {
   rejectReschedule: (id) => api.post(`/v1/bookings/${id}/reject-reschedule`),
   cancelWithReason: (id, data) => api.post(`/v1/bookings/${id}/cancel-with-reason`, data),
   getBookingSummary: (id) => api.get(`/v1/bookings/${id}/payment-summary`),
+
+  // ⭐ Availability validation + reschedule workflow
+  validateSlot: (data) => api.post('/v1/bookings/validate-slot', data),
+  adminReschedule: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/admin-reschedule`, data),
+  customerRequestReschedule: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-request-reschedule`, data),
+  customerCancelBooking: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-cancel`, data),
+
+  // ⭐ Respond to admin reschedule proposal (accept / counter / cancel)
+  customerRespondToReschedule: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-respond-reschedule`, data),
+  // Alias
+  customerRescheduleResponse: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-respond-reschedule`, data),
+
+  // ⭐ Post-rejection decision (continue / cancel)
+  customerPostRejectionDecision: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-post-rejection`, data),
+
+  // ⭐ Customer edit booking (pending_approval only)
+  customerUpdate: (bookingId, data) =>
+    api.post(`/v1/bookings/${bookingId}/customer-update`, data),
 };
 
 // ============================================================
@@ -328,7 +380,8 @@ export const paymentAPI = {
   deletePayment: (id) => api.delete(`/v1/payments/${id}`),
   refundPayment: (id, data) => api.post(`/v1/payments/${id}/refund`, data),
   getPaymentSummary: (params = {}) => api.get('/v1/payments/summary', { params }),
-  downloadReceipt: (id) => api.get(`/v1/payments/${id}/download-receipt`, { responseType: 'blob' }),
+  downloadReceipt: (id) =>
+    api.get(`/v1/payments/${id}/download-receipt`, { responseType: 'blob' }),
 };
 
 // ============================================================
@@ -341,7 +394,8 @@ export const invoiceAPI = {
   getDebts: (params = {}) => api.get('/v1/debts', { params }),
   getInvoicePayments: (id) => api.get(`/v1/invoices/${id}/payments`),
   sendReminder: (id, data) => api.post(`/v1/invoices/${id}/reminder`, data),
-  downloadInvoice: (id) => api.get(`/v1/invoices/${id}/download`, { responseType: 'blob' }),
+  downloadInvoice: (id) =>
+    api.get(`/v1/invoices/${id}/download`, { responseType: 'blob' }),
 };
 
 // ============================================================
@@ -403,7 +457,8 @@ export const eventAPI = {
   getEquipment: (eventId) => api.get(`/v1/events/${eventId}/equipment`),
   getDailyProgress: (eventId) => api.get(`/v1/events/${eventId}/daily-progress`),
   completeEvent: (eventId) => api.post(`/v1/events/${eventId}/complete`),
-  returnEquipment: (eventCode, data) => api.post(`/v1/events/${eventCode}/return-equipment`, data),
+  returnEquipment: (eventCode, data) =>
+    api.post(`/v1/events/${eventCode}/return-equipment`, data),
 };
 
 // ============================================================

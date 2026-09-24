@@ -11,6 +11,11 @@ use Illuminate\Support\Facades\DB;
 
 class DepositService
 {
+    private function depositPercentage(): float
+    {
+        return app(BookingPolicyService::class)->depositPercentage();
+    }
+
     /**
      * Check all confirmed bookings for deposit status
      * Returns bookings with unpaid deposits that are near the event date
@@ -25,21 +30,23 @@ class DepositService
         ])
         ->whereIn('booking_status', ['confirmed', 'pending_approval'])
         ->get();
-        
+
+        $pct = $this->depositPercentage();
         $pendingDeposits = [];
         $upcomingDeadlines = [];
-        
+
         foreach ($bookings as $booking) {
-            $requiredDeposit = $booking->required_deposit ?? ($booking->quotation?->total_amount * 0.3 ?? 0);
+            $totalAmount = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
+            $requiredDeposit = $booking->required_deposit ?? round($totalAmount * ($pct / 100), 2);
             $paidDeposit = $booking->payments()
                 ->where('payment_type', 'deposit')
                 ->where('status', 'completed')
                 ->sum('amount');
-                
+
             $isDepositPaid = $paidDeposit >= $requiredDeposit;
             $eventDate = $booking->serviceEvent?->event_date;
             $daysUntilEvent = $eventDate ? Carbon::now()->diffInDays($eventDate) : null;
-            
+
             // Check if deposit is not paid and event is approaching
             if (!$isDepositPaid && $daysUntilEvent !== null && $daysUntilEvent <= 7) {
                 $pendingDeposits[] = [
@@ -50,16 +57,16 @@ class DepositService
                     'customer_phone' => $booking->serviceEvent?->customer?->person?->phone,
                     'event_date' => $eventDate?->toDateString(),
                     'days_until_event' => $daysUntilEvent,
+                    'total_amount' => $totalAmount,
                     'required_deposit' => $requiredDeposit,
                     'paid_deposit' => $paidDeposit,
                     'remaining_deposit' => max(0, $requiredDeposit - $paidDeposit),
-                    'total_amount' => $booking->quotation?->total_amount ?? 0,
                     'is_deposit_paid' => $isDepositPaid,
                     'booking_status' => $booking->booking_status,
                     'notification_sent' => $this->hasDepositReminderSent($booking),
                 ];
             }
-            
+
             // Track upcoming deadlines (2 days before event)
             if ($daysUntilEvent !== null && $daysUntilEvent <= 2 && !$isDepositPaid) {
                 $upcomingDeadlines[] = [
@@ -72,7 +79,7 @@ class DepositService
                 ];
             }
         }
-        
+
         return [
             'pending_deposits' => $pendingDeposits,
             'upcoming_deadlines' => $upcomingDeadlines,
@@ -80,7 +87,7 @@ class DepositService
             'total_upcoming_deadlines' => count($upcomingDeadlines),
         ];
     }
-    
+
     /**
      * Check if a deposit reminder has been sent for this booking
      */
@@ -91,7 +98,7 @@ class DepositService
             ->where('data', 'like', '%"booking_id":' . $booking->booking_id . '%')
             ->exists();
     }
-    
+
     /**
      * Send deposit reminders for pending deposits
      */
@@ -100,25 +107,25 @@ class DepositService
         $data = $this->getPendingDeposits();
         $notificationService = app(NotificationService::class);
         $sentCount = 0;
-        
+
         foreach ($data['pending_deposits'] as $pending) {
             // Skip if already sent
             if ($pending['notification_sent']) {
                 continue;
             }
-            
+
             $booking = Booking::find($pending['booking_id']);
             if (!$booking) continue;
-            
+
             $customer = $booking->serviceEvent?->customer;
             if (!$customer || !$customer->user_id) continue;
-            
+
             $notificationService->notifyUser(
                 $customer->user_id,
                 'deposit_reminder',
                 '⚠️ Deposit Payment Reminder',
                 "Dear {$pending['customer_name']},\n\n" .
-                "This is a reminder that your deposit of ₱" . number_format($pending['remaining_deposit'], 2) . 
+                "This is a reminder that your deposit of ₱" . number_format($pending['remaining_deposit'], 2) .
                 " for booking {$pending['booking_no']} is still pending.\n\n" .
                 "Your event is scheduled on {$pending['event_date']} (in {$pending['days_until_event']} days).\n" .
                 "Please complete your deposit payment to confirm your booking.\n\n" .
@@ -128,13 +135,13 @@ class DepositService
                 ['booking_id' => $pending['booking_id'], 'booking_no' => $pending['booking_no']],
                 "/customer/bookings/{$pending['booking_id']}"
             );
-            
+
             $sentCount++;
         }
-        
+
         return $sentCount;
     }
-    
+
     /**
      * Auto-cancel bookings with unpaid deposits (2 days before event)
      */
@@ -142,7 +149,7 @@ class DepositService
     {
         $data = $this->getPendingDeposits();
         $cancelled = [];
-        
+
         foreach ($data['upcoming_deadlines'] as $deadline) {
             if ($deadline['days_until_event'] <= 0) {
                 $booking = Booking::find($deadline['booking_id']);
@@ -152,7 +159,7 @@ class DepositService
                             'booking_status' => 'cancelled',
                             'cancellation_reason' => 'Auto-cancelled: Deposit not paid 2 days before event',
                         ]);
-                        
+
                         // Notify customer
                         $customer = $booking->serviceEvent?->customer;
                         if ($customer && $customer->user_id) {
@@ -169,13 +176,13 @@ class DepositService
                                 ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no]
                             );
                         }
-                        
+
                         $cancelled[] = $booking->booking_no;
                     });
                 }
             }
         }
-        
+
         return [
             'cancelled' => $cancelled,
             'count' => count($cancelled),

@@ -28,45 +28,46 @@ use App\Events\BookingApproved;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 use Carbon\Carbon;
 
 class BookingService
 {
-    /**
-     * Generate sequential booking number (BK-0013 format)
-     */
+    protected ProfitabilityService $profitabilityService;
+    protected BookingPolicyService $policyService;
+
+    public function __construct(
+        ProfitabilityService $profitabilityService,
+        BookingPolicyService $policyService
+    ) {
+        $this->profitabilityService = $profitabilityService;
+        $this->policyService = $policyService;
+    }
+
+    // ============================================================
+    // NUMBER GENERATORS
+    // ============================================================
+
     private function generateBookingNumber(): string
     {
         return $this->generateSequentialNumber('BK-', Booking::class, 'booking_no');
     }
 
-    /**
-     * Generate sequential quotation number (QT-0013 format)
-     */
     private function generateQuoteNumber(): string
     {
         return $this->generateSequentialNumber('QT-', Quotation::class, 'quote_no');
     }
 
-    /**
-     * Generate sequential order number (ORD-0013 format)
-     */
     private function generateOrderNumber(): string
     {
         return $this->generateSequentialNumber('ORD-', Order::class, 'order_number');
     }
 
-    /**
-     * Generate sequential invoice number (INV-0013 format)
-     */
     private function generateInvoiceNumber(): string
     {
         return $this->generateSequentialNumber('INV-', Invoice::class, 'invoice_number');
     }
 
-    /**
-     * Generic sequential number generator with improved uniqueness
-     */
     private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
     {
         try {
@@ -101,12 +102,12 @@ class BookingService
         }
     }
 
-    /**
-     * Create or get customer from data - FIXED VERSION
-     */
+    // ============================================================
+    // CUSTOMER CREATION
+    // ============================================================
+
     private function createCustomerFromData(array $data): Customer
     {
-        // Normalize field names - handle both frontend formats
         $firstName = $data['first_name'] ?? $data['customer_name'] ?? 'Customer';
         $lastName = $data['last_name'] ?? '';
         $email = strtolower(trim($data['email'] ?? $data['customer_email'] ?? ''));
@@ -117,18 +118,15 @@ class BookingService
         $postalCode = $data['postal_code'] ?? null;
         $country = $data['country'] ?? 'Philippines';
 
-        // If customer_name is "John Doe", split into first and last name
         if (str_contains($firstName, ' ') && empty($lastName)) {
             $parts = explode(' ', $firstName, 2);
             $firstName = $parts[0];
             $lastName = $parts[1] ?? '';
         }
 
-        // If we have an email, try to find existing person
         if ($email) {
             $existingPerson = Person::with('customer')->where('email', $email)->first();
             if ($existingPerson) {
-                // Update existing person with new data
                 $existingPerson->update([
                     'first_name' => $firstName ?: $existingPerson->first_name,
                     'last_name' => $lastName ?: $existingPerson->last_name,
@@ -140,12 +138,10 @@ class BookingService
                     'country' => $country ?: $existingPerson->country,
                 ]);
 
-                // If the person already has a customer, return it
                 if ($existingPerson->customer) {
                     return $existingPerson->customer;
                 }
 
-                // Otherwise, create a customer for this person
                 return Customer::create([
                     'person_id' => $existingPerson->person_id,
                     'customer_code' => 'CUST-' . str_pad((string) ($existingPerson->person_id ?? 0), 4, '0', STR_PAD_LEFT),
@@ -154,8 +150,6 @@ class BookingService
             }
         }
 
-        // If no email or no existing person, create a new person
-        // Generate a unique email if it's missing (for guest customers)
         if (!$email) {
             $email = 'guest_' . uniqid() . '@example.local';
         }
@@ -179,9 +173,22 @@ class BookingService
         ]);
     }
 
+    // ============================================================
+    // SERVICE EVENT CREATION
+    // ============================================================
+
     private function createOrUpdateServiceEvent(?Customer $customer, array $data): ServiceEvent
     {
-        $eventDate = is_string($data['event_date']) ? $data['event_date'] : $data['event_date']->format('Y-m-d');
+        // ⭐ FIX #4: Guard event_date
+        if (empty($data['event_date'])) {
+            throw new \InvalidArgumentException('Event date is required to create a service event.');
+        }
+
+        $eventDateRaw = $data['event_date'];
+        $eventDate = $eventDateRaw instanceof \DateTimeInterface
+            ? $eventDateRaw->format('Y-m-d')
+            : (string) $eventDateRaw;
+
         $eventEndDate = $data['event_end_date'] ?? $eventDate;
         if ($eventEndDate instanceof \DateTimeInterface) {
             $eventEndDate = $eventEndDate->format('Y-m-d');
@@ -216,6 +223,10 @@ class BookingService
 
         return ServiceEvent::create($payload);
     }
+
+    // ============================================================
+    // TOTALS & CHARGES
+    // ============================================================
 
     private function calculateItemsTotal(array $data): float
     {
@@ -335,7 +346,6 @@ class BookingService
         $charges = $this->normalizeChargesPayload($data);
         if (empty($charges)) return;
 
-        // Bulk insert charges
         $chargesData = [];
         foreach ($charges as $charge) {
             $chargesData[] = array_merge($charge, [
@@ -375,8 +385,9 @@ class BookingService
     }
 
     // ============================================================
-    // ⭐ ULTRA-FAST SYNC MEAL SERVICES - BULK INSERTS ⭐
+    // MEAL SERVICES SYNC — HARDENED VERSION
     // ============================================================
+
     private function syncMealServicesForBooking(Booking $booking, array $data): void
     {
         $mealServices = $data['meal_services'] ?? [];
@@ -384,17 +395,30 @@ class BookingService
             return;
         }
 
-        $eventStart = Carbon::parse($data['event_date'] ?? $booking->serviceEvent?->event_date);
-        $eventEnd = Carbon::parse($data['event_end_date'] ?? $booking->serviceEvent?->event_end_date ?? $eventStart);
+        // ⭐ FIX #7: Guard event_date
+        $eventStartRaw = $data['event_date'] ?? $booking->serviceEvent?->event_date;
+        if (!$eventStartRaw) {
+            throw new \InvalidArgumentException('Cannot sync meal services: event date is missing.');
+        }
+        $eventStart = Carbon::parse($eventStartRaw);
+
+        $eventEndRaw = $data['event_end_date']
+            ?? $booking->serviceEvent?->event_end_date
+            ?? $eventStart;
+        $eventEnd = Carbon::parse($eventEndRaw);
+
         $scope = ($data['booking_scope'] ?? $booking->serviceEvent?->booking_scope ?? 'regular') === 'multi_day'
             ? 'multi_day'
             : 'regular';
+
         if ($eventEnd->lt($eventStart)) {
             throw new \InvalidArgumentException('Event end date must be on or after the event date.');
         }
+
         $maximumDay = $scope === 'multi_day'
             ? max(1, (int) $eventStart->diffInDays($eventEnd) + 1)
             : 1;
+
         $mealSequence = [
             'breakfast' => ['label' => 'Breakfast', 'time' => '8:00 AM', 'order' => 0],
             'morning snacks' => ['label' => 'Morning Snacks', 'time' => '10:00 AM', 'order' => 1],
@@ -404,6 +428,7 @@ class BookingService
             'afternoon snack' => ['label' => 'Afternoon Snacks', 'time' => '3:00 PM', 'order' => 3],
             'dinner' => ['label' => 'Dinner', 'time' => '6:00 PM', 'order' => 4],
         ];
+
         $seenMealSlots = [];
 
         foreach ($mealServices as &$meal) {
@@ -440,47 +465,61 @@ class BookingService
             }
             return ((int) ($left['_meal_order'] ?? 99)) <=> ((int) ($right['_meal_order'] ?? 99));
         });
+
         $mealServices = array_map(function (array $meal): array {
             unset($meal['_meal_order']);
             return $meal;
         }, $mealServices);
 
-        // Delete existing records in ONE query each
+        // Clean up existing records
         MealService::where('booking_id', $booking->booking_id)->delete();
         EventDay::where('booking_id', $booking->booking_id)->delete();
+        BookingItem::where('booking_id', $booking->booking_id)->delete();
 
-        // Prepare bulk data arrays
         $eventDaysData = [];
         $dayMap = [];
-        $mealServicesData = [];
-        $mealServiceFiltersData = [];
-        $mealServiceCustomItemsData = [];
-        $bookingItemsData = [];
 
         foreach ($mealServices as $meal) {
             $dayNumber = max(1, (int)($meal['day_number'] ?? 1));
+            if (isset($dayMap[$dayNumber])) continue;
+
             $serviceDate = $meal['service_date'] ?? $eventStart->copy()->addDays($dayNumber - 1)->toDateString();
+
+            $eventDaysData[] = [
+                'booking_id' => $booking->booking_id,
+                'day_number' => $dayNumber,
+                'date' => $serviceDate,
+                'day_status' => 'pending',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ];
+            $dayMap[$dayNumber] = true;
+        }
+
+        if (!empty($eventDaysData)) {
+            EventDay::insert($eventDaysData);
+        }
+
+        $createdEventDays = EventDay::where('booking_id', $booking->booking_id)
+            ->get()
+            ->keyBy('day_number');
+
+        // ⭐ FIX #2: Insert one at a time to guarantee ID alignment
+        $createdMealServices = [];
+        foreach ($mealServices as $meal) {
+            $dayNumber = max(1, (int)($meal['day_number'] ?? 1));
+            $serviceDate = $meal['service_date']
+                ?? $eventStart->copy()->addDays($dayNumber - 1)->toDateString();
+
             $pax = max(1, (int)($meal['pax'] ?? $data['guests_count'] ?? 1));
             $price = max(0, (float)($meal['price_per_head'] ?? 0));
-            $menuSource = ($meal['menu_source'] ?? $meal['menu_mode'] ?? (!empty($meal['package_id']) ? 'package' : 'custom')) === 'package' ? 'package' : 'custom';
+            $menuSource = ($meal['menu_source'] ?? $meal['menu_mode'] ?? (!empty($meal['package_id']) ? 'package' : 'custom')) === 'package'
+                ? 'package'
+                : 'custom';
 
-            // Collect event day data (deduplicate by day_number)
-            if (!isset($dayMap[$dayNumber])) {
-                $eventDaysData[] = [
-                    'booking_id' => $booking->booking_id,
-                    'day_number' => $dayNumber,
-                    'date' => $serviceDate,
-                    'day_status' => 'pending',
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-                $dayMap[$dayNumber] = true;
-            }
-
-            // Prepare meal service data
-            $mealServicesData[] = [
+            $created = MealService::create([
                 'booking_id' => $booking->booking_id,
-                'event_day_id' => null, // Will be filled after event days are created
+                'event_day_id' => $createdEventDays[$dayNumber]->event_day_id ?? null,
                 'meal_type' => $meal['meal_type'] ?? 'Meal',
                 'serving_time' => $meal['serving_time'] ?? $data['event_time'] ?? null,
                 'preparation_time' => $meal['preparation_time'] ?? null,
@@ -499,197 +538,36 @@ class BookingService
                 'delivery_status' => $meal['delivery_status'] ?? 'pending',
                 'serving_status' => $meal['serving_status'] ?? 'pending',
                 'meal_status' => $meal['meal_status'] ?? 'pending',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ];
-
-            // Collect filters data
-            $rawFilters = $meal['filters'] ?? $meal['dietary_filters'] ?? [];
-            if (is_string($rawFilters)) {
-                $decoded = json_decode($rawFilters, true);
-                $rawFilters = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $rawFilters)));
-            }
-
-            $seenFilters = [];
-            foreach ((array) $rawFilters as $key => $value) {
-                if (is_int($key)) {
-                    $filterKey = is_array($value) ? ($value['filter_key'] ?? $value['key'] ?? null) : $value;
-                    $filterValue = is_array($value) ? ($value['filter_value'] ?? $value['value'] ?? null) : null;
-                } else {
-                    if ($value === false || $value === null || $value === '') continue;
-                    $filterKey = $key;
-                    $filterValue = is_bool($value) ? ($value ? 'yes' : 'no') : (string) $value;
-                }
-
-                $filterKey = strtolower(str_replace(' ', '_', trim((string) $filterKey)));
-                if ($filterKey === '' || isset($seenFilters[$filterKey])) continue;
-                $seenFilters[$filterKey] = true;
-
-                $mealServiceFiltersData[] = [
-                    'meal_service_id' => null, // Will be filled after meal services are created
-                    'filter_key' => $filterKey,
-                    'filter_value' => $filterValue,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-            }
-
-            // Collect custom items data
-            $items = $meal['custom_items'] ?? $meal['menu_items'] ?? [];
-            if (empty($items) && (!empty($meal['menu_name']) || !empty($meal['menu_item_id']))) {
-                $items = [[
-                    'menu_item_id' => $meal['menu_item_id'] ?? null,
-                    'item_name' => $meal['menu_name'] ?? null,
-                    'description' => $meal['menu_description'] ?? null,
-                    'quantity' => 1,
-                    'unit_price' => 0,
-                    'notes' => $meal['notes'] ?? null,
-                ]];
-            }
-
-            foreach ((array) $items as $item) {
-                if (!is_array($item)) continue;
-                $menuItemId = $item['menu_item_id'] ?? null;
-                $itemName = $item['item_name'] ?? $item['name'] ?? null;
-
-                $mealServiceCustomItemsData[] = [
-                    'meal_service_id' => null, // Will be filled after meal services are created
-                    'menu_item_id' => $menuItemId,
-                    'item_name' => $itemName,
-                    'description' => $item['description'] ?? null,
-                    'quantity' => max(1, (int)($item['quantity'] ?? 1)),
-                    'unit_price' => max(0, (float)($item['unit_price'] ?? $item['price'] ?? 0)),
-                    'notes' => $item['notes'] ?? null,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-            }
-
-            // Collect booking items data
-            $basePayload = [
-                'booking_id' => $booking->booking_id,
-                'item_type' => 'menu_item',
-                'action_type' => 'included',
-                'special_instructions' => trim(($meal['meal_type'] ?? 'Meal') . ' | Day ' . $dayNumber . ' | ' . ($serviceDate ?? '') . ' ' . ($meal['serving_time'] ?? '') . ' | ' . ($meal['notes'] ?? '')),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ];
-            if (Schema::hasColumn('booking_items', 'meal_service_id')) {
-                $basePayload['meal_service_id'] = null; // Will be filled after meal services are created
-            }
-
-            if ($menuSource === 'package' && !empty($meal['package_id'])) {
-                $package = \App\Models\Package::with('menuItems')->find($meal['package_id']);
-                $packageItems = $package?->menuItems ?? collect();
-                if ($packageItems->isNotEmpty()) {
-                    foreach ($packageItems as $menuItem) {
-                        $bookingItemsData[] = array_merge($basePayload, [
-                            'menu_item_id' => $menuItem->menu_item_id,
-                            'custom_item_name' => null,
-                            'description' => $menuItem->description ?? null,
-                            'quantity' => max(1, (int) $pax) * max(1, (int) ($menuItem->pivot->quantity_per_pax ?? 1)),
-                            'unit_price' => (float) ($menuItem->pivot->additional_cost ?? 0),
-                        ]);
-                    }
-                    continue;
-                }
-            }
-
-            $customItems = $meal['custom_items'] ?? $meal['menu_items'] ?? [];
-            if (!empty($customItems)) {
-                foreach ((array) $customItems as $customItem) {
-                    if (!is_array($customItem)) continue;
-                    $menuItemId = $customItem['menu_item_id'] ?? null;
-                    $itemName = $customItem['item_name'] ?? $customItem['name'] ?? null;
-
-                    $bookingItemsData[] = array_merge($basePayload, [
-                        'menu_item_id' => $menuItemId,
-                        'custom_item_name' => $menuItemId ? null : ($itemName ?: 'Custom item'),
-                        'description' => $customItem['description'] ?? null,
-                        'quantity' => max(1, (int) $pax) * max(1, (int) ($customItem['quantity'] ?? 1)),
-                        'unit_price' => (float) ($customItem['unit_price'] ?? $customItem['price'] ?? 0),
-                        'item_type' => $menuItemId ? 'menu_item' : 'custom_item',
-                    ]);
-                }
-                continue;
-            }
-
-            // Default: single menu item
-            $bookingItemsData[] = array_merge($basePayload, [
-                'menu_item_id' => $meal['menu_item_id'] ?? null,
-                'custom_item_name' => $meal['menu_item_id'] ? null : ($meal['menu_name'] ?? 'Menu'),
-                'description' => $meal['menu_description'] ?? null,
-                'quantity' => max(1, (int) $pax),
-                'unit_price' => (float) $price,
-                'item_type' => $meal['menu_item_id'] ? 'menu_item' : 'custom_item',
             ]);
+
+            $createdMealServices[] = $created;
         }
 
-        // STEP 1: Bulk insert event days
-        if (!empty($eventDaysData)) {
-            EventDay::insert($eventDaysData);
-        }
-
-        // STEP 2: Get created event days
-        $createdEventDays = EventDay::where('booking_id', $booking->booking_id)->get()->keyBy('day_number');
-
-        // STEP 3: Update meal services with event_day_id
-        $mealIndex = 0;
-        $mealTempIds = [];
-        foreach ($mealServices as $meal) {
-            $dayNumber = max(1, (int)($meal['day_number'] ?? 1));
-            if (isset($createdEventDays[$dayNumber])) {
-                $mealServicesData[$mealIndex]['event_day_id'] = $createdEventDays[$dayNumber]->event_day_id;
-                // Store temporary reference for this meal
-                $mealTempIds[] = 'meal_' . $mealIndex;
-            }
-            $mealIndex++;
-        }
-
-        // STEP 4: Bulk insert meal services
-        $createdMealServiceIds = [];
-        if (!empty($mealServicesData)) {
-            MealService::insert($mealServicesData);
-
-            // Get created meal services
-            $createdMealServices = MealService::where('booking_id', $booking->booking_id)
-                ->orderBy('meal_service_id')
-                ->get();
-
-            foreach ($createdMealServices as $index => $ms) {
-                $createdMealServiceIds[] = $ms->meal_service_id;
-            }
-        }
-
-        // STEP 5: Update filters, custom items, and booking items with meal_service_id
-        $mealIdIndex = 0;
-        foreach ($mealServices as $mealIndex => $meal) {
-            $mealId = $createdMealServiceIds[$mealIndex] ?? null;
-            if (!$mealId) continue;
-
-            // Update filters for this meal
-            $filterStart = $mealIdIndex * 10; // Approximate position
-            $filterEnd = $filterStart + 10;
-            // We need to track which filters belong to which meal - use a different approach
-
-            $mealIdIndex++;
-        }
-
-        // Re-build filter data with correct meal_service_id
+        // ⭐ Now build filters / custom items / booking items with real IDs
         $finalFiltersData = [];
         $finalCustomItemsData = [];
         $finalBookingItemsData = [];
 
-        $mealIdIndex = 0;
-        foreach ($mealServices as $mealIndex => $meal) {
-            $mealId = $createdMealServiceIds[$mealIndex] ?? null;
+        foreach ($mealServices as $index => $meal) {
+            $mealId = $createdMealServices[$index]->meal_service_id ?? null;
             if (!$mealId) continue;
 
-            // Get filters for this meal
+            $dayNumber = max(1, (int)($meal['day_number'] ?? 1));
+            $serviceDate = $meal['service_date']
+                ?? $eventStart->copy()->addDays($dayNumber - 1)->toDateString();
+            $pax = max(1, (int)($meal['pax'] ?? $data['guests_count'] ?? 1));
+            $price = max(0, (float)($meal['price_per_head'] ?? 0));
+            $menuSource = ($meal['menu_source'] ?? $meal['menu_mode'] ?? (!empty($meal['package_id']) ? 'package' : 'custom')) === 'package'
+                ? 'package'
+                : 'custom';
+
+            // -------- Filters --------
             $rawFilters = $meal['filters'] ?? $meal['dietary_filters'] ?? [];
             if (is_string($rawFilters)) {
                 $decoded = json_decode($rawFilters, true);
-                $rawFilters = is_array($decoded) ? $decoded : array_filter(array_map('trim', explode(',', $rawFilters)));
+                $rawFilters = is_array($decoded)
+                    ? $decoded
+                    : array_filter(array_map('trim', explode(',', $rawFilters)));
             }
 
             $seenFilters = [];
@@ -716,15 +594,7 @@ class BookingService
                 ];
             }
 
-            $dayNumber = max(1, (int)($meal['day_number'] ?? 1));
-            $serviceDate = $meal['service_date'] ?? null;
-            $pax = max(1, (int)($meal['pax'] ?? $data['guests_count'] ?? 1));
-            $price = max(0, (float)($meal['price_per_head'] ?? 0));
-            $menuSource = ($meal['menu_source'] ?? $meal['menu_mode'] ?? (!empty($meal['package_id']) ? 'package' : 'custom')) === 'package' ? 'package' : 'custom';
-
-            // Get custom/menu items for this meal. These are saved in BOTH:
-            // 1) meal_service_custom_items for meal planner details; and
-            // 2) booking_items so Booking Details, Orders, Kitchen, Delivery, and Ingredients can see them.
+            // -------- Custom items + booking items --------
             $items = $meal['custom_items'] ?? $meal['menu_items'] ?? [];
             if (empty($items) && (!empty($meal['menu_name']) || !empty($meal['menu_item_id']))) {
                 $items = [[
@@ -737,34 +607,21 @@ class BookingService
                 ]];
             }
 
-            foreach ((array) $items as $item) {
-                if (!is_array($item)) continue;
-                $menuItemId = $item['menu_item_id'] ?? null;
-                $itemName = $item['item_name'] ?? $item['name'] ?? null;
-
-                $finalCustomItemsData[] = [
-                    'meal_service_id' => $mealId,
-                    'menu_item_id' => $menuItemId,
-                    'item_name' => $itemName,
-                    'description' => $item['description'] ?? null,
-                    'quantity' => max(1, (int)($item['quantity'] ?? 1)),
-                    'unit_price' => max(0, (float)($item['unit_price'] ?? $item['price'] ?? 0)),
-                    'notes' => $item['notes'] ?? null,
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ];
-            }
-
             $baseBookingItemPayload = [
                 'booking_id' => $booking->booking_id,
                 'meal_service_id' => $mealId,
                 'item_type' => 'menu_item',
                 'action_type' => 'included',
-                'special_instructions' => trim(($meal['meal_type'] ?? 'Meal') . ' | Day ' . $dayNumber . ' | ' . ($serviceDate ?? '') . ' ' . ($meal['serving_time'] ?? '') . ' | ' . ($meal['notes'] ?? '')),
+                'special_instructions' => trim(
+                    ($meal['meal_type'] ?? 'Meal') . ' | Day ' . $dayNumber . ' | ' .
+                    ($serviceDate ?? '') . ' ' . ($meal['serving_time'] ?? '') . ' | ' .
+                    ($meal['notes'] ?? '')
+                ),
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
 
+            // Package items
             if ($menuSource === 'package' && !empty($meal['package_id'])) {
                 $package = \App\Models\Package::with('menuItems')->find($meal['package_id']);
                 $packageItems = $package?->menuItems ?? collect();
@@ -772,6 +629,19 @@ class BookingService
                 if ($packageItems->isNotEmpty()) {
                     foreach ($packageItems as $menuItem) {
                         $qtyPerPax = max(1, (int)($menuItem->pivot->quantity_per_pax ?? 1));
+
+                        $finalCustomItemsData[] = [
+                            'meal_service_id' => $mealId,
+                            'menu_item_id' => $menuItem->menu_item_id,
+                            'item_name' => $menuItem->name,
+                            'description' => $menuItem->description ?? null,
+                            'quantity' => $qtyPerPax,
+                            'unit_price' => (float)($menuItem->pivot->additional_cost ?? $menuItem->price ?? 0),
+                            'notes' => null,
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
+
                         $finalBookingItemsData[] = array_merge($baseBookingItemPayload, [
                             'menu_item_id' => $menuItem->menu_item_id,
                             'custom_item_name' => null,
@@ -784,13 +654,27 @@ class BookingService
                 }
             }
 
+            // Custom items
             if (!empty($items)) {
                 foreach ((array) $items as $item) {
                     if (!is_array($item)) continue;
+
                     $menuItemId = $item['menu_item_id'] ?? null;
                     $itemName = $item['item_name'] ?? $item['name'] ?? null;
                     $quantity = max(1, (int)($item['quantity'] ?? 1));
                     $unitPrice = max(0, (float)($item['unit_price'] ?? $item['price'] ?? 0));
+
+                    $finalCustomItemsData[] = [
+                        'meal_service_id' => $mealId,
+                        'menu_item_id' => $menuItemId,
+                        'item_name' => $itemName,
+                        'description' => $item['description'] ?? null,
+                        'quantity' => $quantity,
+                        'unit_price' => $unitPrice,
+                        'notes' => $item['notes'] ?? null,
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
 
                     $finalBookingItemsData[] = array_merge($baseBookingItemPayload, [
                         'menu_item_id' => $menuItemId,
@@ -804,6 +688,7 @@ class BookingService
                 continue;
             }
 
+            // Fallback: single menu line
             $finalBookingItemsData[] = array_merge($baseBookingItemPayload, [
                 'menu_item_id' => $meal['menu_item_id'] ?? null,
                 'custom_item_name' => !empty($meal['menu_item_id']) ? null : ($meal['menu_name'] ?? 'Menu'),
@@ -814,21 +699,20 @@ class BookingService
             ]);
         }
 
-        // STEP 6: Bulk insert filters
         if (!empty($finalFiltersData)) {
             MealServiceFilter::insert($finalFiltersData);
         }
-
-        // STEP 7: Bulk insert custom items
         if (!empty($finalCustomItemsData)) {
             MealServiceCustomItem::insert($finalCustomItemsData);
         }
-
-        // STEP 8: Bulk insert booking items
         if (!empty($finalBookingItemsData)) {
             BookingItem::insert($finalBookingItemsData);
         }
     }
+
+    // ============================================================
+    // ORDER ITEM SYNC
+    // ============================================================
 
     private function syncOrderItemsFromBooking(Order $order, Booking $booking): void
     {
@@ -846,8 +730,12 @@ class BookingService
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
-            if (Schema::hasColumn('order_items', 'meal_service_id')) $payload['meal_service_id'] = $item->meal_service_id ?? null;
-            if (Schema::hasColumn('order_items', 'special_notes')) $payload['special_notes'] = $item->special_instructions ?? null;
+            if (Schema::hasColumn('order_items', 'meal_service_id')) {
+                $payload['meal_service_id'] = $item->meal_service_id ?? null;
+            }
+            if (Schema::hasColumn('order_items', 'special_notes')) {
+                $payload['special_notes'] = $item->special_instructions ?? null;
+            }
             $orderItemsData[] = $payload;
         }
 
@@ -855,6 +743,10 @@ class BookingService
             OrderItem::insert($orderItemsData);
         }
     }
+
+    // ============================================================
+    // ADMIN UPDATE
+    // ============================================================
 
     public function updateBookingFromAdmin(Booking $booking, array $data): Booking
     {
@@ -868,7 +760,15 @@ class BookingService
                     $person->first_name = $nameParts[0] ?? $person->first_name;
                     $person->last_name = $nameParts[1] ?? $person->last_name;
                 }
-                foreach (['customer_email' => 'email', 'customer_phone' => 'phone', 'customer_address' => 'address_line_1', 'address_line_1' => 'address_line_1', 'city' => 'city', 'province' => 'province', 'postal_code' => 'postal_code'] as $input => $column) {
+                foreach ([
+                    'customer_email' => 'email',
+                    'customer_phone' => 'phone',
+                    'customer_address' => 'address_line_1',
+                    'address_line_1' => 'address_line_1',
+                    'city' => 'city',
+                    'province' => 'province',
+                    'postal_code' => 'postal_code',
+                ] as $input => $column) {
                     if (array_key_exists($input, $data)) $person->{$column} = $data[$input];
                 }
                 if (array_key_exists('country', $data)) $person->country = $data['country'];
@@ -896,13 +796,21 @@ class BookingService
                     'special_requests' => $data['special_requests'] ?? $booking->serviceEvent->special_requests,
                     'delivery_address' => $data['delivery_address'] ?? $booking->serviceEvent->delivery_address,
                     'delivery_fee' => (float) ($data['delivery_fee'] ?? $booking->serviceEvent->delivery_fee ?? 0),
-                    'booking_scope' => ($data['booking_scope'] ?? $booking->serviceEvent->booking_scope ?? 'regular') === 'multi_day' ? 'multi_day' : 'regular',
+                    'booking_scope' => ($data['booking_scope'] ?? $booking->serviceEvent->booking_scope ?? 'regular') === 'multi_day'
+                        ? 'multi_day'
+                        : 'regular',
                 ]);
             }
 
+            // ⭐ FIX #5: Wrap syncMealServicesForBooking with validation exception
             if (array_key_exists('meal_services', $data) && is_array($data['meal_services'])) {
-                BookingItem::where('booking_id', $booking->booking_id)->delete();
-                $this->syncMealServicesForBooking($booking, $data);
+                try {
+                    $this->syncMealServicesForBooking($booking, $data);
+                } catch (\InvalidArgumentException $e) {
+                    throw ValidationException::withMessages([
+                        'meal_services' => [$e->getMessage()],
+                    ]);
+                }
             }
 
             if (array_key_exists('items', $data) && empty($data['meal_services'])) {
@@ -939,7 +847,11 @@ class BookingService
                 'requested_time' => $data['event_time'] ?? $booking->requested_time,
             ]);
 
-            $depositPaid = $booking->payments()->where('payment_type', 'deposit')->where('status', 'completed')->sum('amount');
+            $depositPaid = $booking->payments()
+                ->where('payment_type', 'deposit')
+                ->where('status', 'completed')
+                ->sum('amount');
+
             if ((float)($data['down_payment'] ?? 0) > $depositPaid) {
                 $data['down_payment'] = (float)$data['down_payment'] - $depositPaid;
                 $this->saveInitialDownPayment($booking, $data);
@@ -951,6 +863,8 @@ class BookingService
                 $this->createKitchenPreparation($booking, $booking->order);
                 $this->createIngredientsManagement($booking);
             }
+
+            $this->saveProfitabilitySnapshot($booking, 'projected', true);
 
             return $booking->fresh([
                 'serviceEvent.customer.person',
@@ -981,17 +895,202 @@ class BookingService
     }
 
     // ============================================================
-    // ⭐ FAST REQUEST BOOKING - OPTIMIZED ⭐
+    // AVAILABILITY VALIDATION — HARDENED
     // ============================================================
+
+    public function validateAvailability(
+        string $eventDate,
+        ?string $eventTime = null,
+        ?int $excludeBookingId = null
+    ): ?array {
+        $targetDate = Carbon::parse($eventDate)->toDateString();
+        $today = now()->startOfDay();
+
+        if (Carbon::parse($targetDate)->startOfDay()->lt($today)) {
+            return ['code' => 'past_date', 'message' => 'The proposed date is in the past.'];
+        }
+
+        $setting = Setting::where('group', 'booking_calendar')
+            ->where('key', $targetDate)
+            ->first();
+
+        $maxBookings = null;
+        $operationMode = 'normal';
+
+        if ($setting) {
+            $value = json_decode($setting->value, true) ?: [];
+            $status = $value['status'] ?? 'available';
+            $operationMode = $value['operation_mode'] ?? 'normal';
+            $maxBookings = $value['max_bookings'] ?? null;
+
+            if ($status === 'unavailable') {
+                return [
+                    'code' => 'date_unavailable',
+                    'message' => "The date {$targetDate} is marked as unavailable.",
+                ];
+            }
+            if ($status === 'fully_booked') {
+                return [
+                    'code' => 'date_fully_booked',
+                    'message' => "The date {$targetDate} is fully booked.",
+                ];
+            }
+        }
+
+        $query = Booking::whereHas('serviceEvent', function ($q) use ($targetDate) {
+            $q->whereDate('event_date', $targetDate);
+        })->whereIn('booking_status', [
+            'confirmed',
+            'pending_approval',
+            'ongoing',
+            'reschedule_proposed',
+            'reschedule_requested',
+        ]);
+
+        if ($excludeBookingId) {
+            $query->where('booking_id', '!=', $excludeBookingId);
+        }
+
+        $bookingCount = $query->count();
+
+        if ($operationMode === 'limited_slot' && $maxBookings !== null && $bookingCount >= (int) $maxBookings) {
+            return [
+                'code' => 'slot_full',
+                'message' => "The date {$targetDate} is fully booked ({$bookingCount}/{$maxBookings}).",
+            ];
+        }
+
+        // ⭐ FIX #6: Case-insensitive, trimmed time comparison
+        if ($eventTime) {
+            $normalizedTime = strtolower(trim((string) $eventTime));
+
+            $timeQuery = Booking::whereHas('serviceEvent', function ($q) use ($targetDate, $normalizedTime) {
+                $q->whereDate('event_date', $targetDate)
+                  ->whereRaw('LOWER(TRIM(event_time)) = ?', [$normalizedTime]);
+            })->whereIn('booking_status', [
+                'confirmed',
+                'pending_approval',
+                'ongoing',
+                'reschedule_proposed',
+                'reschedule_requested',
+            ]);
+
+            if ($excludeBookingId) {
+                $timeQuery->where('booking_id', '!=', $excludeBookingId);
+            }
+
+            $timeConflict = $timeQuery->first();
+
+            if ($timeConflict) {
+                return [
+                    'code' => 'time_conflict',
+                    'message' => "The time slot {$eventTime} on {$targetDate} is already taken by booking {$timeConflict->booking_no}.",
+                    'conflicting_booking_id' => $timeConflict->booking_id,
+                    'conflicting_booking_no' => $timeConflict->booking_no,
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    // ============================================================
+    // RESCHEDULE EXPIRY — FIXED
+    // ============================================================
+
+    /**
+     * Expire admin-initiated reschedule proposals that the customer
+     * has not responded to within the configured window.
+     * Auto-cancels the booking.
+     *
+     * ⭐ FIX #9: Query by reschedule_status/reschedule_proposed_by
+     * (not by booking_status='reschedule_proposed' which is never set)
+     */
+    public function expireCustomerRescheduleResponses(): int
+    {
+        $hours = $this->policyService->customerRescheduleResponseHours();
+
+        if ($hours <= 0) {
+            return 0;
+        }
+
+        $cutoff = now()->subHours($hours);
+
+        $bookings = Booking::where('reschedule_status', 'pending')
+            ->where('reschedule_proposed_by', 'admin')
+            ->whereNotNull('reschedule_proposed_at')
+            ->where('reschedule_proposed_at', '<=', $cutoff)
+            ->whereNotIn('booking_status', ['cancelled', 'rejected', 'completed'])
+            ->get();
+
+        $count = 0;
+
+        foreach ($bookings as $booking) {
+            try {
+                DB::transaction(function () use ($booking, $hours) {
+                    $booking->update([
+                        'booking_status' => 'cancelled',
+                        'cancellation_reason' => 'Reschedule request expired — customer did not respond within '
+                            . $hours . ' hours.',
+                        'reschedule_status' => 'expired',
+                    ]);
+                    $booking->serviceEvent?->update(['status' => 'cancelled']);
+                });
+                $count++;
+            } catch (\Throwable $e) {
+                Log::warning('Failed to expire reschedule proposal', [
+                    'booking_id' => $booking->booking_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Count customer-initiated reschedule requests that the admin
+     * has not responded to within the configured window.
+     * These remain visible but are flagged as overdue.
+     *
+     * ⭐ FIX #10: Query by reschedule_status/reschedule_proposed_by
+     */
+    public function expireAdminRescheduleResponses(): int
+    {
+        $hours = $this->policyService->adminRescheduleResponseHours();
+
+        if ($hours <= 0) {
+            return 0;
+        }
+
+        $cutoff = now()->subHours($hours);
+
+        return Booking::where('reschedule_status', 'pending')
+            ->where('reschedule_proposed_by', 'customer')
+            ->whereNotNull('reschedule_proposed_at')
+            ->where('reschedule_proposed_at', '<=', $cutoff)
+            ->whereNotIn('booking_status', ['cancelled', 'rejected', 'completed'])
+            ->count();
+    }
+
+    // ============================================================
+    // REQUEST BOOKING
+    // ============================================================
+
     public function requestBooking(?Customer $customer, array $data): Booking
     {
+        $policyErrors = $this->policyService->validate($data);
+        if (!empty($policyErrors)) {
+            throw ValidationException::withMessages([
+                'booking' => $policyErrors,
+            ]);
+        }
+
         return DB::transaction(function () use ($customer, $data) {
-            // If no customer is provided but we have customer data in $data, create one
             if (!$customer && (isset($data['customer_email']) || isset($data['customer_name']))) {
                 $customer = $this->createCustomerFromData($data);
             }
 
-            // If we still don't have a customer, throw an error
             if (!$customer) {
                 throw new \Exception('Customer information is required to create a booking.');
             }
@@ -999,36 +1098,38 @@ class BookingService
             $serviceEvent = $this->createOrUpdateServiceEvent($customer, $data);
             $totalAmount = $data['total_amount'] ?? $this->calculateTotalAmount($data);
 
+            $requiredDeposit = $data['required_deposit'] ?? null;
+            if ($requiredDeposit === null) {
+                $requiredDeposit = $this->policyService->requireDeposit()
+                    ? $this->policyService->depositAmount()
+                    : ($totalAmount * ($this->policyService->depositPercentage() / 100));
+            }
+
             $quotation = Quotation::create([
                 'quote_no' => $this->generateQuoteNumber(),
                 'service_event_id' => $serviceEvent->service_event_id,
                 'total_amount' => $totalAmount,
                 'status' => 'pending',
-                'valid_until' => now()->addDays(7)->toDateString(),
+                'valid_until' => now()->addDays($this->policyService->depositPaymentDays())->toDateString(),
             ]);
 
             $booking = Booking::create([
                 'booking_no' => $this->generateBookingNumber(),
                 'service_event_id' => $serviceEvent->service_event_id,
                 'quotation_id' => $quotation->quotation_id,
-                'required_deposit' => $data['required_deposit'] ?? ($totalAmount * 0.3),
+                'required_deposit' => $requiredDeposit,
                 'booking_status' => 'pending_approval',
                 'requested_date' => $data['event_date'] ?? null,
                 'requested_time' => $data['event_time'] ?? null,
             ]);
 
-            // FAST: Bulk sync meal services
             if (!empty($data['meal_services']) && is_array($data['meal_services'])) {
                 $this->syncMealServicesForBooking($booking, $data);
             }
 
-            // FAST: Sync charges
             $this->syncBookingChargesForBooking($booking, $data);
-
-            // FAST: Save down payment
             $this->saveInitialDownPayment($booking, $data);
 
-            // FAST: Handle items if no meal services
             if (empty($data['meal_services']) && isset($data['items']) && is_array($data['items'])) {
                 $bookingItemsData = [];
                 foreach ($data['items'] as $item) {
@@ -1051,8 +1152,6 @@ class BookingService
                 }
             }
 
-            // Return only the relations needed for the immediate API response/notification.
-            // Full list/details can be refreshed in the background by the frontend.
             return $booking->fresh([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
@@ -1061,9 +1160,10 @@ class BookingService
         });
     }
 
-    // ========================================================
-    // APPROVE BOOKING - FAST WITH JOBS
-    // ========================================================
+    // ============================================================
+    // APPROVE — with idempotency guard
+    // ============================================================
+
     public function approve(Booking $booking): Booking
     {
         return DB::transaction(function () use ($booking) {
@@ -1076,7 +1176,25 @@ class BookingService
                     'mealServices',
                     'charges',
                     'quotation',
+                    'order',
                 ]);
+
+                // ⭐ FIX #11: Idempotency guard
+                $alreadyApproved = strtolower((string) $booking->booking_status) === 'confirmed'
+                    && $booking->order;
+
+                if ($alreadyApproved) {
+                    Log::info('Booking already approved — skipping duplicate work', [
+                        'booking_id' => $booking->booking_id,
+                        'booking_no' => $booking->booking_no,
+                    ]);
+                    return $booking->fresh([
+                        'serviceEvent.customer.person',
+                        'order',
+                        'quotation',
+                        'invoice',
+                    ]);
+                }
 
                 $shouldSendQuotation = ! in_array(
                     strtolower((string) $booking->booking_status),
@@ -1084,7 +1202,6 @@ class BookingService
                     true
                 );
 
-                // 1. Update status (FAST)
                 $booking->update(['booking_status' => 'confirmed']);
 
                 if ($booking->serviceEvent) {
@@ -1095,15 +1212,14 @@ class BookingService
                 $quotation->update(['status' => 'approved']);
                 $booking->setRelation('quotation', $quotation);
 
-                // 2. Create order (FAST)
                 $order = $this->createOrderFromBooking($booking);
-
-                // 3. Create invoice (FAST)
                 $invoice = $this->createInvoiceFromBooking($booking);
 
-                // 4. Schedule heavy follow-up work AFTER the HTTP response.
+                $this->saveProfitabilitySnapshot($booking, 'projected', true);
+
                 $bookingId = $booking->booking_id;
                 $orderId = $order?->order_id;
+
                 app()->terminating(function () use ($bookingId, $orderId, $shouldSendQuotation) {
                     try {
                         $freshBooking = Booking::find($bookingId);
@@ -1178,10 +1294,46 @@ class BookingService
         });
     }
 
-    /**
-     * Reuse the quotation associated with the service event. If legacy data is
-     * missing one, create exactly one quotation and link it to the booking.
-     */
+    // ============================================================
+    // PROFITABILITY SNAPSHOT
+    // ============================================================
+
+    private function saveProfitabilitySnapshot(Booking $booking, string $type = 'projected', bool $fresh = false): void
+    {
+        try {
+            if ($fresh) {
+                $booking = $booking->fresh([
+                    'serviceEvent.customer.person',
+                    'serviceEvent.eventType',
+                    'items.menuItem.recipeIngredients.ingredient',
+                    'mealServices.menuItem.recipeIngredients.ingredient',
+                    'payments',
+                    'invoice',
+                    'quotation',
+                    'charges',
+                    'equipment.equipment',
+                ]) ?? $booking;
+            }
+
+            $this->profitabilityService->calculateProfitability($booking, true, $type);
+
+            Log::info('Profitability snapshot saved', [
+                'booking_id' => $booking->booking_id,
+                'booking_no' => $booking->booking_no,
+                'snapshot_type' => $type,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to save profitability snapshot: ' . $e->getMessage(), [
+                'booking_id' => $booking->booking_id ?? null,
+                'snapshot_type' => $type,
+            ]);
+        }
+    }
+
+    // ============================================================
+    // QUOTATION HELPERS
+    // ============================================================
+
     private function ensureQuotationForBooking(Booking $booking): Quotation
     {
         if (! $booking->service_event_id) {
@@ -1231,9 +1383,10 @@ class BookingService
         return max(0, ($mealTotal > 0 ? $mealTotal : $itemTotal) + $adjustmentTotal);
     }
 
-    /**
-     * CREATE ORDER FROM BOOKING - FAST
-     */
+    // ============================================================
+    // ORDER / INVOICE CREATION
+    // ============================================================
+
     private function createOrderFromBooking(Booking $booking): ?Order
     {
         try {
@@ -1259,9 +1412,6 @@ class BookingService
         }
     }
 
-    /**
-     * CREATE INVOICE FROM BOOKING - FAST
-     */
     private function createInvoiceFromBooking(Booking $booking): Invoice
     {
         $existingInvoice = Invoice::query()->where('booking_id', $booking->booking_id)->first();
@@ -1270,7 +1420,15 @@ class BookingService
         }
 
         $totalAmount = $booking->quotation?->total_amount ?? 0;
-        $paidAmount = $booking->payments()->where('status', 'completed')->sum('amount');
+
+        // ⭐ FIX #12: Exclude refunds from paid_amount
+        $paidAmount = $booking->payments()
+            ->where('status', 'completed')
+            ->where('payment_type', '!=', 'refund')
+            ->sum('amount');
+
+        $depositDays = $this->policyService->depositPaymentDays();
+        $dueDate = now()->addDays($depositDays > 0 ? $depositDays : 30);
 
         return Invoice::create([
             'invoice_number' => $this->generateInvoiceNumber(),
@@ -1281,12 +1439,12 @@ class BookingService
             'total_amount' => $totalAmount,
             'paid_amount' => $paidAmount,
             'status' => $paidAmount >= $totalAmount ? 'paid' : ($paidAmount > 0 ? 'partial' : 'unpaid'),
-            'due_date' => now()->addDays(30),
+            'due_date' => $dueDate,
         ]);
     }
 
     // ============================================================
-    // BACKGROUND JOB METHODS (Called by Jobs)
+    // BACKGROUND JOB METHODS
     // ============================================================
 
     public function createKitchenPreparation(Booking $booking, Order $order): void
@@ -1327,9 +1485,6 @@ class BookingService
                     'id' => 'meal-' . $meal->meal_service_id,
                     'meal_service_id' => $meal->meal_service_id,
                     'is_header' => false,
-                    // Keep the task itself limited to the actual food item. Day,
-                    // meal, and serving details are separate fields used by the UI
-                    // to build the production-task heading.
                     'task' => $menuName,
                     'quantity' => $meal->pax,
                     'servings' => $meal->pax,
@@ -1436,6 +1591,10 @@ class BookingService
         return [];
     }
 
+    // ============================================================
+    // INGREDIENTS MANAGEMENT — FIX #13: dedup PRs
+    // ============================================================
+
     public function createIngredientsManagement(Booking $booking): void
     {
         $ingredients = $this->calculateIngredientsForBooking($booking);
@@ -1446,14 +1605,26 @@ class BookingService
         );
 
         foreach ($ingredients as $ingredient) {
-            if ($ingredient['need_to_buy'] && $ingredient['shortage'] > 0) {
-                $this->createPurchaseRequest(
-                    $ingredient['ingredient_id'],
-                    $ingredient['shortage'],
-                    "Auto-generated for booking {$booking->booking_no}",
-                    $booking->booking_id
-                );
+            if (!($ingredient['need_to_buy'] && $ingredient['shortage'] > 0)) {
+                continue;
             }
+
+            // ⭐ Skip if a purchase request already exists for this booking/ingredient
+            $existing = PurchaseRequest::where('ingredient_id', $ingredient['ingredient_id'])
+                ->where('booking_id', $booking->booking_id)
+                ->whereIn('status', ['pending', 'received', 'purchased'])
+                ->exists();
+
+            if ($existing) {
+                continue;
+            }
+
+            $this->createPurchaseRequest(
+                $ingredient['ingredient_id'],
+                $ingredient['shortage'],
+                "Auto-generated for booking {$booking->booking_no}",
+                $booking->booking_id
+            );
         }
     }
 
@@ -1505,7 +1676,9 @@ class BookingService
         foreach ($ingredientsMap as &$ing) {
             $ing['shortage'] = max(0, $ing['quantity_needed'] - $ing['available_stock']);
             $ing['need_to_buy'] = $ing['shortage'] > 0;
-            $ing['status'] = $ing['shortage'] > 0 ? 'insufficient' : ($ing['available_stock'] < $ing['quantity_needed'] * 1.2 ? 'low' : 'sufficient');
+            $ing['status'] = $ing['shortage'] > 0
+                ? 'insufficient'
+                : ($ing['available_stock'] < $ing['quantity_needed'] * 1.2 ? 'low' : 'sufficient');
         }
 
         return array_values($ingredientsMap);
@@ -1574,6 +1747,10 @@ class BookingService
         }
     }
 
+    // ============================================================
+    // REJECT / CANCEL
+    // ============================================================
+
     public function reject(Booking $booking): Booking
     {
         return DB::transaction(function () use ($booking) {
@@ -1593,6 +1770,36 @@ class BookingService
 
     public function cancel(Booking $booking, ?string $reason = null): Booking
     {
+        $eventDate = $booking->serviceEvent?->event_date;
+        $cutoffDays = $this->policyService->cancellationCutoffDays();
+
+        if (!$eventDate && $cutoffDays > 0) {
+            // ⭐ FIX #8: Log warning when booking has no event date
+            Log::warning('Cancelling booking with no event date — cutoff check skipped', [
+                'booking_id' => $booking->booking_id,
+                'booking_no' => $booking->booking_no,
+            ]);
+        }
+
+        if ($eventDate && $cutoffDays > 0) {
+            $eventCarbon = $eventDate instanceof Carbon
+                ? $eventDate
+                : Carbon::parse($eventDate);
+
+            $daysUntilEvent = (int) now()->startOfDay()->diffInDays(
+                $eventCarbon->copy()->startOfDay(),
+                false
+            );
+
+            if ($daysUntilEvent < $cutoffDays) {
+                throw ValidationException::withMessages([
+                    'cancellation' => [
+                        "Cancellation is no longer available because the booking has reached the cancellation cutoff period."
+                    ],
+                ]);
+            }
+        }
+
         return DB::transaction(function () use ($booking, $reason) {
             $booking->update([
                 'booking_status' => 'cancelled',
@@ -1614,6 +1821,10 @@ class BookingService
             return $booking;
         });
     }
+
+    // ============================================================
+    // PAYMENTS
+    // ============================================================
 
     public function paymentSummary(Booking $booking): array
     {
@@ -1660,7 +1871,12 @@ class BookingService
 
             $invoice = $booking->invoice;
             if ($invoice) {
-                $totalPaid = $booking->payments()->where('status', 'completed')->sum('amount');
+                // ⭐ FIX: Exclude refunds from total paid
+                $totalPaid = $booking->payments()
+                    ->where('status', 'completed')
+                    ->where('payment_type', '!=', 'refund')
+                    ->sum('amount');
+
                 $invoice->update([
                     'paid_amount' => $totalPaid,
                     'status' => $totalPaid >= $invoice->total_amount ? 'paid' : ($totalPaid > 0 ? 'partial' : 'unpaid'),

@@ -1,4 +1,4 @@
-// src/screens/OrdersScreen.jsx - COMPLETE FILE
+// src/screens/OrdersScreen.jsx
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
@@ -22,9 +22,11 @@ import {
   Vibration,
   View,
 } from 'react-native';
+import EditBookingModal from '../components/EditBookingModal';
 import RescheduleModal from '../components/RescheduleModal';
 import { useAuth } from '../contexts/AuthContext';
 import { useCart } from '../contexts/CartContext';
+import { useNotifications } from '../contexts/NotificationContext';
 import { bookingService } from '../services/bookingService';
 import { paymentService } from '../services/paymentService';
 
@@ -33,9 +35,9 @@ const { width, height } = Dimensions.get('window');
 const OrdersScreen = ({ navigation }) => {
   const { isGuest, user } = useAuth();
   const { getCartCount } = useCart();
-  
+  const { refreshNotifications } = useNotifications();
+
   const [activeTab, setActiveTab] = useState('upcoming');
-  const [selectedFilter, setSelectedFilter] = useState('all');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [selectedOrderForPayment, setSelectedOrderForPayment] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('');
@@ -52,24 +54,35 @@ const OrdersScreen = ({ navigation }) => {
   const [totalOrders, setTotalOrders] = useState(0);
   const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [completedCount, setCompletedCount] = useState(0);
-  
-  // Reschedule State
+
+  // Reschedule state
   const [showRescheduleModal, setShowRescheduleModal] = useState(false);
+  const [rescheduleMode, setRescheduleMode] = useState('customer-request');
   const [selectedRescheduleBooking, setSelectedRescheduleBooking] = useState(null);
-  const [rescheduleLoading, setRescheduleLoading] = useState(false);
-  
+
+  // Edit state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingBooking, setEditingBooking] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // ⭐ Cancel booking request state
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [selectedCancelOrder, setSelectedCancelOrder] = useState(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [submittingCancel, setSubmittingCancel] = useState(false);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
   const companyPaymentDetails = {
     gcash: {
       number: '09171234567',
-      name: 'Dear Bab\'s Catering',
+      name: "Dear Bab's Catering",
       accountType: 'GCash',
     },
     maya: {
       number: '09171234567',
-      name: 'Dear Bab\'s Catering',
+      name: "Dear Bab's Catering",
       accountType: 'Maya',
     },
   };
@@ -98,21 +111,13 @@ const OrdersScreen = ({ navigation }) => {
     ]).start();
   }, []);
 
-  // ✅ REMOVED auto-refresh interval - user must manually refresh
-
   const loadOrders = async (showLoading = true) => {
     try {
-      if (showLoading) {
-        setLoading(true);
-      } else {
-        setRefreshing(true);
-      }
-      console.log('🔄 Loading orders for user:', user?.email);
-      
-      const response = await bookingService.getBookings({ 
-        per_page: 100
-      });
-      
+      if (showLoading) setLoading(true);
+      else setRefreshing(true);
+
+      const response = await bookingService.getBookings({ per_page: 100 });
+
       if (response.success) {
         let bookings = [];
         if (response.data?.data && Array.isArray(response.data.data)) {
@@ -122,9 +127,7 @@ const OrdersScreen = ({ navigation }) => {
         } else if (response.data?.bookings && Array.isArray(response.data.bookings)) {
           bookings = response.data.bookings;
         }
-        
-        console.log(`✅ Total bookings in system: ${bookings.length}`);
-        
+
         if (bookings.length === 0) {
           setOrders({ upcoming: [], past: [] });
           setTotalOrders(0);
@@ -134,65 +137,60 @@ const OrdersScreen = ({ navigation }) => {
           setRefreshing(false);
           return;
         }
-        
+
         const userEmail = user?.email?.toLowerCase();
-        
-        const userBookings = bookings.filter(booking => {
-          const bookingEmail = 
+
+        const userBookings = bookings.filter((booking) => {
+          const bookingEmail =
             booking.customer_email ||
             booking.email ||
             booking.customer?.email ||
             booking.customer?.person?.email ||
             booking.user?.email;
-          
           return bookingEmail && bookingEmail.toLowerCase() === userEmail;
         });
-        
-        console.log(`✅ Found ${userBookings.length} bookings for user`);
+
         setTotalOrders(userBookings.length);
-        
+
         const pendingApproval = [];
         const confirmed = [];
         const completed = [];
         const cancelled = [];
-        const allOrders = [];
         const uniqueIds = new Set();
-        
+
         userBookings.forEach((booking, index) => {
           const uniqueId = booking.booking_id || booking.id || `booking-${index}`;
-          
-          if (uniqueIds.has(uniqueId)) {
-            console.log(`⚠️ Skipping duplicate booking: ${uniqueId}`);
-            return;
-          }
+          if (uniqueIds.has(uniqueId)) return;
           uniqueIds.add(uniqueId);
-          
+
           let eventDate = null;
           if (booking.event_date) {
             try {
               eventDate = new Date(booking.event_date);
-              if (isNaN(eventDate.getTime())) {
-                eventDate = null;
-              }
+              if (isNaN(eventDate.getTime())) eventDate = null;
             } catch (e) {
               eventDate = null;
             }
           }
-          
-          const isFullyPaid = booking.payment_status === 'paid' || 
-                             (booking.balance !== undefined && booking.balance <= 0);
+
+          const isFullyPaid =
+            booking.payment_status === 'paid' ||
+            (booking.balance !== undefined && booking.balance <= 0);
           const remainingBalance = booking.balance || booking.total_amount || 0;
-          
+
           const orderData = {
             id: booking.booking_no || `BK-${booking.booking_id || booking.id || index + 1}`,
             unique_id: uniqueId,
             booking_id: booking.booking_id || booking.id || index + 1,
-            eventType: booking.event_type_name || booking.event_type || booking.event_type?.name || 'Event',
-            date: eventDate ? eventDate.toLocaleDateString('en-US', { 
-              month: 'short', 
-              day: 'numeric', 
-              year: 'numeric' 
-            }) : 'TBD',
+            eventType:
+              booking.event_type_name || booking.event_type || booking.event_type?.name || 'Event',
+            date: eventDate
+              ? eventDate.toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric',
+                })
+              : 'TBD',
             pax: booking.guests_count || 0,
             status: booking.booking_status || 'pending_approval',
             total: booking.total_amount || 0,
@@ -219,43 +217,68 @@ const OrdersScreen = ({ navigation }) => {
             isFullyPaid: isFullyPaid,
             hasBalance: remainingBalance > 0,
             isPast: false,
+
+            // Reschedule fields
+            reschedule_proposed_by: booking.reschedule_proposed_by || null,
+            reschedule_status: booking.reschedule_status || null,
+            reschedule_reason: booking.reschedule_reason || null,
+            requested_date: booking.requested_date || null,
+            requested_time: booking.requested_time || null,
+            original_event_date: booking.original_event_date || null,
+            original_event_time: booking.original_event_time || null,
+            reschedule_proposed_at: booking.reschedule_proposed_at || null,
+
+            // Deadline + cutoff fields from backend
+            customer_reschedule_deadline: booking.customer_reschedule_deadline || null,
+            admin_reschedule_deadline: booking.admin_reschedule_deadline || null,
+            customer_reschedule_response_hours: booking.customer_reschedule_response_hours ?? 24,
+            admin_reschedule_response_hours: booking.admin_reschedule_response_hours ?? 48,
+            cancellation_cutoff_days: booking.cancellation_cutoff_days ?? 3,
+            is_within_cancellation_cutoff: booking.is_within_cancellation_cutoff ?? false,
+            days_until_event: booking.days_until_event ?? null,
+
+            // Deposit info
+            deposit_percentage: booking.deposit_percentage ?? 30,
+            required_deposit_amount: booking.required_deposit_amount ?? null,
+            deposit_paid: booking.deposit_paid ?? 0,
+            deposit_due_date: booking.deposit_due_date ?? null,
+            is_late_booking: booking.is_late_booking ?? false,
           };
-          
-          allOrders.push(orderData);
-          
+
           const status = booking.booking_status || 'pending_approval';
-          
-          if (status === 'pending_approval') {
-            pendingApproval.push(orderData);
-          } else if (status === 'confirmed' || status === 'rescheduled' || status === 'processing') {
-            confirmed.push(orderData);
+
+          // ⭐ Cancelled/rejected bookings go straight to History — never Upcoming
+          if (status === 'cancelled' || status === 'rejected') {
+            orderData.isPast = true;
+            cancelled.push(orderData);
           } else if (status === 'completed') {
             orderData.isPast = true;
             completed.push(orderData);
-          } else if (status === 'cancelled' || status === 'rejected') {
-            orderData.isPast = true;
-            cancelled.push(orderData);
+          } else if (status === 'pending_approval' || status === 'pending') {
+            pendingApproval.push(orderData);
+          } else if (
+            status === 'confirmed' ||
+            status === 'rescheduled' ||
+            status === 'processing' ||
+            status === 'reschedule_proposed' ||
+            status === 'reschedule_requested' ||
+            status === 'reschedule_rejected'
+          ) {
+            confirmed.push(orderData);
           }
         });
-        
-        const upcoming = [...pendingApproval, ...confirmed];
-        const past = [...completed, ...cancelled];
-        
+
         setPendingApprovalCount(pendingApproval.length);
         setCompletedCount(completed.length);
-        setOrders({ 
-          upcoming, 
-          past 
+        setOrders({
+          upcoming: [...pendingApproval, ...confirmed],
+          past: [...completed, ...cancelled],
         });
-        
-        console.log(`📊 Pending Approval: ${pendingApproval.length}, Confirmed: ${confirmed.length}, Completed: ${completed.length}, Cancelled: ${cancelled.length}`);
-        console.log(`📊 Upcoming: ${upcoming.length}, History: ${past.length}`);
       } else {
-        console.error('❌ Failed to load orders:', response.message);
         setOrders({ upcoming: [], past: [] });
       }
     } catch (error) {
-      console.error('❌ Error loading orders:', error);
+      console.error('Error loading orders:', error);
       if (orders.upcoming.length === 0 && orders.past.length === 0) {
         setOrders({ upcoming: [], past: [] });
       }
@@ -273,6 +296,9 @@ const OrdersScreen = ({ navigation }) => {
     cancelled: { label: 'Cancelled', color: '#9E9E9E', bg: '#F5F5F5', icon: 'cancel' },
     rejected: { label: 'Rejected', color: '#F44336', bg: '#FFEBEE', icon: 'alert-circle' },
     rescheduled: { label: 'Rescheduled', color: '#2196F3', bg: '#E3F2FD', icon: 'calendar-clock' },
+    reschedule_proposed: { label: 'Date Proposed', color: '#9C27B0', bg: '#F3E5F5', icon: 'calendar-edit' },
+    reschedule_requested: { label: 'Awaiting Approval', color: '#FF9800', bg: '#FFF3E0', icon: 'clock-alert-outline' },
+    reschedule_rejected: { label: 'Reschedule Denied', color: '#F44336', bg: '#FFEBEE', icon: 'calendar-remove' },
     draft: { label: 'Draft', color: '#9E9E9E', bg: '#F5F5F5', icon: 'file-document-outline' },
   };
 
@@ -296,9 +322,56 @@ const OrdersScreen = ({ navigation }) => {
     return '#4CAF50';
   };
 
-  const getStatusBadge = (status) => {
-    const config = statusConfig[status] || statusConfig.pending_approval;
-    return config;
+  const getStatusBadge = (status) => statusConfig[status] || statusConfig.pending_approval;
+
+  // ⭐ Helper to check if cancellation is allowed
+  const canCancelOrder = (order) => {
+    if (!order) return { canCancel: false, reason: 'No booking selected.' };
+
+    if (order.is_within_cancellation_cutoff === true) {
+      return {
+        canCancel: false,
+        reason:
+          'Cancellation is no longer available because the booking has reached the cancellation cutoff period.',
+      };
+    }
+
+    const cutoffDays = order.cancellation_cutoff_days ?? 3;
+    const eventDate = order.eventDate;
+
+    if (eventDate && !isNaN(new Date(eventDate).getTime())) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const event = new Date(eventDate);
+      event.setHours(0, 0, 0, 0);
+      const daysUntil = Math.floor((event - today) / (1000 * 60 * 60 * 24));
+
+      if (daysUntil >= 0 && daysUntil < cutoffDays) {
+        return {
+          canCancel: false,
+          reason: `Cancellation is no longer available because the booking has reached the cancellation cutoff period (${cutoffDays} days before the event).`,
+        };
+      }
+    }
+
+    return { canCancel: true, reason: null };
+  };
+
+  // ⭐ Format deadline label
+  const formatDeadline = (iso) => {
+    if (!iso) return null;
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return null;
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch (e) {
+      return null;
+    }
   };
 
   if (isGuest) {
@@ -323,8 +396,8 @@ const OrdersScreen = ({ navigation }) => {
             <Text style={styles.emptyText}>
               Please login to view your orders and track your events.
             </Text>
-            <TouchableOpacity 
-              style={styles.bookButton} 
+            <TouchableOpacity
+              style={styles.bookButton}
               onPress={() => navigation.navigate('Login')}
             >
               <Text style={styles.bookButtonText}>Sign In</Text>
@@ -364,38 +437,30 @@ const OrdersScreen = ({ navigation }) => {
   const handlePickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please allow access to your photo library to upload proof of payment.');
+      Alert.alert('Permission Required', 'Please allow access to your photo library.');
       return;
     }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       quality: 0.8,
       base64: true,
     });
-
-    if (!result.canceled) {
-      setProofImage(result.assets[0].uri);
-    }
+    if (!result.canceled) setProofImage(result.assets[0].uri);
   };
 
   const handleTakePhoto = async () => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please allow access to your camera to take a photo.');
+      Alert.alert('Permission Required', 'Please allow access to your camera.');
       return;
     }
-
     const result = await ImagePicker.launchCameraAsync({
       allowsEditing: true,
       quality: 0.8,
       base64: true,
     });
-
-    if (!result.canceled) {
-      setProofImage(result.assets[0].uri);
-    }
+    if (!result.canceled) setProofImage(result.assets[0].uri);
   };
 
   const handleSubmitPayment = async () => {
@@ -409,7 +474,10 @@ const OrdersScreen = ({ navigation }) => {
           booking_id: selectedOrderForPayment.booking_id,
           amount: selectedOrderForPayment.remainingBalance,
           payment_method: 'cash',
-          payment_type: selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total ? 'full' : 'partial',
+          payment_type:
+            selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total
+              ? 'full'
+              : 'partial',
         });
 
         if (response.success) {
@@ -417,6 +485,7 @@ const OrdersScreen = ({ navigation }) => {
             setIsProcessing(false);
             setShowPaymentModal(false);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            refreshNotifications();
             Alert.alert(
               'Payment Confirmed!',
               `Your cash payment of ₱${selectedOrderForPayment?.remainingBalance?.toLocaleString()} has been confirmed.`,
@@ -434,12 +503,11 @@ const OrdersScreen = ({ navigation }) => {
     }
 
     if (!referenceNumber.trim()) {
-      Alert.alert('Required', 'Please enter the reference number from your payment.');
+      Alert.alert('Required', 'Please enter the reference number.');
       return;
     }
-
     if (!proofImage) {
-      Alert.alert('Required', 'Please upload a screenshot or photo of your payment confirmation.');
+      Alert.alert('Required', 'Please upload a screenshot or photo of your payment.');
       return;
     }
 
@@ -452,7 +520,12 @@ const OrdersScreen = ({ navigation }) => {
       formData.append('booking_id', selectedOrderForPayment.booking_id);
       formData.append('amount', selectedOrderForPayment.remainingBalance);
       formData.append('payment_method', paymentMethod);
-      formData.append('payment_type', selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total ? 'full' : 'partial');
+      formData.append(
+        'payment_type',
+        selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total
+          ? 'full'
+          : 'partial'
+      );
       formData.append('reference_number', referenceNumber);
       formData.append('receipt_file', {
         uri: proofImage,
@@ -468,11 +541,11 @@ const OrdersScreen = ({ navigation }) => {
           setShowPaymentModal(false);
           setShowSuccessModal(true);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          
           setReferenceNumber('');
           setProofImage(null);
           setPaymentMethod('');
           setPaymentStep(1);
+          refreshNotifications();
           loadOrders(true);
         }, 2500);
       } else {
@@ -484,182 +557,205 @@ const OrdersScreen = ({ navigation }) => {
     }
   };
 
-  const handleReorder = (order) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    
-    if (order.isPackage && order.packageName) {
-      Alert.alert(
-        'Reorder Package',
-        `Would you like to reorder ${order.packageName}?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Reorder', onPress: () => {
-              navigation.navigate('BookingTab', { 
-                packageId: order.packageId,
-                packageName: order.packageName,
-                packageData: { name: order.packageName }
-              });
-            }
-          }
-        ]
-      );
-    } else {
-      Alert.alert(
-        'Reorder',
-        `Would you like to reorder ${order.eventType}?`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Reorder', onPress: () => navigation.navigate('BookingTab') }
-        ]
-      );
-    }
-  };
-
   const handleContactSupport = (order) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     navigation.navigate('Chat', { orderId: order.id });
   };
 
-  const handleCancelOrder = (order) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert(
-      'Cancel Order',
-      `Are you sure you want to cancel ${order.eventType}?`,
-      [
-        { text: 'No', style: 'cancel' },
-        { 
-          text: 'Yes, Cancel', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const response = await bookingService.cancelBooking(order.booking_id, { 
-                reason: 'Cancelled by customer' 
-              });
-              if (response.success) {
-                Alert.alert('Cancelled', 'Your order has been cancelled.');
-                loadOrders(true);
-              } else {
-                Alert.alert('Error', response.message || 'Failed to cancel order.');
-              }
-            } catch (error) {
-              Alert.alert('Error', 'Failed to cancel order. Please try again.');
-            }
-          }
-        }
-      ]
-    );
+  const openRescheduleModal = (order, mode) => {
+    setSelectedRescheduleBooking(order);
+    setRescheduleMode(mode);
+    setShowRescheduleModal(true);
   };
 
-  // Handle reschedule acceptance
-  const handleRescheduleAccepted = async (newDate, newTime) => {
-    setRescheduleLoading(true);
+  const closeRescheduleModal = () => {
+    setShowRescheduleModal(false);
+    setSelectedRescheduleBooking(null);
+  };
+
+  const openEditModal = (order) => {
+    setEditingBooking(order);
+    setShowEditModal(true);
+  };
+
+  const closeEditModal = () => {
+    setShowEditModal(false);
+    setEditingBooking(null);
+  };
+
+  const handleSaveEdit = async (payload) => {
+    if (!editingBooking) return;
+    setSavingEdit(true);
     try {
-      // Call the API to accept reschedule
-      const response = await bookingService.acceptReschedule(
-        selectedRescheduleBooking?.booking_id,
-        newDate,
-        newTime
-      );
-      
-      if (response.success) {
+      const res = await bookingService.customerUpdate(editingBooking.booking_id, payload);
+      if (res.success) {
+        Alert.alert('Saved', 'Your booking has been updated.');
+        closeEditModal();
+        refreshNotifications();
         await loadOrders(true);
-        Alert.alert(
-          'Reschedule Confirmed!',
-          `Your booking has been rescheduled to ${newDate} at ${newTime}`,
-          [{ text: 'OK' }]
-        );
       } else {
-        Alert.alert('Error', response.message || 'Failed to reschedule booking');
+        Alert.alert('Error', res.message || 'Failed to update booking.');
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to update booking status');
+      Alert.alert('Error', error?.message || 'Failed to update booking.');
     } finally {
-      setRescheduleLoading(false);
-      setShowRescheduleModal(false);
-      setSelectedRescheduleBooking(null);
+      setSavingEdit(false);
     }
   };
 
-  // Handle reschedule rejection (cancel)
-  const handleRescheduleRejected = async () => {
-    setRescheduleLoading(true);
-    try {
-      const response = await bookingService.rejectRescheduleCustomer(
-        selectedRescheduleBooking?.booking_id,
-        'Customer rejected reschedule request'
+  // ⭐ Opens the cancel confirmation modal (validates cutoff first)
+  const handleRequestCancellation = (order) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    const { canCancel, reason } = canCancelOrder(order);
+
+    if (!canCancel) {
+      Alert.alert(
+        'Cancellation Not Available',
+        reason || 'This booking cannot be cancelled at this time.',
+        [{ text: 'OK' }]
       );
-      
+      return;
+    }
+
+    setSelectedCancelOrder(order);
+    setCancelReason('');
+    setShowCancelModal(true);
+  };
+
+  // ⭐ Closes the cancel modal
+  const closeCancelModal = () => {
+    if (submittingCancel) return;
+    setShowCancelModal(false);
+    setSelectedCancelOrder(null);
+    setCancelReason('');
+  };
+
+  // ⭐ Submits the cancellation request to the backend
+  const submitCancellationRequest = async () => {
+    if (!selectedCancelOrder) return;
+
+    const reason = cancelReason.trim() || 'Cancelled by customer';
+
+    setSubmittingCancel(true);
+    try {
+      const response = await bookingService.customerCancelBooking(
+        selectedCancelOrder.booking_id,
+        { reason }
+      );
+
       if (response.success) {
-        await loadOrders(true);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setShowCancelModal(false);
+        setSelectedCancelOrder(null);
+        setCancelReason('');
+
         Alert.alert(
           'Booking Cancelled',
-          'Your booking has been cancelled as requested.',
-          [{ text: 'OK' }]
+          'Your booking has been cancelled successfully.',
+          [
+            {
+              text: 'OK',
+              onPress: async () => {
+                refreshNotifications();
+                await loadOrders(true);
+              },
+            },
+          ]
         );
       } else {
-        Alert.alert('Error', response.message || 'Failed to cancel booking');
+        Alert.alert(
+          'Cannot Cancel',
+          response.message || 'Failed to cancel this booking.'
+        );
       }
     } catch (error) {
-      Alert.alert('Error', 'Failed to cancel booking');
+      const msg =
+        error?.response?.data?.message ||
+        error?.message ||
+        'Failed to cancel booking. Please try again.';
+      Alert.alert('Error', msg);
     } finally {
-      setRescheduleLoading(false);
-      setShowRescheduleModal(false);
-      setSelectedRescheduleBooking(null);
+      setSubmittingCancel(false);
     }
   };
 
-  // Handle customer cancel with reason
-  const handleCustomerCancel = async (order) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    Alert.alert(
-      'Cancel Booking',
-      `Are you sure you want to cancel ${order.eventType}? This action cannot be undone.`,
-      [
-        { text: 'No', style: 'cancel' },
-        { 
-          text: 'Yes, Cancel', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const response = await bookingService.cancelBookingWithReason(
-                order.booking_id, 
-                'Cancelled by customer'
-              );
-              if (response.success) {
-                Alert.alert('Cancelled', 'Your booking has been cancelled.');
-                await loadOrders(true);
-              } else {
-                Alert.alert('Error', response.message || 'Failed to cancel booking.');
-              }
-            } catch (error) {
-              Alert.alert('Error', 'Failed to cancel booking. Please try again.');
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const OrderCard = ({ item, isPast }) => {
+  const OrderCard = ({ item }) => {
     const status = getStatusBadge(item.status);
     const payment = paymentConfig[item.paymentStatus] || paymentConfig.unpaid;
-    const isPendingApproval = item.status === 'pending_approval';
-    const isConfirmed = item.status === 'confirmed' || item.status === 'processing' || item.status === 'rescheduled';
+    const isPendingApproval = item.status === 'pending_approval' || item.status === 'pending';
+    const isConfirmed =
+      item.status === 'confirmed' ||
+      item.status === 'processing' ||
+      item.status === 'rescheduled';
     const isCompleted = item.status === 'completed';
     const hasBalance = item.hasBalance || item.remainingBalance > 0;
-    const canPay = (isConfirmed || isCompleted) && hasBalance && item.status !== 'cancelled' && item.status !== 'rejected';
+    const canPay =
+      (isConfirmed || isCompleted) &&
+      hasBalance &&
+      item.status !== 'cancelled' &&
+      item.status !== 'rejected';
+
+    const hasPendingAdminProposal =
+      item.reschedule_status === 'pending' && item.reschedule_proposed_by === 'admin';
+    const hasRejectedReschedule = item.status === 'reschedule_rejected';
+    const hasPendingCustomerRequest =
+      item.reschedule_status === 'pending' && item.reschedule_proposed_by === 'customer';
+    const hasPendingCustomerReschedule = item.status === 'reschedule_requested';
+    const canEdit = isPendingApproval;
+
+    // ⭐ cutoff-aware cancel permission
+    const cancelCheck = canCancelOrder(item);
+
+    // ⭐ Show cancel while admin reschedule is pending
+    const canCancelWhileReschedulePending = hasPendingAdminProposal;
+
+    const showCancelButton =
+      (isPendingApproval || isConfirmed || canCancelWhileReschedulePending) &&
+      item.status !== 'cancelled' &&
+      item.status !== 'rejected' &&
+      item.status !== 'reschedule_rejected';
 
     return (
-      <TouchableOpacity 
+      <TouchableOpacity
         key={item.unique_id || item.id}
-        style={[styles.orderCard, isPendingApproval && styles.orderCardPending]}
+        style={[
+          styles.orderCard,
+          isPendingApproval && styles.orderCardPending,
+          hasPendingAdminProposal && styles.orderCardRescheduleProposal,
+          hasRejectedReschedule && styles.orderCardRescheduleRejected,
+        ]}
         onPress={() => handleViewOrder(item)}
-        activeOpacity={0.8}
+        activeOpacity={0.85}
       >
+        {hasPendingAdminProposal && (
+          <View style={styles.highlightStrip}>
+            <Feather name="bell" size={12} color="#FFF" />
+            <Text style={styles.highlightStripText}>
+              NEW DATE PROPOSED — TAP TO RESPOND
+            </Text>
+          </View>
+        )}
+        {hasRejectedReschedule && (
+          <View style={[styles.highlightStrip, styles.highlightStripDanger]}>
+            <Feather name="alert-circle" size={12} color="#FFF" />
+            <Text style={styles.highlightStripText}>
+              RESCHEDULE DENIED — CHOOSE NEXT STEP
+            </Text>
+          </View>
+        )}
+        {hasPendingCustomerRequest && !hasPendingAdminProposal && !hasRejectedReschedule && (
+          <View style={[styles.highlightStrip, styles.highlightStripInfo]}>
+            <Feather name="clock" size={12} color="#FFF" />
+            <Text style={styles.highlightStripText}>AWAITING ADMIN APPROVAL</Text>
+          </View>
+        )}
+
         <View style={styles.orderHeader}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.orderId}>{item.id}</Text>
             <Text style={styles.orderType}>{item.eventType}</Text>
+
             {item.isPackage && (
               <View style={styles.packageBadge}>
                 <Text style={styles.packageBadgeText}>📦 Package</Text>
@@ -733,13 +829,48 @@ const OrdersScreen = ({ navigation }) => {
             <Text style={styles.progressPercent}>{item.progress}%</Text>
           </View>
           <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${item.progress}%`, backgroundColor: getProgressColor(item.progress) }]} />
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${item.progress}%`, backgroundColor: getProgressColor(item.progress) },
+              ]}
+            />
           </View>
         </View>
 
+        {/* ⭐ Reschedule deadline badge */}
+        {hasPendingAdminProposal && item.customer_reschedule_deadline && (
+          <View style={styles.deadlineBadge}>
+            <Feather name="clock" size={10} color="#FFF" />
+            <Text style={styles.deadlineText}>
+              Respond by {formatDeadline(item.customer_reschedule_deadline)}
+            </Text>
+          </View>
+        )}
+
+        {/* ⭐ Admin response overdue info */}
+        {hasPendingCustomerRequest && item.admin_reschedule_deadline && (
+          <View style={[styles.deadlineBadge, styles.deadlineBadgeInfo]}>
+            <Feather name="info" size={10} color="#FFF" />
+            <Text style={styles.deadlineText}>
+              Admin hasn't responded yet — deadline {formatDeadline(item.admin_reschedule_deadline)}
+            </Text>
+          </View>
+        )}
+
         <View style={styles.actionButtons}>
+          {canEdit && (
+            <TouchableOpacity
+              style={[styles.actionButton, styles.editButton]}
+              onPress={() => openEditModal(item)}
+            >
+              <Feather name="edit-3" size={14} color="#FFF" />
+              <Text style={styles.editButtonText}>Edit</Text>
+            </TouchableOpacity>
+          )}
+
           {canPay && (
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.actionButton, styles.payButton]}
               onPress={() => handleMakePayment(item)}
             >
@@ -747,47 +878,70 @@ const OrdersScreen = ({ navigation }) => {
               <Text style={styles.payButtonText}>Pay Balance</Text>
             </TouchableOpacity>
           )}
-          
-          {/* Reschedule Button - Only for confirmed bookings */}
-          {isConfirmed && !isPast && (
-            <TouchableOpacity 
+
+          {/* ⭐ Reschedule button only shown if there is NO pending reschedule */}
+          {isConfirmed && !hasPendingAdminProposal && !hasPendingCustomerRequest && (
+            <TouchableOpacity
               style={[styles.actionButton, styles.rescheduleButton]}
-              onPress={() => {
-                setSelectedRescheduleBooking(item);
-                setShowRescheduleModal(true);
-              }}
+              onPress={() => openRescheduleModal(item, 'customer-request')}
             >
-              <Feather name="calendar" size={14} color="#FFF" />
+              <Feather name="refresh-cw" size={14} color="#FFF" />
               <Text style={styles.rescheduleButtonText}>Reschedule</Text>
             </TouchableOpacity>
           )}
-          
-          <TouchableOpacity 
+
+          {/* ⭐ Customer responds to admin's reschedule */}
+          {hasPendingAdminProposal && (
+            <TouchableOpacity
+              style={[styles.actionButton, styles.respondButton]}
+              onPress={() => openRescheduleModal(item, 'customer-admin-proposal')}
+            >
+              <Feather name="bell" size={14} color="#FFF" />
+              <Text style={styles.respondButtonText}>Respond</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* ⭐ Customer handles post-rejection decision */}
+          {hasRejectedReschedule && (
+            <TouchableOpacity
+              style={[styles.actionButton, styles.decideButton]}
+              onPress={() => openRescheduleModal(item, 'customer-after-rejection')}
+            >
+              <Feather name="alert-circle" size={14} color="#FFF" />
+              <Text style={styles.decideButtonText}>Decide</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity
             style={[styles.actionButton, styles.contactButton]}
             onPress={() => handleContactSupport(item)}
           >
             <Feather name="message-circle" size={14} color="#FF6B9D" />
-            <Text style={styles.contactButtonText}>Support</Text>
+            <Text style={styles.contactButtonText}>Message</Text>
           </TouchableOpacity>
-          
-          {isPendingApproval && (
-            <TouchableOpacity 
-              style={[styles.actionButton, styles.cancelButton]}
-              onPress={() => handleCancelOrder(item)}
+
+          {showCancelButton && (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                styles.cancelCustomerButton,
+                !cancelCheck.canCancel && styles.cancelCustomerButtonDisabled,
+              ]}
+              onPress={() => handleRequestCancellation(item)}
             >
-              <Feather name="x" size={14} color="#FF4444" />
-              <Text style={styles.cancelButtonText}>Cancel</Text>
-            </TouchableOpacity>
-          )}
-          
-          {/* Customer Cancel Button - Only for confirmed bookings */}
-          {isConfirmed && !isPast && (
-            <TouchableOpacity 
-              style={[styles.actionButton, styles.cancelCustomerButton]}
-              onPress={() => handleCustomerCancel(item)}
-            >
-              <Feather name="x-circle" size={14} color="#FF4444" />
-              <Text style={styles.cancelCustomerText}>Cancel</Text>
+              <Feather
+                name={cancelCheck.canCancel ? 'x-circle' : 'lock'}
+                size={14}
+                color={cancelCheck.canCancel ? '#FF4444' : '#9E9E9E'}
+              />
+              <Text
+                style={[
+                  styles.cancelCustomerText,
+                  !cancelCheck.canCancel && styles.cancelCustomerTextDisabled,
+                ]}
+              >
+                {cancelCheck.canCancel ? 'Cancel' : 'Cutoff'}
+              </Text>
             </TouchableOpacity>
           )}
         </View>
@@ -803,18 +957,17 @@ const OrdersScreen = ({ navigation }) => {
       onRequestClose={() => setShowOrderDetail(false)}
     >
       <View style={styles.modalOverlay}>
-        <TouchableOpacity 
-          style={styles.modalBackdrop} 
-          activeOpacity={1} 
-          onPress={() => setShowOrderDetail(false)} 
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowOrderDetail(false)}
         />
-        <Animated.View style={[styles.modalContent, { transform: [{ translateY: slideAnim }] }]}>
-          <LinearGradient
-            colors={['#FF6B9D', '#FF8FB1']}
-            style={styles.modalHeader}
-          >
+        <Animated.View
+          style={[styles.modalContent, { transform: [{ translateY: slideAnim }] }]}
+        >
+          <LinearGradient colors={['#FF6B9D', '#FF8FB1']} style={styles.modalHeader}>
             <Text style={styles.modalHeaderTitle}>Order Details</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.modalCloseButton}
               onPress={() => setShowOrderDetail(false)}
             >
@@ -827,13 +980,28 @@ const OrdersScreen = ({ navigation }) => {
               <>
                 <View style={styles.modalOrderId}>
                   <Text style={styles.modalOrderIdText}>{selectedOrder.id}</Text>
-                  <View style={[styles.statusBadge, { backgroundColor: statusConfig[selectedOrder.status]?.bg || '#F5F5F5' }]}>
-                    <MaterialCommunityIcons 
-                      name={statusConfig[selectedOrder.status]?.icon || 'circle'} 
-                      size={12} 
-                      color={statusConfig[selectedOrder.status]?.color || '#8E8E93'} 
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      {
+                        backgroundColor:
+                          statusConfig[selectedOrder.status]?.bg || '#F5F5F5',
+                      },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={statusConfig[selectedOrder.status]?.icon || 'circle'}
+                      size={12}
+                      color={statusConfig[selectedOrder.status]?.color || '#8E8E93'}
                     />
-                    <Text style={[styles.statusText, { color: statusConfig[selectedOrder.status]?.color || '#8E8E93' }]}>
+                    <Text
+                      style={[
+                        styles.statusText,
+                        {
+                          color: statusConfig[selectedOrder.status]?.color || '#8E8E93',
+                        },
+                      ]}
+                    >
                       {statusConfig[selectedOrder.status]?.label || selectedOrder.status}
                     </Text>
                   </View>
@@ -844,7 +1012,9 @@ const OrdersScreen = ({ navigation }) => {
                 {selectedOrder.isPackage && selectedOrder.packageName && (
                   <View style={styles.modalPackageInfo}>
                     <MaterialCommunityIcons name="package-variant" size={20} color="#FF6B9D" />
-                    <Text style={styles.modalPackageText}>Package: {selectedOrder.packageName}</Text>
+                    <Text style={styles.modalPackageText}>
+                      Package: {selectedOrder.packageName}
+                    </Text>
                   </View>
                 )}
 
@@ -857,7 +1027,9 @@ const OrdersScreen = ({ navigation }) => {
                   <View style={styles.modalInfoItem}>
                     <Feather name="clock" size={16} color="#FF6B9D" />
                     <Text style={styles.modalInfoLabel}>Time</Text>
-                    <Text style={styles.modalInfoValue}>{selectedOrder.timeSlot || 'N/A'}</Text>
+                    <Text style={styles.modalInfoValue}>
+                      {selectedOrder.timeSlot || 'N/A'}
+                    </Text>
                   </View>
                   <View style={styles.modalInfoItem}>
                     <Feather name="users" size={16} color="#FF6B9D" />
@@ -867,9 +1039,47 @@ const OrdersScreen = ({ navigation }) => {
                   <View style={styles.modalInfoItem}>
                     <Feather name="map-pin" size={16} color="#FF6B9D" />
                     <Text style={styles.modalInfoLabel}>Location</Text>
-                    <Text style={styles.modalInfoValue}>{selectedOrder.location || 'N/A'}</Text>
+                    <Text style={styles.modalInfoValue}>
+                      {selectedOrder.location || 'N/A'}
+                    </Text>
                   </View>
                 </View>
+
+                {/* Reschedule proposal info in detail modal */}
+                {selectedOrder.reschedule_proposed_by === 'admin' &&
+                  selectedOrder.reschedule_status === 'pending' && (
+                    <View style={styles.modalRescheduleBox}>
+                      <Text style={styles.modalSectionTitle}>Reschedule Proposal</Text>
+                      <View style={styles.modalRescheduleRow}>
+                        <Text style={styles.modalPaymentLabel}>Original Date</Text>
+                        <Text style={styles.modalPaymentValue}>
+                          {selectedOrder.date} {selectedOrder.timeSlot}
+                        </Text>
+                      </View>
+                      <View style={styles.modalRescheduleRow}>
+                        <Text style={styles.modalPaymentLabel}>Proposed Date</Text>
+                        <Text style={[styles.modalPaymentValue, { color: '#9C27B0' }]}>
+                          {selectedOrder.requested_date} {selectedOrder.requested_time}
+                        </Text>
+                      </View>
+                      {selectedOrder.reschedule_reason && (
+                        <View style={styles.modalRescheduleRow}>
+                          <Text style={styles.modalPaymentLabel}>Reason</Text>
+                          <Text style={styles.modalPaymentValue}>
+                            {selectedOrder.reschedule_reason}
+                          </Text>
+                        </View>
+                      )}
+                      {selectedOrder.customer_reschedule_deadline && (
+                        <View style={styles.modalRescheduleRow}>
+                          <Text style={styles.modalPaymentLabel}>Respond By</Text>
+                          <Text style={[styles.modalPaymentValue, { color: '#E91E63' }]}>
+                            {formatDeadline(selectedOrder.customer_reschedule_deadline)}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  )}
 
                 {selectedOrder.menuItems && selectedOrder.menuItems.length > 0 && (
                   <View style={styles.modalMenuSection}>
@@ -890,7 +1100,9 @@ const OrdersScreen = ({ navigation }) => {
                 {selectedOrder.specialRequests && (
                   <View style={styles.modalSpecialRequests}>
                     <Text style={styles.modalSectionTitle}>Special Requests</Text>
-                    <Text style={styles.modalSpecialText}>{selectedOrder.specialRequests}</Text>
+                    <Text style={styles.modalSpecialText}>
+                      {selectedOrder.specialRequests}
+                    </Text>
                   </View>
                 )}
 
@@ -898,62 +1110,90 @@ const OrdersScreen = ({ navigation }) => {
                   <Text style={styles.modalSectionTitle}>Payment Details</Text>
                   <View style={styles.modalPaymentRow}>
                     <Text style={styles.modalPaymentLabel}>Total Amount</Text>
-                    <Text style={styles.modalPaymentValue}>₱{selectedOrder.total.toLocaleString()}</Text>
+                    <Text style={styles.modalPaymentValue}>
+                      ₱{selectedOrder.total.toLocaleString()}
+                    </Text>
                   </View>
                   {selectedOrder.downpayment > 0 && (
                     <View style={styles.modalPaymentRow}>
-                      <Text style={styles.modalPaymentLabel}>Downpayment</Text>
-                      <Text style={styles.modalPaymentValue}>₱{selectedOrder.downpayment.toLocaleString()}</Text>
+                      <Text style={styles.modalPaymentLabel}>Downpayment (30%)</Text>
+                      <Text style={styles.modalPaymentValue}>
+                        ₱{selectedOrder.downpayment.toLocaleString()}
+                      </Text>
                     </View>
                   )}
                   {selectedOrder.remainingBalance > 0 && (
                     <View style={styles.modalPaymentRow}>
                       <Text style={styles.modalPaymentLabel}>Remaining Balance</Text>
-                      <Text style={[styles.modalPaymentValue, styles.modalPaymentRemaining]}>
+                      <Text
+                        style={[
+                          styles.modalPaymentValue,
+                          styles.modalPaymentRemaining,
+                        ]}
+                      >
                         ₱{selectedOrder.remainingBalance.toLocaleString()}
                       </Text>
                     </View>
                   )}
                   <View style={styles.modalPaymentRow}>
                     <Text style={styles.modalPaymentLabel}>Payment Status</Text>
-                    <View style={[styles.paymentBadge, { backgroundColor: paymentConfig[selectedOrder.paymentStatus]?.bg || '#F5F5F5' }]}>
-                      <MaterialCommunityIcons 
-                        name={paymentConfig[selectedOrder.paymentStatus]?.icon || 'alert-circle'} 
-                        size={10} 
-                        color={paymentConfig[selectedOrder.paymentStatus]?.color || '#8E8E93'} 
+                    <View
+                      style={[
+                        styles.paymentBadge,
+                        {
+                          backgroundColor:
+                            paymentConfig[selectedOrder.paymentStatus]?.bg || '#F5F5F5',
+                        },
+                      ]}
+                    >
+                      <MaterialCommunityIcons
+                        name={
+                          paymentConfig[selectedOrder.paymentStatus]?.icon ||
+                          'alert-circle'
+                        }
+                        size={10}
+                        color={
+                          paymentConfig[selectedOrder.paymentStatus]?.color ||
+                          '#8E8E93'
+                        }
                       />
-                      <Text style={[styles.paymentText, { color: paymentConfig[selectedOrder.paymentStatus]?.color || '#8E8E93' }]}>
+                      <Text
+                        style={[
+                          styles.paymentText,
+                          {
+                            color:
+                              paymentConfig[selectedOrder.paymentStatus]?.color ||
+                              '#8E8E93',
+                          },
+                        ]}
+                      >
                         {paymentConfig[selectedOrder.paymentStatus]?.label || 'Unknown'}
                       </Text>
                     </View>
                   </View>
-                  {selectedOrder.paymentMethod && (
-                    <View style={styles.modalPaymentRow}>
-                      <Text style={styles.modalPaymentLabel}>Payment Method</Text>
-                      <Text style={styles.modalPaymentValue}>{selectedOrder.paymentMethod.toUpperCase()}</Text>
-                    </View>
-                  )}
                 </View>
 
-                {selectedOrder.remainingBalance > 0 && selectedOrder.status !== 'cancelled' && selectedOrder.status !== 'rejected' && (
-                  <TouchableOpacity 
-                    style={styles.modalPayButton}
-                    onPress={() => {
-                      setShowOrderDetail(false);
-                      handleMakePayment(selectedOrder);
-                    }}
-                  >
-                    <LinearGradient
-                      colors={['#FF6B9D', '#FF8FB1']}
-                      style={styles.modalPayGradient}
+                {selectedOrder.remainingBalance > 0 &&
+                  selectedOrder.status !== 'cancelled' &&
+                  selectedOrder.status !== 'rejected' && (
+                    <TouchableOpacity
+                      style={styles.modalPayButton}
+                      onPress={() => {
+                        setShowOrderDetail(false);
+                        handleMakePayment(selectedOrder);
+                      }}
                     >
-                      <Feather name="credit-card" size={18} color="#FFF" />
-                      <Text style={styles.modalPayText}>Pay Balance</Text>
-                    </LinearGradient>
-                  </TouchableOpacity>
-                )}
+                      <LinearGradient
+                        colors={['#FF6B9D', '#FF8FB1']}
+                        style={styles.modalPayGradient}
+                      >
+                        <Feather name="credit-card" size={18} color="#FFF" />
+                        <Text style={styles.modalPayText}>Pay Balance</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  )}
 
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={styles.modalTrackButton}
                   onPress={() => {
                     setShowOrderDetail(false);
@@ -981,20 +1221,22 @@ const OrdersScreen = ({ navigation }) => {
       }}
     >
       <View style={styles.paymentModalOverlay}>
-        <TouchableOpacity 
-          style={styles.paymentModalBackdrop} 
-          activeOpacity={1} 
+        <TouchableOpacity
+          style={styles.paymentModalBackdrop}
+          activeOpacity={1}
           onPress={() => {
             if (!isProcessing) setShowPaymentModal(false);
-          }} 
+          }}
         />
-        <Animated.View style={[styles.paymentModalContent, { transform: [{ scale: fadeAnim }] }]}>
+        <Animated.View
+          style={[styles.paymentModalContent, { transform: [{ scale: fadeAnim }] }]}
+        >
           <View style={styles.paymentModalHeader}>
             <Text style={styles.paymentModalTitle}>
               {paymentStep === 1 ? 'Select Payment Method' : 'Payment Details'}
             </Text>
             {!isProcessing && (
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.paymentModalClose}
                 onPress={() => {
                   setShowPaymentModal(false);
@@ -1013,9 +1255,15 @@ const OrdersScreen = ({ navigation }) => {
               {paymentStep === 1 && (
                 <View style={styles.paymentStep1}>
                   <View style={styles.paymentOrderInfo}>
-                    <Text style={styles.paymentOrderId}>{selectedOrderForPayment.id}</Text>
-                    <Text style={styles.paymentOrderType}>{selectedOrderForPayment.eventType}</Text>
-                    <Text style={styles.paymentAmount}>₱{selectedOrderForPayment.remainingBalance.toLocaleString()}</Text>
+                    <Text style={styles.paymentOrderId}>
+                      {selectedOrderForPayment.id}
+                    </Text>
+                    <Text style={styles.paymentOrderType}>
+                      {selectedOrderForPayment.eventType}
+                    </Text>
+                    <Text style={styles.paymentAmount}>
+                      ₱{selectedOrderForPayment.remainingBalance.toLocaleString()}
+                    </Text>
                     <Text style={styles.paymentAmountLabel}>Remaining Balance</Text>
                   </View>
 
@@ -1030,17 +1278,31 @@ const OrdersScreen = ({ navigation }) => {
                         ]}
                         onPress={() => handleSelectPaymentMethod(method.id)}
                       >
-                        <View style={[styles.paymentMethodIcon, { backgroundColor: method.color + '15' }]}>
-                          <MaterialCommunityIcons name={method.icon} size={24} color={method.color} />
+                        <View
+                          style={[
+                            styles.paymentMethodIcon,
+                            { backgroundColor: method.color + '15' },
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name={method.icon}
+                            size={24}
+                            color={method.color}
+                          />
                         </View>
                         <View style={styles.paymentMethodInfo}>
                           <Text style={styles.paymentMethodName}>{method.name}</Text>
-                          <Text style={styles.paymentMethodDesc}>{method.description}</Text>
+                          <Text style={styles.paymentMethodDesc}>
+                            {method.description}
+                          </Text>
                         </View>
-                        <View style={[
-                          styles.paymentMethodRadio,
-                          paymentMethod === method.id && styles.paymentMethodRadioActive,
-                        ]}>
+                        <View
+                          style={[
+                            styles.paymentMethodRadio,
+                            paymentMethod === method.id &&
+                              styles.paymentMethodRadioActive,
+                          ]}
+                        >
                           {paymentMethod === method.id && (
                             <View style={styles.paymentMethodRadioInner} />
                           )}
@@ -1052,7 +1314,8 @@ const OrdersScreen = ({ navigation }) => {
                   <View style={styles.paymentNote}>
                     <MaterialCommunityIcons name="information" size={16} color="#FF6B9D" />
                     <Text style={styles.paymentNoteText}>
-                      For GCash/Maya payments, you will be asked to provide the reference number and proof of payment.
+                      For GCash/Maya payments, you will be asked to provide the reference
+                      number and proof of payment.
                     </Text>
                   </View>
                 </View>
@@ -1067,44 +1330,41 @@ const OrdersScreen = ({ navigation }) => {
                       <View style={styles.paymentCompanyRow}>
                         <Text style={styles.paymentCompanyLabel}>Account Name:</Text>
                         <Text style={styles.paymentCompanyValue}>
-                          {paymentMethod === 'gcash' ? companyPaymentDetails.gcash.name : companyPaymentDetails.maya.name}
+                          {paymentMethod === 'gcash'
+                            ? companyPaymentDetails.gcash.name
+                            : companyPaymentDetails.maya.name}
                         </Text>
                       </View>
                       <View style={styles.paymentCompanyRow}>
                         <Text style={styles.paymentCompanyLabel}>Account Number:</Text>
                         <Text style={styles.paymentCompanyValue}>
-                          {paymentMethod === 'gcash' ? companyPaymentDetails.gcash.number : companyPaymentDetails.maya.number}
-                        </Text>
-                      </View>
-                      <View style={styles.paymentCompanyRow}>
-                        <Text style={styles.paymentCompanyLabel}>Account Type:</Text>
-                        <Text style={styles.paymentCompanyValue}>
-                          {paymentMethod === 'gcash' ? companyPaymentDetails.gcash.accountType : companyPaymentDetails.maya.accountType}
+                          {paymentMethod === 'gcash'
+                            ? companyPaymentDetails.gcash.number
+                            : companyPaymentDetails.maya.number}
                         </Text>
                       </View>
                       <View style={styles.paymentCompanyRow}>
                         <Text style={styles.paymentCompanyLabel}>Amount:</Text>
-                        <Text style={[styles.paymentCompanyValue, styles.paymentCompanyAmount]}>
+                        <Text
+                          style={[
+                            styles.paymentCompanyValue,
+                            styles.paymentCompanyAmount,
+                          ]}
+                        >
                           ₱{selectedOrderForPayment.remainingBalance.toLocaleString()}
                         </Text>
                       </View>
-                    </View>
-                    <View style={styles.paymentCompanyNote}>
-                      <Feather name="info" size={14} color="#FF9800" />
-                      <Text style={styles.paymentCompanyNoteText}>
-                        Please send the exact amount and keep your reference number.
-                      </Text>
                     </View>
                   </View>
 
                   <View style={styles.paymentForm}>
                     <Text style={styles.paymentFormTitle}>Payment Confirmation</Text>
-                    
+
                     <View style={styles.paymentInputGroup}>
                       <Text style={styles.paymentInputLabel}>Reference Number</Text>
                       <TextInput
                         style={styles.paymentInput}
-                        placeholder="Enter reference number from your payment"
+                        placeholder="Enter reference number"
                         placeholderTextColor="#B0B0B0"
                         value={referenceNumber}
                         onChangeText={setReferenceNumber}
@@ -1115,7 +1375,7 @@ const OrdersScreen = ({ navigation }) => {
                     <View style={styles.paymentInputGroup}>
                       <Text style={styles.paymentInputLabel}>Proof of Payment</Text>
                       <View style={styles.proofActions}>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={[styles.proofButton, styles.proofCameraButton]}
                           onPress={handleTakePhoto}
                           disabled={isProcessing}
@@ -1123,19 +1383,21 @@ const OrdersScreen = ({ navigation }) => {
                           <Feather name="camera" size={20} color="#FFF" />
                           <Text style={styles.proofButtonText}>Take Photo</Text>
                         </TouchableOpacity>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={[styles.proofButton, styles.proofGalleryButton]}
                           onPress={handlePickImage}
                           disabled={isProcessing}
                         >
                           <Feather name="image" size={20} color="#FF6B9D" />
-                          <Text style={[styles.proofButtonText, styles.proofGalleryText]}>Upload</Text>
+                          <Text style={[styles.proofButtonText, styles.proofGalleryText]}>
+                            Upload
+                          </Text>
                         </TouchableOpacity>
                       </View>
                       {proofImage && (
                         <View style={styles.proofPreview}>
                           <Image source={{ uri: proofImage }} style={styles.proofImage} />
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={styles.proofRemove}
                             onPress={() => setProofImage(null)}
                             disabled={isProcessing}
@@ -1144,53 +1406,45 @@ const OrdersScreen = ({ navigation }) => {
                           </TouchableOpacity>
                         </View>
                       )}
-                      <Text style={styles.proofHint}>
-                        Upload a screenshot or photo of your payment confirmation
-                      </Text>
                     </View>
                   </View>
                 </ScrollView>
               )}
 
-              {(paymentStep === 1 || paymentStep === 2) && (
-                <View style={styles.paymentActions}>
-                  {paymentStep === 2 && (
-                    <TouchableOpacity 
-                      style={styles.paymentBackButton}
-                      onPress={() => setPaymentStep(1)}
-                      disabled={isProcessing}
-                    >
-                      <Feather name="arrow-left" size={18} color="#8E8E93" />
-                      <Text style={styles.paymentBackText}>Back</Text>
-                    </TouchableOpacity>
-                  )}
+              <View style={styles.paymentActions}>
+                {paymentStep === 2 && (
                   <TouchableOpacity
-                    style={[
-                      styles.paymentConfirmButton, 
-                      (paymentStep === 1 && !paymentMethod) && styles.paymentConfirmDisabled,
-                      isProcessing && styles.paymentConfirmDisabled,
-                    ]}
-                    onPress={paymentStep === 1 ? () => handleSelectPaymentMethod(paymentMethod) : handleSubmitPayment}
-                    disabled={(paymentStep === 1 && !paymentMethod) || isProcessing}
+                    style={styles.paymentBackButton}
+                    onPress={() => setPaymentStep(1)}
+                    disabled={isProcessing}
                   >
-                    <LinearGradient
-                      colors={['#FF6B9D', '#FF8FB1']}
-                      style={styles.paymentConfirmGradient}
-                    >
-                      {isProcessing ? (
-                        <ActivityIndicator color="#FFF" size="small" />
-                      ) : (
-                        <>
-                          <Text style={styles.paymentConfirmText}>
-                            {paymentStep === 1 ? 'Continue' : 'Submit Payment'}
-                          </Text>
-                          <Feather name="arrow-right" size={18} color="#FFF" />
-                        </>
-                      )}
-                    </LinearGradient>
+                    <Feather name="arrow-left" size={18} color="#8E8E93" />
+                    <Text style={styles.paymentBackText}>Back</Text>
                   </TouchableOpacity>
-                </View>
-              )}
+                )}
+                <TouchableOpacity
+                  style={[
+                    styles.paymentConfirmButton,
+                    isProcessing && styles.paymentConfirmDisabled,
+                  ]}
+                  onPress={paymentStep === 2 ? handleSubmitPayment : undefined}
+                  disabled={paymentStep !== 2 || isProcessing}
+                >
+                  <LinearGradient
+                    colors={['#FF6B9D', '#FF8FB1']}
+                    style={styles.paymentConfirmGradient}
+                  >
+                    {isProcessing ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <>
+                        <Text style={styles.paymentConfirmText}>Submit Payment</Text>
+                        <Feather name="arrow-right" size={18} color="#FFF" />
+                      </>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
             </>
           )}
         </Animated.View>
@@ -1212,18 +1466,18 @@ const OrdersScreen = ({ navigation }) => {
           </View>
           <Text style={styles.successTitle}>Payment Submitted!</Text>
           <Text style={styles.successText}>
-            Your payment of ₱{selectedOrderForPayment?.remainingBalance?.toLocaleString()} via {paymentMethod?.toUpperCase()} has been submitted.
+            Your payment of ₱
+            {selectedOrderForPayment?.remainingBalance?.toLocaleString()} via{' '}
+            {paymentMethod?.toUpperCase()} has been submitted.
           </Text>
-          <Text style={styles.successSubtext}>
-            Reference Number: {referenceNumber}
-          </Text>
+          <Text style={styles.successSubtext}>Reference Number: {referenceNumber}</Text>
           <View style={styles.successStatus}>
             <MaterialCommunityIcons name="clock-outline" size={16} color="#FF9800" />
             <Text style={styles.successStatusText}>
               Waiting for company confirmation. You will be notified once approved.
             </Text>
           </View>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.successButton}
             onPress={() => {
               setShowSuccessModal(false);
@@ -1245,6 +1499,157 @@ const OrdersScreen = ({ navigation }) => {
     </Modal>
   );
 
+  // ⭐ Cancel Booking Confirmation Modal
+  const CancelBookingModal = () => (
+    <Modal
+      visible={showCancelModal}
+      transparent
+      animationType="fade"
+      onRequestClose={closeCancelModal}
+    >
+      <View style={styles.cancelModalOverlay}>
+        <TouchableOpacity
+          style={styles.cancelModalBackdrop}
+          activeOpacity={1}
+          onPress={closeCancelModal}
+        />
+
+        <View style={styles.cancelModalContent}>
+          {/* Header */}
+          <View style={styles.cancelModalHeader}>
+            <View style={styles.cancelModalIconWrap}>
+              <Feather name="alert-triangle" size={26} color="#FF4444" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cancelModalTitle}>Cancel Booking?</Text>
+              <Text style={styles.cancelModalSubtitle}>
+                This action cannot be undone.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.cancelModalClose}
+              onPress={closeCancelModal}
+              disabled={submittingCancel}
+            >
+              <Feather name="x" size={20} color="#8E8E93" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Body */}
+          {selectedCancelOrder && (
+            <ScrollView
+              style={styles.cancelModalBody}
+              showsVerticalScrollIndicator={false}
+            >
+              {/* Booking Summary */}
+              <View style={styles.cancelSummaryBox}>
+                <View style={styles.cancelSummaryRow}>
+                  <Text style={styles.cancelSummaryLabel}>Booking #</Text>
+                  <Text style={styles.cancelSummaryValue}>
+                    {selectedCancelOrder.id}
+                  </Text>
+                </View>
+                <View style={styles.cancelSummaryRow}>
+                  <Text style={styles.cancelSummaryLabel}>Event</Text>
+                  <Text style={styles.cancelSummaryValue}>
+                    {selectedCancelOrder.eventType}
+                  </Text>
+                </View>
+                <View style={styles.cancelSummaryRow}>
+                  <Text style={styles.cancelSummaryLabel}>Date</Text>
+                  <Text style={styles.cancelSummaryValue}>
+                    {selectedCancelOrder.date}
+                  </Text>
+                </View>
+                <View style={styles.cancelSummaryRow}>
+                  <Text style={styles.cancelSummaryLabel}>Time</Text>
+                  <Text style={styles.cancelSummaryValue}>
+                    {selectedCancelOrder.timeSlot}
+                  </Text>
+                </View>
+                {selectedCancelOrder.remainingBalance > 0 && (
+                  <View style={styles.cancelSummaryRow}>
+                    <Text style={styles.cancelSummaryLabel}>Balance</Text>
+                    <Text
+                      style={[
+                        styles.cancelSummaryValue,
+                        { color: '#FF5722', fontWeight: '700' },
+                      ]}
+                    >
+                      ₱{selectedCancelOrder.remainingBalance.toLocaleString()}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Warning */}
+              <View style={styles.cancelWarningBox}>
+                <Feather name="info" size={14} color="#E65100" />
+                <Text style={styles.cancelWarningText}>
+                  Cancelling will remove this booking from your active list.
+                  Any deposit already paid may be subject to the cancellation
+                  policy. Please contact support if you have questions.
+                </Text>
+              </View>
+
+              {/* Reason Input */}
+              <Text style={styles.cancelInputLabel}>
+                Reason for cancellation (optional)
+              </Text>
+              <TextInput
+                style={styles.cancelReasonInput}
+                placeholder="e.g. Change of plans, unexpected conflict..."
+                placeholderTextColor="#B0B0B0"
+                value={cancelReason}
+                onChangeText={setCancelReason}
+                multiline
+                numberOfLines={4}
+                maxLength={500}
+                editable={!submittingCancel}
+                textAlignVertical="top"
+              />
+              <Text style={styles.cancelCharCount}>
+                {cancelReason.length}/500
+              </Text>
+            </ScrollView>
+          )}
+
+          {/* Footer */}
+          <View style={styles.cancelModalFooter}>
+            <TouchableOpacity
+              style={[styles.cancelFooterBtn, styles.cancelFooterBtnKeep]}
+              onPress={closeCancelModal}
+              disabled={submittingCancel}
+            >
+              <Text style={styles.cancelFooterBtnKeepText}>Keep Booking</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.cancelFooterBtn,
+                styles.cancelFooterBtnConfirm,
+                submittingCancel && styles.cancelFooterBtnDisabled,
+              ]}
+              onPress={submitCancellationRequest}
+              disabled={submittingCancel}
+            >
+              {submittingCancel ? (
+                <ActivityIndicator size="small" color="#FFF" />
+              ) : (
+                <>
+                  <Feather name="x-circle" size={16} color="#FFF" />
+                  <Text style={styles.cancelFooterBtnConfirmText}>
+                    Yes, Cancel
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+
   const EmptyState = () => (
     <View style={styles.emptyState}>
       <View style={styles.emptyIconContainer}>
@@ -1252,11 +1657,14 @@ const OrdersScreen = ({ navigation }) => {
       </View>
       <Text style={styles.emptyTitle}>No orders found</Text>
       <Text style={styles.emptyText}>
-        {activeTab === 'upcoming' 
-          ? "You don't have any upcoming events. Start planning your next celebration!" 
+        {activeTab === 'upcoming'
+          ? "You don't have any upcoming events. Start planning your next celebration!"
           : "You haven't completed any events yet."}
       </Text>
-      <TouchableOpacity style={styles.bookButton} onPress={() => navigation.navigate('BookingTab')}>
+      <TouchableOpacity
+        style={styles.bookButton}
+        onPress={() => navigation.navigate('BookingTab')}
+      >
         <Text style={styles.bookButtonText}>Book an Event</Text>
       </TouchableOpacity>
     </View>
@@ -1264,7 +1672,9 @@ const OrdersScreen = ({ navigation }) => {
 
   if (loading) {
     return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+      <View
+        style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}
+      >
         <ActivityIndicator size="large" color="#FF6B9D" />
         <Text style={{ marginTop: 16, color: '#8E8E93' }}>Loading orders...</Text>
       </View>
@@ -1274,17 +1684,14 @@ const OrdersScreen = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
-      
-      <LinearGradient
-        colors={['#FFFFFF', '#FFF8FA', '#FFF0F5']}
-        style={styles.gradient}
-      >
+
+      <LinearGradient colors={['#FFFFFF', '#FFF8FA', '#FFF0F5']} style={styles.gradient}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
             <Feather name="arrow-left" size={24} color="#FF6B9D" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
-            My Orders 
+            My Orders
             {totalOrders > 0 && <Text style={styles.orderCount}> ({totalOrders})</Text>}
           </Text>
           <TouchableOpacity style={styles.filterButton} onPress={() => loadOrders(true)}>
@@ -1303,7 +1710,14 @@ const OrdersScreen = ({ navigation }) => {
             <View style={[styles.statusSummaryDot, { backgroundColor: '#4CAF50' }]} />
             <Text style={styles.statusSummaryLabel}>Confirmed</Text>
             <Text style={styles.statusSummaryCount}>
-              {orders.upcoming.filter(o => o.status === 'confirmed' || o.status === 'processing' || o.status === 'rescheduled').length}
+              {
+                orders.upcoming.filter(
+                  (o) =>
+                    o.status === 'confirmed' ||
+                    o.status === 'processing' ||
+                    o.status === 'rescheduled'
+                ).length
+              }
             </Text>
           </View>
           <View style={styles.statusSummaryDivider} />
@@ -1315,16 +1729,16 @@ const OrdersScreen = ({ navigation }) => {
         </View>
 
         <View style={styles.tabBar}>
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'upcoming' && styles.tabActive]} 
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'upcoming' && styles.tabActive]}
             onPress={() => setActiveTab('upcoming')}
           >
             <Text style={[styles.tabText, activeTab === 'upcoming' && styles.tabTextActive]}>
               Upcoming ({orders.upcoming.length})
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity 
-            style={[styles.tab, activeTab === 'past' && styles.tabActive]} 
+          <TouchableOpacity
+            style={[styles.tab, activeTab === 'past' && styles.tabActive]}
             onPress={() => setActiveTab('past')}
           >
             <Text style={[styles.tabText, activeTab === 'past' && styles.tabTextActive]}>
@@ -1335,8 +1749,12 @@ const OrdersScreen = ({ navigation }) => {
 
         <FlatList
           data={orders[activeTab]}
-          renderItem={({ item }) => <OrderCard item={item} isPast={activeTab === 'past'} />}
-          keyExtractor={item => item.unique_id?.toString() || item.id?.toString() || item.booking_id?.toString()}
+          renderItem={({ item }) => <OrderCard item={item} />}
+          keyExtractor={(item) =>
+            item.unique_id?.toString() ||
+            item.id?.toString() ||
+            item.booking_id?.toString()
+          }
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           ListEmptyComponent={EmptyState}
@@ -1348,24 +1766,31 @@ const OrdersScreen = ({ navigation }) => {
       <OrderDetailModal />
       <PaymentModal />
       <SuccessModal />
-      
-      {/* Reschedule Modal */}
+      <CancelBookingModal />
+
       <RescheduleModal
         visible={showRescheduleModal}
+        mode={rescheduleMode}
         booking={selectedRescheduleBooking}
-        onClose={() => {
-          setShowRescheduleModal(false);
-          setSelectedRescheduleBooking(null);
+        onClose={closeRescheduleModal}
+        onSuccess={() => {
+          closeRescheduleModal();
+          refreshNotifications();
+          loadOrders(true);
         }}
-        onRescheduleConfirmed={handleRescheduleAccepted}
-        onCancelConfirmed={handleRescheduleRejected}
-        loading={rescheduleLoading}
+      />
+
+      <EditBookingModal
+        visible={showEditModal}
+        booking={editingBooking}
+        saving={savingEdit}
+        onClose={closeEditModal}
+        onSave={handleSaveEdit}
       />
     </View>
   );
 };
 
-// ... (styles remain the same as in the original file)
 const styles = StyleSheet.create({
   container: { flex: 1 },
   gradient: { flex: 1 },
@@ -1376,7 +1801,6 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'ios' ? 12 : 8,
     paddingHorizontal: 20,
     paddingBottom: 16,
-    backgroundColor: 'transparent',
   },
   backButton: {
     width: 40,
@@ -1386,16 +1810,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FF6B9D',
-  },
-  orderCount: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8E8E93',
-  },
+  headerTitle: { fontSize: 18, fontWeight: '700', color: '#FF6B9D' },
+  orderCount: { fontSize: 14, fontWeight: '600', color: '#8E8E93' },
   filterButton: {
     width: 40,
     height: 40,
@@ -1425,26 +1841,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
   },
-  statusSummaryDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusSummaryLabel: {
-    fontSize: 11,
-    color: '#8E8E93',
-    fontWeight: '500',
-  },
-  statusSummaryCount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
-  statusSummaryDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: '#E5E5EA',
-  },
+  statusSummaryDot: { width: 8, height: 8, borderRadius: 4 },
+  statusSummaryLabel: { fontSize: 11, color: '#8E8E93', fontWeight: '500' },
+  statusSummaryCount: { fontSize: 14, fontWeight: '700', color: '#1C1C1E' },
+  statusSummaryDivider: { width: 1, height: 24, backgroundColor: '#E5E5EA' },
   tabBar: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -1458,27 +1858,11 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
   },
-  tab: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 26,
-    alignItems: 'center',
-  },
-  tabActive: {
-    backgroundColor: '#FF6B9D',
-  },
-  tabText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8E8E93',
-  },
-  tabTextActive: {
-    color: '#FFFFFF',
-  },
-  list: {
-    paddingHorizontal: 16,
-    paddingBottom: 100,
-  },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 26, alignItems: 'center' },
+  tabActive: { backgroundColor: '#FF6B9D' },
+  tabText: { fontSize: 13, fontWeight: '600', color: '#8E8E93' },
+  tabTextActive: { color: '#FFFFFF' },
+  list: { paddingHorizontal: 16, paddingBottom: 100 },
   orderCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 20,
@@ -1489,10 +1873,39 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.04,
     shadowRadius: 8,
     elevation: 2,
+    overflow: 'hidden',
   },
-  orderCardPending: {
+  orderCardPending: { borderWidth: 2, borderColor: '#FFE0B2' },
+  orderCardRescheduleProposal: {
     borderWidth: 2,
-    borderColor: '#FFE0B2',
+    borderColor: '#9C27B0',
+    shadowColor: '#9C27B0',
+    shadowOpacity: 0.15,
+  },
+  orderCardRescheduleRejected: {
+    borderWidth: 2,
+    borderColor: '#F44336',
+    shadowColor: '#F44336',
+    shadowOpacity: 0.15,
+  },
+  highlightStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#9C27B0',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginHorizontal: -16,
+    marginTop: -16,
+    marginBottom: 12,
+  },
+  highlightStripDanger: { backgroundColor: '#F44336' },
+  highlightStripInfo: { backgroundColor: '#2196F3' },
+  highlightStripText: {
+    color: '#FFF',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   orderHeader: {
     flexDirection: 'row',
@@ -1500,17 +1913,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 12,
   },
-  orderId: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF6B9D',
-    marginBottom: 4,
-  },
-  orderType: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
+  orderId: { fontSize: 12, fontWeight: '600', color: '#FF6B9D', marginBottom: 4 },
+  orderType: { fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
   packageBadge: {
     backgroundColor: '#FFF0F5',
     paddingHorizontal: 8,
@@ -1519,11 +1923,7 @@ const styles = StyleSheet.create({
     marginTop: 2,
     alignSelf: 'flex-start',
   },
-  packageBadgeText: {
-    fontSize: 9,
-    color: '#FF6B9D',
-    fontWeight: '600',
-  },
+  packageBadgeText: { fontSize: 9, color: '#FF6B9D', fontWeight: '600' },
   balanceDueBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1535,11 +1935,7 @@ const styles = StyleSheet.create({
     gap: 4,
     alignSelf: 'flex-start',
   },
-  balanceDueBadgeText: {
-    fontSize: 9,
-    color: '#FF5722',
-    fontWeight: '500',
-  },
+  balanceDueBadgeText: { fontSize: 9, color: '#FF5722', fontWeight: '500' },
   pendingBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1551,11 +1947,7 @@ const styles = StyleSheet.create({
     gap: 4,
     alignSelf: 'flex-start',
   },
-  pendingBadgeText: {
-    fontSize: 9,
-    color: '#FF9800',
-    fontWeight: '500',
-  },
+  pendingBadgeText: { fontSize: 9, color: '#FF9800', fontWeight: '500' },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1564,36 +1956,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 4,
   },
-  statusText: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  orderDetails: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 16,
-    marginBottom: 12,
-  },
-  detailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  detailText: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  packageInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
-  },
-  packageInfoText: {
-    fontSize: 12,
-    color: '#FF6B9D',
-    fontWeight: '500',
-  },
+  statusText: { fontSize: 10, fontWeight: '600' },
+  orderDetails: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 12 },
+  detailItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  detailText: { fontSize: 12, color: '#8E8E93' },
+  packageInfo: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  packageInfoText: { fontSize: 12, color: '#FF6B9D', fontWeight: '500' },
   paymentSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1608,15 +1976,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 4,
   },
-  paymentText: {
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  totalAmount: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FF6B9D',
-  },
+  paymentText: { fontSize: 11, fontWeight: '600' },
+  totalAmount: { fontSize: 16, fontWeight: '700', color: '#FF6B9D' },
   balanceSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1624,42 +1985,23 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     paddingHorizontal: 4,
   },
-  balanceLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  balanceAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FF5722',
-  },
-  progressSection: {
-    marginBottom: 12,
-  },
+  balanceLabel: { fontSize: 12, color: '#8E8E93' },
+  balanceAmount: { fontSize: 14, fontWeight: '700', color: '#FF5722' },
+  progressSection: { marginBottom: 12 },
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 6,
   },
-  progressLabel: {
-    fontSize: 11,
-    color: '#8E8E93',
-  },
-  progressPercent: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#1C1C1E',
-  },
+  progressLabel: { fontSize: 11, color: '#8E8E93' },
+  progressPercent: { fontSize: 11, fontWeight: '600', color: '#1C1C1E' },
   progressBar: {
     height: 6,
     backgroundColor: '#E5E5EA',
     borderRadius: 3,
     overflow: 'hidden',
   },
-  progressFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
+  progressFill: { height: '100%', borderRadius: 3 },
   actionButtons: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1677,53 +2019,30 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 60,
   },
-  payButton: {
-    backgroundColor: '#FF6B9D',
-  },
-  payButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFF',
-  },
-  rescheduleButton: {
-    backgroundColor: '#2196F3',
-  },
-  rescheduleButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFF',
-  },
-  contactButton: {
-    backgroundColor: '#FFF0F5',
-  },
-  contactButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF6B9D',
-  },
-  cancelButton: {
-    backgroundColor: '#FFEBEE',
-  },
-  cancelButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF4444',
-  },
+  editButton: { backgroundColor: '#3F51B5' },
+  editButtonText: { fontSize: 12, fontWeight: '600', color: '#FFF' },
+  payButton: { backgroundColor: '#FF6B9D' },
+  payButtonText: { fontSize: 12, fontWeight: '600', color: '#FFF' },
+  rescheduleButton: { backgroundColor: '#2196F3' },
+  rescheduleButtonText: { fontSize: 12, fontWeight: '600', color: '#FFF' },
+  respondButton: { backgroundColor: '#9C27B0' },
+  respondButtonText: { fontSize: 12, fontWeight: '600', color: '#FFF' },
+  decideButton: { backgroundColor: '#F44336' },
+  decideButtonText: { fontSize: 12, fontWeight: '600', color: '#FFF' },
+  contactButton: { backgroundColor: '#FFF0F5' },
+  contactButtonText: { fontSize: 12, fontWeight: '600', color: '#FF6B9D' },
   cancelCustomerButton: {
     backgroundColor: '#FFEBEE',
     borderWidth: 1,
     borderColor: '#FFCDD2',
   },
-  cancelCustomerText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF4444',
+  cancelCustomerButtonDisabled: {
+    backgroundColor: '#F5F5F5',
+    borderColor: '#E0E0E0',
   },
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
+  cancelCustomerText: { fontSize: 12, fontWeight: '600', color: '#FF4444' },
+  cancelCustomerTextDisabled: { color: '#9E9E9E' },
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   emptyIconContainer: {
     width: 80,
     height: 80,
@@ -1752,21 +2071,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 25,
   },
-  bookButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  modalOverlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
+  bookButtonText: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
+  modalOverlay: { flex: 1, justifyContent: 'flex-end' },
   modalBackdrop: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   modalContent: {
@@ -1783,11 +2092,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
   },
-  modalHeaderTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
+  modalHeaderTitle: { fontSize: 18, fontWeight: '700', color: '#FFFFFF' },
   modalCloseButton: {
     width: 36,
     height: 36,
@@ -1796,20 +2101,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  modalBody: {
-    padding: 20,
-  },
+  modalBody: { padding: 20 },
   modalOrderId: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
   },
-  modalOrderIdText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FF6B9D',
-  },
+  modalOrderIdText: { fontSize: 14, fontWeight: '600', color: '#FF6B9D' },
   modalEventType: {
     fontSize: 20,
     fontWeight: '700',
@@ -1825,17 +2124,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginBottom: 16,
   },
-  modalPackageText: {
-    fontSize: 14,
-    color: '#FF6B9D',
-    fontWeight: '500',
-  },
-  modalInfoGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 16,
-  },
+  modalPackageText: { fontSize: 14, color: '#FF6B9D', fontWeight: '500' },
+  modalInfoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginBottom: 16 },
   modalInfoItem: {
     flex: 1,
     minWidth: '45%',
@@ -1843,20 +2133,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 12,
   },
-  modalInfoLabel: {
-    fontSize: 10,
-    color: '#8E8E93',
-    marginTop: 4,
-  },
-  modalInfoValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1C1C1E',
-    marginTop: 2,
-  },
-  modalMenuSection: {
-    marginBottom: 16,
-  },
+  modalInfoLabel: { fontSize: 10, color: '#8E8E93', marginTop: 4 },
+  modalInfoValue: { fontSize: 13, fontWeight: '600', color: '#1C1C1E', marginTop: 2 },
+  modalMenuSection: { marginBottom: 16 },
   modalMenuItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1864,26 +2143,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
-  modalMenuItemName: {
-    fontSize: 13,
-    color: '#1C1C1E',
-  },
-  modalMenuItemPrice: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FF6B9D',
-  },
+  modalMenuItemName: { fontSize: 13, color: '#1C1C1E' },
+  modalMenuItemPrice: { fontSize: 13, fontWeight: '600', color: '#FF6B9D' },
   modalSpecialRequests: {
     backgroundColor: '#FFF8FA',
     padding: 12,
     borderRadius: 12,
     marginBottom: 16,
   },
-  modalSpecialText: {
-    fontSize: 13,
-    color: '#8E8E93',
-    lineHeight: 18,
-  },
+  modalSpecialText: { fontSize: 13, color: '#8E8E93', lineHeight: 18 },
   modalPaymentSection: {
     backgroundColor: '#F8F9FA',
     borderRadius: 16,
@@ -1902,24 +2170,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 8,
   },
-  modalPaymentLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  modalPaymentValue: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#1C1C1E',
-  },
-  modalPaymentRemaining: {
-    color: '#FF5722',
-    fontSize: 14,
-  },
-  modalPayButton: {
-    borderRadius: 28,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
+  modalPaymentLabel: { fontSize: 12, color: '#8E8E93' },
+  modalPaymentValue: { fontSize: 12, fontWeight: '600', color: '#1C1C1E' },
+  modalPaymentRemaining: { color: '#FF5722', fontSize: 14 },
+  modalPayButton: { borderRadius: 28, overflow: 'hidden', marginBottom: 12 },
   modalPayGradient: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1927,11 +2181,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 8,
   },
-  modalPayText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  modalPayText: { fontSize: 14, fontWeight: '600', color: '#FFFFFF' },
   modalTrackButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1941,11 +2191,7 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     gap: 8,
   },
-  modalTrackText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FF6B9D',
-  },
+  modalTrackText: { fontSize: 14, fontWeight: '600', color: '#FF6B9D' },
   paymentModalOverlay: {
     flex: 1,
     justifyContent: 'center',
@@ -1955,10 +2201,7 @@ const styles = StyleSheet.create({
   },
   paymentModalBackdrop: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    top: 0, left: 0, right: 0, bottom: 0,
   },
   paymentModalContent: {
     backgroundColor: '#FFFFFF',
@@ -1975,11 +2218,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
-  paymentModalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
+  paymentModalTitle: { fontSize: 18, fontWeight: '700', color: '#1C1C1E' },
   paymentModalClose: {
     width: 36,
     height: 36,
@@ -1988,39 +2227,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  paymentStep1: {
-    padding: 16,
-  },
+  paymentStep1: { padding: 16 },
   paymentOrderInfo: {
     alignItems: 'center',
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
-  paymentOrderId: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  paymentOrderType: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1C1C1E',
-    marginTop: 4,
-  },
+  paymentOrderId: { fontSize: 12, color: '#8E8E93' },
+  paymentOrderType: { fontSize: 16, fontWeight: '600', color: '#1C1C1E', marginTop: 4 },
   paymentAmount: {
     fontSize: 28,
     fontWeight: '800',
     color: '#FF6B9D',
     marginTop: 8,
   },
-  paymentAmountLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-    marginTop: 2,
-  },
-  paymentMethods: {
-    paddingTop: 16,
-  },
+  paymentAmountLabel: { fontSize: 12, color: '#8E8E93', marginTop: 2 },
+  paymentMethods: { paddingTop: 16 },
   paymentMethodsTitle: {
     fontSize: 14,
     fontWeight: '600',
@@ -2036,10 +2259,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#F0F0F0',
   },
-  paymentMethodItemActive: {
-    borderColor: '#FF6B9D',
-    backgroundColor: '#FFF0F5',
-  },
+  paymentMethodItemActive: { borderColor: '#FF6B9D', backgroundColor: '#FFF0F5' },
   paymentMethodIcon: {
     width: 44,
     height: 44,
@@ -2048,18 +2268,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-  paymentMethodInfo: {
-    flex: 1,
-  },
-  paymentMethodName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1C1C1E',
-  },
-  paymentMethodDesc: {
-    fontSize: 11,
-    color: '#8E8E93',
-  },
+  paymentMethodInfo: { flex: 1 },
+  paymentMethodName: { fontSize: 14, fontWeight: '600', color: '#1C1C1E' },
+  paymentMethodDesc: { fontSize: 11, color: '#8E8E93' },
   paymentMethodRadio: {
     width: 20,
     height: 20,
@@ -2069,9 +2280,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  paymentMethodRadioActive: {
-    borderColor: '#FF6B9D',
-  },
+  paymentMethodRadioActive: { borderColor: '#FF6B9D' },
   paymentMethodRadioInner: {
     width: 10,
     height: 10,
@@ -2087,15 +2296,8 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 8,
   },
-  paymentNoteText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#8E8E93',
-    lineHeight: 16,
-  },
-  paymentStep2: {
-    padding: 16,
-  },
+  paymentNoteText: { flex: 1, fontSize: 12, color: '#8E8E93', lineHeight: 16 },
+  paymentStep2: { padding: 16 },
   paymentCompanyInfo: {
     backgroundColor: '#F8F9FA',
     borderRadius: 16,
@@ -2109,11 +2311,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 12,
   },
-  paymentCompanyDetails: {
-    backgroundColor: '#FFF',
-    borderRadius: 12,
-    padding: 12,
-  },
+  paymentCompanyDetails: { backgroundColor: '#FFF', borderRadius: 12, padding: 12 },
   paymentCompanyRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2121,46 +2319,17 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
-  paymentCompanyLabel: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  paymentCompanyValue: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#1C1C1E',
-  },
-  paymentCompanyAmount: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FF6B9D',
-  },
-  paymentCompanyNote: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFF3E0',
-    padding: 10,
-    borderRadius: 10,
-    marginTop: 12,
-    gap: 8,
-  },
-  paymentCompanyNoteText: {
-    flex: 1,
-    fontSize: 11,
-    color: '#8E8E93',
-  },
-  paymentForm: {
-    marginTop: 8,
-  },
+  paymentCompanyLabel: { fontSize: 12, color: '#8E8E93' },
+  paymentCompanyValue: { fontSize: 12, fontWeight: '500', color: '#1C1C1E' },
+  paymentCompanyAmount: { fontSize: 16, fontWeight: '700', color: '#FF6B9D' },
+  paymentForm: { marginTop: 8 },
   paymentFormTitle: {
     fontSize: 14,
     fontWeight: '600',
     color: '#1C1C1E',
     marginBottom: 12,
   },
-  paymentInputGroup: {
-    marginBottom: 16,
-  },
+  paymentInputGroup: { marginBottom: 16 },
   paymentInputLabel: {
     fontSize: 12,
     fontWeight: '500',
@@ -2177,10 +2346,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#F0F0F0',
   },
-  proofActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
+  proofActions: { flexDirection: 'row', gap: 10 },
   proofButton: {
     flex: 1,
     flexDirection: 'row',
@@ -2190,33 +2356,21 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 6,
   },
-  proofCameraButton: {
-    backgroundColor: '#FF6B9D',
-  },
+  proofCameraButton: { backgroundColor: '#FF6B9D' },
   proofGalleryButton: {
     backgroundColor: '#FFF0F5',
     borderWidth: 1,
     borderColor: '#FF6B9D',
   },
-  proofButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFF',
-  },
-  proofGalleryText: {
-    color: '#FF6B9D',
-  },
+  proofButtonText: { fontSize: 13, fontWeight: '600', color: '#FFF' },
+  proofGalleryText: { color: '#FF6B9D' },
   proofPreview: {
     marginTop: 10,
     borderRadius: 12,
     overflow: 'hidden',
     position: 'relative',
   },
-  proofImage: {
-    width: '100%',
-    height: 150,
-    borderRadius: 12,
-  },
+  proofImage: { width: '100%', height: 150, borderRadius: 12 },
   proofRemove: {
     position: 'absolute',
     top: 8,
@@ -2228,11 +2382,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  proofHint: {
-    fontSize: 11,
-    color: '#B0B0B0',
-    marginTop: 6,
-  },
+  proofHint: { fontSize: 11, color: '#B0B0B0', marginTop: 6 },
   paymentActions: {
     flexDirection: 'row',
     padding: 16,
@@ -2247,18 +2397,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 4,
   },
-  paymentBackText: {
-    fontSize: 14,
-    color: '#8E8E93',
-  },
-  paymentConfirmButton: {
-    flex: 1,
-    borderRadius: 28,
-    overflow: 'hidden',
-  },
-  paymentConfirmDisabled: {
-    opacity: 0.5,
-  },
+  paymentBackText: { fontSize: 14, color: '#8E8E93' },
+  paymentConfirmButton: { flex: 1, borderRadius: 28, overflow: 'hidden' },
+  paymentConfirmDisabled: { opacity: 0.5 },
   paymentConfirmGradient: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2266,11 +2407,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     gap: 8,
   },
-  paymentConfirmText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  paymentConfirmText: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
   successOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -2321,25 +2458,223 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     gap: 8,
   },
-  successStatusText: {
+  successStatusText: { flex: 1, fontSize: 12, color: '#8E8E93', lineHeight: 16 },
+  successButton: { borderRadius: 28, overflow: 'hidden', width: '100%' },
+  successGradient: { paddingVertical: 14, alignItems: 'center' },
+  successButtonText: { fontSize: 15, fontWeight: '600', color: '#FFF' },
+
+  // ⭐ Deadline badges
+  deadlineBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#9C27B0',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    marginTop: 8,
+    marginBottom: 4,
+    alignSelf: 'flex-start',
+  },
+  deadlineBadgeInfo: {
+    backgroundColor: '#2196F3',
+  },
+  deadlineText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFF',
+    letterSpacing: 0.3,
+  },
+
+  // ⭐ Reschedule box in detail modal
+  modalRescheduleBox: {
+    backgroundColor: '#F3E5F5',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#9C27B0',
+  },
+  modalRescheduleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+
+  // ⭐ Cancel Booking Modal styles
+  cancelModalOverlay: {
     flex: 1,
-    fontSize: 12,
-    color: '#8E8E93',
-    lineHeight: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(20, 8, 15, 0.65)',
+    padding: 20,
   },
-  successButton: {
-    borderRadius: 28,
+  cancelModalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  cancelModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    width: width - 40,
+    maxWidth: 480,
+    maxHeight: height * 0.85,
     overflow: 'hidden',
-    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 12,
   },
-  successGradient: {
-    paddingVertical: 14,
+  cancelModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  cancelModalIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFEBEE',
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  successButtonText: {
-    fontSize: 15,
+  cancelModalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  cancelModalSubtitle: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  cancelModalClose: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#F5F5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cancelModalBody: {
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 8,
+    maxHeight: height * 0.5,
+  },
+  cancelSummaryBox: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
+  },
+  cancelSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  cancelSummaryLabel: {
+    fontSize: 12,
+    color: '#8E8E93',
+  },
+  cancelSummaryValue: {
+    fontSize: 13,
     fontWeight: '600',
+    color: '#1C1C1E',
+    textAlign: 'right',
+    flexShrink: 1,
+    marginLeft: 12,
+  },
+  cancelWarningBox: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'flex-start',
+    backgroundColor: '#FFF3E0',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#FFE0B2',
+  },
+  cancelWarningText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#8A5A00',
+    lineHeight: 17,
+  },
+  cancelInputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#5A5A5E',
+    marginBottom: 6,
+  },
+  cancelReasonInput: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E5E5EA',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: '#1C1C1E',
+    minHeight: 90,
+  },
+  cancelCharCount: {
+    fontSize: 11,
+    color: '#B0B0B0',
+    textAlign: 'right',
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  cancelModalFooter: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 18,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+  },
+  cancelFooterBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
+  },
+  cancelFooterBtnKeep: {
+    backgroundColor: '#F5F5F5',
+  },
+  cancelFooterBtnKeepText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#5A5A5E',
+  },
+  cancelFooterBtnConfirm: {
+    backgroundColor: '#FF4444',
+  },
+  cancelFooterBtnConfirmText: {
+    fontSize: 14,
+    fontWeight: '700',
     color: '#FFF',
+  },
+  cancelFooterBtnDisabled: {
+    opacity: 0.6,
   },
 });
 

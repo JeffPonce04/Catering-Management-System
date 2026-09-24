@@ -140,7 +140,7 @@ const StaffManagement = () => {
     const [benefitsData, setBenefitsData] = useState([]);
     const [reportsData, setReportsData] = useState([]);
 
-    const pageSize = 5;
+    const pageSize = 6;
     const API_URL = API_ORIGIN;
 
     const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -719,7 +719,7 @@ const StaffManagement = () => {
             formDataToSend.append('profile_photo', imageFile);
         }
 
-        try {
+             try {
             if (modalMode === 'add') {
                 await createEmployeeMutation.mutateAsync(formDataToSend);
                 showNotificationMessage('Staff member added successfully', 'success');
@@ -738,6 +738,12 @@ const StaffManagement = () => {
                 await refetchEmployees();
                 await refetchStats();
             }
+
+            // ⭐ #1 — Refresh compliance cache so the modal shows fresh data
+            //    the next time it's opened.
+            setComplianceData([]);
+            setFilteredComplianceData([]);
+
             setCurrentPage(1);
         } catch (err) {
             console.error('Save error:', err);

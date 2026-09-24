@@ -25,12 +25,20 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 use App\Mail\BookingConfirmationMail;
 use Illuminate\Support\Facades\Mail;
 
 class BookingController extends Controller
 {
     use Auditable;
+
+    private const SETTINGS_GROUP_DEPOSIT_POLICY  = 'booking_deposit_policy';
+    private const SETTINGS_GROUP_REFUND_REQUESTS = 'booking_refund_requests';
+
+    // ============================================================
+    // RELATION HELPERS
+    // ============================================================
 
     private function query()
     {
@@ -93,23 +101,23 @@ class BookingController extends Controller
     private function expireStaleRescheduleRequests(): void
     {
         try {
-            Booking::where('booking_status', 'reschedule_requested')
-                ->whereNotNull('requested_date')
-                ->where('updated_at', '<=', now()->subHours(48))
-                ->update([
-                    'booking_status' => 'cancelled',
-                    'cancellation_reason' => DB::raw("COALESCE(cancellation_reason, 'Auto-cancelled: customer did not respond to the reschedule request within 48 hours.')"),
-                ]);
+            $service = app(\App\Services\BookingService::class);
+            $service->expireCustomerRescheduleResponses();
         } catch (\Throwable $e) {
             Log::warning('Failed to expire stale reschedule requests: ' . $e->getMessage());
         }
     }
+
+    // ============================================================
+    // INDEX / SHOW
+    // ============================================================
 
     public function index(Request $request): JsonResponse
     {
         $this->expireStaleRescheduleRequests();
 
         $query = $this->query();
+
         if (! $request->boolean('include_history')) {
             $query->where('booking_no', 'not like', 'HIST-%');
         }
@@ -120,7 +128,7 @@ class BookingController extends Controller
                 ->filter()
                 ->values()
                 ->all();
-            if (!empty($statuses)) {
+            if (! empty($statuses)) {
                 $query->whereIn('booking_status', $statuses);
             }
         } elseif ($request->filled('status')) {
@@ -133,7 +141,7 @@ class BookingController extends Controller
                 ->filter()
                 ->values()
                 ->all();
-            if (!empty($excludedStatuses)) {
+            if (! empty($excludedStatuses)) {
                 $query->whereNotIn('booking_status', $excludedStatuses);
             }
         }
@@ -234,42 +242,46 @@ class BookingController extends Controller
         return $this->ok($bookings);
     }
 
-    /**
-     * Send booking confirmation email + messenger notification
-     */
+    public function show(Booking $booking): JsonResponse
+    {
+        $booking = $this->query()->findOrFail($booking->booking_id);
+        return $this->ok($this->formatBooking($booking));
+    }
+
+    // ============================================================
+    // CONFIRMATION NOTIFICATIONS
+    // ============================================================
+
     private function sendBookingConfirmation(Booking $booking): void
     {
-        $customer = $booking->serviceEvent?->customer;
-        $person = $customer?->person;
-        $email = $person?->email;
+        $customer     = $booking->serviceEvent?->customer;
+        $person       = $customer?->person;
+        $email        = $person?->email;
         $customerName = $person?->full_name ?? 'Customer';
-        $bookingNo = $booking->booking_no;
-        $eventDate = $booking->serviceEvent?->event_date?->format('F d, Y') ?? 'TBD';
-        $eventTime = $booking->serviceEvent?->event_time ?? 'TBD';
-        $venue = $booking->serviceEvent?->venue ?? 'TBD';
-        $totalAmount = number_format($booking->quotation?->total_amount ?? 0, 2);
+        $bookingNo    = $booking->booking_no;
+        $eventDate    = $booking->serviceEvent?->event_date?->format('F d, Y') ?? 'TBD';
+        $eventTime    = $booking->serviceEvent?->event_time ?? 'TBD';
+        $venue        = $booking->serviceEvent?->venue ?? 'TBD';
+        $totalAmount  = number_format($booking->quotation?->total_amount ?? 0, 2);
 
-        // 1. Send Email
         if ($email) {
             try {
                 Mail::to($email)->send(new BookingConfirmationMail($booking));
                 Log::info('Booking confirmation email sent to: ' . $email, [
                     'booking_id' => $booking->booking_id,
-                    'booking_no' => $bookingNo
+                    'booking_no' => $bookingNo,
                 ]);
             } catch (\Exception $e) {
                 Log::error('Failed to send booking confirmation email: ' . $e->getMessage(), [
                     'booking_id' => $booking->booking_id,
-                    'email' => $email
+                    'email'      => $email,
                 ]);
             }
         }
 
-        // 2. Send In-App Notification
         if ($customer && $customer->user_id) {
             try {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'booking_confirmed',
                     '🎉 Booking Confirmed!',
@@ -283,22 +295,15 @@ class BookingController extends Controller
                         'booking_id' => $booking->booking_id,
                         'booking_no' => $bookingNo,
                         'event_date' => $eventDate,
-                        'venue' => $venue,
+                        'venue'      => $venue,
                     ],
                     "/customer/bookings/{$booking->booking_id}"
                 );
-                Log::info('Booking in-app notification sent', [
-                    'booking_id' => $booking->booking_id,
-                    'user_id' => $customer->user_id
-                ]);
             } catch (\Exception $e) {
-                Log::error('Failed to send booking in-app notification: ' . $e->getMessage(), [
-                    'booking_id' => $booking->booking_id
-                ]);
+                Log::error('Failed to send booking in-app notification: ' . $e->getMessage());
             }
         }
 
-        // 3. Send Mobile Push Notification (if FCM token exists)
         if ($customer && $customer->user_id) {
             try {
                 $user = \App\Models\User::find($customer->user_id);
@@ -310,49 +315,30 @@ class BookingController extends Controller
                         [
                             'booking_id' => (string) $booking->booking_id,
                             'booking_no' => $bookingNo,
-                            'type' => 'booking_confirmed'
+                            'type'       => 'booking_confirmed',
                         ]
                     );
                 }
             } catch (\Exception $e) {
-                Log::error('Failed to send mobile push notification: ' . $e->getMessage(), [
-                    'booking_id' => $booking->booking_id
-                ]);
+                Log::error('Failed to send mobile push notification: ' . $e->getMessage());
             }
         }
     }
 
-    /**
-     * Send mobile push notification via FCM
-     */
     private function sendMobilePushNotification($user, $title, $body, $data = []): void
     {
         try {
             $fcmToken = $user->fcm_token ?? null;
-
-            if (!$fcmToken) {
-                Log::info('User has no FCM token set', ['user_id' => $user->user_id]);
-                return;
-            }
+            if (!$fcmToken) return;
 
             $serverKey = config('services.fcm.server_key');
-
-            if (!$serverKey) {
-                Log::warning('FCM server key not configured');
-                return;
-            }
+            if (!$serverKey) return;
 
             $payload = [
-                'to' => $fcmToken,
-                'notification' => [
-                    'title' => $title,
-                    'body' => $body,
-                    'sound' => 'default',
-                ],
-                'data' => array_merge($data, [
-                    'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
-                ]),
-                'priority' => 'high',
+                'to'           => $fcmToken,
+                'notification' => ['title' => $title, 'body' => $body, 'sound' => 'default'],
+                'data'         => array_merge($data, ['click_action' => 'FLUTTER_NOTIFICATION_CLICK']),
+                'priority'     => 'high',
             ];
 
             $ch = curl_init('https://fcm.googleapis.com/fcm/send');
@@ -363,60 +349,42 @@ class BookingController extends Controller
                 'Content-Type: application/json',
             ]);
             curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-
-            $response = curl_exec($ch);
-            $error = curl_error($ch);
+            curl_exec($ch);
             curl_close($ch);
-
-            if ($error) {
-                Log::error('FCM push notification error: ' . $error);
-            } else {
-                Log::info('FCM push notification sent', ['response' => $response]);
-            }
         } catch (\Exception $e) {
             Log::error('Failed to send mobile push notification: ' . $e->getMessage());
         }
     }
 
     // ============================================================
-    // ⭐ FIXED: STORE METHOD - Ensures customer is created/saved
+    // STORE / APPROVE / UPDATE / DESTROY
     // ============================================================
+
     public function store(BookingRequest $request, BookingService $service): JsonResponse
     {
         try {
-            // Get customer from request
             $customer = null;
-
-            // If customer_id is provided, use it
             if ($request->has('customer_id')) {
                 $customer = \App\Models\Customer::find($request->customer_id);
             }
 
-            // If no customer_id but we have customer data, let the service create one
-            // The service's createCustomerFromData will handle this
             $booking = $service->requestBooking($customer, $request->validated());
 
             $payload = [
-                'booking_id' => $booking->booking_id,
-                'booking_no' => $booking->booking_no,
+                'booking_id'     => $booking->booking_id,
+                'booking_no'     => $booking->booking_no,
                 'booking_status' => $booking->booking_status,
-                'event_date' => optional($booking->serviceEvent?->event_date)->format('Y-m-d'),
-                'customer_name' => $booking->serviceEvent?->customer?->person?->full_name,
-                'total_amount' => $booking->quotation?->total_amount,
+                'event_date'     => optional($booking->serviceEvent?->event_date)->format('Y-m-d'),
+                'customer_name'  => $booking->serviceEvent?->customer?->person?->full_name,
+                'total_amount'   => $booking->quotation?->total_amount,
             ];
 
             $bookingId = $booking->booking_id;
 
             app()->terminating(function () use ($bookingId) {
                 try {
-                    $booking = Booking::with([
-                        'serviceEvent.customer.person',
-                        'quotation',
-                    ])->find($bookingId);
-
-                    if (!$booking) {
-                        return;
-                    }
+                    $booking = Booking::with(['serviceEvent.customer.person', 'quotation'])->find($bookingId);
+                    if (!$booking) return;
 
                     $this->logCustom(
                         'store',
@@ -424,12 +392,12 @@ class BookingController extends Controller
                         $booking->booking_id,
                         "Booking {$booking->booking_no} created",
                         [
-                            'booking_no' => $booking->booking_no,
-                            'customer' => $booking->serviceEvent?->customer?->person?->full_name,
-                            'event_date' => $booking->serviceEvent?->event_date?->format('Y-m-d'),
+                            'booking_no'   => $booking->booking_no,
+                            'customer'     => $booking->serviceEvent?->customer?->person?->full_name,
+                            'event_date'   => $booking->serviceEvent?->event_date?->format('Y-m-d'),
                             'guests_count' => $booking->serviceEvent?->guests_count,
                             'total_amount' => $booking->quotation?->total_amount,
-                            'created_at' => now()->toDateTimeString(),
+                            'created_at'   => now()->toDateTimeString(),
                         ]
                     );
 
@@ -440,45 +408,36 @@ class BookingController extends Controller
             });
 
             return $this->ok($payload, 'Booking created successfully.');
+        } catch (ValidationException $e) {
+            return $this->fail(
+                $e->validator->errors()->first('booking')
+                    ?: $e->validator->errors()->first()
+                    ?: 'Booking does not satisfy the current booking policy.',
+                422,
+                $e->errors()
+            );
         } catch (\Throwable $e) {
             Log::error('Booking store error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to create booking: ' . $e->getMessage(), 500);
         }
     }
 
-    // ============================================================
-    // ⭐ FIXED: APPROVE METHOD - Gets customer data correctly
-    // ============================================================
     public function approve(Booking $booking, BookingService $service): JsonResponse
     {
         try {
-            // Only the service event is needed for the pre-approval guard.
-            // BookingService loads the relations required by the transaction.
             $booking->load('serviceEvent');
-
             $oldData = $booking->toArray();
 
             if (!$booking->serviceEvent) {
-                Log::error('Booking approval failed: No service event found', [
-                    'booking_id' => $booking->booking_id,
-                    'booking_no' => $booking->booking_no
-                ]);
                 return $this->fail('Cannot approve booking: No service event associated with this booking.', 422);
             }
 
             try {
                 $booking = $service->approve($booking);
             } catch (\Exception $e) {
-                Log::error('Booking approval transaction failed: ' . $e->getMessage(), [
-                    'booking_id' => $booking->booking_id,
-                    'trace' => $e->getTraceAsString()
-                ]);
                 return $this->fail('Failed to approve booking: ' . $e->getMessage(), 500);
             }
 
-            // Reload only the fields required by the immediate response. The
-            // normal query() relation graph is intentionally avoided here because
-            // it includes recipes, inventory stock, equipment, and tracking.
             $booking = Booking::with([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
@@ -488,12 +447,17 @@ class BookingController extends Controller
                 'payments',
             ])->findOrFail($booking->booking_id);
 
+            try {
+                app(NotificationService::class)->bookingApproved($booking);
+                app(NotificationService::class)->depositRequired($booking);
+            } catch (\Throwable $e) {
+                Log::warning('Approval notification failed: ' . $e->getMessage());
+            }
+
             $approvedBookingId = $booking->booking_id;
             $approvedBookingNo = $booking->booking_no;
-            $orderNumber = $booking->order?->order_number;
+            $orderNumber       = $booking->order?->order_number;
 
-            // Notifications, audit logging, and admin alerts run after the HTTP
-            // response so approval stays fast even when email providers are slow.
             app()->terminating(function () use ($approvedBookingId, $oldData, $approvedBookingNo) {
                 try {
                     $booking = Booking::with([
@@ -503,20 +467,12 @@ class BookingController extends Controller
                         'order',
                     ])->find($approvedBookingId);
 
-                    if (!$booking) {
-                        return;
-                    }
+                    if (!$booking) return;
 
                     try {
                         $this->sendBookingConfirmation($booking);
-                        Log::info('Booking confirmation notifications sent', [
-                            'booking_id' => $approvedBookingId,
-                            'booking_no' => $approvedBookingNo,
-                        ]);
                     } catch (\Throwable $notificationError) {
-                        Log::warning('Failed to send booking confirmation notifications: ' . $notificationError->getMessage(), [
-                            'booking_id' => $approvedBookingId,
-                        ]);
+                        Log::warning('Failed to send booking confirmation notifications: ' . $notificationError->getMessage());
                     }
 
                     $customerName = $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown';
@@ -527,21 +483,18 @@ class BookingController extends Controller
                         $booking->booking_id,
                         "Booking {$booking->booking_no} APPROVED",
                         [
-                            'booking_no' => $booking->booking_no,
-                            'customer' => $customerName,
-                            'event_date' => $booking->serviceEvent?->event_date?->format('Y-m-d'),
-                            'total_amount' => $booking->quotation?->total_amount,
-                            'old_status' => $oldData['booking_status'] ?? 'pending',
-                            'new_status' => 'confirmed',
+                            'booking_no'    => $booking->booking_no,
+                            'customer'      => $customerName,
+                            'event_date'    => $booking->serviceEvent?->event_date?->format('Y-m-d'),
+                            'total_amount'  => $booking->quotation?->total_amount,
+                            'old_status'    => $oldData['booking_status'] ?? 'pending',
+                            'new_status'    => 'confirmed',
                             'order_created' => $booking->order?->order_number,
-                            'approved_at' => now()->toDateTimeString(),
+                            'approved_at'   => now()->toDateTimeString(),
                         ]
                     );
 
-                    $notificationService = app(NotificationService::class);
-
-                    // Notify admin
-                    $notificationService->notifyRole(
+                    app(NotificationService::class)->notifyRole(
                         'admin',
                         'booking_approved',
                         '🎉 Booking Approved Successfully',
@@ -551,8 +504,8 @@ class BookingController extends Controller
                             "💰 Amount: ₱" . number_format($booking->quotation?->total_amount ?? 0, 2),
                         \App\Models\Notification::PRIORITY_HIGH,
                         [
-                            'booking_id' => $booking->booking_id,
-                            'booking_no' => $booking->booking_no,
+                            'booking_id'    => $booking->booking_id,
+                            'booking_no'    => $booking->booking_no,
                             'customer_name' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
                         ],
                         "/admin/bookings/{$booking->booking_id}"
@@ -562,10 +515,6 @@ class BookingController extends Controller
                 }
             });
 
-            // Return a lightweight list-compatible booking payload. Avoid the
-            // full formatBooking() relation graph here because recipe, inventory,
-            // equipment, and tracking data are not required to insert the row in
-            // Orders & Events immediately after approval.
             $booking->loadMissing([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
@@ -574,70 +523,48 @@ class BookingController extends Controller
                 'order',
                 'payments',
             ]);
-            $event = $booking->serviceEvent;
-            $person = $event?->customer?->person;
+
+            $event       = $booking->serviceEvent;
+            $person      = $event?->customer?->person;
             $totalAmount = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
-            $paidAmount = (float) $booking->payments->where('status', 'completed')->sum('amount');
+            $paidAmount  = (float) $booking->payments->where('status', 'completed')->sum('amount');
 
             $payload = [
-                'id' => $booking->booking_id,
-                'booking_id' => $booking->booking_id,
-                'booking_no' => $approvedBookingNo,
-                'booking_status' => 'confirmed',
-                'order_number' => $orderNumber,
-                'order' => $booking->order,
-                'invoice' => $booking->invoice,
-                'quotation' => $booking->quotation,
-                'customer_name' => $person?->full_name ?? 'Unknown',
-                'customer_email' => $person?->email,
-                'customer_phone' => $person?->phone,
+                'id'               => $booking->booking_id,
+                'booking_id'       => $booking->booking_id,
+                'booking_no'       => $approvedBookingNo,
+                'booking_status'   => 'confirmed',
+                'order_number'     => $orderNumber,
+                'order'            => $booking->order,
+                'invoice'          => $booking->invoice,
+                'quotation'        => $booking->quotation,
+                'customer_name'    => $person?->full_name ?? 'Unknown',
+                'customer_email'   => $person?->email,
+                'customer_phone'   => $person?->phone,
                 'customer_address' => $person?->address_line_1,
-                'event_type_id' => $event?->event_type_id,
-                'event_type_name' => $event?->eventType?->name,
-                'booking_scope' => $event?->booking_scope ?? 'regular',
-                'event_date' => $event?->event_date?->toDateString(),
-                'event_time' => $event?->event_time,
-                'venue' => $event?->venue,
-                'guests_count' => (int) ($event?->guests_count ?? 0),
-                'service_type' => $event?->service_type,
-                'delivery_method' => $event?->delivery_method,
+                'event_type_id'    => $event?->event_type_id,
+                'event_type_name'  => $event?->eventType?->name,
+                'booking_scope'    => $event?->booking_scope ?? 'regular',
+                'event_date'       => $event?->event_date?->toDateString(),
+                'event_time'       => $event?->event_time,
+                'venue'            => $event?->venue,
+                'guests_count'     => (int) ($event?->guests_count ?? 0),
+                'service_type'     => $event?->service_type,
+                'delivery_method'  => $event?->delivery_method,
                 'special_requests' => $event?->special_requests,
-                'total_amount' => $totalAmount,
-                'paid_amount' => $paidAmount,
-                'balance' => max(0, $totalAmount - $paidAmount),
-                'payments' => $booking->payments->values(),
-                'meal_services' => [],
-                'assigned_staff' => [],
-                'assigned_staff_count' => 0,
-                'total_staff_required' => 0,
-                'event_completed' => false,
-                'event_done' => false,
-                'event_done_at' => null,
-                'progress' => 0,
-                'equipment_in_out' => [],
-                'kitchen_preparation' => [],
-                'delivery_preparation' => [],
-                'delivery_tracking' => [],
-                'menu_items' => [],
-                'created_at' => $booking->created_at,
-                'updated_at' => $booking->updated_at,
+                'total_amount'     => $totalAmount,
+                'paid_amount'      => $paidAmount,
+                'balance'          => max(0, $totalAmount - $paidAmount),
+                'payments'         => $booking->payments->values(),
+                'created_at'       => $booking->created_at,
+                'updated_at'       => $booking->updated_at,
             ];
 
             return $this->ok($payload, 'Booking ' . $approvedBookingNo . ' confirmed successfully!');
         } catch (\Exception $e) {
-            Log::error('Booking approval failed: ' . $e->getMessage(), [
-                'booking_id' => $booking->booking_id,
-                'trace' => $e->getTraceAsString()
-            ]);
-
+            Log::error('Booking approval failed: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to approve booking: ' . $e->getMessage(), 500);
         }
-    }
-
-    public function show(Booking $booking): JsonResponse
-    {
-        $booking = $this->query()->findOrFail($booking->booking_id);
-        return $this->ok($this->formatBooking($booking));
     }
 
     public function update(Request $request, Booking $booking, BookingService $service): JsonResponse
@@ -651,7 +578,6 @@ class BookingController extends Controller
                 if (! in_array($booking->booking_status, ['pending', 'draft'], true)) {
                     return $this->fail('Cashiers may only update pending booking requests.', 403);
                 }
-
                 if ($request->hasAny(['booking_status', 'cancellation_reason'])) {
                     return $this->fail('Booking approval, rejection, cancellation, and status changes require administrator approval.', 403);
                 }
@@ -667,6 +593,12 @@ class BookingController extends Controller
                     'requested_date',
                     'requested_time',
                     'reschedule_reason',
+                    'reschedule_proposed_by',
+                    'reschedule_status',
+                    'reschedule_source',
+                    'reschedule_proposed_at',
+                    'original_event_date',
+                    'original_event_time',
                     'cancellation_reason',
                 ]));
 
@@ -692,7 +624,7 @@ class BookingController extends Controller
                     'booking_no' => $booking->booking_no,
                     'old_status' => $oldData['booking_status'] ?? 'pending',
                     'new_status' => $booking->booking_status,
-                    'updated_at' => now()->toDateTimeString()
+                    'updated_at' => now()->toDateTimeString(),
                 ]
             );
 
@@ -715,9 +647,9 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Booking {$booking->booking_no} archived",
                 [
-                    'booking_no' => $booking->booking_no,
+                    'booking_no'     => $booking->booking_no,
                     'booking_status' => $oldData['booking_status'] ?? 'unknown',
-                    'deleted_at' => now()->toDateTimeString()
+                    'deleted_at'     => now()->toDateTimeString(),
                 ]
             );
 
@@ -744,17 +676,16 @@ class BookingController extends Controller
                 "Booking {$booking->booking_no} REJECTED",
                 [
                     'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'customer'   => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
                     'old_status' => $oldData['booking_status'] ?? 'pending',
                     'new_status' => 'rejected',
-                    'rejected_at' => now()->toDateTimeString()
+                    'rejected_at' => now()->toDateTimeString(),
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'booking_rejected',
                     'Booking Update',
@@ -765,8 +696,7 @@ class BookingController extends Controller
                 );
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'booking_rejected',
                 '❌ Booking Rejected',
@@ -783,17 +713,13 @@ class BookingController extends Controller
         }
     }
 
-    public function cancel(Request $request, Booking $booking): JsonResponse
+    public function cancel(Request $request, Booking $booking, BookingService $service): JsonResponse
     {
         try {
             $oldData = $booking->toArray();
-            $reason = $request->input('reason');
+            $reason  = $request->input('reason');
 
-            $booking->update([
-                'booking_status' => 'cancelled',
-                'cancellation_reason' => $reason,
-            ]);
-            $booking->serviceEvent?->update(['status' => 'cancelled']);
+            $booking = $service->cancel($booking, $reason);
 
             $this->logCustom(
                 'cancel',
@@ -801,24 +727,35 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Booking {$booking->booking_no} CANCELLED",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'reason' => $reason,
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'cancelled',
-                    'cancelled_at' => now()->toDateTimeString()
+                    'booking_no'    => $booking->booking_no,
+                    'customer'      => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'reason'        => $reason,
+                    'old_status'    => $oldData['booking_status'] ?? 'pending',
+                    'new_status'    => 'cancelled',
+                    'cancelled_at'  => now()->toDateTimeString(),
                 ]
             );
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->bookingCancelled($booking, $reason);
+            app(NotificationService::class)->bookingCancelled($booking, $reason);
 
             return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled.');
+        } catch (ValidationException $e) {
+            return $this->fail(
+                $e->validator->errors()->first('cancellation')
+                    ?: $e->validator->errors()->first()
+                    ?: 'Cancellation is not allowed at this time.',
+                422,
+                $e->errors()
+            );
         } catch (\Exception $e) {
             Log::error('Booking cancel error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to cancel booking: ' . $e->getMessage(), 500);
         }
     }
+
+    // ============================================================
+    // LEGACY RESCHEDULE METHODS
+    // ============================================================
 
     public function reschedule(Request $request, Booking $booking): JsonResponse
     {
@@ -826,11 +763,11 @@ class BookingController extends Controller
             $oldData = $booking->toArray();
 
             $validated = $request->validate([
-                'new_date' => ['nullable', 'date'],
+                'new_date'   => ['nullable', 'date'],
                 'event_date' => ['nullable', 'date'],
-                'new_time' => ['nullable', 'string'],
+                'new_time'   => ['nullable', 'string'],
                 'event_time' => ['nullable', 'string'],
-                'reason' => ['nullable', 'string'],
+                'reason'     => ['nullable', 'string'],
             ]);
 
             $booking->serviceEvent?->update([
@@ -839,7 +776,7 @@ class BookingController extends Controller
             ]);
 
             $booking->update([
-                'booking_status' => 'confirmed',
+                'booking_status'    => 'confirmed',
                 'reschedule_reason' => $validated['reason'] ?? null,
             ]);
 
@@ -849,21 +786,20 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Booking {$booking->booking_no} RESCHEDULED",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'old_date' => $oldData['event_date'] ?? null,
-                    'new_date' => $booking->serviceEvent?->event_date?->toDateString(),
-                    'old_time' => $oldData['event_time'] ?? null,
-                    'new_time' => $booking->serviceEvent?->event_time,
-                    'reason' => $validated['reason'] ?? null,
-                    'rescheduled_at' => now()->toDateTimeString()
+                    'booking_no'     => $booking->booking_no,
+                    'customer'       => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'old_date'       => $oldData['event_date'] ?? null,
+                    'new_date'       => $booking->serviceEvent?->event_date?->toDateString(),
+                    'old_time'       => $oldData['event_time'] ?? null,
+                    'new_time'       => $booking->serviceEvent?->event_time,
+                    'reason'         => $validated['reason'] ?? null,
+                    'rescheduled_at' => now()->toDateTimeString(),
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'booking_rescheduled',
                     'Booking Rescheduled',
@@ -874,8 +810,7 @@ class BookingController extends Controller
                 );
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'booking_rescheduled',
                 '🔄 Booking Rescheduled',
@@ -898,19 +833,23 @@ class BookingController extends Controller
             $validated = $request->validate([
                 'requested_date' => ['required', 'date'],
                 'requested_time' => ['required', 'string', 'max:50'],
-                'reason' => ['required', 'string', 'max:500'],
+                'reason'         => ['required', 'string', 'max:500'],
             ]);
 
             $oldData = $booking->toArray();
             $newDate = $validated['requested_date'];
             $newTime = $validated['requested_time'];
-            $reason = $validated['reason'];
+            $reason  = $validated['reason'];
 
             $booking->update([
-                'booking_status' => 'reschedule_requested',
-                'requested_date' => $newDate,
-                'requested_time' => $newTime,
-                'reschedule_reason' => $reason,
+                'booking_status'         => 'reschedule_requested',
+                'requested_date'         => $newDate,
+                'requested_time'         => $newTime,
+                'reschedule_reason'      => $reason,
+                'reschedule_proposed_by' => 'customer',
+                'reschedule_status'      => 'pending',
+                'reschedule_source'      => 'customer_initial',
+                'reschedule_proposed_at' => now(),
             ]);
 
             $this->logCustom(
@@ -919,21 +858,22 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Reschedule REQUESTED for booking {$booking->booking_no}",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'booking_no'     => $booking->booking_no,
+                    'customer'       => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
                     'requested_date' => $newDate,
                     'requested_time' => $newTime,
-                    'reason' => $reason,
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'reschedule_requested',
-                    'requested_at' => now()->toDateTimeString()
+                    'reason'         => $reason,
+                    'old_status'     => $oldData['booking_status'] ?? 'pending',
+                    'new_status'     => 'reschedule_requested',
+                    'requested_at'   => now()->toDateTimeString(),
                 ]
             );
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->bookingRescheduleRequested($booking, $newDate, $newTime, $reason);
+            app(NotificationService::class)->bookingRescheduleRequested($booking, $newDate, $newTime, $reason);
 
             return $this->ok($this->formatBooking($booking->fresh()), 'Reschedule requested.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
         } catch (\Exception $e) {
             Log::error('Request reschedule error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to request reschedule: ' . $e->getMessage(), 500);
@@ -949,7 +889,16 @@ class BookingController extends Controller
                 'event_date' => $booking->requested_date ?? $booking->serviceEvent->event_date,
                 'event_time' => $booking->requested_time ?? $booking->serviceEvent->event_time,
             ]);
-            $booking->update(['booking_status' => 'confirmed']);
+            $booking->update([
+                'booking_status' => 'confirmed',
+                'reschedule_status' => 'accepted',
+                'requested_date' => null,
+                'requested_time' => null,
+                'reschedule_proposed_by' => null,
+                'reschedule_proposed_at' => null,
+                'original_event_date' => null,
+                'original_event_time' => null,
+            ]);
             $this->handleConfirmedBooking($booking);
 
             $this->logCustom(
@@ -958,20 +907,19 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Reschedule request APPROVED for booking {$booking->booking_no}",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'booking_no'    => $booking->booking_no,
+                    'customer'      => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
                     'approved_date' => $booking->serviceEvent?->event_date?->toDateString(),
                     'approved_time' => $booking->serviceEvent?->event_time,
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'confirmed',
-                    'approved_at' => now()->toDateTimeString()
+                    'old_status'    => $oldData['booking_status'] ?? 'pending',
+                    'new_status'    => 'confirmed',
+                    'approved_at'   => now()->toDateTimeString(),
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'reschedule_approved',
                     'Reschedule Request Approved',
@@ -982,8 +930,7 @@ class BookingController extends Controller
                 );
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'reschedule_approved',
                 '✅ Reschedule Request Approved',
@@ -1013,18 +960,17 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Reschedule request REJECTED for booking {$booking->booking_no}",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'confirmed',
-                    'rejected_at' => now()->toDateTimeString()
+                    'booking_no'  => $booking->booking_no,
+                    'customer'    => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'old_status'  => $oldData['booking_status'] ?? 'pending',
+                    'new_status'  => 'confirmed',
+                    'rejected_at' => now()->toDateTimeString(),
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'reschedule_rejected',
                     'Reschedule Request Update',
@@ -1035,8 +981,7 @@ class BookingController extends Controller
                 );
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'reschedule_rejected',
                 '❌ Reschedule Request Rejected',
@@ -1053,17 +998,1066 @@ class BookingController extends Controller
         }
     }
 
+    // ============================================================
+    // TWO-WAY RESCHEDULE WORKFLOW
+    // ============================================================
+
+    private function validateRescheduleDate(Carbon $newDate, ?Booking $booking = null, ?string $newTime = null): ?array
+    {
+        $today  = now()->startOfDay();
+        $target = $newDate->copy()->startOfDay();
+
+        if ($target->lt($today)) {
+            return ['code' => 'past_date', 'message' => 'The proposed date is in the past.'];
+        }
+
+        $setting = Setting::where('group', 'booking_calendar')
+            ->where('key', $target->toDateString())
+            ->first();
+
+        if ($setting) {
+            $value       = json_decode($setting->value, true) ?: [];
+            $status      = $value['status'] ?? 'available';
+            $opMode      = $value['operation_mode'] ?? 'normal';
+            $maxBookings = (int) ($value['max_bookings'] ?? 0);
+
+            $bookingCount = Booking::whereIn('booking_status', [
+                'confirmed',
+                'pending_approval',
+                'ongoing',
+                'reschedule_proposed',
+            ])
+                ->when($booking, fn($q) => $q->where('booking_id', '!=', $booking->booking_id))
+                ->whereHas(
+                    'serviceEvent',
+                    fn($q) =>
+                    $q->whereDate('event_date', $target->toDateString())
+                )
+                ->count();
+
+            if ($status !== 'available') {
+                return [
+                    'code'    => 'date_unavailable',
+                    'message' => "The date {$target->toDateString()} is marked as {$status}.",
+                ];
+            }
+
+            if ($opMode === 'limited_slot' && $maxBookings > 0 && $bookingCount >= $maxBookings) {
+                return [
+                    'code'    => 'slot_full',
+                    'message' => "The date {$target->toDateString()} is fully booked ({$bookingCount}/{$maxBookings}).",
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    public function rejectWithReschedule(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'new_date' => ['required', 'date'],
+                'new_time' => ['nullable', 'string', 'max:50'],
+                'reason'   => ['required', 'string', 'max:500'],
+            ]);
+
+            $booking->loadMissing('serviceEvent');
+            if (!$booking->serviceEvent) {
+                return $this->fail('Booking has no service event.', 422);
+            }
+
+            $newDate = Carbon::parse($validated['new_date']);
+            $error   = $this->validateRescheduleDate($newDate, $booking);
+            if ($error) {
+                return $this->fail($error['message'], 422, ['code' => $error['code']]);
+            }
+
+            $oldStatus    = $booking->booking_status;
+            $oldEventDate = $booking->serviceEvent->event_date?->toDateString();
+            $oldEventTime = $booking->serviceEvent->event_time;
+
+            DB::transaction(function () use ($booking, $validated, $newDate, $oldEventDate, $oldEventTime) {
+                $booking->update([
+                    'booking_status'         => $booking->booking_status ?: 'confirmed',
+                    'requested_date'         => $newDate->toDateString(),
+                    'requested_time'         => $validated['new_time'] ?? $booking->serviceEvent->event_time,
+                    'reschedule_reason'      => $validated['reason'],
+                    'reschedule_proposed_by' => 'admin',
+                    'reschedule_status'      => 'pending',
+                    'reschedule_source'      => 'admin_proposal',
+                    'reschedule_proposed_at' => now(),
+                    'original_event_date'    => $oldEventDate,
+                    'original_event_time'    => $oldEventTime,
+                ]);
+            });
+
+            $this->logCustom(
+                'reject_with_reschedule',
+                'bookings',
+                $booking->booking_id,
+                "Admin proposed reschedule for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'old_status' => $oldStatus,
+                    'new_date'   => $newDate->toDateString(),
+                    'reason'     => $validated['reason'],
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->rescheduleProposedByAdmin(
+                    $booking->fresh(),
+                    $newDate,
+                    $validated['new_time'] ?? null,
+                    $validated['reason']
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Reschedule proposal notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Reschedule proposal sent.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('rejectWithReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to propose reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function acceptAdminReschedule(Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->reschedule_status !== 'pending' || $booking->reschedule_proposed_by !== 'admin') {
+                return $this->fail('No pending admin reschedule proposal for this booking.', 422);
+            }
+
+            $newDate = $booking->requested_date ? Carbon::parse($booking->requested_date) : null;
+            if (!$newDate) {
+                return $this->fail('Missing proposed date.', 422);
+            }
+
+            $booking->loadMissing('serviceEvent');
+
+            DB::transaction(function () use ($booking, $newDate) {
+                $booking->serviceEvent?->update([
+                    'event_date' => $newDate->toDateString(),
+                    'event_time' => $booking->requested_time ?? $booking->serviceEvent->event_time,
+                ]);
+                $booking->update([
+                    'booking_status'         => 'confirmed',
+                    'reschedule_status'      => 'accepted',
+                    'reschedule_proposed_by' => 'admin',
+                    'requested_date'         => null,
+                    'requested_time'         => null,
+                    'reschedule_reason'      => null,
+                    'reschedule_proposed_at' => null,
+                    'original_event_date'    => null,
+                    'original_event_time'    => null,
+                ]);
+            });
+
+            $this->logCustom(
+                'reschedule_accepted_by_customer',
+                'bookings',
+                $booking->booking_id,
+                "Customer accepted reschedule for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'new_date'   => $newDate->toDateString(),
+                ]
+            );
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Reschedule accepted.');
+        } catch (\Throwable $e) {
+            Log::error('acceptAdminReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to accept reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function counterReschedule(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->reschedule_status !== 'pending' || $booking->reschedule_proposed_by !== 'admin') {
+                return $this->fail('No pending admin reschedule proposal to counter.', 422);
+            }
+
+            $validated = $request->validate([
+                'new_date' => ['required', 'date'],
+                'new_time' => ['nullable', 'string', 'max:50'],
+                'reason'   => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $newDate = Carbon::parse($validated['new_date']);
+            $error   = $this->validateRescheduleDate($newDate, $booking);
+            if ($error) {
+                return $this->fail($error['message'], 422, ['code' => $error['code']]);
+            }
+
+            // ⭐ Keep booking_status as confirmed — reschedule is a sub-state
+            $restoreStatus = in_array($booking->booking_status, ['confirmed', 'ongoing'], true)
+                ? $booking->booking_status
+                : 'confirmed';
+
+            $booking->update([
+                'booking_status'         => $restoreStatus,
+                'requested_date'         => $newDate->toDateString(),
+                'requested_time'         => $validated['new_time'] ?? $booking->requested_time,
+                'reschedule_reason'      => $validated['reason'] ?? $booking->reschedule_reason,
+                'reschedule_proposed_by' => 'customer',
+                'reschedule_status'      => 'pending',
+                'reschedule_source'      => 'customer_counter',
+                'reschedule_proposed_at' => now(),
+            ]);
+
+            $this->logCustom(
+                'counter_reschedule',
+                'bookings',
+                $booking->booking_id,
+                "Customer counter-proposed date for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'new_date'   => $newDate->toDateString(),
+                    'new_time'   => $validated['new_time'] ?? null,
+                    'reason'     => $validated['reason'] ?? null,
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->rescheduleCounterProposed(
+                    $booking->fresh(),
+                    $newDate,
+                    $validated['reason'] ?? null
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Counter reschedule notification failed: ' . $e->getMessage());
+            }
+
+            try {
+                app(NotificationService::class)->notifyRole(
+                    'admin',
+                    'reschedule_counter_proposed',
+                    '🔄 Customer Counter-Proposed a Date',
+                    "The customer proposed an alternative schedule for booking {$booking->booking_no}.\n\n" .
+                        "📅 New Date: {$newDate->format('F d, Y')}\n" .
+                        "⏰ New Time: " . ($validated['new_time'] ?? '—') . "\n\n" .
+                        "Please review and approve or reject.",
+                    \App\Models\Notification::PRIORITY_HIGH,
+                    [
+                        'booking_id' => $booking->booking_id,
+                        'booking_no' => $booking->booking_no,
+                    ],
+                    "/admin/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Admin counter notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Counter proposal sent.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('counterReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to send counter proposal: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function declineAdminReschedule(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->reschedule_status !== 'pending' || $booking->reschedule_proposed_by !== 'admin') {
+                return $this->fail('No pending admin reschedule proposal.', 422);
+            }
+
+            $validated = $request->validate([
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            DB::transaction(function () use ($booking, $validated) {
+                $booking->update([
+                    'booking_status'         => 'cancelled',
+                    'cancellation_reason'    => $validated['reason'] ?? 'Customer declined reschedule.',
+                    'reschedule_status'      => 'rejected',
+                    'reschedule_proposed_by' => 'admin',
+                ]);
+                $booking->serviceEvent?->update(['status' => 'cancelled']);
+            });
+
+            $this->logCustom(
+                'reschedule_declined_by_customer',
+                'bookings',
+                $booking->booking_id,
+                "Customer declined reschedule and cancelled {$booking->booking_no}",
+                ['booking_no' => $booking->booking_no]
+            );
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('declineAdminReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to decline reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function approveCustomerReschedule(Booking $booking): JsonResponse
+    {
+        try {
+            if (
+                $booking->reschedule_status !== 'pending' ||
+                $booking->reschedule_proposed_by !== 'customer'
+            ) {
+                return $this->fail('No pending customer reschedule request.', 422);
+            }
+
+            $newDate = $booking->requested_date ? Carbon::parse($booking->requested_date) : null;
+            if (!$newDate) {
+                return $this->fail('Missing requested date.', 422);
+            }
+
+            $error = $this->validateRescheduleDate($newDate, $booking);
+            if ($error) {
+                return $this->fail($error['message'], 422, ['code' => $error['code']]);
+            }
+
+            $booking->loadMissing('serviceEvent');
+
+            DB::transaction(function () use ($booking, $newDate) {
+                $booking->serviceEvent?->update([
+                    'event_date' => $newDate->toDateString(),
+                    'event_time' => $booking->requested_time ?? $booking->serviceEvent->event_time,
+                ]);
+                $booking->update([
+                    'booking_status'         => 'confirmed',
+                    'reschedule_status'      => 'accepted',
+                    'reschedule_proposed_by' => 'customer',
+                    'requested_date'         => null,
+                    'requested_time'         => null,
+                    'reschedule_reason'      => null,
+                    'reschedule_proposed_at' => null,
+                    'original_event_date'    => null,
+                    'original_event_time'    => null,
+                ]);
+            });
+
+            $this->logCustom(
+                'customer_reschedule_approved',
+                'bookings',
+                $booking->booking_id,
+                "Admin approved customer reschedule for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'new_date'   => $newDate->toDateString(),
+                ]
+            );
+
+            try {
+                $customer = $booking->serviceEvent?->customer;
+                if ($customer?->user_id) {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'reschedule_approved',
+                        '✅ Reschedule Approved',
+                        "Your reschedule request for booking {$booking->booking_no} has been approved.\n\n" .
+                            "New date: {$newDate->format('F d, Y')}",
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Customer reschedule approval notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Reschedule approved.');
+        } catch (\Throwable $e) {
+            Log::error('approveCustomerReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to approve reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function rejectCustomerReschedule(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if (
+                $booking->reschedule_status !== 'pending' ||
+                $booking->reschedule_proposed_by !== 'customer'
+            ) {
+                return $this->fail('No pending customer reschedule request.', 422);
+            }
+
+            $validated = $request->validate([
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $booking->update([
+                'booking_status'         => 'reschedule_rejected',
+                'reschedule_status'      => 'rejected',
+                'reschedule_reason'      => $validated['reason'] ?? $booking->reschedule_reason,
+                'reschedule_proposed_by' => 'customer',
+            ]);
+
+            $this->logCustom(
+                'customer_reschedule_rejected',
+                'bookings',
+                $booking->booking_id,
+                "Admin rejected customer reschedule for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'reason'     => $validated['reason'] ?? null,
+                ]
+            );
+
+            try {
+                $customer = $booking->serviceEvent?->customer;
+                if ($customer?->user_id) {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'reschedule_rejected',
+                        'Reschedule Not Approved',
+                        "We could not accommodate your reschedule request for booking {$booking->booking_no}.\n\n" .
+                            ($validated['reason'] ? "Reason: {$validated['reason']}\n\n" : '') .
+                            "Please choose whether to continue with the original date or cancel the booking.",
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Customer reschedule rejection notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh()),
+                'Reschedule rejected. Customer can decide to continue or cancel.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('rejectCustomerReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to reject reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function continueOriginalSchedule(Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->booking_status !== 'reschedule_rejected') {
+                return $this->fail('Booking is not in a rejected-reschedule state.', 422);
+            }
+
+            $booking->update([
+                'booking_status'         => 'confirmed',
+                'requested_date'         => null,
+                'requested_time'         => null,
+                'reschedule_status'      => null,
+                'reschedule_proposed_by' => null,
+                'reschedule_source'      => null,
+                'original_event_date'    => null,
+                'original_event_time'    => null,
+            ]);
+
+            $this->logCustom(
+                'reschedule_customer_continue',
+                'bookings',
+                $booking->booking_id,
+                "Customer chose to continue original schedule for {$booking->booking_no}",
+                ['booking_no' => $booking->booking_no]
+            );
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Continuing with original schedule.');
+        } catch (\Throwable $e) {
+            Log::error('continueOriginalSchedule error: ' . $e->getMessage());
+            return $this->fail('Failed to continue schedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function cancelAfterRejectedReschedule(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->booking_status !== 'reschedule_rejected') {
+                return $this->fail('Booking is not in a rejected-reschedule state.', 422);
+            }
+
+            $validated = $request->validate([
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            DB::transaction(function () use ($booking, $validated) {
+                $booking->update([
+                    'booking_status'      => 'cancelled',
+                    'cancellation_reason' => $validated['reason'] ?? 'Customer cancelled after rejected reschedule.',
+                ]);
+                $booking->serviceEvent?->update(['status' => 'cancelled']);
+            });
+
+            $this->logCustom(
+                'reschedule_customer_cancelled',
+                'bookings',
+                $booking->booking_id,
+                "Customer cancelled after rejected reschedule for {$booking->booking_no}",
+                ['booking_no' => $booking->booking_no, 'reason' => $validated['reason'] ?? null]
+            );
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('cancelAfterRejectedReschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to cancel booking: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // CUSTOMER EDIT BOOKING + RESCHEDULE RESPONSE
+    // ============================================================
+
+    public function customerUpdate(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if (!in_array($booking->booking_status, ['pending_approval', 'pending'], true)) {
+                return $this->fail('Booking can no longer be edited once it has been processed.', 403);
+            }
+
+            $validated = $request->validate([
+                'venue'                   => ['nullable', 'string', 'max:500'],
+                'guests_count'            => ['nullable', 'integer', 'min:10'],
+                'event_date'              => ['nullable', 'date'],
+                'event_time'              => ['nullable', 'string', 'max:50'],
+                'special_requests'        => ['nullable', 'string', 'max:2000'],
+                'delivery_address'        => ['nullable', 'string', 'max:500'],
+                'delivery_contact_person' => ['nullable', 'string', 'max:150'],
+                'delivery_contact_phone'  => ['nullable', 'string', 'max:30'],
+            ]);
+
+            $booking->loadMissing('serviceEvent');
+            $old = [
+                'venue'        => $booking->serviceEvent?->venue,
+                'guests_count' => $booking->serviceEvent?->guests_count,
+                'event_date'   => $booking->serviceEvent?->event_date?->toDateString(),
+                'event_time'   => $booking->serviceEvent?->event_time,
+            ];
+
+            DB::transaction(function () use ($booking, $validated) {
+                if ($booking->serviceEvent) {
+                    $booking->serviceEvent->update(array_filter([
+                        'venue'                   => $validated['venue'] ?? null,
+                        'guests_count'            => $validated['guests_count'] ?? null,
+                        'event_date'              => $validated['event_date'] ?? null,
+                        'event_time'              => $validated['event_time'] ?? null,
+                        'special_requests'        => $validated['special_requests'] ?? null,
+                        'delivery_address'        => $validated['delivery_address'] ?? null,
+                        'delivery_contact_person' => $validated['delivery_contact_person'] ?? null,
+                        'delivery_contact_phone'  => $validated['delivery_contact_phone'] ?? null,
+                    ], fn($v) => $v !== null));
+                }
+            });
+
+            $this->logCustom(
+                'customer_update',
+                'bookings',
+                $booking->booking_id,
+                "Customer edited booking {$booking->booking_no}",
+                ['old' => $old, 'new' => $validated]
+            );
+
+            try {
+                app(NotificationService::class)->notifyRole(
+                    'admin',
+                    'booking_updated_by_customer',
+                    '✏️ Booking Updated',
+                    "Customer updated booking {$booking->booking_no}.\n" .
+                        "Guests: " . ($booking->serviceEvent?->guests_count ?? '—') . "\n" .
+                        "Venue: " . ($booking->serviceEvent?->venue ?? '—'),
+                    \App\Models\Notification::PRIORITY_MEDIUM,
+                    ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                    "/admin/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Customer edit notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking updated.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Customer booking edit error: ' . $e->getMessage());
+            return $this->fail('Failed to update booking: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function customerRescheduleResponse(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if (
+                $booking->reschedule_status !== 'pending' ||
+                $booking->reschedule_proposed_by !== 'admin'
+            ) {
+                return $this->fail('No pending admin reschedule proposal for this booking.', 422);
+            }
+
+            $validated = $request->validate([
+                'action'   => ['required', 'in:accept,counter,cancel'],
+                'new_date' => ['nullable', 'date'],
+                'new_time' => ['nullable', 'string', 'max:50'],
+                'reason'   => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $action = $validated['action'];
+
+            if ($action === 'accept') {
+                return $this->acceptAdminReschedule($booking);
+            }
+
+            if ($action === 'counter') {
+                $req = new Request([
+                    'new_date' => $validated['new_date'],
+                    'new_time' => $validated['new_time'] ?? null,
+                    'reason'   => $validated['reason'] ?? 'Customer proposed an alternative date.',
+                ]);
+                return $this->counterReschedule($req, $booking);
+            }
+
+            $req = new Request([
+                'reason' => $validated['reason'] ?? 'Customer declined reschedule.',
+            ]);
+            return $this->declineAdminReschedule($req, $booking);
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('customerRescheduleResponse error: ' . $e->getMessage());
+            return $this->fail('Failed to process response: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function customerPostRejectionDecision(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            if ($booking->booking_status !== 'reschedule_rejected') {
+                return $this->fail('Booking is not awaiting a post-rejection decision.', 422);
+            }
+
+            $validated = $request->validate([
+                'action' => ['required', 'in:continue,cancel'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            if ($validated['action'] === 'continue') {
+                return $this->continueOriginalSchedule($booking);
+            }
+
+            $req = new Request([
+                'reason' => $validated['reason'] ?? 'Customer cancelled after rejected reschedule.',
+            ]);
+            return $this->cancelAfterRejectedReschedule($req, $booking);
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('customerPostRejectionDecision error: ' . $e->getMessage());
+            return $this->fail('Failed to process decision: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // AVAILABILITY VALIDATION ENDPOINT
+    // ============================================================
+
+    public function validateSlot(Request $request, BookingService $service): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'event_date'         => ['required', 'date'],
+                'event_time'         => ['nullable', 'string', 'max:50'],
+                'exclude_booking_id' => ['nullable', 'integer', 'exists:bookings,booking_id'],
+            ]);
+
+            $conflict = $service->validateAvailability(
+                $validated['event_date'],
+                $validated['event_time'] ?? null,
+                $validated['exclude_booking_id'] ?? null
+            );
+
+            $sameDateTime = false;
+            if (!empty($validated['exclude_booking_id'])) {
+                $booking = Booking::with('serviceEvent')->find($validated['exclude_booking_id']);
+                if ($booking?->serviceEvent) {
+                    $sameDateTime = $booking->serviceEvent->event_date?->toDateString() === $validated['event_date']
+                        && $booking->serviceEvent->event_time === ($validated['event_time'] ?? null);
+                }
+            }
+
+            return $this->ok([
+                'available'           => $conflict === null || $sameDateTime,
+                'same_datetime'       => $sameDateTime,
+                'requires_admin'      => $sameDateTime,
+                'conflict'            => $conflict,
+            ], $conflict === null || $sameDateTime
+                ? 'Date/time is available.'
+                : $conflict['message']);
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Validate slot error: ' . $e->getMessage());
+            return $this->fail('Failed to validate slot: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // ADMIN RESCHEDULE WITH AVAILABILITY CHECK
+    // ============================================================
+
+    public function adminRescheduleWithValidation(Request $request, Booking $booking, BookingService $service): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'new_date' => ['required', 'date'],
+                'new_time' => ['required', 'string', 'max:50'],
+                'reason'   => ['required', 'string', 'max:500'],
+            ]);
+
+            $booking->loadMissing('serviceEvent');
+            $currentDate = $booking->serviceEvent?->event_date?->toDateString();
+            $currentTime = $booking->serviceEvent?->event_time;
+
+            $isSameDateTime = ($currentDate === $validated['new_date'])
+                && ($currentTime === $validated['new_time']);
+
+            $conflict = $service->validateAvailability(
+                $validated['new_date'],
+                $validated['new_time'],
+                $booking->booking_id
+            );
+
+            if ($conflict && !$isSameDateTime) {
+                return $this->fail($conflict['message'], 422, ['code' => $conflict['code']]);
+            }
+
+            $oldEventDate = $booking->serviceEvent?->event_date?->toDateString();
+            $oldEventTime = $booking->serviceEvent?->event_time;
+
+            DB::transaction(function () use ($booking, $validated, $oldEventDate, $oldEventTime, $isSameDateTime) {
+                $booking->update([
+                    'booking_status'         => $booking->booking_status ?: 'confirmed',
+                    'requested_date'         => $validated['new_date'],
+                    'requested_time'         => $validated['new_time'],
+                    'reschedule_reason'      => $validated['reason'],
+                    'reschedule_proposed_by' => 'admin',
+                    'reschedule_status'      => 'pending',
+                    'reschedule_source'      => 'admin_proposal',
+                    'reschedule_proposed_at' => now(),
+                    'original_event_date'    => $oldEventDate,
+                    'original_event_time'    => $oldEventTime,
+                ]);
+            });
+
+            $this->logCustom(
+                'admin_reschedule_proposed',
+                'bookings',
+                $booking->booking_id,
+                "Admin proposed reschedule for {$booking->booking_no}" . ($isSameDateTime ? ' (SAME DATE/TIME — admin override)' : ''),
+                [
+                    'booking_no'      => $booking->booking_no,
+                    'new_date'        => $validated['new_date'],
+                    'new_time'        => $validated['new_time'],
+                    'reason'          => $validated['reason'],
+                    'original_date'   => $oldEventDate,
+                    'original_time'   => $oldEventTime,
+                    'same_datetime'   => $isSameDateTime,
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->rescheduleProposedByAdmin(
+                    $booking->fresh(),
+                    \Carbon\Carbon::parse($validated['new_date']),
+                    $validated['new_time'],
+                    $validated['reason']
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Admin reschedule notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh()),
+                'Reschedule proposal sent to customer.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Admin reschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to propose reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // CUSTOMER RESCHEDULE WITH AVAILABILITY CHECK
+    // ============================================================
+
+    public function customerRequestRescheduleWithValidation(Request $request, Booking $booking, BookingService $service): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'requested_date' => ['required', 'date'],
+                'requested_time' => ['required', 'string', 'max:50'],
+                'reason' => ['required', 'string', 'max:500'],
+            ]);
+
+            $conflict = $service->validateAvailability(
+                $validated['requested_date'],
+                $validated['requested_time'],
+                $booking->booking_id
+            );
+
+            if ($conflict) {
+                return $this->fail($conflict['message'], 422, ['code' => $conflict['code']]);
+            }
+
+            // ⭐ Keep booking_status as confirmed — reschedule is a sub-state
+            $restoreStatus = in_array($booking->booking_status, ['confirmed', 'ongoing'], true)
+                ? $booking->booking_status
+                : 'confirmed';
+
+            $booking->update([
+                'booking_status' => $restoreStatus,
+                'requested_date' => $validated['requested_date'],
+                'requested_time' => $validated['requested_time'],
+                'reschedule_reason' => $validated['reason'],
+                'reschedule_proposed_by' => 'customer',
+                'reschedule_status' => 'pending',
+                'reschedule_source' => 'customer_initial',
+                'reschedule_proposed_at' => now(),
+            ]);
+
+            $this->logCustom(
+                'customer_reschedule_requested',
+                'bookings',
+                $booking->booking_id,
+                "Customer requested reschedule for {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'requested_date' => $validated['requested_date'],
+                    'requested_time' => $validated['requested_time'],
+                    'reason' => $validated['reason'],
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->bookingRescheduleRequested(
+                    $booking->fresh(),
+                    $validated['requested_date'],
+                    $validated['requested_time'],
+                    $validated['reason']
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Customer reschedule notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh()),
+                'Reschedule request sent to admin.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Customer reschedule error: ' . $e->getMessage());
+            return $this->fail('Failed to request reschedule: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // CUSTOMER CANCELLATION WITH CUTOFF VALIDATION
+    // ============================================================
+
+    public function customerCancelWithValidation(Request $request, Booking $booking, BookingService $service): JsonResponse
+    {
+        try {
+            $policy = app(\App\Services\BookingPolicyService::class);
+            $cutoffDays = $policy->cancellationCutoffDays();
+            $eventDate = $booking->serviceEvent?->event_date;
+
+            if ($eventDate && $cutoffDays > 0) {
+                $eventCarbon = $eventDate instanceof \Carbon\Carbon
+                    ? $eventDate
+                    : \Carbon\Carbon::parse($eventDate);
+
+                $daysUntilEvent = (int) now()->startOfDay()->diffInDays(
+                    $eventCarbon->copy()->startOfDay(),
+                    false
+                );
+
+                if ($daysUntilEvent < $cutoffDays) {
+                    return $this->fail(
+                        'Cancellation is no longer available because the booking has reached the cancellation cutoff period.',
+                        422,
+                        [
+                            'code' => 'cancellation_cutoff',
+                            'cutoff_days' => $cutoffDays,
+                            'days_until_event' => $daysUntilEvent,
+                        ]
+                    );
+                }
+            }
+
+            $reason = $request->input('reason', 'Cancelled by customer.');
+
+            $booking = $service->cancel($booking, $reason);
+
+            $this->logCustom(
+                'customer_cancelled',
+                'bookings',
+                $booking->booking_id,
+                "Customer cancelled booking {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'reason' => $reason,
+                    'cancelled_at' => now()->toDateTimeString(),
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->bookingCancelled($booking, $reason);
+            } catch (\Throwable $e) {
+                Log::warning('Customer cancel notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled.');
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Customer cancel error: ' . $e->getMessage());
+            return $this->fail('Failed to cancel booking: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // CUSTOMER RESPOND TO ADMIN RESCHEDULE
+    // ============================================================
+
+    public function customerRespondToAdminReschedule(Request $request, Booking $booking, BookingService $service): JsonResponse
+    {
+        try {
+            if (
+                $booking->reschedule_status !== 'pending' ||
+                $booking->reschedule_proposed_by !== 'admin'
+            ) {
+                return $this->fail('No pending admin reschedule proposal for this booking.', 422);
+            }
+
+            $validated = $request->validate([
+                'action' => ['required', 'in:accept,counter,cancel'],
+                'new_date' => ['nullable', 'date'],
+                'new_time' => ['nullable', 'string', 'max:50'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $action = $validated['action'];
+
+            if ($action === 'accept') {
+                return $this->acceptAdminReschedule($booking);
+            }
+
+            if ($action === 'counter') {
+                $request->validate([
+                    'new_date' => ['required', 'date'],
+                    'new_time' => ['required', 'string', 'max:50'],
+                ]);
+
+                $conflict = $service->validateAvailability(
+                    $validated['new_date'],
+                    $validated['new_time'],
+                    $booking->booking_id
+                );
+
+                if ($conflict) {
+                    return $this->fail($conflict['message'], 422, ['code' => $conflict['code']]);
+                }
+
+                // ⭐ Keep booking_status as confirmed — reschedule is a sub-state
+                $restoreStatus = in_array($booking->booking_status, ['confirmed', 'ongoing'], true)
+                    ? $booking->booking_status
+                    : 'confirmed';
+
+                $booking->update([
+                    'booking_status' => $restoreStatus,
+                    'requested_date' => $validated['new_date'],
+                    'requested_time' => $validated['new_time'],
+                    'reschedule_reason' => $validated['reason'] ?? 'Customer proposed an alternative date.',
+                    'reschedule_proposed_by' => 'customer',
+                    'reschedule_status' => 'pending',
+                    'reschedule_source' => 'customer_counter',
+                    'reschedule_proposed_at' => now(),
+                ]);
+
+                $this->logCustom(
+                    'customer_counter_proposed',
+                    'bookings',
+                    $booking->booking_id,
+                    "Customer counter-proposed for {$booking->booking_no}",
+                    [
+                        'booking_no'    => $booking->booking_no,
+                        'new_date'      => $validated['new_date'],
+                        'new_time'      => $validated['new_time'],
+                        'original_date' => $booking->original_event_date,
+                        'original_time' => $booking->original_event_time,
+                    ]
+                );
+
+                try {
+                    app(NotificationService::class)->notifyRole(
+                        'admin',
+                        'reschedule_counter_proposed',
+                        '🔄 Customer Counter-Proposed a Date',
+                        "The customer proposed an alternative schedule for booking {$booking->booking_no}.\n\n" .
+                            "📅 New Date: " . \Carbon\Carbon::parse($validated['new_date'])->format('F d, Y') . "\n" .
+                            "⏰ New Time: {$validated['new_time']}\n\n" .
+                            "Please review and approve or reject.",
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        [
+                            'booking_id' => $booking->booking_id,
+                            'booking_no' => $booking->booking_no,
+                        ],
+                        "/admin/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $e) {
+                    Log::warning('Admin counter notification failed: ' . $e->getMessage());
+                }
+
+                return $this->ok($this->formatBooking($booking->fresh()), 'Counter proposal sent to admin.');
+            }
+
+            // cancel
+            $booking->update([
+                'booking_status' => 'cancelled',
+                'cancellation_reason' => $validated['reason'] ?? 'Customer declined reschedule.',
+                'reschedule_status' => 'rejected',
+                'reschedule_proposed_by' => 'admin',
+            ]);
+            $booking->serviceEvent?->update(['status' => 'cancelled']);
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Customer reschedule response error: ' . $e->getMessage());
+            return $this->fail('Failed to process response: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // PAYMENTS
+    // ============================================================
+
     public function recordPayment(Request $request, Booking $booking): JsonResponse
     {
         try {
             $validated = $request->validate([
-                'amount' => ['required', 'numeric', 'min:0.01'],
-                'method' => ['nullable', 'string'],
-                'payment_method' => ['nullable', 'string'],
-                'payment_type' => ['nullable', 'in:deposit,partial,full'],
-                'reference' => ['nullable', 'string'],
+                'amount'           => ['required', 'numeric', 'min:0.01'],
+                'method'           => ['nullable', 'string'],
+                'payment_method'   => ['nullable', 'string'],
+                'payment_type'     => ['nullable', 'in:deposit,partial,full'],
+                'reference'        => ['nullable', 'string'],
                 'reference_number' => ['nullable', 'string'],
-                'notes' => ['nullable', 'string'],
+                'notes'            => ['nullable', 'string'],
             ]);
 
             $method = strtolower(str_replace(' ', '_', $validated['payment_method'] ?? $validated['method'] ?? 'cash'));
@@ -1080,17 +2074,17 @@ class BookingController extends Controller
 
             $payment = DB::transaction(function () use ($booking, $validated, $method) {
                 $payment = BookingPayment::create([
-                    'booking_id' => $booking->booking_id,
-                    'payment_number' => 'PAY-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
-                    'amount' => $validated['amount'],
-                    'payment_method' => $method,
-                    'payment_type' => $validated['payment_type'] ?? 'partial',
+                    'booking_id'       => $booking->booking_id,
+                    'payment_number'   => 'PAY-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
+                    'amount'           => $validated['amount'],
+                    'payment_method'   => $method,
+                    'payment_type'     => $validated['payment_type'] ?? 'partial',
                     'reference_number' => $validated['reference_number'] ?? $validated['reference'] ?? null,
-                    'notes' => $validated['notes'] ?? null,
-                    'status' => 'completed',
-                    'payment_date' => now(),
-                    'verified_by' => auth()->id(),
-                    'verified_at' => now(),
+                    'notes'            => $validated['notes'] ?? null,
+                    'status'           => 'completed',
+                    'payment_date'     => now(),
+                    'verified_by'      => auth()->id(),
+                    'verified_at'      => now(),
                 ]);
 
                 $this->synchronizeBookingInvoice($booking);
@@ -1103,30 +2097,28 @@ class BookingController extends Controller
                 $payment->payment_id,
                 "Payment of ₱{$validated['amount']} recorded for booking {$booking->booking_no}",
                 [
-                    'booking_id' => $booking->booking_id,
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'amount' => $validated['amount'],
-                    'payment_method' => $method,
-                    'payment_type' => $validated['payment_type'] ?? 'partial',
+                    'booking_id'       => $booking->booking_id,
+                    'booking_no'       => $booking->booking_no,
+                    'customer'         => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'amount'           => $validated['amount'],
+                    'payment_method'   => $method,
+                    'payment_type'     => $validated['payment_type'] ?? 'partial',
                     'reference_number' => $validated['reference_number'] ?? null,
-                    'recorded_at' => now()->toDateTimeString()
+                    'recorded_at'      => now()->toDateTimeString(),
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->paymentReceived($payment, $customer);
+                app(NotificationService::class)->paymentReceived($payment, $customer);
 
                 $balance = $booking->invoice?->balance ?? 0;
                 if ($balance > 0) {
-                    $notificationService->balanceReminder($booking, $customer, $balance);
+                    app(NotificationService::class)->balanceReminder($booking, $customer, $balance);
                 }
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'payment_received',
                 '💰 Payment Received',
@@ -1148,6 +2140,10 @@ class BookingController extends Controller
         return $this->ok($service->paymentSummary($booking));
     }
 
+    // ============================================================
+    // CALENDAR / CONFLICTS / STATISTICS
+    // ============================================================
+
     public function calendar(): JsonResponse
     {
         try {
@@ -1163,16 +2159,16 @@ class BookingController extends Controller
                         $endDate = $start->copy()->addDays($formatted['days'] - 1)->toDateString();
                     }
                     return [
-                        'id' => $booking->booking_id,
+                        'id'    => $booking->booking_id,
                         'title' => $booking->booking_no . ' - ' . $formatted['customer_name'],
                         'start' => $formatted['event_date'],
-                        'end' => $endDate,
+                        'end'   => $endDate,
                         'status' => $booking->booking_status,
                         'extendedProps' => [
-                            'event_time' => $formatted['event_time'],
-                            'venue' => $formatted['venue'],
+                            'event_time'   => $formatted['event_time'],
+                            'venue'        => $formatted['venue'],
                             'service_type' => $formatted['service_type'],
-                            'days' => $formatted['days'],
+                            'days'         => $formatted['days'],
                             'is_multi_day' => $formatted['days'] > 1,
                         ],
                     ];
@@ -1199,7 +2195,7 @@ class BookingController extends Controller
 
             return $this->ok([
                 'has_conflicts' => $bookings->count() > 1,
-                'conflicts' => $bookings->count() > 1
+                'conflicts'     => $bookings->count() > 1
                     ? [['date' => $date, 'bookings' => $bookings->values()]]
                     : [],
             ]);
@@ -1223,8 +2219,7 @@ class BookingController extends Controller
                 ->get();
 
             if ($conflicts->count() > 1) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->scheduleConflictWarning($date, $conflicts->toArray());
+                app(NotificationService::class)->scheduleConflictWarning($date, $conflicts->toArray());
 
                 $this->logCustom(
                     'conflict_detected',
@@ -1232,17 +2227,17 @@ class BookingController extends Controller
                     null,
                     "Schedule conflict detected on {$date}",
                     [
-                        'date' => $date,
+                        'date'           => $date,
                         'conflict_count' => $conflicts->count(),
-                        'booking_ids' => $conflicts->pluck('booking_id')->toArray(),
-                        'detected_at' => now()->toDateTimeString()
+                        'booking_ids'    => $conflicts->pluck('booking_id')->toArray(),
+                        'detected_at'    => now()->toDateTimeString(),
                     ]
                 );
             }
 
             return $this->ok([
                 'has_conflicts' => $conflicts->count() > 1,
-                'conflicts' => $conflicts,
+                'conflicts'     => $conflicts,
             ]);
         } catch (\Exception $e) {
             Log::error('Check conflicts notify error: ' . $e->getMessage());
@@ -1256,15 +2251,15 @@ class BookingController extends Controller
             $bookings = $this->query()->where('booking_no', 'not like', 'HIST-%')->get()->map(fn(Booking $booking) => $this->formatBooking($booking));
 
             return $this->ok([
-                'total_bookings' => $bookings->count(),
-                'pending_approvals' => $bookings->where('booking_status', 'pending_approval')->count(),
-                'confirmed_bookings' => $bookings->where('booking_status', 'confirmed')->count(),
-                'completed_bookings' => $bookings->where('booking_status', 'completed')->count(),
-                'regular_bookings' => $bookings->where('days', '<=', 1)->count(),
-                'multi_day_events' => $bookings->where('days', '>', 1)->count(),
-                'total_revenue' => $bookings->sum('total_amount'),
-                'total_paid' => $bookings->sum('paid_amount'),
-                'total_outstanding' => $bookings->sum('balance'),
+                'total_bookings'       => $bookings->count(),
+                'pending_approvals'    => $bookings->where('booking_status', 'pending_approval')->count(),
+                'confirmed_bookings'   => $bookings->where('booking_status', 'confirmed')->count(),
+                'completed_bookings'   => $bookings->where('booking_status', 'completed')->count(),
+                'regular_bookings'     => $bookings->where('days', '<=', 1)->count(),
+                'multi_day_events'     => $bookings->where('days', '>', 1)->count(),
+                'total_revenue'        => $bookings->sum('total_amount'),
+                'total_paid'           => $bookings->sum('paid_amount'),
+                'total_outstanding'    => $bookings->sum('balance'),
             ]);
         } catch (\Exception $e) {
             Log::error('Statistics error: ' . $e->getMessage());
@@ -1272,21 +2267,20 @@ class BookingController extends Controller
         }
     }
 
+    // ============================================================
+    // AVAILABILITY
+    // ============================================================
+
     public function getAvailability(Request $request): JsonResponse
     {
         try {
             $startDate = $request->input('start_date', now()->toDateString());
-            $endDate = $request->input('end_date', now()->addMonths(3)->toDateString());
+            $endDate   = $request->input('end_date', now()->addMonths(3)->toDateString());
 
             try {
                 $start = Carbon::parse($startDate);
-                $end = Carbon::parse($endDate);
+                $end   = Carbon::parse($endDate);
             } catch (\Exception $e) {
-                Log::warning('Invalid date format in getAvailability', [
-                    'start' => $startDate,
-                    'end' => $endDate,
-                    'error' => $e->getMessage()
-                ]);
                 return $this->fail('Invalid date format. Use YYYY-MM-DD.', 422);
             }
 
@@ -1310,67 +2304,67 @@ class BookingController extends Controller
                         ->where('key', $date)
                         ->first();
 
-                    $status = 'available';
+                    $status        = 'available';
                     $operationMode = 'normal';
-                    $maxBookings = null;
-                    $notes = null;
-                    $isHoliday = false;
+                    $maxBookings   = null;
+                    $notes         = null;
+                    $isHoliday     = false;
 
                     if ($setting) {
                         try {
                             $value = json_decode($setting->value, true);
                             if (is_array($value)) {
-                                $status = $value['status'] ?? 'available';
+                                $status        = $value['status'] ?? 'available';
                                 $operationMode = $value['operation_mode'] ?? (!empty($value['max_bookings']) ? 'limited_slot' : 'normal');
-                                $maxBookings = $operationMode === 'limited_slot' ? ($value['max_bookings'] ?? null) : null;
-                                $notes = $value['notes'] ?? null;
-                                $isHoliday = $value['is_holiday'] ?? false;
+                                $maxBookings   = $operationMode === 'limited_slot' ? ($value['max_bookings'] ?? null) : null;
+                                $notes         = $value['notes'] ?? null;
+                                $isHoliday     = $value['is_holiday'] ?? false;
                             }
                         } catch (\Exception $e) {
                             Log::warning('Failed to decode setting value', [
-                                'date' => $date,
+                                'date'  => $date,
                                 'value' => $setting->value,
-                                'error' => $e->getMessage()
+                                'error' => $e->getMessage(),
                             ]);
                         }
                     }
 
-                    $isPast = $current->isPast() && !$current->isToday();
+                    $isPast        = $current->isPast() && !$current->isToday();
                     $isLimitedSlot = $operationMode === 'limited_slot' && $maxBookings !== null;
-                    $isAvailable = !$isPast && $status === 'available' && (! $isLimitedSlot || $bookingCount < $maxBookings);
+                    $isAvailable   = !$isPast && $status === 'available' && (! $isLimitedSlot || $bookingCount < $maxBookings);
 
                     $availability[] = [
-                        'date' => $date,
-                        'status' => $isPast ? 'past' : $status,
+                        'date'           => $date,
+                        'status'         => $isPast ? 'past' : $status,
                         'operation_mode' => $operationMode,
-                        'booking_count' => $bookingCount,
-                        'max_bookings' => $maxBookings,
-                        'is_available' => $isAvailable,
-                        'notes' => $notes,
-                        'day_of_week' => $current->format('l'),
-                        'formatted' => $current->format('F j, Y'),
-                        'is_holiday' => $isHoliday,
-                        'is_past' => $isPast,
-                        'is_today' => $current->isToday(),
+                        'booking_count'  => $bookingCount,
+                        'max_bookings'   => $maxBookings,
+                        'is_available'   => $isAvailable,
+                        'notes'          => $notes,
+                        'day_of_week'    => $current->format('l'),
+                        'formatted'      => $current->format('F j, Y'),
+                        'is_holiday'     => $isHoliday,
+                        'is_past'        => $isPast,
+                        'is_today'       => $current->isToday(),
                     ];
                 } catch (\Exception $e) {
                     Log::error('Error processing date: ' . $date, [
                         'error' => $e->getMessage(),
-                        'trace' => $e->getTraceAsString()
+                        'trace' => $e->getTraceAsString(),
                     ]);
                     $availability[] = [
-                        'date' => $date,
-                        'status' => 'available',
-                        'booking_count' => 0,
+                        'date'           => $date,
+                        'status'         => 'available',
+                        'booking_count'  => 0,
                         'operation_mode' => 'normal',
-                        'max_bookings' => null,
-                        'is_available' => true,
-                        'notes' => null,
-                        'day_of_week' => $current->format('l'),
-                        'formatted' => $current->format('F j, Y'),
-                        'is_holiday' => false,
-                        'is_past' => $current->isPast() && !$current->isToday(),
-                        'is_today' => $current->isToday(),
+                        'max_bookings'   => null,
+                        'is_available'   => true,
+                        'notes'          => null,
+                        'day_of_week'    => $current->format('l'),
+                        'formatted'      => $current->format('F j, Y'),
+                        'is_holiday'     => false,
+                        'is_past'        => $current->isPast() && !$current->isToday(),
+                        'is_today'       => $current->isToday(),
                     ];
                 }
 
@@ -1389,11 +2383,11 @@ class BookingController extends Controller
     {
         try {
             $startDate = $request->input('start_date', now()->toDateString());
-            $endDate = $request->input('end_date', now()->addMonths(3)->toDateString());
+            $endDate   = $request->input('end_date', now()->addMonths(3)->toDateString());
 
             try {
                 $start = Carbon::parse($startDate);
-                $end = Carbon::parse($endDate);
+                $end   = Carbon::parse($endDate);
             } catch (\Exception $e) {
                 return $this->fail('Invalid date format. Use YYYY-MM-DD.', 422);
             }
@@ -1419,15 +2413,15 @@ class BookingController extends Controller
                         ->first();
 
                     $isAvailable = true;
-                    $notes = null;
+                    $notes       = null;
 
                     if ($setting) {
                         $value = json_decode($setting->value, true);
                         if (is_array($value)) {
-                            $status = $value['status'] ?? 'available';
+                            $status        = $value['status'] ?? 'available';
                             $operationMode = $value['operation_mode'] ?? (!empty($value['max_bookings']) ? 'limited_slot' : 'normal');
-                            $maxBookings = $operationMode === 'limited_slot' ? ($value['max_bookings'] ?? null) : null;
-                            $notes = $value['notes'] ?? null;
+                            $maxBookings   = $operationMode === 'limited_slot' ? ($value['max_bookings'] ?? null) : null;
+                            $notes         = $value['notes'] ?? null;
 
                             $bookingCount = Booking::whereIn('booking_status', ['confirmed', 'pending_approval'])
                                 ->whereHas('serviceEvent', function ($query) use ($date) {
@@ -1435,21 +2429,21 @@ class BookingController extends Controller
                                 })->count();
 
                             $isLimitedSlot = $operationMode === 'limited_slot' && $maxBookings !== null;
-                            $isAvailable = $status === 'available' && (! $isLimitedSlot || $bookingCount < $maxBookings);
+                            $isAvailable   = $status === 'available' && (! $isLimitedSlot || $bookingCount < $maxBookings);
                         }
                     }
 
                     if ($isAvailable) {
                         $availableDates[] = [
-                            'date' => $date,
+                            'date'        => $date,
                             'day_of_week' => $current->format('l'),
-                            'formatted' => $current->format('F j, Y'),
-                            'notes' => $notes,
+                            'formatted'   => $current->format('F j, Y'),
+                            'notes'       => $notes,
                         ];
                     }
                 } catch (\Exception $e) {
                     Log::warning('Error checking availability for date: ' . $date, [
-                        'error' => $e->getMessage()
+                        'error' => $e->getMessage(),
                     ]);
                 }
 
@@ -1530,10 +2524,10 @@ class BookingController extends Controller
             }
 
             $validated = $request->validate([
-                'status' => ['required', 'in:available,fully_booked,unavailable'],
+                'status'         => ['required', 'in:available,fully_booked,unavailable'],
                 'operation_mode' => ['nullable', 'in:normal,limited_slot'],
-                'max_bookings' => ['nullable', 'integer', 'min:1'],
-                'notes' => ['nullable', 'string', 'max:2000'],
+                'max_bookings'   => ['nullable', 'integer', 'min:1'],
+                'notes'          => ['nullable', 'string', 'max:2000'],
             ]);
 
             if (Carbon::parse($date)->isPast() && !Carbon::parse($date)->isToday()) {
@@ -1549,11 +2543,11 @@ class BookingController extends Controller
             }
 
             $data = [
-                'status' => $validated['status'],
+                'status'         => $validated['status'],
                 'operation_mode' => $operationMode,
-                'max_bookings' => $operationMode === 'limited_slot' ? ($validated['max_bookings'] ?? null) : null,
-                'notes' => $validated['notes'] ?? null,
-                'updated_at' => now()->toDateTimeString(),
+                'max_bookings'   => $operationMode === 'limited_slot' ? ($validated['max_bookings'] ?? null) : null,
+                'notes'          => $validated['notes'] ?? null,
+                'updated_at'     => now()->toDateTimeString(),
             ];
 
             Setting::updateOrCreate(
@@ -1567,16 +2561,16 @@ class BookingController extends Controller
                 null,
                 "Calendar availability updated for {$date}",
                 [
-                    'date' => $date,
-                    'status' => $validated['status'],
+                    'date'           => $date,
+                    'status'         => $validated['status'],
                     'operation_mode' => $operationMode,
-                    'max_bookings' => $data['max_bookings'] ?? null,
-                    'updated_at' => now()->toDateTimeString()
+                    'max_bookings'   => $data['max_bookings'] ?? null,
+                    'updated_at'     => now()->toDateTimeString(),
                 ]
             );
 
             return $this->ok(null, 'Calendar availability saved.');
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return $this->fail('Validation failed', 422, $e->errors());
         } catch (\Exception $e) {
             Log::error('Save availability error: ' . $e->getMessage());
@@ -1614,6 +2608,10 @@ class BookingController extends Controller
         }
     }
 
+    // ============================================================
+    // ORDER / EVENT CREATION
+    // ============================================================
+
     public function createOrder(Booking $booking, BookingService $service): JsonResponse
     {
         try {
@@ -1625,9 +2623,9 @@ class BookingController extends Controller
                 $booking->order?->order_id,
                 "Order #{$booking->order?->order_number} created from booking {$booking->booking_no}",
                 [
-                    'booking_no' => $booking->booking_no,
+                    'booking_no'   => $booking->booking_no,
                     'order_number' => $booking->order?->order_number,
-                    'created_at' => now()->toDateTimeString()
+                    'created_at'   => now()->toDateTimeString(),
                 ]
             );
 
@@ -1664,10 +2662,10 @@ class BookingController extends Controller
                 $booking,
                 true,
                 [
-                    'debt_booking_event' => false,
+                    'debt_booking_event'  => false,
                     'outstanding_balance' => 0,
-                    'approved_by' => auth()->id(),
-                    'approved_at' => now()->toDateTimeString(),
+                    'approved_by'         => auth()->id(),
+                    'approved_at'         => now()->toDateTimeString(),
                 ]
             );
 
@@ -1677,19 +2675,18 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Booking {$booking->booking_no} marked as COMPLETED",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'completed',
-                    'completed_at' => now()->toDateTimeString(),
-                    'inventory_deduction' => 'Handled by EventService; duplicate deductions are prevented.'
+                    'booking_no'          => $booking->booking_no,
+                    'customer'            => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'old_status'          => $oldData['booking_status'] ?? 'pending',
+                    'new_status'          => 'completed',
+                    'completed_at'        => now()->toDateTimeString(),
+                    'inventory_deduction' => 'Handled by EventService; duplicate deductions are prevented.',
                 ]
             );
 
             $customer = $booking->serviceEvent?->customer;
             if ($customer && $customer->user_id) {
-                $notificationService = app(NotificationService::class);
-                $notificationService->notifyUser(
+                app(NotificationService::class)->notifyUser(
                     $customer->user_id,
                     'event_completed',
                     'Event Completed',
@@ -1700,8 +2697,7 @@ class BookingController extends Controller
                 );
             }
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->notifyRole(
+            app(NotificationService::class)->notifyRole(
                 'admin',
                 'event_completed',
                 '🎉 Event Completed',
@@ -1730,20 +2726,20 @@ class BookingController extends Controller
             }
 
             $tracking = EventTracking::create([
-                'booking_id' => $booking->booking_id,
-                'stage' => 'preparation',
+                'booking_id'          => $booking->booking_id,
+                'stage'               => 'preparation',
                 'progress_percentage' => 0,
-                'stage_started_at' => now(),
-                'notes' => json_encode([
+                'stage_started_at'    => now(),
+                'notes'               => json_encode([
                     'created_from_booking' => $booking->booking_no,
-                    'created_at' => now()->toIso8601String(),
+                    'created_at'           => now()->toIso8601String(),
                 ]),
             ]);
 
             return $this->ok([
                 'booking_id' => $booking->booking_id,
-                'event' => $event,
-                'tracking' => $tracking,
+                'event'      => $event,
+                'tracking'   => $tracking,
             ], 'Event created successfully');
         } catch (\Exception $e) {
             Log::error('Create event error: ' . $e->getMessage());
@@ -1751,7 +2747,7 @@ class BookingController extends Controller
         }
     }
 
-    public function cancelWithReason(Request $request, Booking $booking): JsonResponse
+    public function cancelWithReason(Request $request, Booking $booking, BookingService $service): JsonResponse
     {
         try {
             $validated = $request->validate([
@@ -1759,16 +2755,9 @@ class BookingController extends Controller
             ]);
 
             $oldData = $booking->toArray();
-            $reason = $validated['reason'] ?? null;
+            $reason  = $validated['reason'] ?? null;
 
-            $booking->update([
-                'booking_status' => 'cancelled',
-                'cancellation_reason' => $reason,
-            ]);
-
-            if ($booking->serviceEvent) {
-                $booking->serviceEvent->update(['status' => 'cancelled']);
-            }
+            $booking = $service->cancel($booking, $reason);
 
             foreach ($booking->items as $item) {
                 if (!$item->menu_item_id) continue;
@@ -1791,21 +2780,28 @@ class BookingController extends Controller
                 $booking->booking_id,
                 "Booking {$booking->booking_no} CANCELLED with reason",
                 [
-                    'booking_no' => $booking->booking_no,
-                    'customer' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'reason' => $reason,
-                    'old_status' => $oldData['booking_status'] ?? 'pending',
-                    'new_status' => 'cancelled',
-                    'cancelled_at' => now()->toDateTimeString()
+                    'booking_no'   => $booking->booking_no,
+                    'customer'     => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'reason'       => $reason,
+                    'old_status'   => $oldData['booking_status'] ?? 'pending',
+                    'new_status'   => 'cancelled',
+                    'cancelled_at' => now()->toDateTimeString(),
                 ]
             );
 
-            $notificationService = app(NotificationService::class);
-            $notificationService->bookingCancelled($booking, $reason);
+            app(NotificationService::class)->bookingCancelled($booking, $reason);
 
             return $this->ok(
                 $this->formatBooking($booking->fresh()),
                 'Booking cancelled.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail(
+                $e->validator->errors()->first('cancellation')
+                    ?: $e->validator->errors()->first()
+                    ?: 'Cancellation is not allowed at this time.',
+                422,
+                $e->errors()
             );
         } catch (\Exception $e) {
             Log::error('Cancel with reason error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
@@ -1813,9 +2809,593 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Get all bookings with ingredients summary organized by booking
-     */
+    // ============================================================
+    // REFUND + DEPOSIT DECISION
+    // ============================================================
+
+    public function requestRefund(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'reason'         => ['required', 'string', 'max:500'],
+                'cancel_booking' => ['nullable', 'boolean'],
+            ]);
+
+            $booking->loadMissing(['serviceEvent', 'payments', 'quotation', 'invoice']);
+
+            $depositPaid = (float) $booking->payments()
+                ->where('status', 'completed')
+                ->where('payment_type', 'deposit')
+                ->sum('amount');
+
+            if ($depositPaid <= 0) {
+                $depositPaid = (float) ($booking->invoice?->down_payment ?? 0);
+            }
+
+            $existingState = $booking->refund_request_state;
+            if (($existingState['status'] ?? null) === 'pending') {
+                return $this->fail('A refund request is already pending for this booking.', 422);
+            }
+
+            $refundState = [
+                'status'           => 'pending',
+                'amount'           => 0,
+                'deposit_snapshot' => $depositPaid,
+                'reason'           => $validated['reason'],
+                'requested_at'     => now()->toIso8601String(),
+                'requested_by'     => optional($request->user())->user_id,
+                'decided_at'       => null,
+                'decided_by'       => null,
+                'decision_notes'   => null,
+                'released_at'      => null,
+                'released_amount'  => null,
+                'payment_id'       => null,
+            ];
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_REFUND_REQUESTS,
+                'booking_' . $booking->booking_id,
+                $refundState,
+                'json'
+            );
+
+            $cancellationRequested = (bool) ($validated['cancel_booking'] ?? false);
+            if ($cancellationRequested) {
+                $booking->update([
+                    'cancellation_reason' => trim(($booking->cancellation_reason ?? '') .
+                        "\n[Cancellation requested by cashier: " . $validated['reason'] . "]"),
+                ]);
+            }
+
+            $this->logCustom(
+                'refund_requested',
+                'bookings',
+                $booking->booking_id,
+                "Refund requested for booking {$booking->booking_no}",
+                [
+                    'booking_no'       => $booking->booking_no,
+                    'deposit_snapshot' => $depositPaid,
+                    'reason'           => $validated['reason'],
+                    'cancel_booking'   => $cancellationRequested,
+                    'requested_at'     => $refundState['requested_at'],
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->notifyRole(
+                    'admin',
+                    'refund_requested',
+                    '💰 Refund Request Pending',
+                    "A refund request has been submitted for booking {$booking->booking_no}.\n" .
+                        "Deposit on file: ₱" . number_format($depositPaid, 2) . "\n" .
+                        "Please review and input the refund amount to release.",
+                    \App\Models\Notification::PRIORITY_HIGH,
+                    [
+                        'booking_id' => $booking->booking_id,
+                        'booking_no' => $booking->booking_no,
+                    ],
+                    "/admin/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $notifyErr) {
+                Log::warning('Refund request notification failed: ' . $notifyErr->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Refund request submitted. Awaiting admin approval.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Refund request error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to submit refund request: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function approveRefund(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $refundState = $booking->refund_request_state;
+
+            if (($refundState['status'] ?? null) !== 'pending') {
+                return $this->fail('No pending refund request for this booking.', 422);
+            }
+
+            $validated = $request->validate([
+                'notes' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $refundState['status']         = 'approved';
+            $refundState['approved_at']    = now()->toIso8601String();
+            $refundState['decided_at']     = now()->toIso8601String();
+            $refundState['decided_by']     = optional($request->user())->user_id;
+            $refundState['decision_notes'] = $validated['notes'] ?? null;
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_REFUND_REQUESTS,
+                'booking_' . $booking->booking_id,
+                $refundState,
+                'json'
+            );
+
+            $this->logCustom(
+                'refund_approved',
+                'bookings',
+                $booking->booking_id,
+                "Refund APPROVED (awaiting cashier release) for booking {$booking->booking_no}",
+                [
+                    'booking_no'  => $booking->booking_no,
+                    'notes'       => $validated['notes'] ?? null,
+                    'approved_at' => $refundState['approved_at'],
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->notifyRole(
+                    'cashier',
+                    'refund_approved',
+                    '✅ Refund Request Approved',
+                    "The refund request for booking {$booking->booking_no} was approved. " .
+                        "Please open the booking and confirm the refund amount.",
+                    \App\Models\Notification::PRIORITY_HIGH,
+                    ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                    "/admin/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $notifyErr) {
+                Log::warning('Cashier refund approval notification failed: ' . $notifyErr->getMessage());
+            }
+
+            $customer = $booking->serviceEvent?->customer;
+            if ($customer && $customer->user_id) {
+                try {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'refund_approved',
+                        '✅ Refund Approved',
+                        "Your refund request for booking {$booking->booking_no} has been approved. " .
+                            "The refund will be released shortly.",
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Customer refund approval notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Refund approved. Awaiting cashier confirmation.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Approve refund error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to approve refund: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function confirmRefund(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $refundState = $booking->refund_request_state;
+
+            if (($refundState['status'] ?? null) !== 'approved') {
+                return $this->fail('No approved refund to confirm for this booking.', 422);
+            }
+
+            $validated = $request->validate([
+                'refund_amount'    => ['required', 'numeric', 'min:0.01'],
+                'payment_method'   => ['nullable', 'string', 'max:50'],
+                'reference_number' => ['nullable', 'string', 'max:100'],
+                'notes'            => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $refundAmount = (float) $validated['refund_amount'];
+            $method = strtolower(str_replace(' ', '_', $validated['payment_method'] ?? 'cash'));
+            $allowedMethods = ['cash', 'gcash', 'maya', 'bank_transfer', 'card', 'check'];
+            if (!in_array($method, $allowedMethods, true)) {
+                $method = 'cash';
+            }
+
+            $booking->loadMissing(['invoice', 'payments']);
+
+            $payment = DB::transaction(function () use ($booking, $refundAmount, $method, $validated) {
+                $payment = BookingPayment::create([
+                    'booking_id'       => $booking->booking_id,
+                    'payment_number'   => 'REF-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
+                    'amount'           => $refundAmount,
+                    'payment_method'   => $method,
+                    'payment_type'     => 'refund',
+                    'reference_number' => $validated['reference_number'] ?? null,
+                    'notes'            => trim('Refund released by cashier. ' . ($validated['notes'] ?? '')),
+                    'status'           => 'completed',
+                    'payment_date'     => now(),
+                    'verified_by'      => auth()->id(),
+                    'verified_at'      => now(),
+                ]);
+
+                $this->synchronizeBookingInvoice($booking);
+
+                return $payment;
+            });
+
+            $refundState['status']           = 'released';
+            $refundState['amount']           = $refundAmount;
+            $refundState['released_amount']  = $refundAmount;
+            $refundState['released_at']      = now()->toIso8601String();
+            $refundState['released_by']      = optional($request->user())->user_id;
+            $refundState['payment_id']       = $payment->payment_id;
+            $refundState['payment_method']   = $method;
+            $refundState['reference_number'] = $validated['reference_number'] ?? null;
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_REFUND_REQUESTS,
+                'booking_' . $booking->booking_id,
+                $refundState,
+                'json'
+            );
+
+            $booking->update([
+                'booking_status'      => 'cancelled',
+                'cancellation_reason' => trim('Refund released by cashier. ' . ($validated['notes'] ?? '')),
+            ]);
+            $booking->serviceEvent?->update(['status' => 'cancelled']);
+
+            $this->logCustom(
+                'refund_released',
+                'bookings',
+                $booking->booking_id,
+                "Refund RELEASED by cashier for booking {$booking->booking_no}",
+                [
+                    'booking_no'       => $booking->booking_no,
+                    'refund_amount'    => $refundAmount,
+                    'payment_method'   => $method,
+                    'reference_number' => $validated['reference_number'] ?? null,
+                    'payment_id'       => $payment->payment_id,
+                    'released_at'      => $refundState['released_at'],
+                ]
+            );
+
+            $customer = $booking->serviceEvent?->customer;
+            if ($customer && $customer->user_id) {
+                try {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'refund_released',
+                        '💵 Refund Released',
+                        "Your refund of ₱" . number_format($refundAmount, 2)
+                            . " for booking {$booking->booking_no} has been released.",
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Customer refund released notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Refund released.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Confirm refund error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to confirm refund: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function adminDirectRefund(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'refund_amount'    => ['required', 'numeric', 'min:0'],
+                'payment_method'   => ['nullable', 'string', 'max:50'],
+                'reference_number' => ['nullable', 'string', 'max:100'],
+                'reason'           => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $refundAmount = (float) $validated['refund_amount'];
+            $method = strtolower(str_replace(' ', '_', $validated['payment_method'] ?? 'cash'));
+            $allowedMethods = ['cash', 'gcash', 'maya', 'bank_transfer', 'card', 'check'];
+            if (!in_array($method, $allowedMethods, true)) {
+                $method = 'cash';
+            }
+
+            $booking->loadMissing(['invoice', 'payments']);
+
+            $payment = null;
+            if ($refundAmount > 0) {
+                $payment = DB::transaction(function () use ($booking, $refundAmount, $method, $validated) {
+                    $payment = BookingPayment::create([
+                        'booking_id'       => $booking->booking_id,
+                        'payment_number'   => 'REF-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
+                        'amount'           => $refundAmount,
+                        'payment_method'   => $method,
+                        'payment_type'     => 'refund',
+                        'reference_number' => $validated['reference_number'] ?? null,
+                        'notes'            => trim('Admin direct refund. ' . ($validated['reason'] ?? '')),
+                        'status'           => 'completed',
+                        'payment_date'     => now(),
+                        'verified_by'      => auth()->id(),
+                        'verified_at'      => now(),
+                    ]);
+
+                    $this->synchronizeBookingInvoice($booking);
+
+                    return $payment;
+                });
+            }
+
+            $refundState = $booking->refund_request_state;
+            $refundState['status']           = 'released';
+            $refundState['amount']           = $refundAmount;
+            $refundState['released_amount']  = $refundAmount;
+            $refundState['released_at']      = now()->toIso8601String();
+            $refundState['released_by']      = optional($request->user())->user_id;
+            $refundState['payment_id']       = $payment?->payment_id;
+            $refundState['payment_method']   = $method;
+            $refundState['reference_number'] = $validated['reference_number'] ?? null;
+            $refundState['reason']           = $validated['reason'] ?? 'Cancelled by admin.';
+            $refundState['admin_direct']     = true;
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_REFUND_REQUESTS,
+                'booking_' . $booking->booking_id,
+                $refundState,
+                'json'
+            );
+
+            $booking->update([
+                'booking_status'      => 'cancelled',
+                'cancellation_reason' => trim('Cancelled by admin. ' . ($validated['reason'] ?? '')),
+            ]);
+            $booking->serviceEvent?->update(['status' => 'cancelled']);
+
+            $depositState = $booking->deposit_policy_state;
+            $depositState['decision_status'] = 'cancelled';
+            $depositState['decision_action'] = 'cancel';
+            $depositState['decision_notes']  = $validated['reason'] ?? 'Cancelled by admin.';
+            $depositState['decision_at']     = now()->toIso8601String();
+            $depositState['decision_by']     = optional($request->user())->user_id;
+            $depositState['extended_until']  = null;
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_DEPOSIT_POLICY,
+                'booking_' . $booking->booking_id,
+                $depositState,
+                'json'
+            );
+
+            $this->logCustom(
+                'refund_admin_direct',
+                'bookings',
+                $booking->booking_id,
+                "Booking {$booking->booking_no} cancelled by admin with refund ₱" . number_format($refundAmount, 2),
+                [
+                    'booking_no'       => $booking->booking_no,
+                    'refund_amount'    => $refundAmount,
+                    'payment_method'   => $method,
+                    'reference_number' => $validated['reference_number'] ?? null,
+                    'payment_id'       => $payment?->payment_id,
+                    'reason'           => $validated['reason'] ?? null,
+                ]
+            );
+
+            $customer = $booking->serviceEvent?->customer;
+            if ($customer && $customer->user_id) {
+                try {
+                    $msg = $refundAmount > 0
+                        ? "Your booking {$booking->booking_no} has been cancelled. Refund of ₱" . number_format($refundAmount, 2) . " released."
+                        : "Your booking {$booking->booking_no} has been cancelled.";
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'refund_admin_direct',
+                        'Booking Cancelled',
+                        $msg,
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Admin direct refund notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking cancelled with refund.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Admin direct refund error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to cancel with refund: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function rejectRefund(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $refundState = $booking->refund_request_state;
+
+            if (($refundState['status'] ?? null) !== 'pending') {
+                return $this->fail('No pending refund request for this booking.', 422);
+            }
+
+            $validated = $request->validate([
+                'reason' => ['required', 'string', 'max:500'],
+            ]);
+
+            $refundState['status']         = 'rejected';
+            $refundState['decided_at']     = now()->toIso8601String();
+            $refundState['decided_by']     = optional($request->user())->user_id;
+            $refundState['decision_notes'] = $validated['reason'];
+            $refundState['reason']         = trim(($refundState['reason'] ?? '') . "\n[Rejected]: " . $validated['reason']);
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_REFUND_REQUESTS,
+                'booking_' . $booking->booking_id,
+                $refundState,
+                'json'
+            );
+
+            $this->logCustom(
+                'refund_rejected',
+                'bookings',
+                $booking->booking_id,
+                "Refund REJECTED for booking {$booking->booking_no}",
+                [
+                    'booking_no'  => $booking->booking_no,
+                    'reason'      => $validated['reason'],
+                    'rejected_at' => now()->toDateTimeString(),
+                ]
+            );
+
+            $customer = $booking->serviceEvent?->customer;
+            if ($customer && $customer->user_id) {
+                try {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'refund_rejected',
+                        'Refund Request Update',
+                        "Your refund request for booking {$booking->booking_no} has been rejected. Reason: {$validated['reason']}",
+                        \App\Models\Notification::PRIORITY_MEDIUM,
+                        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Refund rejection notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Refund rejected.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Reject refund error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to reject refund: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function depositDecision(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'action'          => ['required', 'in:cancel,extend,waive'],
+                'extension_days'  => ['nullable', 'integer', 'min:1', 'max:90'],
+                'notes'           => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $action = $validated['action'];
+            $notes  = $validated['notes'] ?? '';
+
+            $booking->loadMissing('serviceEvent');
+            $event    = $booking->serviceEvent;
+            $eventDate = $event?->event_date;
+            $policy = app(\App\Services\BookingPolicyService::class);
+            $depositPaymentDays = max(0, (int) $policy->depositPaymentDays());
+            $daysUntilEvent = $eventDate
+                ? (int) now()->startOfDay()->diffInDays($eventDate->copy()->startOfDay(), false)
+                : null;
+            $isLateBooking = $daysUntilEvent !== null
+                && $depositPaymentDays > 0
+                && $daysUntilEvent >= 0
+                && $daysUntilEvent < $depositPaymentDays;
+
+            $state = [
+                'decision_status'      => null,
+                'decision_action'      => $action,
+                'decision_notes'       => $notes,
+                'decision_at'          => now()->toIso8601String(),
+                'decision_by'          => optional($request->user())->user_id,
+                'extended_until'       => null,
+                'applied_at_approval'  => $isLateBooking,
+            ];
+
+            if ($action === 'cancel') {
+                $booking->update([
+                    'booking_status'      => 'cancelled',
+                    'cancellation_reason' => trim('Deposit not paid within 1 week of event. ' . $notes),
+                ]);
+                $booking->serviceEvent?->update(['status' => 'cancelled']);
+                $state['decision_status'] = 'cancelled';
+            } elseif ($action === 'extend') {
+                $days = (int) ($validated['extension_days'] ?? 7);
+                $newDeadline = now()->addDays($days)->toDateString();
+                $state['decision_status'] = 'extended';
+                $state['extended_until']  = $newDeadline;
+            } else {
+                $state['decision_status'] = 'waived';
+            }
+
+            Setting::setValue(
+                self::SETTINGS_GROUP_DEPOSIT_POLICY,
+                'booking_' . $booking->booking_id,
+                $state,
+                'json'
+            );
+
+            $this->logCustom(
+                'deposit_decision',
+                'bookings',
+                $booking->booking_id,
+                "Deposit decision '{$action}' for booking {$booking->booking_no}",
+                [
+                    'booking_no'     => $booking->booking_no,
+                    'action'         => $action,
+                    'extension_days' => $validated['extension_days'] ?? null,
+                    'extended_until' => $state['extended_until'],
+                    'notes'          => $notes,
+                    'decided_at'     => $state['decision_at'],
+                ]
+            );
+
+            $customer = $booking->serviceEvent?->customer;
+            if ($customer && $customer->user_id) {
+                $messages = [
+                    'cancel' => "Your booking {$booking->booking_no} has been cancelled due to unpaid deposit.",
+                    'extend' => "Your deposit deadline for booking {$booking->booking_no} has been extended until {$state['extended_until']}.",
+                    'waive'  => "Your deposit requirement for booking {$booking->booking_no} has been waived. Your booking remains confirmed.",
+                ];
+                try {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'deposit_decision',
+                        'Booking Update',
+                        $messages[$action],
+                        \App\Models\Notification::PRIORITY_HIGH,
+                        ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                } catch (\Throwable $notifyErr) {
+                    Log::warning('Deposit decision notification failed: ' . $notifyErr->getMessage());
+                }
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Deposit decision recorded.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Deposit decision error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to record deposit decision: ' . $e->getMessage(), 500);
+        }
+    }
+
+    // ============================================================
+    // INGREDIENTS
+    // ============================================================
+
     public function getBookingsWithIngredients(Request $request): JsonResponse
     {
         try {
@@ -1831,9 +3411,9 @@ class BookingController extends Controller
             $result = [];
 
             foreach ($bookings as $booking) {
-                $guestsCount = (int) ($booking->serviceEvent?->guests_count ?? 0);
+                $guestsCount    = (int) ($booking->serviceEvent?->guests_count ?? 0);
                 $allIngredients = [];
-                $menuItems = [];
+                $menuItems      = [];
 
                 foreach ($booking->items as $item) {
                     if (!$item->menu_item_id) continue;
@@ -1844,10 +3424,10 @@ class BookingController extends Controller
                     $itemIngredients = [];
 
                     foreach ($menuItem->recipeIngredients as $recipe) {
-                        $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
-                        $quantityNeeded = $recipe->quantity_per_pax * max(1, (int) $item->quantity);
-                        $availableStock = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
-                        $shortage = max(0, $quantityNeeded - $availableStock);
+                        $stock           = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
+                        $quantityNeeded  = $recipe->quantity_per_pax * max(1, (int) $item->quantity);
+                        $availableStock  = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
+                        $shortage        = max(0, $quantityNeeded - $availableStock);
 
                         $purchased = PurchaseRequest::where('ingredient_id', $recipe->ingredient_id)
                             ->where('booking_id', $booking->booking_id)
@@ -1855,40 +3435,39 @@ class BookingController extends Controller
                             ->exists();
 
                         $ingredientData = [
-                            'ingredient_id' => $recipe->ingredient_id,
-                            'name' => $recipe->ingredient?->name ?? 'Unknown',
-                            'unit' => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
-                            'per_pax' => (float) $recipe->quantity_per_pax,
-                            'quantity_needed' => round($quantityNeeded, 2),
-                            'current_stock' => (float) ($stock?->current_quantity ?? 0),
+                            'ingredient_id'    => $recipe->ingredient_id,
+                            'name'             => $recipe->ingredient?->name ?? 'Unknown',
+                            'unit'             => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
+                            'per_pax'          => (float) $recipe->quantity_per_pax,
+                            'quantity_needed'  => round($quantityNeeded, 2),
+                            'current_stock'    => (float) ($stock?->current_quantity ?? 0),
                             'reserved_quantity' => (float) ($stock?->reserved_quantity ?? 0),
-                            'available_stock' => round($availableStock, 2),
-                            'shortage' => round($shortage, 2),
-                            'purchased' => $purchased,
-                            'need_to_buy' => !$purchased && $shortage > 0,
-                            'unit_cost' => (float) ($recipe->ingredient?->unit_cost ?? 0),
+                            'available_stock'  => round($availableStock, 2),
+                            'shortage'         => round($shortage, 2),
+                            'purchased'        => $purchased,
+                            'need_to_buy'      => !$purchased && $shortage > 0,
+                            'unit_cost'        => (float) ($recipe->ingredient?->unit_cost ?? 0),
                         ];
 
                         $itemIngredients[] = $ingredientData;
-                        $allIngredients[] = $ingredientData;
+                        $allIngredients[]  = $ingredientData;
                     }
 
                     $menuItems[] = [
                         'menu_item_id' => $menuItem->menu_item_id,
-                        'name' => $menuItem->name,
-                        'quantity' => $item->quantity,
-                        'price' => (float) $item->unit_price,
-                        'ingredients' => $itemIngredients,
+                        'name'         => $menuItem->name,
+                        'quantity'     => $item->quantity,
+                        'price'        => (float) $item->unit_price,
+                        'ingredients'  => $itemIngredients,
                         'ingredients_summary' => [
-                            'total' => count($itemIngredients),
-                            'need_to_buy' => collect($itemIngredients)->where('need_to_buy', true)->count(),
-                            'purchased' => collect($itemIngredients)->where('purchased', true)->count(),
+                            'total'          => count($itemIngredients),
+                            'need_to_buy'    => collect($itemIngredients)->where('need_to_buy', true)->count(),
+                            'purchased'      => collect($itemIngredients)->where('purchased', true)->count(),
                             'total_shortage' => collect($itemIngredients)->sum('shortage'),
-                        ]
+                        ],
                     ];
                 }
 
-                // Deduplicate all ingredients
                 $uniqueIngredients = [];
                 foreach ($allIngredients as $ing) {
                     $key = $ing['ingredient_id'];
@@ -1906,28 +3485,27 @@ class BookingController extends Controller
                 $allIngredients = array_values($uniqueIngredients);
 
                 $result[] = [
-                    'booking_id' => $booking->booking_id,
-                    'booking_no' => $booking->booking_no,
-                    'booking_status' => $booking->booking_status,
-                    'customer_name' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'customer_email' => $booking->serviceEvent?->customer?->person?->email,
-                    'customer_phone' => $booking->serviceEvent?->customer?->person?->phone,
-                    'event_date' => $booking->serviceEvent?->event_date?->toDateString(),
-                    'event_time' => $booking->serviceEvent?->event_time,
-                    'venue' => $booking->serviceEvent?->venue,
-                    'guests_count' => $guestsCount,
-                    'menu_items' => $menuItems,
+                    'booking_id'      => $booking->booking_id,
+                    'booking_no'      => $booking->booking_no,
+                    'booking_status'  => $booking->booking_status,
+                    'customer_name'   => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'customer_email'  => $booking->serviceEvent?->customer?->person?->email,
+                    'customer_phone'  => $booking->serviceEvent?->customer?->person?->phone,
+                    'event_date'      => $booking->serviceEvent?->event_date?->toDateString(),
+                    'event_time'      => $booking->serviceEvent?->event_time,
+                    'venue'           => $booking->serviceEvent?->venue,
+                    'guests_count'    => $guestsCount,
+                    'menu_items'      => $menuItems,
                     'ingredients_summary' => [
                         'total_ingredients' => count($allIngredients),
-                        'need_to_buy' => collect($allIngredients)->where('need_to_buy', true)->count(),
-                        'purchased' => collect($allIngredients)->where('purchased', true)->count(),
-                        'total_shortage' => collect($allIngredients)->sum('shortage'),
+                        'need_to_buy'       => collect($allIngredients)->where('need_to_buy', true)->count(),
+                        'purchased'         => collect($allIngredients)->where('purchased', true)->count(),
+                        'total_shortage'    => collect($allIngredients)->sum('shortage'),
                     ],
                     'all_ingredients' => $allIngredients,
                 ];
             }
 
-            // Apply search filter
             if ($request->filled('search')) {
                 $search = strtolower($request->input('search'));
                 $result = array_filter($result, function ($booking) use ($search) {
@@ -1938,43 +3516,31 @@ class BookingController extends Controller
             }
 
             $perPage = $request->integer('per_page', 10);
-            if ($perPage < 1) {
-                $perPage = 10;
-            }
-            if ($perPage > 1000) {
-                $perPage = 100;
-            }
+            if ($perPage < 1) $perPage = 10;
+            if ($perPage > 1000) $perPage = 100;
 
             $page = $request->integer('page', 1);
-            if ($page < 1) {
-                $page = 1;
-            }
+            if ($page < 1) $page = 1;
 
-            $total = count($result);
+            $total    = count($result);
             $lastPage = max(1, ceil($total / $perPage));
+            if ($page > $lastPage) $page = $lastPage;
 
-            if ($page > $lastPage) {
-                $page = $lastPage;
-            }
-
-            $offset = ($page - 1) * $perPage;
+            $offset    = ($page - 1) * $perPage;
             $paginated = array_slice($result, $offset, $perPage);
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'data' => $paginated,
-                    'total' => $total,
+                'data'    => [
+                    'data'         => $paginated,
+                    'total'        => $total,
                     'current_page' => $page,
-                    'per_page' => $perPage,
-                    'last_page' => $lastPage,
-                ]
+                    'per_page'     => $perPage,
+                    'last_page'    => $lastPage,
+                ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Get bookings with ingredients error: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
-            ]);
-
+            Log::error('Get bookings with ingredients error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load ingredients data: ' . $e->getMessage(),
@@ -1982,9 +3548,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Get detailed ingredients for a specific booking
-     */
     public function getBookingIngredientsDetails(Booking $booking): JsonResponse
     {
         try {
@@ -1994,9 +3557,9 @@ class BookingController extends Controller
                 'items.menuItem.recipeIngredients.ingredient.stock',
             ]);
 
-            $guestsCount = (int) ($booking->serviceEvent?->guests_count ?? 0);
+            $guestsCount    = (int) ($booking->serviceEvent?->guests_count ?? 0);
             $allIngredients = [];
-            $menuItems = [];
+            $menuItems      = [];
 
             foreach ($booking->items as $item) {
                 if (!$item->menu_item_id) continue;
@@ -2007,10 +3570,10 @@ class BookingController extends Controller
                 $itemIngredients = [];
 
                 foreach ($menuItem->recipeIngredients as $recipe) {
-                    $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
-                    $quantityNeeded = $recipe->quantity_per_pax * max(1, (int) $item->quantity);
-                    $availableStock = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
-                    $shortage = max(0, $quantityNeeded - $availableStock);
+                    $stock           = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
+                    $quantityNeeded  = $recipe->quantity_per_pax * max(1, (int) $item->quantity);
+                    $availableStock  = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
+                    $shortage        = max(0, $quantityNeeded - $availableStock);
 
                     $purchased = PurchaseRequest::where('ingredient_id', $recipe->ingredient_id)
                         ->where('booking_id', $booking->booking_id)
@@ -2018,48 +3581,47 @@ class BookingController extends Controller
                         ->exists();
 
                     $ingredientData = [
-                        'ingredient_id' => $recipe->ingredient_id,
-                        'name' => $recipe->ingredient?->name ?? 'Unknown',
-                        'unit' => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
-                        'per_pax' => (float) $recipe->quantity_per_pax,
-                        'quantity_needed' => round($quantityNeeded, 2),
-                        'current_stock' => (float) ($stock?->current_quantity ?? 0),
+                        'ingredient_id'    => $recipe->ingredient_id,
+                        'name'             => $recipe->ingredient?->name ?? 'Unknown',
+                        'unit'             => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
+                        'per_pax'          => (float) $recipe->quantity_per_pax,
+                        'quantity_needed'  => round($quantityNeeded, 2),
+                        'current_stock'    => (float) ($stock?->current_quantity ?? 0),
                         'reserved_quantity' => (float) ($stock?->reserved_quantity ?? 0),
-                        'available_stock' => round($availableStock, 2),
-                        'shortage' => round($shortage, 2),
-                        'purchased' => $purchased,
-                        'need_to_buy' => !$purchased && $shortage > 0,
-                        'unit_cost' => (float) ($recipe->ingredient?->unit_cost ?? 0),
-                        'menu_items' => [
+                        'available_stock'  => round($availableStock, 2),
+                        'shortage'         => round($shortage, 2),
+                        'purchased'        => $purchased,
+                        'need_to_buy'      => !$purchased && $shortage > 0,
+                        'unit_cost'        => (float) ($recipe->ingredient?->unit_cost ?? 0),
+                        'menu_items'       => [
                             [
-                                'name' => $menuItem->name,
+                                'name'     => $menuItem->name,
                                 'quantity' => $item->quantity,
-                                'per_pax' => $recipe->quantity_per_pax,
+                                'per_pax'  => $recipe->quantity_per_pax,
                                 'required' => round($quantityNeeded, 2),
-                            ]
+                            ],
                         ],
                     ];
 
                     $itemIngredients[] = $ingredientData;
-                    $allIngredients[] = $ingredientData;
+                    $allIngredients[]  = $ingredientData;
                 }
 
                 $menuItems[] = [
                     'menu_item_id' => $menuItem->menu_item_id,
-                    'name' => $menuItem->name,
-                    'quantity' => $item->quantity,
-                    'price' => (float) $item->unit_price,
-                    'ingredients' => $itemIngredients,
+                    'name'         => $menuItem->name,
+                    'quantity'     => $item->quantity,
+                    'price'        => (float) $item->unit_price,
+                    'ingredients'  => $itemIngredients,
                     'ingredients_summary' => [
-                        'total' => count($itemIngredients),
-                        'need_to_buy' => collect($itemIngredients)->where('need_to_buy', true)->count(),
-                        'purchased' => collect($itemIngredients)->where('purchased', true)->count(),
+                        'total'          => count($itemIngredients),
+                        'need_to_buy'    => collect($itemIngredients)->where('need_to_buy', true)->count(),
+                        'purchased'      => collect($itemIngredients)->where('purchased', true)->count(),
                         'total_shortage' => collect($itemIngredients)->sum('shortage'),
-                    ]
+                    ],
                 ];
             }
 
-            // Deduplicate all ingredients
             $uniqueIngredients = [];
             foreach ($allIngredients as $ing) {
                 $key = $ing['ingredient_id'];
@@ -2082,33 +3644,32 @@ class BookingController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'booking_id' => $booking->booking_id,
-                    'booking_no' => $booking->booking_no,
+                'data'    => [
+                    'booking_id'     => $booking->booking_id,
+                    'booking_no'     => $booking->booking_no,
                     'booking_status' => $booking->booking_status,
-                    'customer_name' => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'customer_name'  => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
                     'customer_email' => $booking->serviceEvent?->customer?->person?->email,
                     'customer_phone' => $booking->serviceEvent?->customer?->person?->phone,
-                    'event_date' => $booking->serviceEvent?->event_date?->toDateString(),
-                    'event_time' => $booking->serviceEvent?->event_time,
-                    'venue' => $booking->serviceEvent?->venue,
-                    'guests_count' => $guestsCount,
-                    'menu_items' => $menuItems,
+                    'event_date'     => $booking->serviceEvent?->event_date?->toDateString(),
+                    'event_time'     => $booking->serviceEvent?->event_time,
+                    'venue'          => $booking->serviceEvent?->venue,
+                    'guests_count'   => $guestsCount,
+                    'menu_items'     => $menuItems,
                     'ingredients_summary' => [
                         'total_ingredients' => count($allIngredients),
-                        'need_to_buy' => collect($allIngredients)->where('need_to_buy', true)->count(),
-                        'purchased' => collect($allIngredients)->where('purchased', true)->count(),
-                        'total_shortage' => collect($allIngredients)->sum('shortage'),
+                        'need_to_buy'       => collect($allIngredients)->where('need_to_buy', true)->count(),
+                        'purchased'         => collect($allIngredients)->where('purchased', true)->count(),
+                        'total_shortage'    => collect($allIngredients)->sum('shortage'),
                     ],
                     'all_ingredients' => $allIngredients,
-                ]
+                ],
             ]);
         } catch (\Exception $e) {
             Log::error('Get booking ingredients details error: ' . $e->getMessage(), [
                 'booking_id' => $booking->booking_id,
-                'trace' => $e->getTraceAsString()
+                'trace'      => $e->getTraceAsString(),
             ]);
-
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load ingredients details: ' . $e->getMessage(),
@@ -2116,9 +3677,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Get ingredients for a specific menu item within a booking
-     */
     public function getMenuItemIngredients(Booking $booking, $menuItemId): JsonResponse
     {
         try {
@@ -2131,7 +3689,7 @@ class BookingController extends Controller
             }
 
             $booking->loadMissing(['serviceEvent', 'items']);
-            $guestsCount = (int) ($booking->serviceEvent?->guests_count ?? 0);
+            $guestsCount     = (int) ($booking->serviceEvent?->guests_count ?? 0);
             $servingQuantity = (int) $booking->items
                 ->where('menu_item_id', (int) $menuItemId)
                 ->sum('quantity');
@@ -2141,10 +3699,10 @@ class BookingController extends Controller
             $ingredients = [];
 
             foreach ($menuItem->recipeIngredients as $recipe) {
-                $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
-                $quantityNeeded = $recipe->quantity_per_pax * $servingQuantity;
-                $availableStock = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
-                $shortage = max(0, $quantityNeeded - $availableStock);
+                $stock           = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
+                $quantityNeeded  = $recipe->quantity_per_pax * $servingQuantity;
+                $availableStock  = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
+                $shortage        = max(0, $quantityNeeded - $availableStock);
 
                 $purchased = PurchaseRequest::where('ingredient_id', $recipe->ingredient_id)
                     ->where('booking_id', $booking->booking_id)
@@ -2152,43 +3710,42 @@ class BookingController extends Controller
                     ->exists();
 
                 $ingredients[] = [
-                    'ingredient_id' => $recipe->ingredient_id,
-                    'name' => $recipe->ingredient?->name ?? 'Unknown',
-                    'unit' => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
-                    'per_pax' => (float) $recipe->quantity_per_pax,
-                    'quantity_needed' => round($quantityNeeded, 2),
-                    'current_stock' => (float) ($stock?->current_quantity ?? 0),
+                    'ingredient_id'    => $recipe->ingredient_id,
+                    'name'             => $recipe->ingredient?->name ?? 'Unknown',
+                    'unit'             => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
+                    'per_pax'          => (float) $recipe->quantity_per_pax,
+                    'quantity_needed'  => round($quantityNeeded, 2),
+                    'current_stock'    => (float) ($stock?->current_quantity ?? 0),
                     'reserved_quantity' => (float) ($stock?->reserved_quantity ?? 0),
-                    'available_stock' => round($availableStock, 2),
-                    'shortage' => round($shortage, 2),
-                    'purchased' => $purchased,
-                    'need_to_buy' => !$purchased && $shortage > 0,
-                    'unit_cost' => (float) ($recipe->ingredient?->unit_cost ?? 0),
+                    'available_stock'  => round($availableStock, 2),
+                    'shortage'         => round($shortage, 2),
+                    'purchased'        => $purchased,
+                    'need_to_buy'      => !$purchased && $shortage > 0,
+                    'unit_cost'        => (float) ($recipe->ingredient?->unit_cost ?? 0),
                 ];
             }
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'menu_item_id' => $menuItem->menu_item_id,
+                'data'    => [
+                    'menu_item_id'   => $menuItem->menu_item_id,
                     'menu_item_name' => $menuItem->name,
-                    'guests_count' => $guestsCount,
-                    'ingredients' => $ingredients,
-                    'summary' => [
+                    'guests_count'   => $guestsCount,
+                    'ingredients'    => $ingredients,
+                    'summary'        => [
                         'total_ingredients' => count($ingredients),
-                        'need_to_buy' => collect($ingredients)->where('need_to_buy', true)->count(),
-                        'purchased' => collect($ingredients)->where('purchased', true)->count(),
-                        'total_shortage' => collect($ingredients)->sum('shortage'),
-                    ]
-                ]
+                        'need_to_buy'       => collect($ingredients)->where('need_to_buy', true)->count(),
+                        'purchased'         => collect($ingredients)->where('purchased', true)->count(),
+                        'total_shortage'    => collect($ingredients)->sum('shortage'),
+                    ],
+                ],
             ]);
         } catch (\Exception $e) {
             Log::error('Get menu item ingredients error: ' . $e->getMessage(), [
-                'booking_id' => $booking->booking_id,
+                'booking_id'   => $booking->booking_id,
                 'menu_item_id' => $menuItemId,
-                'trace' => $e->getTraceAsString()
+                'trace'        => $e->getTraceAsString(),
             ]);
-
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load menu item ingredients: ' . $e->getMessage(),
@@ -2196,24 +3753,21 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Mark ingredients as purchased for a booking
-     */
     public function markIngredientsPurchasedPerBooking(Request $request, Booking $booking): JsonResponse
     {
         try {
             $data = $request->validate([
-                'ingredient_ids' => 'required|array',
+                'ingredient_ids'   => 'required|array',
                 'ingredient_ids.*' => 'exists:ingredients,ingredient_id',
-                'menu_item_id' => 'nullable|exists:menu_items,menu_item_id',
+                'menu_item_id'     => 'nullable|exists:menu_items,menu_item_id',
             ]);
 
-            $updated = 0;
+            $updated         = 0;
             $ingredientNames = [];
-            $menuItemName = null;
+            $menuItemName    = null;
 
             if ($data['menu_item_id'] ?? false) {
-                $menuItem = MenuItem::find($data['menu_item_id']);
+                $menuItem     = MenuItem::find($data['menu_item_id']);
                 $menuItemName = $menuItem?->name;
             }
 
@@ -2232,19 +3786,19 @@ class BookingController extends Controller
                         ->first();
 
                     $ingredients = $setting ? $this->decodeSettingValue($setting->value) : [];
-                    $found = collect($ingredients)->firstWhere('ingredient_id', $ingredientId);
+                    $found       = collect($ingredients)->firstWhere('ingredient_id', $ingredientId);
 
                     if ($found && ($found['shortage'] ?? 0) > 0) {
                         PurchaseRequest::create([
-                            'pr_number' => 'PRQ-' . now()->format('YmdHis') . '-' . random_int(100, 999),
+                            'pr_number'     => 'PRQ-' . now()->format('YmdHis') . '-' . random_int(100, 999),
                             'ingredient_id' => $ingredientId,
-                            'quantity' => $found['shortage'],
-                            'urgency' => 'normal',
-                            'status' => 'received',
-                            'notes' => "Marked as purchased for booking {$booking->booking_no}" .
+                            'quantity'      => $found['shortage'],
+                            'urgency'       => 'normal',
+                            'status'        => 'received',
+                            'notes'         => "Marked as purchased for booking {$booking->booking_no}" .
                                 ($menuItemName ? " (Menu: {$menuItemName})" : ''),
-                            'requested_by' => auth()->id() ?? 1,
-                            'booking_id' => $booking->booking_id,
+                            'requested_by'  => auth()->id() ?? 1,
+                            'booking_id'    => $booking->booking_id,
                         ]);
                         $updated++;
                     }
@@ -2256,7 +3810,6 @@ class BookingController extends Controller
                 }
             }
 
-            // Update settings
             $setting = Setting::where('group', 'ingredients_summary')
                 ->where('key', 'booking_' . $booking->booking_id)
                 ->first();
@@ -2277,26 +3830,25 @@ class BookingController extends Controller
 
             return response()->json([
                 'success' => true,
-                'data' => [
-                    'updated' => $updated,
-                    'ingredients' => $ingredientNames,
+                'data'    => [
+                    'updated'        => $updated,
+                    'ingredients'    => $ingredientNames,
                     'menu_item_name' => $menuItemName,
                     'total_selected' => count($data['ingredient_ids']),
                 ],
-                'message' => $message
+                'message' => $message,
             ]);
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (ValidationException $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
-                'errors' => $e->errors(),
+                'errors'  => $e->errors(),
             ], 422);
         } catch (\Exception $e) {
             Log::error('Mark ingredients purchased error: ' . $e->getMessage(), [
                 'booking_id' => $booking->booking_id,
-                'trace' => $e->getTraceAsString()
+                'trace'      => $e->getTraceAsString(),
             ]);
-
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to mark ingredients: ' . $e->getMessage(),
@@ -2304,9 +3856,6 @@ class BookingController extends Controller
         }
     }
 
-    /**
-     * Mark all ingredients for a booking as purchased
-     */
     public function markAllIngredientsPurchased(Booking $booking): JsonResponse
     {
         try {
@@ -2315,7 +3864,7 @@ class BookingController extends Controller
                 ->first();
 
             $ingredients = $setting ? $this->decodeSettingValue($setting->value) : [];
-            $needToBuy = array_filter($ingredients, function ($ing) {
+            $needToBuy   = array_filter($ingredients, function ($ing) {
                 return ($ing['need_to_buy'] ?? false) === true;
             });
 
@@ -2336,13 +3885,107 @@ class BookingController extends Controller
         } catch (\Exception $e) {
             Log::error('Mark all ingredients purchased error: ' . $e->getMessage(), [
                 'booking_id' => $booking->booking_id,
-                'trace' => $e->getTraceAsString()
+                'trace'      => $e->getTraceAsString(),
             ]);
-
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to mark all ingredients: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * Admin cancels / withdraws a pending reschedule proposal
+     * that has NOT yet been accepted by the customer.
+     */
+    public function cancelRescheduleProposal(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            if ($booking->reschedule_status !== 'pending') {
+                return $this->fail(
+                    'No pending reschedule request to cancel for this booking.',
+                    422
+                );
+            }
+
+            $booking->loadMissing('serviceEvent');
+
+            $oldData    = $booking->toArray();
+            $proposedBy = $booking->reschedule_proposed_by;
+
+            DB::transaction(function () use ($booking) {
+                $restoreStatus = in_array($booking->booking_status, ['confirmed', 'ongoing'], true)
+                    ? $booking->booking_status
+                    : 'confirmed';
+
+                $booking->update([
+                    'booking_status'         => $restoreStatus,
+                    'reschedule_status'      => 'cancelled',
+                    'reschedule_proposed_by' => null,
+                    'reschedule_source'      => null,
+                    'requested_date'         => null,
+                    'requested_time'         => null,
+                    'reschedule_reason'      => null,
+                    'reschedule_proposed_at' => null,
+                    'original_event_date'    => null,
+                    'original_event_time'    => null,
+                ]);
+            });
+
+            $this->logCustom(
+                'reschedule_proposal_cancelled_by_admin',
+                'bookings',
+                $booking->booking_id,
+                "Admin cancelled reschedule proposal for {$booking->booking_no}",
+                [
+                    'booking_no'   => $booking->booking_no,
+                    'customer'     => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'old_status'   => $oldData['booking_status'] ?? 'unknown',
+                    'new_status'   => 'confirmed',
+                    'proposed_by'  => $proposedBy,
+                    'cancelled_at' => now()->toDateTimeString(),
+                    'reason'       => $validated['reason'] ?? null,
+                ]
+            );
+
+            try {
+                $customer = $booking->serviceEvent?->customer;
+                if ($customer && $customer->user_id) {
+                    app(NotificationService::class)->notifyUser(
+                        $customer->user_id,
+                        'reschedule_proposal_cancelled',
+                        'Reschedule Proposal Withdrawn',
+                        "The proposed new schedule for booking {$booking->booking_no} has been withdrawn by our team.\n\n" .
+                            "Your original event schedule remains confirmed.\n\n" .
+                            "If you have questions, please contact us.",
+                        \App\Models\Notification::PRIORITY_MEDIUM,
+                        [
+                            'booking_id' => $booking->booking_id,
+                            'booking_no' => $booking->booking_no,
+                        ],
+                        "/customer/bookings/{$booking->booking_id}"
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Reschedule cancel notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh()),
+                'Reschedule proposal cancelled. Booking restored to confirmed.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('Cancel reschedule proposal error: ' . $e->getMessage(), [
+                'booking_id' => $booking->booking_id,
+                'trace'      => $e->getTraceAsString(),
+            ]);
+            return $this->fail('Failed to cancel reschedule proposal: ' . $e->getMessage(), 500);
         }
     }
 
@@ -2363,7 +4006,7 @@ class BookingController extends Controller
     }
 
     // ============================================================
-    // PRIVATE HELPER METHODS
+    // PRIVATE HELPERS
     // ============================================================
 
     private function validateBookingCompletion(Booking $booking): array
@@ -2371,7 +4014,7 @@ class BookingController extends Controller
         $booking->loadMissing(['payments', 'invoice', 'quotation', 'equipment.equipment', 'order', 'serviceEvent']);
         $missing = [];
 
-        $payments = $this->loadedRelationCollection($booking, 'payments');
+        $payments  = $this->loadedRelationCollection($booking, 'payments');
         $equipment = $this->loadedRelationCollection($booking, 'equipment');
 
         $totalAmount = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
@@ -2389,7 +4032,7 @@ class BookingController extends Controller
         }
 
         $damageAmount = (float) $equipment->sum(fn($item) => (float) ($item->damage_charge ?? 0) + (float) ($item->missing_charge ?? 0));
-        $paidAmount = (float) $payments->where('status', 'completed')->sum('amount');
+        $paidAmount   = (float) $payments->where('status', 'completed')->sum('amount');
         $requiredPayment = $totalAmount;
 
         if ($totalAmount > 0 && $paidAmount + 0.01 < $requiredPayment) {
@@ -2414,8 +4057,8 @@ class BookingController extends Controller
 
         $order = $booking->order;
         if ($order) {
-            $metadata = $this->orderMetadata($order);
-            $kitchenTasks = $metadata['kitchen_preparation'] ?? $this->settingArray('kitchen_tasks', 'order_' . $order->order_id);
+            $metadata      = $this->orderMetadata($order);
+            $kitchenTasks  = $metadata['kitchen_preparation'] ?? $this->settingArray('kitchen_tasks', 'order_' . $order->order_id);
             $kitchenPending = collect($kitchenTasks)->filter(function ($task) {
                 if (($task['is_header'] ?? false) === true) return false;
                 return ! (($task['is_done'] ?? false) || (($task['status'] ?? 'pending') === 'completed'));
@@ -2424,7 +4067,7 @@ class BookingController extends Controller
                 $missing[] = 'Kitchen preparation checklist is not yet done.';
             }
 
-            $deliveryItems = $metadata['delivery_preparation'] ?? $this->settingArray('delivery_items', 'order_' . $order->order_id);
+            $deliveryItems     = $metadata['delivery_preparation'] ?? $this->settingArray('delivery_items', 'order_' . $order->order_id);
             $needsDeliveryPrep = in_array(strtolower((string) $booking->serviceEvent?->delivery_method), ['delivery', 'buffet', 'setup'], true)
                 || in_array(strtolower((string) $booking->serviceEvent?->service_type), ['buffet', 'tray'], true);
             if ($needsDeliveryPrep && count($deliveryItems) === 0) {
@@ -2442,7 +4085,7 @@ class BookingController extends Controller
 
         return [
             'can_complete' => empty($missing),
-            'missing' => array_values(array_unique($missing)),
+            'missing'      => array_values(array_unique($missing)),
         ];
     }
 
@@ -2491,43 +4134,43 @@ class BookingController extends Controller
             if (!$menuItem) continue;
 
             foreach ($menuItem->recipeIngredients as $recipe) {
-                $ingredientId = $recipe->ingredient_id;
-                $quantityPerPax = (float)$recipe->quantity_per_pax;
-                $requiredQty = $quantityPerPax * $item->quantity;
+                $ingredientId    = $recipe->ingredient_id;
+                $quantityPerPax  = (float) $recipe->quantity_per_pax;
+                $requiredQty     = $quantityPerPax * $item->quantity;
 
                 if (!isset($ingredients[$ingredientId])) {
-                    $stock = InventoryStock::where('ingredient_id', $ingredientId)->first();
+                    $stock      = InventoryStock::where('ingredient_id', $ingredientId)->first();
                     $ingredient = Ingredient::find($ingredientId);
 
                     $ingredients[$ingredientId] = [
-                        'ingredient_id' => $ingredientId,
-                        'name' => $ingredient?->name ?? 'Unknown',
-                        'unit' => $recipe->unit ?? $ingredient?->unit ?? 'kg',
-                        'per_pax' => $quantityPerPax,
-                        'quantity_needed' => 0,
-                        'current_stock' => $stock?->current_quantity ?? 0,
+                        'ingredient_id'     => $ingredientId,
+                        'name'              => $ingredient?->name ?? 'Unknown',
+                        'unit'              => $recipe->unit ?? $ingredient?->unit ?? 'kg',
+                        'per_pax'           => $quantityPerPax,
+                        'quantity_needed'   => 0,
+                        'current_stock'     => $stock?->current_quantity ?? 0,
                         'reserved_quantity' => $stock?->reserved_quantity ?? 0,
-                        'available_stock' => ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0),
-                        'unit_cost' => $ingredient?->unit_cost ?? 0,
-                        'menu_items' => [],
-                        'purchased' => false,
+                        'available_stock'   => ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0),
+                        'unit_cost'         => $ingredient?->unit_cost ?? 0,
+                        'menu_items'        => [],
+                        'purchased'         => false,
                     ];
                 }
 
                 $ingredients[$ingredientId]['quantity_needed'] += $requiredQty;
                 $ingredients[$ingredientId]['menu_items'][] = [
-                    'name' => $menuItem->name,
+                    'name'     => $menuItem->name,
                     'quantity' => $item->quantity,
-                    'per_pax' => $quantityPerPax,
+                    'per_pax'  => $quantityPerPax,
                     'required' => $requiredQty,
                 ];
             }
         }
 
         foreach ($ingredients as &$ing) {
-            $ing['shortage'] = max(0, $ing['quantity_needed'] - $ing['available_stock']);
+            $ing['shortage']    = max(0, $ing['quantity_needed'] - $ing['available_stock']);
             $ing['need_to_buy'] = $ing['shortage'] > 0;
-            $ing['status'] = $ing['shortage'] > 0 ? 'insufficient' : ($ing['available_stock'] < $ing['quantity_needed'] * 1.2 ? 'low' : 'sufficient');
+            $ing['status']      = $ing['shortage'] > 0 ? 'insufficient' : ($ing['available_stock'] < $ing['quantity_needed'] * 1.2 ? 'low' : 'sufficient');
         }
 
         return array_values($ingredients);
@@ -2537,186 +4180,305 @@ class BookingController extends Controller
     {
         $booking->loadMissing($this->bookingRelations());
 
-        $event = $booking->serviceEvent;
+        $policy = app(\App\Services\BookingPolicyService::class);
+        $depositPaymentDays     = max(0, (int) $policy->depositPaymentDays());
+        $cancellationCutoffDays = max(0, (int) $policy->cancellationCutoffDays());
+
+        $event  = $booking->serviceEvent;
         $person = $event?->customer?->person;
 
+        $isWithinCancellationCutoff = false;
+        $daysUntilEvent             = null;
+        if ($event?->event_date) {
+            $daysUntilEvent = (int) now()->startOfDay()->diffInDays(
+                $event->event_date->copy()->startOfDay(),
+                false
+            );
+            if ($cancellationCutoffDays > 0) {
+                $isWithinCancellationCutoff = $daysUntilEvent >= 0 && $daysUntilEvent < $cancellationCutoffDays;
+            }
+        }
+
+        $isLateBooking = $daysUntilEvent !== null
+            && $depositPaymentDays > 0
+            && $daysUntilEvent >= 0
+            && $daysUntilEvent < $depositPaymentDays;
+
         $startDate = $event?->event_date?->toDateString();
-        $endDate = $event?->event_end_date?->toDateString() ?: $startDate;
-        $days = 1;
+        $endDate   = $event?->event_end_date?->toDateString() ?: $startDate;
+        $days      = 1;
         if ($startDate && $endDate) {
             $days = max(1, Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) + 1);
         }
         $eventDayRowsForMax = $this->loadedRelationCollection($booking, 'eventDays');
-        $mealMaxDay = (int) ($eventDayRowsForMax->max('day_number') ?? 1);
-        $days = max($days, $mealMaxDay);
-        $isMultiDay = ($event?->booking_scope === 'multi_day') || $days > 1;
+        $mealMaxDay         = (int) ($eventDayRowsForMax->max('day_number') ?? 1);
+        $days               = max($days, $mealMaxDay);
+        $isMultiDay         = ($event?->booking_scope === 'multi_day') || $days > 1;
 
-        $totalAmount = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
-        $payments = $this->loadedRelationCollection($booking, 'payments');
-        $bookingItems = $this->loadedRelationCollection($booking, 'items');
-        $eventDayRows = $this->loadedRelationCollection($booking, 'eventDays');
+        $totalAmount   = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
+        $payments      = $this->loadedRelationCollection($booking, 'payments');
+        $bookingItems  = $this->loadedRelationCollection($booking, 'items');
+        $eventDayRows  = $this->loadedRelationCollection($booking, 'eventDays');
         $mealServiceRows = $this->loadedRelationCollection($booking, 'mealServices');
-        $chargeRows = $this->loadedRelationCollection($booking, 'charges');
+        $chargeRows    = $this->loadedRelationCollection($booking, 'charges');
         $equipmentRows = $this->loadedRelationCollection($booking, 'equipment');
-        $trackingRows = $this->loadedRelationCollection($booking, 'tracking');
-        $paidAmount = (float) $payments->where('status', 'completed')->sum('amount');
+        $trackingRows  = $this->loadedRelationCollection($booking, 'tracking');
+        $paidAmount    = (float) $payments->where('status', 'completed')->sum('amount');
+
         $preparationTracking = $trackingRows->where('stage', 'preparation')->first();
         $preparationMetadata = json_decode((string) ($preparationTracking?->notes ?? '[]'), true);
         $preparationMetadata = is_array($preparationMetadata) ? $preparationMetadata : [];
-        $assignedStaff = collect($preparationMetadata['assigned_staff'] ?? [])->values();
-        $completedTracking = $trackingRows->where('stage', 'completed')->first();
-        $completionMetadata = json_decode((string) ($completedTracking?->notes ?? '[]'), true);
-        $completionMetadata = is_array($completionMetadata) ? $completionMetadata : [];
-        $ongoingTracking = $trackingRows->where('stage', 'ongoing')->first();
-        $ongoingMetadata = json_decode((string) ($ongoingTracking?->notes ?? '[]'), true);
-        $ongoingMetadata = is_array($ongoingMetadata) ? $ongoingMetadata : [];
+        $assignedStaff       = collect($preparationMetadata['assigned_staff'] ?? [])->values();
+
+        $completedTracking   = $trackingRows->where('stage', 'completed')->first();
+        $completionMetadata  = json_decode((string) ($completedTracking?->notes ?? '[]'), true);
+        $completionMetadata  = is_array($completionMetadata) ? $completionMetadata : [];
+
+        $ongoingTracking     = $trackingRows->where('stage', 'ongoing')->first();
+        $ongoingMetadata     = json_decode((string) ($ongoingTracking?->notes ?? '[]'), true);
+        $ongoingMetadata     = is_array($ongoingMetadata) ? $ongoingMetadata : [];
+
         $mealServices = $mealServiceRows->map(fn($meal) => [
-            'meal_service_id' => $meal->meal_service_id,
-            'id' => $meal->meal_service_id,
-            'event_day_id' => $meal->event_day_id,
-            'day_number' => (int) $meal->day_number,
-            'service_date' => $meal->service_date?->toDateString(),
-            'date' => $meal->service_date?->toDateString(),
-            'meal_type' => $meal->meal_type,
-            'serving_time' => $meal->serving_time,
-            'preparation_time' => $meal->preparation_time,
-            'dispatch_time' => $meal->dispatch_time,
-            'arrival_time' => $meal->arrival_time,
-            'pax' => (int) $meal->pax,
-            'menu_source' => $meal->menu_source,
-            'menu_item_id' => $meal->menu_item_id,
-            'package_id' => $meal->package_id,
-            'menu_name' => $meal->menu_name,
-            'menu_description' => $meal->menu_description,
-            'price_per_head' => (float) $meal->price_per_head,
-            'total_meal_amount' => (float) $meal->total_meal_amount,
-            'filters' => ($meal->relationLoaded('filters') ? $meal->filters : collect())->map(fn($filter) => [
-                'filter_key' => $filter->filter_key,
+            'meal_service_id'     => $meal->meal_service_id,
+            'id'                  => $meal->meal_service_id,
+            'event_day_id'        => $meal->event_day_id,
+            'day_number'          => (int) $meal->day_number,
+            'service_date'        => $meal->service_date?->toDateString(),
+            'date'                => $meal->service_date?->toDateString(),
+            'meal_type'           => $meal->meal_type,
+            'serving_time'        => $meal->serving_time,
+            'preparation_time'    => $meal->preparation_time,
+            'dispatch_time'       => $meal->dispatch_time,
+            'arrival_time'        => $meal->arrival_time,
+            'pax'                 => (int) $meal->pax,
+            'menu_source'         => $meal->menu_source,
+            'menu_item_id'        => $meal->menu_item_id,
+            'package_id'          => $meal->package_id,
+            'menu_name'           => $meal->menu_name,
+            'menu_description'    => $meal->menu_description,
+            'price_per_head'      => (float) $meal->price_per_head,
+            'total_meal_amount'   => (float) $meal->total_meal_amount,
+            'filters'             => ($meal->relationLoaded('filters') ? $meal->filters : collect())->map(fn($filter) => [
+                'filter_key'   => $filter->filter_key,
                 'filter_value' => $filter->filter_value,
             ])->values(),
-            'custom_items' => ($meal->relationLoaded('customItems') ? $meal->customItems : collect())->map(fn($item) => [
+            'custom_items'        => ($meal->relationLoaded('customItems') ? $meal->customItems : collect())->map(fn($item) => [
                 'meal_service_custom_item_id' => $item->meal_service_custom_item_id,
-                'menu_item_id' => $item->menu_item_id,
-                'item_name' => $item->item_name ?? $item->menuItem?->name,
-                'description' => $item->description,
-                'quantity' => (int) $item->quantity,
-                'unit_price' => (float) $item->unit_price,
-                'notes' => $item->notes,
+                'menu_item_id'                => $item->menu_item_id,
+                'item_name'                   => $item->item_name ?? $item->menuItem?->name,
+                'description'                 => $item->description,
+                'quantity'                    => (int) $item->quantity,
+                'unit_price'                  => (float) $item->unit_price,
+                'notes'                       => $item->notes,
             ])->values(),
-            'notes' => $meal->notes,
-            'preparation_status' => $meal->preparation_status,
-            'delivery_status' => $meal->delivery_status,
-            'serving_status' => $meal->serving_status,
-            'meal_status' => $meal->meal_status,
+            'notes'               => $meal->notes,
+            'preparation_status'  => $meal->preparation_status,
+            'delivery_status'     => $meal->delivery_status,
+            'serving_status'      => $meal->serving_status,
+            'meal_status'         => $meal->meal_status,
         ])->values();
+
         $eventDays = $eventDayRows->map(fn($day) => [
-            'event_day_id' => $day->event_day_id,
-            'day_number' => (int) $day->day_number,
-            'date' => $day->date?->toDateString(),
-            'day_status' => $day->day_status,
+            'event_day_id'    => $day->event_day_id,
+            'day_number'      => (int) $day->day_number,
+            'date'            => $day->date?->toDateString(),
+            'day_status'      => $day->day_status,
             'day_total_amount' => (float) $day->day_total_amount,
         ])->values();
 
+        $depositPolicyState  = $booking->deposit_policy_state;
+        $refundRequestState  = $booking->refund_request_state;
+
+        $depositPaid = (float) $payments->where('status', 'completed')->where('payment_type', 'deposit')->sum('amount');
+        if ($depositPaid <= 0) {
+            $depositPaid = (float) ($refundRequestState['deposit_snapshot'] ?? 0);
+        }
+        if ($depositPaid <= 0) {
+            $depositPaid = (float) ($booking->invoice?->down_payment ?? 0);
+        }
+
         return [
-            'id' => $booking->booking_id,
-            'booking_id' => $booking->booking_id,
-            'booking_no' => $booking->booking_no,
+            'id'             => $booking->booking_id,
+            'booking_id'     => $booking->booking_id,
+            'booking_no'     => $booking->booking_no,
             'booking_status' => $booking->booking_status,
-            'customer_name' => trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? '')),
-            'customer_email' => $person?->email,
-            'customer_phone' => $person?->phone,
+
+            'customer_name'    => trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? '')),
+            'customer_email'   => $person?->email,
+            'customer_phone'   => $person?->phone,
             'customer_address' => $person?->address_line_1,
-            'address_line_1' => $person?->address_line_1,
-            'city' => $person?->city,
-            'province' => $person?->province,
-            'postal_code' => $person?->postal_code,
-            'country' => $person?->country,
-            'requested_date' => $booking->booking_status === 'reschedule_requested' ? ($booking->requested_date?->toDateString() ?? null) : null,
-            'requested_time' => $booking->booking_status === 'reschedule_requested' ? $booking->requested_time : null,
-            'reschedule_reason' => $booking->booking_status === 'reschedule_requested' ? $booking->reschedule_reason : null,
-            'event_type_id' => $event?->event_type_id,
-            'event_type_name' => $event?->eventType?->name,
-            'event_date' => $startDate,
-            'event_end_date' => $endDate,
-            'days' => $days,
-            'is_multi_day' => $isMultiDay,
-            'booking_scope' => $event?->booking_scope ?? ($isMultiDay ? 'multi_day' : 'regular'),
-            'event_time' => $event?->event_time,
-            'venue' => $event?->venue,
-            'location' => $event?->venue,
-            'guests_count' => (int) ($event?->guests_count ?? 0),
-            'service_type' => $event?->service_type,
-            'delivery_method' => $event?->delivery_method,
+            'address_line_1'   => $person?->address_line_1,
+            'city'             => $person?->city,
+            'province'         => $person?->province,
+            'postal_code'      => $person?->postal_code,
+            'country'          => $person?->country,
+
+            // Reschedule metadata
+            'requested_date'         => $booking->requested_date?->toDateString(),
+            'requested_time'         => $booking->requested_time,
+            'reschedule_reason'      => $booking->reschedule_reason,
+            'reschedule_proposed_by' => $booking->reschedule_proposed_by,
+            'reschedule_status'      => $booking->reschedule_status,
+            'reschedule_source'      => $booking->reschedule_source,
+            'reschedule_proposed_at' => optional($booking->reschedule_proposed_at)->toIso8601String(),
+            'original_event_date'    => optional($booking->original_event_date)->toDateString(),
+            'original_event_time'    => $booking->original_event_time,
+
+            // Reschedule deadline metadata
+            'customer_reschedule_deadline' => (function () use ($booking) {
+                if (
+                    $booking->reschedule_status === 'pending' &&
+                    $booking->reschedule_proposed_by === 'admin' &&
+                    $booking->reschedule_proposed_at
+                ) {
+                    $hours = app(\App\Services\BookingPolicyService::class)->customerRescheduleResponseHours();
+                    return $booking->reschedule_proposed_at->copy()->addHours($hours)->toIso8601String();
+                }
+                return null;
+            })(),
+            'admin_reschedule_deadline' => (function () use ($booking) {
+                if (
+                    $booking->reschedule_status === 'pending' &&
+                    $booking->reschedule_proposed_by === 'customer' &&
+                    $booking->reschedule_proposed_at
+                ) {
+                    $hours = app(\App\Services\BookingPolicyService::class)->adminRescheduleResponseHours();
+                    return $booking->reschedule_proposed_at->copy()->addHours($hours)->toIso8601String();
+                }
+                return null;
+            })(),
+            'customer_reschedule_response_hours' => app(\App\Services\BookingPolicyService::class)->customerRescheduleResponseHours(),
+            'admin_reschedule_response_hours'    => app(\App\Services\BookingPolicyService::class)->adminRescheduleResponseHours(),
+
+            'event_type_id'       => $event?->event_type_id,
+            'event_type_name'     => $event?->eventType?->name,
+            'event_date'          => $startDate,
+            'event_end_date'      => $endDate,
+            'days'                => $days,
+            'is_multi_day'        => $isMultiDay,
+            'booking_scope'       => $event?->booking_scope ?? ($isMultiDay ? 'multi_day' : 'regular'),
+            'event_time'          => $event?->event_time,
+            'venue'               => $event?->venue,
+            'location'            => $event?->venue,
+            'guests_count'        => (int) ($event?->guests_count ?? 0),
+            'service_type'        => $event?->service_type,
+            'delivery_method'     => $event?->delivery_method,
             'menu_selection_type' => $event?->menu_selection_type,
-            'special_requests' => $event?->special_requests,
-            'total_amount' => $totalAmount,
-            'paid_amount' => $paidAmount,
-            'balance' => max(0, $totalAmount - $paidAmount),
+            'special_requests'    => $event?->special_requests,
+
+            'total_amount'   => $totalAmount,
+            'paid_amount'    => $paidAmount,
+            'balance'        => max(0, $totalAmount - $paidAmount),
             'payment_status' => $paidAmount <= 0 ? 'pending' : ($paidAmount < $totalAmount ? 'partial' : 'paid'),
-            'assigned_staff' => $assignedStaff,
-            'assigned_staff_count' => $assignedStaff->count(),
-            'total_staff_required' => $assignedStaff->count(),
-            'event_completed' => (bool) ($completionMetadata['event_completed'] ?? false),
-            'event_done' => (bool) ($ongoingMetadata['event_done'] ?? false),
-            'event_done_at' => $ongoingMetadata['event_done_at'] ?? null,
-            'progress' => (int) ($ongoingTracking?->progress_percentage ?? 0),
-            'debt_booking_event' => (bool) ($completionMetadata['debt_booking_event'] ?? false),
-            'was_debt_booking_event' => (bool) ($completionMetadata['was_debt_booking_event'] ?? $completionMetadata['debt_booking_event'] ?? false),
+
+            'deposit_decision_status' => $depositPolicyState['decision_status'] ?? null,
+            'deposit_decision_action' => $depositPolicyState['decision_action'] ?? null,
+            'deposit_decision_notes'  => $depositPolicyState['decision_notes'] ?? null,
+            'deposit_extended_until'  => $depositPolicyState['extended_until'] ?? null,
+            'deposit_decision_at'     => $depositPolicyState['decision_at'] ?? null,
+
+            'refund_status'         => $refundRequestState['status'] ?? null,
+            'refund_amount'         => (float) ($refundRequestState['amount'] ?? 0),
+            'refund_reason'         => $refundRequestState['reason'] ?? null,
+            'refund_released_amount' => (float) ($refundRequestState['released_amount'] ?? 0),
+            'refund_released_at'    => $refundRequestState['released_at'] ?? null,
+            'refund_payment_id'     => $refundRequestState['payment_id'] ?? null,
+            'refund_admin_direct'   => (bool) ($refundRequestState['admin_direct'] ?? false),
+            'refund_requested_at'   => $refundRequestState['requested_at'] ?? null,
+            'refund_requested_by'   => $refundRequestState['requested_by'] ?? null,
+
+            'deposit_paid' => $depositPaid,
+            'deposit_due_date' => (function () use ($startDate, $depositPaymentDays, $isLateBooking) {
+                if (!$startDate) return null;
+                if ($isLateBooking) return null;
+                if ($depositPaymentDays > 0) {
+                    $computed = Carbon::parse($startDate)->subDays($depositPaymentDays);
+                    return $computed->isBefore(now()->startOfDay())
+                        ? now()->startOfDay()->toDateString()
+                        : $computed->toDateString();
+                }
+                return Carbon::parse($startDate)->toDateString();
+            })(),
+            'is_late_booking'    => $isLateBooking,
+            'days_until_event'   => $daysUntilEvent,
+
+            'is_within_cancellation_cutoff' => $isWithinCancellationCutoff,
+            'cancellation_cutoff_days'      => $cancellationCutoffDays,
+
+            'deposit_percentage' => app(\App\Services\BookingPolicyService::class)->depositPercentage(),
+            'required_deposit_amount' => (function () use ($totalAmount) {
+                $pct = app(\App\Services\BookingPolicyService::class)->depositPercentage();
+                return round($totalAmount * ($pct / 100), 2);
+            })(),
+
+            'assigned_staff'          => $assignedStaff,
+            'assigned_staff_count'    => $assignedStaff->count(),
+            'total_staff_required'    => $assignedStaff->count(),
+            'event_completed'         => (bool) ($completionMetadata['event_completed'] ?? false),
+            'event_done'              => (bool) ($ongoingMetadata['event_done'] ?? false),
+            'event_done_at'           => $ongoingMetadata['event_done_at'] ?? null,
+            'progress'                => (int) ($ongoingTracking?->progress_percentage ?? 0),
+            'debt_booking_event'      => (bool) ($completionMetadata['debt_booking_event'] ?? false),
+            'was_debt_booking_event'  => (bool) ($completionMetadata['was_debt_booking_event'] ?? $completionMetadata['debt_booking_event'] ?? false),
             'completion_override_reason' => $completionMetadata['override_reason'] ?? null,
-            'outstanding_balance' => max(0, $totalAmount - $paidAmount),
+            'outstanding_balance'     => max(0, $totalAmount - $paidAmount),
+
             'menu_items' => $bookingItems->map(fn($item) => [
-                'id' => $item->booking_item_id,
-                'meal_service_id' => $item->meal_service_id ?? null,
-                'meal_type' => $item->mealService?->meal_type,
-                'service_date' => $item->mealService?->service_date?->toDateString(),
-                'name' => $item->custom_item_name ?? $item->menuItem?->name ?? 'Menu item',
-                'description' => $item->description,
-                'quantity' => (int) $item->quantity,
-                'total_quantity' => (int) $item->quantity,
-                'price' => (float) $item->unit_price,
-                'total_price' => (float) $item->unit_price * (int) $item->quantity,
+                'id'                   => $item->booking_item_id,
+                'meal_service_id'      => $item->meal_service_id ?? null,
+                'meal_type'            => $item->mealService?->meal_type,
+                'service_date'         => $item->mealService?->service_date?->toDateString(),
+                'name'                 => $item->custom_item_name ?? $item->menuItem?->name ?? 'Menu item',
+                'description'          => $item->description,
+                'quantity'             => (int) $item->quantity,
+                'total_quantity'       => (int) $item->quantity,
+                'price'                => (float) $item->unit_price,
+                'total_price'          => (float) $item->unit_price * (int) $item->quantity,
                 'special_instructions' => $item->special_instructions,
             ])->values(),
-            'event_days' => $eventDays,
+            'event_days'    => $eventDays,
             'meal_services' => $mealServices,
             'meal_schedule' => $mealServices,
+
             'billing_summary' => [
                 'total_meal_amount' => (float) $mealServices->sum('total_meal_amount'),
-                'charges' => $chargeRows->where('charge_kind', 'charge')->values()->map(fn($charge) => [
+                'charges'           => $chargeRows->where('charge_kind', 'charge')->values()->map(fn($charge) => [
                     'charge_type' => $charge->charge_type,
                     'description' => $charge->description,
-                    'amount' => (float) $charge->amount,
+                    'amount'      => (float) $charge->amount,
                 ]),
-                'discounts' => $chargeRows->where('charge_kind', 'discount')->values()->map(fn($charge) => [
+                'discounts'         => $chargeRows->where('charge_kind', 'discount')->values()->map(fn($charge) => [
                     'charge_type' => $charge->charge_type,
                     'description' => $charge->description,
-                    'amount' => (float) $charge->amount,
+                    'amount'      => (float) $charge->amount,
                 ]),
                 'additional_charges' => (float) $chargeRows->where('charge_kind', 'charge')->sum('amount'),
-                'discount' => (float) $chargeRows->where('charge_kind', 'discount')->sum('amount'),
-                'grand_total' => $totalAmount,
-                'down_payment' => (float) $payments->where('payment_type', 'deposit')->where('status', 'completed')->sum('amount'),
+                'discount'          => (float) $chargeRows->where('charge_kind', 'discount')->sum('amount'),
+                'grand_total'       => $totalAmount,
+                'down_payment'      => (float) $payments->where('payment_type', 'deposit')->where('status', 'completed')->sum('amount'),
                 'remaining_balance' => max(0, $totalAmount - $paidAmount),
-                'payment_status' => $paidAmount <= 0 ? 'pending' : ($paidAmount < $totalAmount ? 'partial' : 'paid'),
+                'payment_status'    => $paidAmount <= 0 ? 'pending' : ($paidAmount < $totalAmount ? 'partial' : 'paid'),
             ],
+
             'package_summary' => $event?->package ? [
-                'name' => $event->package->name,
-                'description' => $event->package->description,
-                'base_price_per_pax' => (float) $event->package->base_price_per_pax,
-                'total_menu_items' => $bookingItems->count(),
+                'name'                => $event->package->name,
+                'description'         => $event->package->description,
+                'base_price_per_pax'  => (float) $event->package->base_price_per_pax,
+                'total_menu_items'    => $bookingItems->count(),
             ] : null,
-            'order' => $booking->order,
-            'invoice' => $booking->invoice,
+
+            'order'     => $booking->order,
+            'invoice'   => $booking->invoice,
             'equipment' => $equipmentRows,
-            'tracking' => $trackingRows,
+            'tracking'  => $trackingRows,
         ];
     }
 
     private function paginateCollection(Collection $items, Request $request): LengthAwarePaginator
     {
-        $page = max(1, $request->integer('page', 1));
+        $page    = max(1, $request->integer('page', 1));
         $perPage = max(1, min(100, $request->integer('per_page', 20)));
-        $items = $items->values();
+        $items   = $items->values();
         return new LengthAwarePaginator(
             $items->slice(($page - 1) * $perPage, $perPage)->values(),
             $items->count(),
@@ -2742,15 +4504,15 @@ class BookingController extends Controller
             ->where('payment_type', 'refund')
             ->sum('amount');
         $netPaid = max(0, $completed - $refunded);
-        $total = (float) $booking->invoice->total_amount;
-        $status = $netPaid >= $total && $total > 0 ? 'paid' : ($netPaid > 0 ? 'partial' : 'unpaid');
+        $total   = (float) $booking->invoice->total_amount;
+        $status  = $netPaid >= $total && $total > 0 ? 'paid' : ($netPaid > 0 ? 'partial' : 'unpaid');
         if ($status !== 'paid' && $booking->invoice->due_date?->isPast()) {
             $status = 'overdue';
         }
 
         $booking->invoice->update([
             'paid_amount' => $netPaid,
-            'status' => $status,
+            'status'      => $status,
         ]);
     }
 
@@ -2767,15 +4529,12 @@ class BookingController extends Controller
             if (method_exists($service, 'createOrderFromBooking')) {
                 $service->createOrderFromBooking($booking);
             }
-
             if (method_exists($service, 'createKitchenPreparation')) {
                 $service->createKitchenPreparation($booking);
             }
-
             if (method_exists($service, 'createDeliveryPreparation')) {
                 $service->createDeliveryPreparation($booking);
             }
-
             if (method_exists($service, 'createIngredientsManagement')) {
                 $service->createIngredientsManagement($booking);
             }

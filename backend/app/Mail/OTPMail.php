@@ -3,7 +3,6 @@
 namespace App\Mail;
 
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Mail\Mailables\Content;
 use Illuminate\Mail\Mailables\Envelope;
@@ -15,19 +14,19 @@ class OTPMail extends Mailable
 
     public $otp;
     public $name;
-    public $subject;
+    public $mailSubject;
 
-    public function __construct($otp, $name = 'User', $subject = 'Your OTP Code')
+    public function __construct($otp, $name = 'User', $mailSubject = 'Your OTP Code')
     {
         $this->otp = $otp;
         $this->name = $name;
-        $this->subject = $subject;
+        $this->mailSubject = $mailSubject;
     }
 
     public function envelope(): Envelope
     {
         return new Envelope(
-            subject: $this->subject,
+            subject: $this->mailSubject,
         );
     }
 
@@ -38,8 +37,13 @@ class OTPMail extends Mailable
             with: [
                 'otp' => $this->otp,
                 'name' => $this->name,
-                'subject' => $this->subject,
+                'subject' => $this->mailSubject,
             ],
         );
+    }
+
+    public function attachments(): array
+    {
+        return [];
     }
 }

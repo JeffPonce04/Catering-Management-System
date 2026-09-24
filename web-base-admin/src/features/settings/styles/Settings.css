@@ -1,6 +1,11 @@
 /* src/components/styles/Settings.css - Complete Enhanced */
-
+/* import DeliverySettingsPanel from './settings/DeliverySettingsPanel';
+import AnnouncementsPanel from './settings/AnnouncementsPanel';
+import BackupConfigPanel from './settings/BackupConfigPanel';
+import RoleRestrictionsPanel from './settings/RoleRestrictionsPanel'; */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+
 
 :root {
     --settings-primary: #1a7ab5;
@@ -355,6 +360,16 @@
 
 .settings-dark-mode .settings-section-title {
     color: #e2e8f0;
+}
+
+.settings-section-count {
+    font-size: 12px;
+    color: var(--settings-muted);
+    margin-top: 4px;
+}
+
+.settings-dark-mode .settings-section-count {
+    color: #8b93a8;
 }
 
 /* ==================== TABLE CONTAINER ==================== */
@@ -1053,8 +1068,6 @@
     }
 }
 
-
-
 /* ==================== ADD TO Settings.css ==================== */
 
 /* Roles Summary */
@@ -1507,7 +1520,6 @@
     background: #eff6ff;
 }
 
-
 /* ==================== GLOBAL LOADING OVERLAY ==================== */
 .settings-global-loading {
     position: fixed;
@@ -1588,4 +1600,458 @@
 
 .settings-loading-content {
     animation: fadeInLoading 0.3s ease-out;
+}
+
+/* ==================== ENHANCED SEARCH & FILTER BAR ==================== */
+.settings-search-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding: 12px 16px;
+    background: var(--settings-surface);
+    border: 1px solid var(--settings-border);
+    border-radius: 14px;
+    flex-wrap: wrap;
+    transition: all 0.3s ease;
+}
+
+.settings-dark-mode .settings-search-filter-bar {
+    background: #0f1424;
+    border-color: #1a1f35;
+}
+
+.settings-search-wrapper {
+    position: relative;
+    flex: 1;
+    min-width: 280px;
+    display: flex;
+    align-items: center;
+}
+
+.settings-search-icon {
+    position: absolute;
+    left: 14px;
+    color: var(--settings-muted);
+    font-size: 16px;
+    z-index: 2;
+    pointer-events: none;
+    transition: color 0.2s ease;
+}
+
+.settings-search-input {
+    width: 100%;
+    height: 42px !important;
+    padding-left: 42px !important;
+    border-radius: 10px !important;
+    border: 1.5px solid var(--settings-border) !important;
+    background: var(--settings-surface) !important;
+    font-size: 14px !important;
+    transition: all 0.25s ease !important;
+}
+
+.settings-dark-mode .settings-search-input {
+    background: #0a0e1a !important;
+    border-color: #1a1f35 !important;
+    color: #e2e8f0 !important;
+}
+
+.settings-search-input:hover {
+    border-color: var(--settings-primary) !important;
+}
+
+.settings-search-input:focus,
+.settings-search-input-focused {
+    border-color: var(--settings-primary) !important;
+    box-shadow: 0 0 0 3px rgba(26, 122, 181, 0.12) !important;
+}
+
+.settings-search-input::placeholder {
+    color: var(--settings-muted) !important;
+    font-size: 13px;
+}
+
+.settings-search-wrapper:focus-within .settings-search-icon {
+    color: var(--settings-primary);
+}
+
+.settings-filter-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.settings-filter-select {
+    min-width: 140px;
+    height: 42px;
+}
+
+.settings-filter-select .ant-select-selector {
+    height: 42px !important;
+    border-radius: 10px !important;
+    border: 1.5px solid var(--settings-border) !important;
+    background: var(--settings-surface) !important;
+    padding: 0 12px !important;
+    display: flex;
+    align-items: center;
+    transition: all 0.25s ease !important;
+}
+
+.settings-dark-mode .settings-filter-select .ant-select-selector {
+    background: #0a0e1a !important;
+    border-color: #1a1f35 !important;
+}
+
+.settings-filter-select .ant-select-selector:hover {
+    border-color: var(--settings-primary) !important;
+}
+
+.settings-filter-select.ant-select-focused .ant-select-selector {
+    border-color: var(--settings-primary) !important;
+    box-shadow: 0 0 0 3px rgba(26, 122, 181, 0.12) !important;
+}
+
+.settings-filter-select .ant-select-selection-placeholder {
+    color: var(--settings-muted) !important;
+    font-size: 13px;
+}
+
+.settings-filter-select .ant-select-selection-item {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--settings-text);
+}
+
+.settings-dark-mode .settings-filter-select .ant-select-selection-item {
+    color: #e2e8f0;
+}
+
+.settings-date-range-picker {
+    height: 42px;
+    border-radius: 10px !important;
+    border: 1.5px solid var(--settings-border) !important;
+    background: var(--settings-surface) !important;
+    transition: all 0.25s ease !important;
+}
+
+.settings-dark-mode .settings-date-range-picker {
+    background: #0a0e1a !important;
+    border-color: #1a1f35 !important;
+}
+
+.settings-date-range-picker:hover {
+    border-color: var(--settings-primary) !important;
+}
+
+.settings-date-range-picker.ant-picker-focused {
+    border-color: var(--settings-primary) !important;
+    box-shadow: 0 0 0 3px rgba(26, 122, 181, 0.12) !important;
+}
+
+.settings-date-range-picker .ant-picker-input > input {
+    font-size: 13px;
+    color: var(--settings-text);
+}
+
+.settings-dark-mode .settings-date-range-picker .ant-picker-input > input {
+    color: #e2e8f0;
+}
+
+.settings-clear-filters {
+    height: 42px;
+    padding: 0 16px !important;
+    color: var(--settings-danger) !important;
+    font-weight: 500;
+    font-size: 13px;
+    border-radius: 10px !important;
+    border: 1.5px solid transparent !important;
+    transition: all 0.25s ease !important;
+}
+
+.settings-clear-filters:hover {
+    background: var(--settings-danger-soft) !important;
+    border-color: var(--settings-danger) !important;
+    color: var(--settings-danger) !important;
+}
+
+.settings-dark-mode .settings-clear-filters:hover {
+    background: rgba(239, 68, 68, 0.15) !important;
+}
+
+/* ==================== ACTIVE FILTERS DISPLAY ==================== */
+.settings-active-filters {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 8px 14px;
+    background: var(--settings-primary-soft);
+    border-radius: 10px;
+    flex-wrap: wrap;
+    animation: fadeIn 0.25s ease-out;
+}
+
+.settings-dark-mode .settings-active-filters {
+    background: rgba(26, 122, 181, 0.12);
+}
+
+.settings-active-filters-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--settings-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.settings-filter-tag {
+    margin: 0 !important;
+    padding: 4px 10px !important;
+    border-radius: 6px !important;
+    font-size: 12px !important;
+    font-weight: 500;
+    background: var(--settings-surface) !important;
+    border: 1px solid var(--settings-primary) !important;
+    color: var(--settings-primary) !important;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.settings-filter-tag .ant-tag-close-icon {
+    color: var(--settings-primary) !important;
+    font-size: 11px;
+    margin-left: 2px;
+}
+
+.settings-filter-tag:hover {
+    opacity: 0.85;
+}
+
+/* ==================== SCROLLABLE CONTENT AREA ==================== */
+.settings-scrollable-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    padding-right: 4px;
+    margin-right: -4px;
+}
+
+.settings-scrollable-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.settings-scrollable-content::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.settings-scrollable-content::-webkit-scrollbar-thumb {
+    background: var(--settings-border);
+    border-radius: 10px;
+}
+
+.settings-scrollable-content::-webkit-scrollbar-thumb:hover {
+    background: var(--settings-primary);
+}
+
+/* ==================== PREVENT PAGE SCROLL ==================== */
+.settings-container {
+    height: 100vh;
+    overflow: hidden;
+}
+
+.settings-layout {
+    height: calc(100vh - 70px);
+    overflow: hidden;
+}
+
+.settings-content {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-main-card {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.settings-main-card .ant-card-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    height: 100%;
+}
+
+/* Ensure table container scrolls internally */
+.settings-table-container {
+    flex: 1;
+    overflow: auto;
+    min-height: 0;
+}
+
+/* ==================== DROPDOWN STYLING ==================== */
+.settings-filter-dropdown {
+    border-radius: 12px !important;
+    padding: 6px !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.12) !important;
+    border: 1px solid var(--settings-border) !important;
+}
+
+.settings-dark-mode .settings-filter-dropdown {
+    background: #1a1f38 !important;
+    border-color: #2a2f4e !important;
+}
+
+.settings-filter-dropdown .ant-select-item {
+    border-radius: 8px !important;
+    padding: 8px 12px !important;
+    font-size: 13px;
+    transition: all 0.15s ease;
+}
+
+.settings-filter-dropdown .ant-select-item-option-selected {
+    background: var(--settings-primary-soft) !important;
+    color: var(--settings-primary) !important;
+    font-weight: 600;
+}
+
+.settings-filter-dropdown .ant-select-item-option-active {
+    background: #f0f4f8 !important;
+}
+
+.settings-dark-mode .settings-filter-dropdown .ant-select-item-option-active {
+    background: #2a2f4e !important;
+}
+
+/* ==================== RESPONSIVE SEARCH/FILTER ==================== */
+@media (max-width: 992px) {
+    .settings-search-filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px;
+    }
+
+    .settings-search-wrapper {
+        min-width: unset;
+    }
+
+    .settings-filter-actions {
+        width: 100%;
+    }
+
+    .settings-filter-select,
+    .settings-date-range-picker {
+        flex: 1;
+        min-width: 0;
+    }
+}
+
+@media (max-width: 576px) {
+    .settings-filter-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .settings-filter-select {
+        min-width: unset;
+        width: 100%;
+    }
+
+    .settings-date-range-picker {
+        width: 100%;
+    }
+
+    .settings-clear-filters {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .settings-active-filters {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+}
+
+/* ==================== ENSURE PANEL SCROLL ==================== */
+.settings-main-card .ant-card-body > .settings-scrollable-content {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    padding-right: 4px;
+    margin-right: -4px;
+}
+
+/* For StaffSettingsPanel's internal scroll */
+.settings-scrollable-content .ant-collapse {
+    background: transparent !important;
+    border: none !important;
+}
+
+.settings-scrollable-content .ant-collapse-item {
+    border: 1px solid var(--settings-border) !important;
+    border-radius: 12px !important;
+    margin-bottom: 12px !important;
+    overflow: hidden;
+}
+
+.settings-dark-mode .settings-scrollable-content .ant-collapse-item {
+    border-color: #1a1f35 !important;
+}
+
+.settings-scrollable-content .ant-collapse-header {
+    font-weight: 600 !important;
+    padding: 16px 20px !important;
+}
+
+.settings-scrollable-content .ant-collapse-content {
+    border-top: 1px solid var(--settings-border) !important;
+}
+
+.settings-dark-mode .settings-scrollable-content .ant-collapse-content {
+    border-top-color: #1a1f35 !important;
+}
+
+/* ==================== EMPTY STATE ==================== */
+.settings-empty-state {
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.settings-empty-state p {
+    margin: 0;
+}
+
+/* ==================== STAFF PANEL SCROLL WRAPPER ==================== */
+.settings-staff-panel-scroll {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
+    padding-right: 4px;
+    margin-right: -4px;
+}
+
+.settings-staff-panel-scroll::-webkit-scrollbar {
+    width: 6px;
+}
+
+.settings-staff-panel-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.settings-staff-panel-scroll::-webkit-scrollbar-thumb {
+    background: var(--settings-border);
+    border-radius: 10px;
+}
+
+.settings-staff-panel-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--settings-primary);
 }

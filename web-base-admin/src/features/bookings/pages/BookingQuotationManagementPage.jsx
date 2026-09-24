@@ -1,12 +1,4 @@
-// src/components/BookingQuotationManagement.jsx - COMPLETE FIXED VERSION
-// ENHANCEMENTS:
-// 1. Table footer with cleaner summary layout
-// 2. All table text uses black font color
-// 3. MEAL SERVICES column hidden from tables
-// 4. View modal enhanced with organized meal services by day
-// 5. Package items automatically expanded in view modal
-
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import {
@@ -41,6 +33,8 @@ import {
     Empty,
     Statistic,
     List,
+    Switch,
+    Checkbox,
 } from 'antd';
 
 import {
@@ -81,10 +75,13 @@ import {
     LeftOutlined,
     RightOutlined,
     SyncOutlined,
+    InfoCircleOutlined,
+    FireOutlined,
+    ShoppingOutlined,
+    SwapOutlined,
 } from '@ant-design/icons';
 
 import { FaRegCalendarAlt } from "react-icons/fa";
-
 
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
@@ -296,6 +293,7 @@ const parseTimeToMinutes = (timeValue) => {
 };
 
 const getBookingScheduleValue = (booking) => {
+    if (!booking) return Number.MAX_SAFE_INTEGER;
     const dateValue = dayjs(booking?.event_date);
     if (!dateValue.isValid()) return Number.MAX_SAFE_INTEGER;
     return dateValue.startOf('day').valueOf() + (parseTimeToMinutes(booking?.event_time) * 60 * 1000);
@@ -322,8 +320,6 @@ const getMenuItemCategoryText = (item = {}) => {
     ].map(normalizeMealLabel).filter(Boolean).join(' ');
 };
 
-// UPDATED: Select Menu Items now displays all available menu items for every meal type.
-// Meal type is still retained for labeling/sorting, but it no longer filters available menus.
 const menuItemMatchesMealType = (item, mealType) => {
     return true;
 };
@@ -361,8 +357,271 @@ const getAvailabilityConfig = (status) => {
 };
 
 // ============================================================
+// SAFE BOOKING HELPERS - WITH NULL CHECKS
+// ============================================================
+const getBookingLocation = (booking) => {
+    if (!booking) return 'N/A';
+    return booking.location || booking.venue || booking.delivery_address || 'N/A';
+};
+
+const getBookingId = (booking) => {
+    if (!booking) return null;
+    return booking.id || booking.booking_id;
+};
+
+const getServiceType = (booking) => {
+    if (!booking) return 'Catering Service';
+    return booking.service_type || booking.fulfillment_type || booking.delivery_type || 'Catering Service';
+};
+
+const getMenuType = (booking) => {
+    if (!booking) return 'Customize';
+    return booking.menu_selection_type === 'package' ? 'Package' : 'Customize';
+};
+
+const getSpecialRequests = (booking) => {
+    if (!booking) return 'No special requests';
+    return safeString(booking.special_requests, 'No special requests');
+};
+
+const getPackageInfo = (booking) => {
+    if (!booking) return null;
+    return booking.package_summary || booking.selected_package || null;
+};
+
+const isBookingToday = (booking) => {
+    if (!booking) return false;
+    const eventDate = safeString(booking?.event_date);
+    if (!eventDate) return false;
+    const today = dayjs().format('YYYY-MM-DD');
+    return eventDate === today;
+};
+
+const isBookingTodayOrPast = (booking) => {
+    if (!booking) return false;
+    const eventDate = safeString(booking?.event_date);
+    if (!eventDate) return false;
+    return dayjs(eventDate).isBefore(dayjs().add(1, 'day'));
+};
+
+const isBookingConfirmedAndToday = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking?.booking_status).toLowerCase();
+    return (status === 'confirmed' || status === 'approved') && isBookingToday(booking);
+};
+
+const isBookingPendingAndToday = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking?.booking_status).toLowerCase();
+    return (status === 'pending' || status === 'pending_approval') && isBookingToday(booking);
+};
+
+const isBookingSchedulePassed = (booking) => {
+    if (!booking) return false;
+    const eventDate = safeString(booking?.event_date);
+    const eventTime = safeString(booking?.event_time);
+    if (!eventDate) return false;
+    const scheduledDate = dayjs(`${eventDate} ${eventTime}`);
+    if (!scheduledDate.isValid()) return false;
+    return scheduledDate.isBefore(dayjs());
+};
+
+const splitAddressParts = (details = {}) => {
+    if (!details) return { address_line_1: '', city: '', province: '', postal_code: '' };
+    const full = safeString(details.customer_address || details.address_line_1 || details.address || '');
+    const parts = full.split(',').map(part => part.trim()).filter(Boolean);
+    return {
+        address_line_1: safeString(details.address_line_1 || parts[0] || full),
+        city: safeString(details.city || parts[1] || ''),
+        province: safeString(details.province || parts[2] || ''),
+        postal_code: safeString(details.postal_code || parts[3] || ''),
+    };
+};
+
+const renderMealServiceTagText = (meal) => `Day ${meal.day_number || 1} • ${meal.meal_type || 'Meal'} • ${meal.serving_time || '-'}`;
+
+// ============================================================
+// POLICY-DRIVEN CUTOFF HELPERS
+// ============================================================
+const getCancellationCutoffDays = (booking) => {
+    return safeNumber(booking?.cancellation_cutoff_days, 3);
+};
+
+const getDepositPaymentDays = (booking) => {
+    const dueDate = safeString(booking?.deposit_due_date);
+    const eventDate = safeString(booking?.event_date);
+    if (dueDate && eventDate) {
+        const diff = dayjs(eventDate).startOf('day').diff(dayjs(dueDate).startOf('day'), 'day');
+        if (Number.isFinite(diff) && diff >= 0) return diff;
+    }
+    return 7;
+};
+
+const isBookingWithinCancellationCutoff = (booking) => {
+    if (!booking) return false;
+    if (typeof booking.is_within_cancellation_cutoff === 'boolean') {
+        return booking.is_within_cancellation_cutoff;
+    }
+    const cutoffDays = getCancellationCutoffDays(booking);
+    const eventDate = safeString(booking?.event_date);
+    if (!eventDate) return false;
+    const event = dayjs(eventDate).startOf('day');
+    const today = dayjs().startOf('day');
+    if (!event.isValid()) return false;
+    const daysUntil = event.diff(today, 'day');
+    return daysUntil >= 0 && daysUntil < cutoffDays;
+};
+
+const isBookingWithinThreeDays = (booking) => isBookingWithinCancellationCutoff(booking);
+const isBookingWithinOneWeek = (booking) => isBookingWithinCancellationCutoff(booking);
+
+const getDaysUntilEvent = (booking) => {
+    if (!booking) return null;
+    const eventDate = safeString(booking?.event_date);
+    if (!eventDate) return null;
+    const event = dayjs(eventDate).startOf('day');
+    const today = dayjs().startOf('day');
+    if (!event.isValid()) return null;
+    return event.diff(today, 'day');
+};
+
+const getDepositAmount = (booking) => {
+    if (!booking) return 0;
+    const candidates = [
+        booking.deposit_paid,
+        booking.billing_summary?.down_payment,
+        booking.down_payment,
+        booking.deposit_amount,
+    ];
+    for (const value of candidates) {
+        const n = safeNumber(value, 0);
+        if (n > 0) return n;
+    }
+    return 0;
+};
+
+const getPaidAmount = (booking) => {
+    if (!booking) return 0;
+    return safeNumber(
+        booking.paid_amount ||
+        booking.billing_summary?.total_paid ||
+        0
+    );
+};
+
+const hasRefundRequest = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking.refund_status).toLowerCase();
+    return status === 'pending' || status === 'pending_approval';
+};
+
+const getRefundStatusConfig = (status) => {
+    const config = {
+        pending:          { text: 'Refund Pending',   color: '#f97316', background: '#fff7ed', icon: <ClockCircleOutlined /> },
+        pending_approval: { text: 'Refund Pending',   color: '#f97316', background: '#fff7ed', icon: <ClockCircleOutlined /> },
+        approved:         { text: 'Refund Approved',  color: '#3b82f6', background: '#eff6ff', icon: <CheckCircleOutlined /> },
+        released:         { text: 'Refund Released',  color: '#10b981', background: '#ecfdf5', icon: <CheckCircleOutlined /> },
+        processed:        { text: 'Refund Released',  color: '#10b981', background: '#ecfdf5', icon: <CheckCircleOutlined /> },
+        rejected:         { text: 'Refund Rejected',  color: '#ef4444', background: '#fef2f2', icon: <CloseCircleOutlined /> },
+    };
+    return config[safeString(status).toLowerCase()] || null;
+};
+
+const getDepositDueDate = (booking) => {
+    if (!booking) return null;
+    const explicit = safeString(booking?.deposit_due_date);
+    if (explicit) {
+        const parsed = dayjs(explicit);
+        if (parsed.isValid()) return parsed;
+    }
+    const eventDate = safeString(booking?.event_date);
+    if (!eventDate) return null;
+    const event = dayjs(eventDate).startOf('day');
+    if (!event.isValid()) return null;
+    return event.subtract(getDepositPaymentDays(booking), 'day');
+};
+
+const isDepositOverdue = (booking) => {
+    if (!booking) return false;
+
+    const status = safeString(booking?.booking_status).toLowerCase();
+    if (!['confirmed', 'approved', 'ongoing'].includes(status)) return false;
+
+    const decision = safeString(booking?.deposit_decision_status).toLowerCase();
+    if (decision === 'waived' || decision === 'cancelled') return false;
+
+    const depositPaid = getDepositAmount(booking);
+    const paidAmount = getPaidAmount(booking);
+    if (depositPaid > 0 || paidAmount > 0) return false;
+
+    if (booking?.is_late_booking === true && !booking?.deposit_decision_status) return false;
+
+    const extendedUntil = safeString(booking?.deposit_extended_until);
+    if (extendedUntil) {
+        const parsed = dayjs(extendedUntil);
+        if (parsed.isValid()) {
+            const today = dayjs().startOf('day');
+            const deadline = parsed.startOf('day');
+            return today.isAfter(deadline) || today.isSame(deadline, 'day');
+        }
+    }
+
+    if (!safeString(booking?.deposit_due_date)) return false;
+
+    const dueDate = getDepositDueDate(booking);
+    if (!dueDate) return false;
+    const today = dayjs().startOf('day');
+    return today.isAfter(dueDate.startOf('day')) || today.isSame(dueDate, 'day');
+};
+
+const hasPendingRefundRequest = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking?.refund_status).toLowerCase();
+    return status === 'pending' || status === 'pending_approval' || status === 'approved';
+};
+
+const getDepositStateLabel = (status) => {
+    const config = {
+        cancelled: { text: 'Deposit Cancelled', color: '#ef4444', background: '#fef2f2', icon: <CloseCircleOutlined /> },
+        extended: { text: 'Deposit Extended', color: '#3b82f6', background: '#eff6ff', icon: <ScheduleOutlined /> },
+        waived: { text: 'Deposit Waived', color: '#10b981', background: '#ecfdf5', icon: <CheckCircleOutlined /> },
+    };
+    return config[safeString(status).toLowerCase()] || null;
+};
+
+const isRefundPending = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking.refund_status).toLowerCase();
+    return status === 'pending';
+};
+
+const isRefundApproved = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking.refund_status).toLowerCase();
+    return status === 'approved';
+};
+
+const isRefundFinalized = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking.refund_status).toLowerCase();
+    return status === 'released' || status === 'rejected';
+};
+
+const isCancellationInProgress = (booking) => {
+    if (!booking) return false;
+    const status = safeString(booking.refund_status).toLowerCase();
+    if (status === 'pending' || status === 'pending_approval') return true;
+    if (status === 'approved') return true;
+    if (Boolean(booking.refund_admin_direct)) return true;
+    if (Boolean(booking.refund_request_state?.admin_direct)) return true;
+    if (Boolean(booking.cancellation_in_progress)) return true;
+    return false;
+};
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
+
 const BookingQuotationManagement = () => {
     const location = useLocation();
     const { user } = useAuth();
@@ -376,18 +635,17 @@ const BookingQuotationManagement = () => {
 
     useEffect(() => {
         const requestedView = new URLSearchParams(location.search).get('view');
-        if (['bookings', 'quotations', 'history', 'calendar'].includes(requestedView)) {
+        if (['bookings', 'quotations', 'history', 'calendar', 'refund-requests'].includes(requestedView)) {
             setActiveMainTab(requestedView);
         }
     }, [location.search]);
 
     const [searchText, setSearchText] = useState('');
+    const [debouncedSearchText, setDebouncedSearchText] = useState('');
     const [filterStatus, setFilterStatus] = useState('all');
     const [filterEventType, setFilterEventType] = useState('all');
-    
-    // Date filter now supports range
     const [filterDateRange, setFilterDateRange] = useState([]);
-    
+
     const [historySearchText, setHistorySearchText] = useState('');
     const [historyBookingId, setHistoryBookingId] = useState('');
     const [historyCustomerName, setHistoryCustomerName] = useState('');
@@ -412,7 +670,50 @@ const BookingQuotationManagement = () => {
     const [cancelReasonModalVisible, setCancelReasonModalVisible] = useState(false);
     const [rescheduleModalVisible, setRescheduleModalVisible] = useState(false);
 
-    // Meal and Menu Selection Modals
+    // ⭐ Cancel reschedule proposal modal
+    const [cancelRescheduleModalVisible, setCancelRescheduleModalVisible] = useState(false);
+    const [cancelRescheduleBooking, setCancelRescheduleBooking] = useState(null);
+    const [cancelRescheduleReason, setCancelRescheduleReason] = useState('');
+    const [cancelRescheduleSubmitting, setCancelRescheduleSubmitting] = useState(false);
+
+    const [todayBookingModalVisible, setTodayBookingModalVisible] = useState(false);
+    const [todayBookingData, setTodayBookingData] = useState(null);
+    const [todayBookingAction, setTodayBookingAction] = useState(null);
+
+    const [startEventModalVisible, setStartEventModalVisible] = useState(false);
+    const [startEventBookingData, setStartEventBookingData] = useState(null);
+
+    const [threeDayWarningModalVisible, setThreeDayWarningModalVisible] = useState(false);
+    const [threeDayWarningBooking, setThreeDayWarningBooking] = useState(null);
+
+    const [cancelWithRefundModalVisible, setCancelWithRefundModalVisible] = useState(false);
+    const [refundApprovalModalVisible, setRefundApprovalModalVisible] = useState(false);
+    const [refundApprovalBooking, setRefundApprovalBooking] = useState(null);
+    const [refundApprovalForm] = Form.useForm();
+
+    const [cancelWithRefundForm] = Form.useForm();
+
+    const [confirmRefundModalVisible, setConfirmRefundModalVisible] = useState(false);
+    const [confirmRefundBooking, setConfirmRefundBooking] = useState(null);
+    const [confirmRefundForm] = Form.useForm();
+
+    const [adminDepositAction, setAdminDepositAction] = useState('cancel');
+    const [adminDepositForm] = Form.useForm();
+
+    const [lateApprovalModalVisible, setLateApprovalModalVisible] = useState(false);
+    const [lateApprovalBooking, setLateApprovalBooking] = useState(null);
+    const [lateApprovalAction, setLateApprovalAction] = useState('waive');
+    const [lateApprovalExtensionDays, setLateApprovalExtensionDays] = useState(7);
+    const [lateApprovalNotes, setLateApprovalNotes] = useState('');
+    const [lateApprovalSubmitting, setLateApprovalSubmitting] = useState(false);
+
+    const [depositOverdueModalVisible, setDepositOverdueModalVisible] = useState(false);
+    const [depositOverdueBooking, setDepositOverdueBooking] = useState(null);
+    const [depositDecisionAction, setDepositDecisionAction] = useState('extend');
+    const [depositDecisionForm] = Form.useForm();
+
+    const [refundApprovalAction, setRefundApprovalAction] = useState('with_refund');
+
     const [addMealModalVisible, setAddMealModalVisible] = useState(false);
     const [pendingMealDay, setPendingMealDay] = useState(null);
     const [pendingMealType, setPendingMealType] = useState(null);
@@ -423,13 +724,13 @@ const BookingQuotationManagement = () => {
     const [menuViewMode, setMenuViewMode] = useState('grid');
     const [menuSelectionMode, setMenuSelectionMode] = useState('menu_items');
 
-    // ========================================================
-    // STATE FOR ENHANCED CREATE BOOKING
-    // ========================================================
     const [createBookingStep, setCreateBookingStep] = useState(0);
     const [serviceType, setServiceType] = useState('buffet');
     const [eventScope, setEventScope] = useState('regular');
     const [multiDayDays, setMultiDayDays] = useState(2);
+
+    const [modalPricingType, setModalPricingType] = useState('per_pax');
+    const [modalSelectedIds, setModalSelectedIds] = useState([]);
 
     const createDefaultMealService = (overrides = {}) => ({
         id: `meal-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -452,6 +753,12 @@ const BookingQuotationManagement = () => {
         total_meal_amount: 0,
         notes: '',
         meal_status: 'pending',
+        tray_price: 0,
+        tray_servings: 25,
+        tray_min_pax: 20,
+        tray_max_pax: 25,
+        tray_description: '',
+        tray_quantity: 1,
         ...overrides
     });
 
@@ -468,7 +775,6 @@ const BookingQuotationManagement = () => {
         down_payment: 0
     });
 
-    // Menu selection states
     const [menuSelectionType, setMenuSelectionType] = useState('customize');
     const [selectedPackage, setSelectedPackage] = useState(null);
     const [selectedPromo, setSelectedPromo] = useState(null);
@@ -478,13 +784,11 @@ const BookingQuotationManagement = () => {
     const [promosList, setPromosList] = useState([]);
     const [isLoadingMenuData, setIsLoadingMenuData] = useState(false);
 
-    // Store form values for review step
     const [formValues, setFormValues] = useState({});
     const [fieldErrors, setFieldErrors] = useState({});
     const [isSaving, setIsSaving] = useState(false);
     const saveLockRef = useRef(false);
 
-    // Use useForm for all forms
     const [quotationForm] = Form.useForm();
     const [availabilityForm] = Form.useForm();
     const [rejectForm] = Form.useForm();
@@ -501,12 +805,11 @@ const BookingQuotationManagement = () => {
     const ACTIVE_BOOKING_STATUS_EXCLUSIONS = 'completed,cancelled,rejected';
     const HISTORY_BOOKING_STATUSES = 'completed,cancelled,rejected';
 
-    // Build params with date range support - fetch all records
-    const buildBookingParams = (scope, status = filterStatus) => {
+    const buildBookingParams = (scope, status = filterStatus, search = debouncedSearchText) => {
         const params = {
             booking_scope: scope,
             sort: 'event_schedule',
-            per_page: FETCH_ALL_LIMIT  // Fetch all records
+            per_page: FETCH_ALL_LIMIT
         };
 
         if (status !== 'all') {
@@ -519,11 +822,10 @@ const BookingQuotationManagement = () => {
             params.event_type_id = filterEventType;
         }
 
-        if (searchText.trim()) {
-            params.search = searchText.trim();
+        if (search && search.trim()) {
+            params.search = search.trim();
         }
 
-        // Date range support
         if (filterDateRange?.length === 2) {
             params.date_from = dayjs(filterDateRange[0]).format('YYYY-MM-DD');
             params.date_to = dayjs(filterDateRange[1]).format('YYYY-MM-DD');
@@ -532,7 +834,6 @@ const BookingQuotationManagement = () => {
         return params;
     };
 
-    // History params with date range
     const buildHistoryParams = () => {
         const combinedSearch = [historySearchText, historyBookingId, historyCustomerName]
             .map((value) => safeString(value).trim())
@@ -540,7 +841,7 @@ const BookingQuotationManagement = () => {
             .join(' ');
 
         const params = {
-            per_page: FETCH_ALL_LIMIT  // Fetch all records
+            per_page: FETCH_ALL_LIMIT
         };
 
         if (historyStatus !== 'all') {
@@ -573,24 +874,25 @@ const BookingQuotationManagement = () => {
         return params;
     };
 
-    // ========================================================
-    // DATABASE QUERIES
-    // ========================================================
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearchText(searchText);
+        }, 400);
+
+        return () => clearTimeout(timer);
+    }, [searchText]);
+
     const {
         data: regularBookingsData,
         isLoading: regularBookingsLoading,
         refetch: refetchRegularBookings
-    } = useBookings(
-        buildBookingParams('regular')
-    );
+    } = useBookings(buildBookingParams('regular'));
 
     const {
         data: multiDayBookingsData,
         isLoading: multiDayBookingsLoading,
         refetch: refetchMultiDayBookings
-    } = useBookings(
-        buildBookingParams('multi_day')
-    );
+    } = useBookings(buildBookingParams('multi_day'));
 
     const {
         data: completedBookingsData,
@@ -613,9 +915,6 @@ const BookingQuotationManagement = () => {
     const { data: calendarEvents, refetch: refetchCalendarEvents } = useCalendarEvents(calendarRange);
     const { data: calendarAvailabilityData, refetch: refetchCalendarAvailability } = useCalendarAvailability(calendarRange);
 
-    // ========================================================
-    // DATABASE MUTATIONS
-    // ========================================================
     const confirmBookingMutation = useConfirmBooking();
     const rejectBookingMutation = useRejectBooking();
     const createQuotationMutation = useCreateQuotation();
@@ -625,9 +924,6 @@ const BookingQuotationManagement = () => {
     const saveCalendarAvailabilityMutation = useSaveCalendarAvailability();
     const deleteCalendarAvailabilityMutation = useDeleteCalendarAvailability();
 
-    // ========================================================
-    // NORMALIZED DATABASE DATA
-    // ========================================================
     const isActiveBookingStatus = (status) => !['completed', 'cancelled', 'rejected'].includes(safeString(status));
 
     const regularBookingsDataNormalized = normalizeListResponse(regularBookingsData);
@@ -661,9 +957,27 @@ const BookingQuotationManagement = () => {
         total_paid: 0, total_outstanding: 0, regular_bookings: 0, multi_day_events: 0
     });
 
-    // ========================================================
-    // THEME
-    // ========================================================
+    const refundRequests = useMemo(() => {
+        const all = [...regularBookings, ...multiDayBookings];
+        const seen = new Set();
+        return all.filter((booking) => {
+            const id = getBookingId(booking);
+            if (!id || seen.has(id)) return false;
+            seen.add(id);
+            const status = safeString(booking.refund_status).toLowerCase();
+            return status === 'pending' || status === 'pending_approval' || status === 'approved';
+        });
+    }, [regularBookings, multiDayBookings]);
+
+    const refundRequestsPendingCount = useMemo(
+        () => refundRequests.filter((b) => isRefundPending(b)).length,
+        [refundRequests]
+    );
+    const refundRequestsApprovedCount = useMemo(
+        () => refundRequests.filter((b) => isRefundApproved(b)).length,
+        [refundRequests]
+    );
+
     useEffect(() => {
         const detectTheme = () => {
             if (!isMounted.current) return;
@@ -678,9 +992,6 @@ const BookingQuotationManagement = () => {
         };
     }, []);
 
-    // ========================================================
-    // EVENT LISTENERS
-    // ========================================================
     useEffect(() => {
         const handleBookingEvent = (event) => {
             console.log('📢 Booking event received:', event.detail);
@@ -698,9 +1009,6 @@ const BookingQuotationManagement = () => {
         };
     }, []);
 
-    // ========================================================
-    // LOAD MENU DATA
-    // ========================================================
     useEffect(() => {
         if (quotationModalVisible) {
             loadMenuData();
@@ -718,7 +1026,18 @@ const BookingQuotationManagement = () => {
         try {
             const menuResponse = await api.get('/menu-items', { params: { per_page: 100, is_available: true } });
             const menuData = menuResponse?.data?.data?.data || menuResponse?.data?.data || [];
-            setMenuItemsList(Array.isArray(menuData) ? menuData : []);
+            const mappedMenuItems = Array.isArray(menuData) ? menuData.map(item => ({
+                ...item,
+                pricing_type: item.pricing_type || 'both',
+                tray_price: safeNumber(item.tray_price, 0),
+                tray_servings: safeNumber(item.tray_servings, 25),
+                tray_min_pax: safeNumber(item.tray_min_pax, 20),
+                tray_max_pax: safeNumber(item.tray_max_pax, 25),
+                tray_description: item.tray_description || `Good for ${safeNumber(item.tray_min_pax, 20)}–${safeNumber(item.tray_max_pax, 25)} pax`,
+                has_tray_pricing: item.has_tray_pricing || (item.pricing_type === 'per_tray' || item.pricing_type === 'both'),
+                has_per_pax_pricing: item.has_per_pax_pricing || (item.pricing_type === 'per_pax' || item.pricing_type === 'both')
+            })) : [];
+            setMenuItemsList(mappedMenuItems);
 
             const packageResponse = await api.get('/packages', { params: { per_page: 50, is_active: true } });
             const packageData = packageResponse?.data?.data?.data || packageResponse?.data?.data || [];
@@ -735,9 +1054,6 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // DATA HELPERS
-    // ========================================================
     const getEventTypeName = (eventTypeId) => {
         const found = eventTypes.find((eventType) => Number(eventType.event_type_id || eventType.id) === Number(eventTypeId));
         return found?.name || 'Unknown';
@@ -748,11 +1064,8 @@ const BookingQuotationManagement = () => {
         return calendarAvailability.find((item) => safeString(item.availability_date || item.date) === date);
     };
 
-    const getBookingLocation = (booking) => booking.location || booking.venue || booking.delivery_address || 'N/A';
-    const getServiceType = (booking) => booking.service_type || booking.fulfillment_type || booking.delivery_type || 'Catering Service';
-    const getBookingId = (booking) => booking.id || booking.booking_id;
-
     const getMenuItems = (booking) => {
+        if (!booking) return [];
         const items = safeArray(booking.menu_items || booking.items || booking.selected_items, []);
         return items.map(item => ({
             name: safeString(item.name),
@@ -762,29 +1075,16 @@ const BookingQuotationManagement = () => {
         }));
     };
 
-    const getMenuType = (booking) => booking.menu_selection_type === 'package' ? 'Package' : 'Customize';
-    const getSpecialRequests = (booking) => safeString(booking.special_requests, 'No special requests');
-    const getPackageInfo = (booking) => booking.package_summary || booking.selected_package || null;
-
-    const splitAddressParts = (details = {}) => {
-        const full = safeString(details.customer_address || details.address_line_1 || details.address || '');
-        const parts = full.split(',').map(part => part.trim()).filter(Boolean);
-        return {
-            address_line_1: safeString(details.address_line_1 || parts[0] || full),
-            city: safeString(details.city || parts[1] || ''),
-            province: safeString(details.province || parts[2] || ''),
-            postal_code: safeString(details.postal_code || parts[3] || ''),
-        };
-    };
-
-    const renderMealServiceTagText = (meal) => `Day ${meal.day_number || 1} • ${meal.meal_type || 'Meal'} • ${meal.serving_time || '-'}`;
-
-    // ========================================================
-    // ENHANCED MEAL SERVICES RENDERER FOR VIEW MODAL
-    // ========================================================
     const renderMealServicesInModal = (booking) => {
+        if (!booking) {
+            return (
+                <div className="bqm-no-meals-message">
+                    <Text type="secondary">No booking data available.</Text>
+                </div>
+            );
+        }
         const mealServices = safeArray(booking.meal_services);
-        
+
         if (mealServices.length === 0) {
             return (
                 <div className="bqm-no-meals-message">
@@ -793,7 +1093,6 @@ const BookingQuotationManagement = () => {
             );
         }
 
-        // Group meals by day
         const mealsByDay = {};
         mealServices.forEach(meal => {
             const day = meal.day_number || 1;
@@ -803,15 +1102,12 @@ const BookingQuotationManagement = () => {
             mealsByDay[day].push(meal);
         });
 
-        // Sort days
         const sortedDays = Object.keys(mealsByDay).sort((a, b) => Number(a) - Number(b));
 
         return (
             <div className="bqm-meal-services-view">
                 {sortedDays.map((day) => {
                     const dayMeals = mealsByDay[day];
-                    
-                    // Sort meals by meal type order: Breakfast, Lunch, Snacks, Dinner
                     const mealOrder = ['Breakfast', 'Lunch', 'Snacks', 'Dinner'];
                     const sortedMeals = [...dayMeals].sort((a, b) => {
                         const indexA = mealOrder.indexOf(a.meal_type);
@@ -826,14 +1122,11 @@ const BookingQuotationManagement = () => {
                                     <CalendarOutlined /> Day {day}
                                 </Tag>
                             </div>
-                            
+
                             {sortedMeals.map((meal, index) => {
-                                // Get menu items for this meal
                                 let menuItems = [];
-                                
-                                // Check if this is a package meal
+
                                 if (meal.menu_source === 'package' || meal.package_id) {
-                                    // Try to get package items
                                     const packageItems = safeArray(meal.custom_items);
                                     if (packageItems.length > 0) {
                                         menuItems = packageItems.map(item => ({
@@ -843,25 +1136,22 @@ const BookingQuotationManagement = () => {
                                             subtotal: safeNumber(item.quantity, 1) * safeNumber(item.unit_price || item.price, 0)
                                         }));
                                     } else {
-                                        // Fallback: show package name with note
                                         const packageName = meal.menu_name || meal.package_name || 'Package';
                                         menuItems = [{
-                                            name: `${packageName} (Package - items will be expanded in production)`,
+                                            name: `${packageName} (Package)`,
                                             quantity: 1,
                                             price: safeNumber(meal.price_per_head, 0),
                                             subtotal: safeNumber(meal.price_per_head, 0)
                                         }];
                                     }
                                 } else {
-                                    // Custom menu items
                                     menuItems = safeArray(meal.custom_items).map(item => ({
                                         name: item.item_name || item.name || 'Menu Item',
                                         quantity: safeNumber(item.quantity, 1),
                                         price: safeNumber(item.unit_price || item.price, 0),
                                         subtotal: safeNumber(item.quantity, 1) * safeNumber(item.unit_price || item.price, 0)
                                     }));
-                                    
-                                    // If no custom items but we have a menu name, use it
+
                                     if (menuItems.length === 0 && meal.menu_name) {
                                         menuItems = [{
                                             name: meal.menu_name,
@@ -872,9 +1162,13 @@ const BookingQuotationManagement = () => {
                                     }
                                 }
 
-                                // Calculate totals
                                 const totalItems = menuItems.reduce((sum, item) => sum + safeNumber(item.quantity), 0);
                                 const totalPrice = menuItems.reduce((sum, item) => sum + safeNumber(item.subtotal), 0);
+
+                                const pricingType = meal.pricing_type || 'per_pax';
+                                const pricingBadge = pricingType === 'tray'
+                                    ? <Tag color="orange">Tray Pricing</Tag>
+                                    : <Tag color="blue">Per Pax Pricing</Tag>;
 
                                 return (
                                     <div key={index} className="bqm-meal-schedule-group">
@@ -883,6 +1177,7 @@ const BookingQuotationManagement = () => {
                                                 <Tag color="green" className="bqm-meal-type-tag">
                                                     {meal.meal_type || 'Meal'}
                                                 </Tag>
+                                                {pricingBadge}
                                                 <span className="bqm-meal-time">
                                                     <ClockCircleOutlined /> {meal.serving_time || 'Time TBD'}
                                                 </span>
@@ -937,9 +1232,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // ========================================================
-    // REFRESH
-    // ========================================================
     const refreshAllData = async (showNotification = true) => {
         try {
             await Promise.all([
@@ -963,9 +1255,6 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // EXPORT FUNCTIONS
-    // ========================================================
     const exportToExcel = (data, filename, columns) => {
         const worksheetData = data.map(row => {
             const exportRow = {};
@@ -1130,10 +1419,11 @@ const BookingQuotationManagement = () => {
         printRows('Booking History', rows, bookingPrintColumns);
     };
 
-    // ========================================================
-    // BOOKING ACTIONS
-    // ========================================================
     const handleCompleteBooking = async (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         const balance = safeNumber(
             booking.balance ?? booking.outstanding_balance ?? booking.billing_summary?.remaining_balance,
             Math.max(0, safeNumber(booking.total_amount) - safeNumber(booking.paid_amount))
@@ -1151,6 +1441,10 @@ const BookingQuotationManagement = () => {
             keyboard: false,
             onOk: async () => {
                 const bookingId = getBookingId(booking);
+                if (!bookingId) {
+                    message.error('Invalid booking ID');
+                    return;
+                }
                 try {
                     await api.post(`/bookings/${bookingId}/complete`);
                     message.success('Booking moved to history successfully');
@@ -1164,6 +1458,10 @@ const BookingQuotationManagement = () => {
 
     const handleCancelBooking = async (values) => {
         const bookingId = getBookingId(selectedBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
         try {
             await api.post(`/bookings/${bookingId}/cancel-with-reason`, { reason: values.reason });
             message.success('Booking cancelled and moved to history');
@@ -1175,21 +1473,379 @@ const BookingQuotationManagement = () => {
         }
     };
 
+    const closeCancelWithRefundModal = useCallback(() => {
+        setCancelWithRefundModalVisible(false);
+        cancelWithRefundForm.resetFields();
+        adminDepositForm.resetFields();
+        setAdminDepositAction('cancel');
+    }, [cancelWithRefundForm, adminDepositForm]);
+
     const openCancelModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         setSelectedBooking(booking);
-        cancelForm.resetFields();
-        setCancelReasonModalVisible(true);
+
+        const withinCutoff = isBookingWithinCancellationCutoff(booking);
+        const refundInFlight = hasPendingRefundRequest(booking) || isRefundApproved(booking);
+
+        if (withinCutoff || refundInFlight) {
+            cancelWithRefundForm.resetFields();
+            adminDepositForm.resetFields();
+            setAdminDepositAction('cancel');
+            adminDepositForm.setFieldsValue({
+                action: 'cancel',
+                extension_days: 7,
+                notes: '',
+                refund_amount: 0,
+                refund_method: 'cash',
+                refund_reference: '',
+            });
+            setCancelWithRefundModalVisible(true);
+        } else {
+            cancelForm.resetFields();
+            setCancelReasonModalVisible(true);
+        }
     };
 
-    const handleRejectBooking = (values) => {
+    const handleCancelWithoutRefund = async (values) => {
         const bookingId = getBookingId(selectedBooking);
-        if (values.action === 'reject') {
-            rejectBookingMutation.mutate(bookingId, {
-                onSuccess: () => {
-                    setRejectReasonModalVisible(false);
-                    rejectForm.resetFields();
-                }
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+        try {
+            await api.post(`/bookings/${bookingId}/cancel-with-reason`, {
+                reason: values.reason,
+                forfeit_deposit: true,
             });
+            message.success('Booking cancelled. Deposit is forfeited per policy.');
+            closeCancelWithRefundModal();
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to cancel booking');
+        }
+    };
+
+    const handleSubmitRefundRequest = async (values) => {
+        const bookingId = getBookingId(selectedBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+        try {
+            await api.post(`/bookings/${bookingId}/request-refund`, {
+                reason: values.reason,
+                refund_amount: 0,
+                cancel_booking: true,
+            });
+            message.success('Cancellation & refund request submitted. An admin will review it.');
+            closeCancelWithRefundModal();
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to submit refund request');
+        }
+    };
+
+    const openRefundApprovalModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        setRefundApprovalBooking(booking);
+        setRefundApprovalAction('with_refund');
+        refundApprovalForm.resetFields();
+        refundApprovalForm.setFieldsValue({ notes: '' });
+        setRefundApprovalModalVisible(true);
+    };
+
+    const handleApproveRefundWithRefund = async () => {
+        const bookingId = getBookingId(refundApprovalBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const notes = refundApprovalForm.getFieldValue('notes') || '';
+
+        try {
+            await api.post(`/bookings/${bookingId}/approve-refund`, {
+                notes,
+            });
+            message.success('Refund approved. The cashier can now confirm and enter the amount.');
+            setRefundApprovalModalVisible(false);
+            refundApprovalForm.resetFields();
+            setRefundApprovalAction('with_refund');
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to approve refund');
+        }
+    };
+
+    const handleApproveRefundWithoutRefund = async () => {
+        const bookingId = getBookingId(refundApprovalBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const notes = refundApprovalForm.getFieldValue('notes') || '';
+
+        modal.confirm({
+            title: 'Cancel Booking Without Refund?',
+            content: (
+                <div>
+                    <p>
+                        Booking <strong>{safeString(refundApprovalBooking?.booking_no)}</strong> will be
+                        cancelled immediately. No refund will be issued to the customer.
+                    </p>
+                    <p style={{ color: '#ef4444', marginTop: 8 }}>
+                        <WarningOutlined /> This action cannot be undone.
+                    </p>
+                </div>
+            ),
+            okText: 'Yes, cancel without refund',
+            okButtonProps: { danger: true },
+            cancelText: 'Back',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                try {
+                    await api.post(`/bookings/${bookingId}/admin-direct-refund`, {
+                        refund_amount: 0,
+                        payment_method: 'cash',
+                        reference_number: null,
+                        reason: notes || 'Cancellation request approved without refund.',
+                    });
+                    message.success('Booking cancelled without refund.');
+                    setRefundApprovalModalVisible(false);
+                    refundApprovalForm.resetFields();
+                    setRefundApprovalAction('with_refund');
+                    await refreshAllData();
+                } catch (error) {
+                    message.error(error?.response?.data?.message || 'Failed to cancel booking');
+                    throw error;
+                }
+            },
+        });
+    };
+
+    const handleRejectRefund = async (values) => {
+        const bookingId = getBookingId(refundApprovalBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+        try {
+            await api.post(`/bookings/${bookingId}/reject-refund`, {
+                reason: values.reason || 'Refund request rejected by admin.',
+            });
+            message.success('Refund request rejected. Booking remains as-is.');
+            setRefundApprovalModalVisible(false);
+            refundApprovalForm.resetFields();
+            setRefundApprovalAction('with_refund');
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to reject refund');
+        }
+    };
+
+    const openDepositOverdueModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        setDepositOverdueBooking(booking);
+        setDepositDecisionAction('extend');
+        depositDecisionForm.resetFields();
+        depositDecisionForm.setFieldsValue({
+            action: 'extend',
+            extension_days: 7,
+            notes: '',
+            refund_amount: 0,
+            refund_method: 'cash',
+            refund_reference: '',
+        });
+        setDepositOverdueModalVisible(true);
+    };
+
+    const closeDepositOverdueModal = () => {
+        setDepositOverdueModalVisible(false);
+        depositDecisionForm.resetFields();
+        setDepositDecisionAction('extend');
+    };
+
+    const handleDepositDecision = async (values) => {
+        const bookingId = getBookingId(depositOverdueBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        if (values.action === 'extend') {
+            try {
+                await api.post(`/bookings/${bookingId}/deposit-decision`, {
+                    action: 'extend',
+                    extension_days: safeNumber(values.extension_days, 7),
+                    notes: values.notes || '',
+                });
+                message.success(
+                    `Deposit deadline extended by ${safeNumber(values.extension_days, 7)} day(s).`,
+                );
+                closeDepositOverdueModal();
+                await refreshAllData();
+            } catch (error) {
+                message.error(error?.response?.data?.message || 'Failed to extend deposit deadline');
+            }
+            return;
+        }
+
+        if (values.action === 'waive') {
+            try {
+                await api.post(`/bookings/${bookingId}/deposit-decision`, {
+                    action: 'waive',
+                    notes: values.notes || '',
+                });
+                message.success('Deposit requirement waived. Booking remains confirmed.');
+                closeDepositOverdueModal();
+                await refreshAllData();
+            } catch (error) {
+                message.error(error?.response?.data?.message || 'Failed to waive deposit');
+            }
+            return;
+        }
+
+        if (values.action === 'cancel') {
+            const refundAmount = safeNumber(values.refund_amount, 0);
+            try {
+                await api.post(`/bookings/${bookingId}/admin-direct-refund`, {
+                    refund_amount: refundAmount,
+                    payment_method: values.refund_method || 'cash',
+                    reference_number: values.refund_reference || null,
+                    reason: values.notes || 'Cancelled by admin — deposit overdue.',
+                });
+                message.success(
+                    refundAmount > 0
+                        ? `Booking cancelled. Refund of ${formatCurrency(refundAmount)} released.`
+                        : 'Booking cancelled with no refund.',
+                );
+                closeDepositOverdueModal();
+                await refreshAllData();
+            } catch (error) {
+                message.error(error?.response?.data?.message || 'Failed to cancel booking');
+            }
+        }
+    };
+
+    const openConfirmRefundModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        if (!isRefundApproved(booking)) {
+            message.warning('This booking has no approved refund to confirm.');
+            return;
+        }
+        setConfirmRefundBooking(booking);
+        confirmRefundForm.resetFields();
+        confirmRefundForm.setFieldsValue({
+            refund_amount: safeNumber(getDepositAmount(booking), 0),
+            payment_method: 'cash',
+            reference_number: '',
+            notes: '',
+        });
+        setConfirmRefundModalVisible(true);
+    };
+
+    const handleConfirmRefund = async (values) => {
+        const bookingId = getBookingId(confirmRefundBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const refundAmount = safeNumber(values.refund_amount, 0);
+        if (refundAmount <= 0) {
+            message.error('Please enter a refund amount greater than 0.');
+            return;
+        }
+
+        try {
+            await api.post(`/bookings/${bookingId}/confirm-refund`, {
+                refund_amount: refundAmount,
+                payment_method: values.payment_method || 'cash',
+                reference_number: values.reference_number || null,
+                notes: values.notes || '',
+            });
+            message.success(`Refund of ${formatCurrency(refundAmount)} released successfully.`);
+            setConfirmRefundModalVisible(false);
+            confirmRefundForm.resetFields();
+            setConfirmRefundBooking(null);
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to release refund');
+        }
+    };
+
+    const handleAdminDepositAction = async (values) => {
+        const bookingId = getBookingId(selectedBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const reason = cancelWithRefundForm.getFieldValue('reason');
+        if (!reason || !safeString(reason).trim()) {
+            message.warning('Please provide a cancellation reason first.');
+            return;
+        }
+
+        const refundAmount = safeNumber(values.refund_amount, 0);
+        if (refundAmount < 0) {
+            message.error('Refund amount cannot be negative.');
+            return;
+        }
+
+        try {
+            await api.post(`/bookings/${bookingId}/admin-direct-refund`, {
+                refund_amount: refundAmount,
+                payment_method: values.refund_method || 'cash',
+                reference_number: values.refund_reference || null,
+                reason: safeString(reason).trim() || 'Cancelled by admin.',
+            });
+            message.success(
+                refundAmount > 0
+                    ? `Booking cancelled. Refund of ${formatCurrency(refundAmount)} released.`
+                    : 'Booking cancelled with no refund.',
+            );
+            closeCancelWithRefundModal();
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to cancel with refund');
+        }
+    };
+
+    const handleRejectBooking = async (values) => {
+        const bookingId = getBookingId(selectedBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        if (values.action === 'reject') {
+            try {
+                await api.post(`/bookings/${bookingId}/reject`, {
+                    reason: values.reason
+                });
+
+                message.success('Booking rejected and removed from active bookings');
+                setRejectReasonModalVisible(false);
+                rejectForm.resetFields();
+                await refreshAllData();
+            } catch (error) {
+                message.error(error?.response?.data?.message || 'Failed to reject booking');
+            }
         } else if (values.action === 'reschedule') {
             rescheduleForm.setFieldsValue({
                 new_date: dayjs(selectedBooking.event_date),
@@ -1202,33 +1858,84 @@ const BookingQuotationManagement = () => {
     };
 
     const openRejectModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         setSelectedBooking(booking);
         rejectForm.resetFields();
         setRejectReasonModalVisible(true);
     };
 
-    const handleReschedule = (values) => {
+      const handleReschedule = async (values) => {
         const bookingId = getBookingId(selectedBooking);
-        const newDate = values.new_date ? values.new_date.format('YYYY-MM-DD') : selectedBooking.event_date;
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const newDate = values.new_date
+            ? values.new_date.format('YYYY-MM-DD')
+            : selectedBooking.event_date;
         const newTime = values.new_time || selectedBooking.event_time;
 
-        api.post(`/bookings/${bookingId}/request-reschedule`, {
-            requested_date: newDate,
-            requested_time: newTime,
-            reason: values.reason,
-            booking_status: 'reschedule_requested'
-        }).then(() => {
-            message.success('Reschedule request submitted to customer');
+        const currentDate = safeString(selectedBooking?.event_date);
+        const currentTime = safeString(selectedBooking?.event_time);
+        const isSameDateTime = currentDate === newDate && currentTime === newTime;
+
+        try {
+            const validation = await api.post('/bookings/validate-slot', {
+                event_date: newDate,
+                event_time: newTime,
+                exclude_booking_id: bookingId,
+            });
+
+            const validationData =
+                validation?.data?.data || validation?.data || {};
+            const isAvailable = validationData?.available === true;
+            const isSame = validationData?.same_datetime === true;
+
+            if (!isAvailable && !isSame && !isSameDateTime) {
+                const conflict = validationData?.conflict;
+                message.error(
+                    conflict?.message ||
+                        'The selected date and time is not available. Please choose another slot.'
+                );
+                return;
+            }
+
+            const hideLoading = message.loading('Sending reschedule proposal...', 0);
+
+            await api.post(`/bookings/${bookingId}/admin-reschedule`, {
+                new_date: newDate,
+                new_time: newTime,
+                reason: values.reason,
+            });
+
+            hideLoading();
+
+            message.success(
+                isSameDateTime
+                    ? 'Same-schedule proposal sent to customer (admin override).'
+                    : 'Reschedule proposal sent to customer'
+            );
             setRescheduleModalVisible(false);
             rescheduleForm.resetFields();
-            refreshAllData();
+            await refreshAllData();
             notifyRescheduleRequest(bookingId, newDate, newTime);
-        }).catch(error => {
-            message.error(error?.response?.data?.message || 'Failed to submit reschedule request');
-        });
+        } catch (error) {
+            console.error('Reschedule error:', error);
+            message.error(
+                error?.response?.data?.message || 'Failed to submit reschedule request'
+            );
+        }
     };
 
     const openRescheduleModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         setSelectedBooking(booking);
         rescheduleForm.setFieldsValue({
             new_date: dayjs(booking.event_date),
@@ -1238,7 +1945,264 @@ const BookingQuotationManagement = () => {
         setRescheduleModalVisible(true);
     };
 
+    // ========================================================
+    // ⭐ NEW: Admin responds to CUSTOMER-initiated reschedule
+    // ========================================================
+
+    const handleApproveCustomerReschedule = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const newDate = booking.requested_date || booking.event_date;
+        const newTime = booking.requested_time || booking.event_time;
+
+        modal.confirm({
+            title: 'Approve Customer Reschedule?',
+            content: (
+                <div>
+                    <p>
+                        Booking <strong>{safeString(booking.booking_no)}</strong> will be
+                        moved to the customer's requested date and time.
+                    </p>
+                    <p style={{ marginTop: 8 }}>
+                        <strong>New Date:</strong> {formatDateSafe(newDate)}
+                        <br />
+                        <strong>New Time:</strong> {newTime || 'N/A'}
+                    </p>
+                    {booking.reschedule_reason && (
+                        <p style={{ marginTop: 8 }}>
+                            <strong>Customer's Reason:</strong> {booking.reschedule_reason}
+                        </p>
+                    )}
+                </div>
+            ),
+            okText: 'Approve Reschedule',
+            okButtonProps: { style: { background: '#10b981', borderColor: '#10b981' } },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                const hideLoading = message.loading('Approving reschedule...', 0);
+                try {
+                    await api.post(`/bookings/${bookingId}/approve-reschedule`);
+                    hideLoading();
+                    message.success('Customer reschedule approved.');
+                    await refreshAllData();
+                } catch (error) {
+                    hideLoading();
+                    message.error(
+                        error?.response?.data?.message || 'Failed to approve reschedule'
+                    );
+                    throw error;
+                }
+            },
+        });
+    };
+
+    const handleRejectCustomerReschedule = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        let rejectReason = '';
+
+        modal.confirm({
+            title: 'Reject Customer Reschedule?',
+            content: (
+                <div>
+                    <p>
+                        Booking <strong>{safeString(booking.booking_no)}</strong> will stay on
+                        the original schedule.
+                    </p>
+                    <p style={{ marginTop: 8 }}>
+                        <strong>Original Date:</strong> {formatDateSafe(booking.event_date)}
+                        <br />
+                        <strong>Original Time:</strong> {booking.event_time || 'N/A'}
+                    </p>
+                    <p style={{ marginTop: 8 }}>The customer will be notified.</p>
+                    <label
+                        style={{
+                            display: 'block',
+                            marginTop: 12,
+                            marginBottom: 4,
+                            fontWeight: 600,
+                        }}
+                    >
+                        Reason (optional)
+                    </label>
+                    <TextArea
+                        rows={3}
+                        placeholder="e.g., No available slot on the requested date..."
+                        maxLength={500}
+                        onChange={(e) => {
+                            rejectReason = e.target.value;
+                        }}
+                    />
+                </div>
+            ),
+            okText: 'Reject Reschedule',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                const hideLoading = message.loading('Rejecting reschedule...', 0);
+                try {
+                    await api.post(`/bookings/${bookingId}/reject-customer-reschedule`, {
+                        reason: rejectReason || 'Reschedule request rejected by admin.',
+                    });
+                    hideLoading();
+                    message.success('Customer reschedule rejected.');
+                    await refreshAllData();
+                } catch (error) {
+                    hideLoading();
+                    message.error(
+                        error?.response?.data?.message || 'Failed to reject reschedule'
+                    );
+                    throw error;
+                }
+            },
+        });
+    };
+
+    const handleCancelCustomerRescheduleRequest = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        let cancelReason = '';
+
+        modal.confirm({
+            title: 'Cancel Reschedule Request?',
+            content: (
+                <div>
+                    <p>
+                        The customer's pending reschedule request for{' '}
+                        <strong>{safeString(booking.booking_no)}</strong> will be withdrawn.
+                    </p>
+                    <p style={{ marginTop: 8 }}>
+                        The booking will remain on its <strong>original schedule</strong>.
+                    </p>
+                    <label
+                        style={{
+                            display: 'block',
+                            marginTop: 12,
+                            marginBottom: 4,
+                            fontWeight: 600,
+                        }}
+                    >
+                        Reason (optional)
+                    </label>
+                    <TextArea
+                        rows={3}
+                        placeholder="e.g., Discussed with customer, keeping original schedule..."
+                        maxLength={500}
+                        onChange={(e) => {
+                            cancelReason = e.target.value;
+                        }}
+                    />
+                </div>
+            ),
+            okText: 'Cancel Request',
+            okButtonProps: { danger: true },
+            cancelText: 'Keep Request',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                const hideLoading = message.loading('Cancelling request...', 0);
+                try {
+                    await api.post(`/bookings/${bookingId}/cancel-reschedule-proposal`, {
+                        reason: cancelReason || 'Reschedule request withdrawn by admin.',
+                    });
+                    hideLoading();
+                    message.success('Customer reschedule request cancelled.');
+                    await refreshAllData();
+                } catch (error) {
+                    hideLoading();
+                    message.error(
+                        error?.response?.data?.message || 'Failed to cancel request'
+                    );
+                    throw error;
+                }
+            },
+        });
+    };
+
+    // ⭐ Admin cancels their own reschedule proposal
+    const openCancelRescheduleModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        setCancelRescheduleBooking(booking);
+        setCancelRescheduleReason('');
+        setCancelRescheduleModalVisible(true);
+    };
+
+    const closeCancelRescheduleModal = () => {
+        if (cancelRescheduleSubmitting) return;
+        setCancelRescheduleModalVisible(false);
+        setCancelRescheduleBooking(null);
+        setCancelRescheduleReason('');
+    };
+
+    const handleCancelRescheduleProposal = async () => {
+        if (!cancelRescheduleBooking) return;
+        const bookingId = getBookingId(cancelRescheduleBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        setCancelRescheduleSubmitting(true);
+        const hideLoading = message.loading('Cancelling reschedule proposal...', 0);
+
+        try {
+            await api.post(`/bookings/${bookingId}/cancel-reschedule-proposal`, {
+                reason: cancelRescheduleReason.trim() || null,
+            });
+
+            hideLoading();
+            message.success('Reschedule proposal cancelled. Booking restored to confirmed.');
+
+            closeCancelRescheduleModal();
+            await refreshAllData();
+        } catch (error) {
+            hideLoading();
+            console.error('Cancel reschedule proposal error:', error);
+            message.error(
+                error?.response?.data?.message ||
+                'Failed to cancel reschedule proposal.'
+            );
+        } finally {
+            setCancelRescheduleSubmitting(false);
+        }
+    };
+
     const openBookingDetails = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         setSelectedBooking(booking);
         setBookingStep(0);
         setBookingDetailsModalVisible(true);
@@ -1252,26 +2216,12 @@ const BookingQuotationManagement = () => {
         if (bookingStep > 0) setBookingStep(bookingStep - 1);
     };
 
-    // ========================================================
-    // CONFIRM BOOKING
-    // ========================================================
-    const isBookingSchedulePassed = (booking) => {
-        const eventDate = safeString(booking?.event_date);
-        const eventTime = safeString(booking?.event_time);
-
-        if (!eventDate) return false;
-
-        const scheduledDate = dayjs(`${eventDate} ${eventTime}`);
-
-        if (!scheduledDate.isValid()) {
-            return false;
-        }
-
-        return scheduledDate.isBefore(dayjs());
-    };
-
     const autoCancelExpiredBooking = async (booking) => {
         const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return false;
+        }
 
         try {
             await api.post(`/bookings/${bookingId}/cancel-with-reason`, {
@@ -1288,12 +2238,83 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    const confirmBooking = (booking) => {
+    const handleStartEvent = async (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
         const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+        try {
+            await api.post(`/events/${bookingId}/start`, {
+                force_start: true,
+                reason: 'Event started by admin on event day'
+            });
+            message.success('Event started successfully!');
+            setStartEventModalVisible(false);
+            setStartEventBookingData(null);
+            await refreshAllData();
+        } catch (error) {
+            message.error(error?.response?.data?.message || 'Failed to start event');
+        }
+    };
+
+    const openStartEventModal = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        setStartEventBookingData(booking);
+        setStartEventModalVisible(true);
+    };
+
+    const confirmBooking = (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
         const bookingNo = safeString(booking.booking_no);
 
         if (isBookingSchedulePassed(booking)) {
             autoCancelExpiredBooking(booking);
+            return;
+        }
+
+        if (isBookingPendingAndToday(booking)) {
+            setTodayBookingData(booking);
+            setTodayBookingAction('approve');
+            setTodayBookingModalVisible(true);
+            return;
+        }
+
+        if (isBookingWithinThreeDays(booking)) {
+            setThreeDayWarningBooking(booking);
+            setThreeDayWarningModalVisible(true);
+            return;
+        }
+
+        const daysUntil = getDaysUntilEvent(booking);
+        const depositDays = getDepositPaymentDays(booking);
+        const isLateBooking =
+            daysUntil !== null &&
+            daysUntil >= 0 &&
+            depositDays > 0 &&
+            daysUntil < depositDays;
+
+        if (isLateBooking) {
+            setLateApprovalBooking(booking);
+            setLateApprovalAction('waive');
+            setLateApprovalExtensionDays(daysUntil + 1);
+            setLateApprovalNotes('');
+            setLateApprovalModalVisible(true);
             return;
         }
 
@@ -1320,9 +2341,120 @@ const BookingQuotationManagement = () => {
         });
     };
 
-    // ========================================================
-    // CHECK FOR DUPLICATE BOOKING
-    // ========================================================
+    const handleThreeDayWarningApprove = async () => {
+        if (!threeDayWarningBooking) return;
+        const bookingId = getBookingId(threeDayWarningBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const daysUntil = getDaysUntilEvent(threeDayWarningBooking);
+        const depositDays = getDepositPaymentDays(threeDayWarningBooking);
+        const isLateBooking =
+            daysUntil !== null &&
+            daysUntil >= 0 &&
+            depositDays > 0 &&
+            daysUntil < depositDays;
+
+        if (isLateBooking) {
+            setThreeDayWarningModalVisible(false);
+            setLateApprovalBooking(threeDayWarningBooking);
+            setLateApprovalAction('waive');
+            setLateApprovalExtensionDays(daysUntil + 1);
+            setLateApprovalNotes('');
+            setLateApprovalModalVisible(true);
+            return;
+        }
+
+        const bookingNo = safeString(threeDayWarningBooking.booking_no);
+        setThreeDayWarningModalVisible(false);
+
+        const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+        try {
+            await confirmBookingMutation.mutateAsync(bookingId);
+            message.success(`Booking ${bookingNo} approved successfully`);
+        } catch (error) {
+            console.error('Approval error:', error);
+            const errorMsg = error?.response?.data?.message || error?.message || 'Failed to approve booking';
+            message.error(errorMsg);
+        } finally {
+            hideLoading();
+            setThreeDayWarningBooking(null);
+        }
+    };
+
+    const handleLateBookingApproval = async () => {
+        if (!lateApprovalBooking) return;
+        const bookingId = getBookingId(lateApprovalBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        if (lateApprovalAction === 'extend') {
+            if (!lateApprovalExtensionDays || lateApprovalExtensionDays < 1) {
+                message.warning('Please enter at least 1 day for the extension.');
+                return;
+            }
+        }
+
+        setLateApprovalSubmitting(true);
+        const bookingNo = safeString(lateApprovalBooking.booking_no);
+        const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+
+        try {
+            await confirmBookingMutation.mutateAsync(bookingId);
+
+            await api.post(`/bookings/${bookingId}/deposit-decision`, {
+                action: lateApprovalAction,
+                extension_days:
+                    lateApprovalAction === 'extend'
+                        ? safeNumber(lateApprovalExtensionDays, 7)
+                        : null,
+                notes:
+                    lateApprovalNotes?.trim() ||
+                    'Applied at approval (late booking).',
+            });
+
+            if (lateApprovalAction === 'waive') {
+                message.success(`Booking ${bookingNo} approved. Deposit waived.`);
+            } else {
+                message.success(
+                    `Booking ${bookingNo} approved. Deposit deadline extended by ${safeNumber(lateApprovalExtensionDays, 7)} day(s).`,
+                );
+            }
+
+            setLateApprovalModalVisible(false);
+            setLateApprovalBooking(null);
+            setThreeDayWarningBooking(null);
+            await refreshAllData();
+        } catch (error) {
+            console.error('Late booking approval error:', error);
+            message.error(
+                error?.response?.data?.message ||
+                    'Failed to approve booking with deposit decision.',
+            );
+        } finally {
+            hideLoading();
+            setLateApprovalSubmitting(false);
+        }
+    };
+
+    const closeLateBookingApprovalModal = () => {
+        if (lateApprovalSubmitting) return;
+        setLateApprovalModalVisible(false);
+        setLateApprovalBooking(null);
+        setLateApprovalAction('waive');
+        setLateApprovalExtensionDays(7);
+        setLateApprovalNotes('');
+    };
+
+    const handleThreeDayWarningCancel = () => {
+        setThreeDayWarningModalVisible(false);
+        setThreeDayWarningBooking(null);
+    };
+
     const checkForDuplicateBooking = async (customerEmail, customerName, eventDate) => {
         try {
             const response = await api.get('/bookings', {
@@ -1353,9 +2485,6 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // OPEN CREATE BOOKING MODAL
-    // ========================================================
     const openCreateBookingModal = () => {
         quotationForm.resetFields();
         setEditingBooking(null);
@@ -1367,6 +2496,8 @@ const BookingQuotationManagement = () => {
         setServiceType('buffet');
         setEventScope('regular');
         setMultiDayDays(2);
+        setModalPricingType('per_pax');
+        setModalSelectedIds([]);
         setMealServices([]);
         setAddMealModalVisible(false);
         setPendingMealDay(null);
@@ -1394,12 +2525,9 @@ const BookingQuotationManagement = () => {
         setQuotationModalVisible(true);
     };
 
-    // ========================================================
-    // VALIDATE STEP
-    // ========================================================
     const validateStep = async (step) => {
         const form = quotationForm;
-        
+
         if (step === 0) {
             try {
                 await form.validateFields([
@@ -1426,7 +2554,7 @@ const BookingQuotationManagement = () => {
                     errors[field.name[0]] = field.errors[0];
                 });
                 setFieldErrors(errors);
-                
+
                 const firstError = errorFields[0];
                 if (firstError) {
                     const fieldName = firstError.name[0];
@@ -1449,7 +2577,7 @@ const BookingQuotationManagement = () => {
                 return false;
             }
         }
-        
+
         if (step === 1) {
             try {
                 const mealKeys = mealServices.map(meal => `${safeNumber(meal.day_number, 1)}::${normalizeMealLabel(meal.meal_type)}`);
@@ -1470,7 +2598,7 @@ const BookingQuotationManagement = () => {
                     message.warning('Please add at least one meal service with pax, menu items, and price.');
                     return false;
                 }
-                
+
                 for (const meal of validMeals) {
                     if (!meal.custom_items || meal.custom_items.length === 0) {
                         message.warning(`Please select menu items for ${meal.meal_type}`);
@@ -1486,7 +2614,7 @@ const BookingQuotationManagement = () => {
                 return false;
             }
         }
-        
+
         return true;
     };
 
@@ -1573,11 +2701,33 @@ const BookingQuotationManagement = () => {
                 if (selected) {
                     next.menu_item_id = value;
                     next.menu_name = selected.name || '';
-                    next.price_per_head = safeNumber(selected.price || selected.unit_price || 0);
+                    const isTray = modalPricingType === 'tray';
+                    if (isTray && selected.has_tray_pricing) {
+                        next.tray_price = safeNumber(selected.tray_price, 0);
+                        next.tray_servings = safeNumber(selected.tray_servings, 25);
+                        next.tray_min_pax = safeNumber(selected.tray_min_pax, 20);
+                        next.tray_max_pax = safeNumber(selected.tray_max_pax, 25);
+                        next.tray_description = selected.tray_description || `Good for ${safeNumber(selected.tray_min_pax, 20)}–${safeNumber(selected.tray_max_pax, 25)} pax`;
+                        next.price_per_head = safeNumber(selected.tray_price, 0);
+                        next.pricing_type = 'tray';
+                    } else {
+                        next.price_per_head = safeNumber(selected.price || selected.unit_price || 0);
+                        next.pricing_type = 'per_pax';
+                    }
+                }
+            }
+            if (field === 'tray_quantity') {
+                next.tray_quantity = safeNumber(value, 1);
+                if (next.pricing_type === 'tray') {
+                    next.total_meal_amount = safeNumber(next.tray_price) * safeNumber(next.tray_quantity);
                 }
             }
             if (['pax', 'price_per_head', 'menu_item_id', 'package_id'].includes(field)) {
-                next.total_meal_amount = safeNumber(next.pax) * safeNumber(next.price_per_head);
+                if (next.pricing_type === 'tray') {
+                    next.total_meal_amount = safeNumber(next.tray_price) * safeNumber(next.tray_quantity, 1);
+                } else {
+                    next.total_meal_amount = safeNumber(next.pax) * safeNumber(next.price_per_head);
+                }
             }
             if (field === 'meal_type') {
                 next.serving_time = DEFAULT_MEAL_TIMES[value] || next.serving_time;
@@ -1593,17 +2743,40 @@ const BookingQuotationManagement = () => {
         }));
     };
 
-    const normalizeCustomMealItem = (item) => ({
-        menu_item_id: item.menu_item_id || item.id,
-        item_name: item.name || item.item_name || 'Menu Item',
-        description: item.description || '',
-        quantity: 1,
-        unit_price: safeNumber(item.price || item.unit_price || item.base_price || 0),
-        notes: item.notes || ''
-    });
+    const normalizeCustomMealItem = (item) => {
+        const isTray = modalPricingType === 'tray';
+        const trayPrice = safeNumber(item.tray_price, 0);
+        const perPaxPrice = safeNumber(item.price, 0);
+        const price = (isTray && (item.pricing_type === 'tray' || item.pricing_type === 'both')) ? trayPrice : perPaxPrice;
+
+        return {
+            menu_item_id: item.menu_item_id || item.id,
+            item_name: item.name || item.item_name || 'Menu Item',
+            description: item.description || '',
+            quantity: 1,
+            unit_price: price,
+            notes: item.notes || '',
+            pricing_type: (isTray && (item.pricing_type === 'tray' || item.pricing_type === 'both')) ? 'tray' : 'per_pax',
+            tray_price: trayPrice,
+            tray_servings: safeNumber(item.tray_servings, 25),
+            tray_min_pax: safeNumber(item.tray_min_pax, 20),
+            tray_max_pax: safeNumber(item.tray_max_pax, 25),
+            tray_description: item.tray_description || `Good for ${safeNumber(item.tray_min_pax, 20)}–${safeNumber(item.tray_max_pax, 25)} pax`,
+            is_tray: (isTray && (item.pricing_type === 'tray' || item.pricing_type === 'both')),
+            original_item: item
+        };
+    };
+
+    const toggleGlobalPricingType = (type) => {
+        setModalPricingType(type);
+    };
 
     const calculateCustomItemsPrice = (items = []) => safeArray(items)
-        .reduce((sum, item) => sum + (safeNumber(item.unit_price) * safeNumber(item.quantity, 1)), 0);
+        .reduce((sum, item) => {
+            const price = safeNumber(item.unit_price || item.price || 0);
+            const qty = safeNumber(item.quantity, 1);
+            return sum + (price * qty);
+        }, 0);
 
     const setMealCustomItems = (mealId, selectedIds = []) => {
         setMealServices(prev => prev.map(meal => {
@@ -1613,7 +2786,8 @@ const BookingQuotationManagement = () => {
                 const existing = existingItems.find(i => String(i.menu_item_id) === String(id));
                 if (existing) return existing;
                 const source = menuItemsList.find(item => String(item.menu_item_id || item.id) === String(id));
-                return source ? normalizeCustomMealItem(source) : null;
+                if (!source) return null;
+                return normalizeCustomMealItem(source);
             }).filter(Boolean);
             const pkgItems = meal.package_id ? packagesList
                 .find(p => String(p.package_id || p.id) === String(meal.package_id))
@@ -1628,6 +2802,7 @@ const BookingQuotationManagement = () => {
                     uniqueItems.push(item);
                 }
             }
+            const hasTrayItems = uniqueItems.some(item => item.is_tray || item.pricing_type === 'tray');
             const totalPrice = calculateCustomItemsPrice(uniqueItems);
             return {
                 ...meal,
@@ -1635,8 +2810,11 @@ const BookingQuotationManagement = () => {
                 custom_items: uniqueItems,
                 menu_item_id: uniqueItems.length === 1 ? uniqueItems[0].menu_item_id : null,
                 menu_name: uniqueItems.map(i => i.item_name).join(', '),
+                pricing_type: hasTrayItems ? 'tray' : 'per_pax',
                 price_per_head: totalPrice,
-                total_meal_amount: safeNumber(meal.pax) * totalPrice
+                total_meal_amount: hasTrayItems
+                    ? uniqueItems.reduce((sum, item) => sum + (safeNumber(item.unit_price) * safeNumber(item.tray_quantity || 1)), 0)
+                    : safeNumber(meal.pax) * totalPrice
             };
         }));
     };
@@ -1648,12 +2826,16 @@ const BookingQuotationManagement = () => {
                 String(item.menu_item_id) === String(menuItemId) ? { ...item, [field]: value } : item
             );
             const nextPrice = calculateCustomItemsPrice(nextItems);
+            const hasTrayItems = nextItems.some(item => item.is_tray || item.pricing_type === 'tray');
             return {
                 ...meal,
                 custom_items: nextItems,
                 menu_name: nextItems.map(i => i.item_name).join(', '),
+                pricing_type: hasTrayItems ? 'tray' : 'per_pax',
                 price_per_head: nextPrice,
-                total_meal_amount: safeNumber(meal.pax) * nextPrice
+                total_meal_amount: hasTrayItems
+                    ? nextItems.reduce((sum, item) => sum + (safeNumber(item.unit_price) * safeNumber(item.tray_quantity || 1)), 0)
+                    : safeNumber(meal.pax) * nextPrice
             };
         }));
     };
@@ -1663,13 +2845,17 @@ const BookingQuotationManagement = () => {
             if (meal.id !== mealId) return meal;
             const nextItems = safeArray(meal.custom_items).filter(item => String(item.menu_item_id) !== String(menuItemId));
             const nextPrice = calculateCustomItemsPrice(nextItems);
+            const hasTrayItems = nextItems.some(item => item.is_tray || item.pricing_type === 'tray');
             return {
                 ...meal,
                 custom_items: nextItems,
                 menu_item_id: nextItems.length === 1 ? nextItems[0].menu_item_id : null,
                 menu_name: nextItems.map(i => i.item_name).join(', '),
+                pricing_type: hasTrayItems ? 'tray' : 'per_pax',
                 price_per_head: nextPrice,
-                total_meal_amount: safeNumber(meal.pax) * nextPrice
+                total_meal_amount: hasTrayItems
+                    ? nextItems.reduce((sum, item) => sum + (safeNumber(item.unit_price) * safeNumber(item.tray_quantity || 1)), 0)
+                    : safeNumber(meal.pax) * nextPrice
             };
         }));
     };
@@ -1756,6 +2942,12 @@ const BookingQuotationManagement = () => {
         setMealServices(prev => prev.map(meal => {
             const shouldSync = safeNumber(meal.pax, previousGuestCount) === previousGuestCount;
             if (!shouldSync) return meal;
+            if (meal.pricing_type === 'tray') {
+                return {
+                    ...meal,
+                    pax: nextGuestCount,
+                };
+            }
             return {
                 ...meal,
                 pax: nextGuestCount,
@@ -1764,7 +2956,13 @@ const BookingQuotationManagement = () => {
         }));
     };
 
-    const calculateMealServicesTotal = () => mealServices.reduce((sum, meal) => sum + (safeNumber(meal.pax) * safeNumber(meal.price_per_head)), 0);
+    const calculateMealServicesTotal = () => mealServices.reduce((sum, meal) => {
+        if (meal.pricing_type === 'tray') {
+            return sum + (safeNumber(meal.tray_price) * safeNumber(meal.tray_quantity, 1));
+        }
+        return sum + (safeNumber(meal.pax) * safeNumber(meal.price_per_head));
+    }, 0);
+
     const calculateBillingAdjustmentsTotal = () => safeNumber(billingAdjustments.transportation_fee) + safeNumber(billingAdjustments.setup_fee) + safeNumber(billingAdjustments.service_crew_fee) + safeNumber(billingAdjustments.equipment_rental) + safeNumber(billingAdjustments.extra_food_fee);
 
     const calculateTotalAmount = () => {
@@ -1782,22 +2980,42 @@ const BookingQuotationManagement = () => {
         return total;
     };
 
-    // ========================================================
-    // OPEN MENU SELECTION
-    // ========================================================
     const openMenuSelection = (mealId) => {
+        const meal = mealServices.find(m => m.id === mealId);
+        const existingSelectedIds = meal?.custom_items?.map(item => String(item.menu_item_id || item.id)) || [];
+
         setSelectedMealId(mealId);
         setMenuSearchTerm('');
         setMenuCategoryFilter('all');
         setMenuViewMode('grid');
         setMenuSelectionMode('menu_items');
+
+        setModalSelectedIds([...existingSelectedIds]);
+
+        let currentPricingType = 'per_pax';
+        if (meal?.custom_items && meal.custom_items.length > 0) {
+            const hasTray = meal.custom_items.some(item => item.pricing_type === 'tray');
+            if (hasTray) {
+                currentPricingType = 'tray';
+            }
+        }
+        setModalPricingType(currentPricingType);
+
         setMenuSelectionModalVisible(true);
     };
 
-    const handleSelectMenuItems = (selectedIds) => {
+    const handleSelectMenuItems = () => {
         if (selectedMealId) {
-            setMealCustomItems(selectedMealId, selectedIds);
+            setMealCustomItems(selectedMealId, modalSelectedIds);
         }
+        setMenuSelectionModalVisible(false);
+        setSelectedMealId(null);
+        setMenuSelectionMode('menu_items');
+        setModalSelectedIds([]);
+    };
+
+    const handleCancelMenuSelection = () => {
+        setModalSelectedIds([]);
         setMenuSelectionModalVisible(false);
         setSelectedMealId(null);
         setMenuSelectionMode('menu_items');
@@ -1817,6 +3035,7 @@ const BookingQuotationManagement = () => {
         setMenuSelectionModalVisible(false);
         setSelectedMealId(null);
         setMenuSelectionMode('menu_items');
+        setModalSelectedIds([]);
         message.success('Package items added to meal');
     };
 
@@ -1829,11 +3048,9 @@ const BookingQuotationManagement = () => {
         setMenuSelectionModalVisible(false);
         setSelectedMealId(null);
         setMenuSelectionMode('menu_items');
+        setModalSelectedIds([]);
     };
 
-    // ============================================================
-    // SAVE BOOKING
-    // ============================================================
     const saveBooking = async (values) => {
         if (saveLockRef.current || isSaving) {
             console.log('⏳ Save already in progress, skipping...');
@@ -1842,10 +3059,10 @@ const BookingQuotationManagement = () => {
 
         saveLockRef.current = true;
         setIsSaving(true);
-        
+
         try {
             const allValues = { ...formValues, ...values };
-            
+
             const formattedMealServices = sortedMealServices
                 .filter(meal => meal.pax > 0 && (meal.package_id || meal.menu_item_id || meal.custom_items?.length > 0))
                 .map(meal => ({
@@ -1869,12 +3086,27 @@ const BookingQuotationManagement = () => {
                         description: item.description || '',
                         quantity: safeNumber(item.quantity, 1),
                         unit_price: safeNumber(item.unit_price || item.price, 0),
-                        notes: item.notes || ''
+                        notes: item.notes || '',
+                        pricing_type: item.pricing_type || 'per_pax',
+                        tray_price: safeNumber(item.tray_price || 0, 0),
+                        tray_servings: safeNumber(item.tray_servings || 25, 25),
+                        tray_min_pax: safeNumber(item.tray_min_pax || 20, 20),
+                        tray_max_pax: safeNumber(item.tray_max_pax || 25, 25),
+                        tray_quantity: safeNumber(item.tray_quantity || 1, 1)
                     })),
                     price_per_head: safeNumber(meal.price_per_head, 0),
-                    total_meal_amount: safeNumber(meal.pax) * safeNumber(meal.price_per_head, 0),
+                    total_meal_amount: meal.pricing_type === 'tray'
+                        ? safeNumber(meal.tray_price) * safeNumber(meal.tray_quantity, 1)
+                        : safeNumber(meal.pax) * safeNumber(meal.price_per_head, 0),
                     notes: meal.notes || '',
-                    meal_status: String(meal.meal_status || 'pending').toLowerCase().replaceAll(' ', '_')
+                    meal_status: String(meal.meal_status || 'pending').toLowerCase().replaceAll(' ', '_'),
+                    pricing_type: meal.pricing_type || 'per_pax',
+                    tray_price: safeNumber(meal.tray_price, 0),
+                    tray_servings: safeNumber(meal.tray_servings, 25),
+                    tray_min_pax: safeNumber(meal.tray_min_pax, 20),
+                    tray_max_pax: safeNumber(meal.tray_max_pax, 25),
+                    tray_description: meal.tray_description || `Good for ${safeNumber(meal.tray_min_pax, 20)}–${safeNumber(meal.tray_max_pax, 25)} pax`,
+                    tray_quantity: safeNumber(meal.tray_quantity, 1)
                 }));
 
             const addressLine1 = allValues.address_line_1 || allValues.address || '';
@@ -1893,7 +3125,7 @@ const BookingQuotationManagement = () => {
             const adjustmentTotal = calculateBillingAdjustmentsTotal();
             let totalAmount = mealTotal + adjustmentTotal;
             totalAmount = Math.max(0, totalAmount - safeNumber(billingAdjustments.discount));
-            
+
             const totalBeforePromo = totalAmount;
             let promoDiscountAmount = 0;
             if (selectedPromo) {
@@ -1964,7 +3196,7 @@ const BookingQuotationManagement = () => {
             const responsePayload = response?.data?.data || response?.data || {};
             const bookingNo = responsePayload?.booking_no || 'N/A';
             message.success({
-                content: isUpdate ? `✅ Booking ${bookingNo} updated successfully!` : `✅ Booking ${bookingNo} created successfully!`,
+                content: isUpdate ? ` Booking ${bookingNo} updated successfully!` : ` Booking ${bookingNo} created successfully!`,
                 duration: 3,
             });
 
@@ -1974,6 +3206,8 @@ const BookingQuotationManagement = () => {
             setSelectedPromo(null);
             setEditingBooking(null);
             setMealServices([]);
+            setModalPricingType('per_pax');
+            setModalSelectedIds([]);
             setBillingAdjustments({
                 transportation_fee: 0,
                 setup_fee: 0,
@@ -1986,20 +3220,20 @@ const BookingQuotationManagement = () => {
             setFormValues({});
             setQuotationModalVisible(false);
             setCreateBookingStep(0);
-            
+
             void refreshAllData(false);
 
         } catch (error) {
             console.error('❌ Booking creation error:', error);
-            
+
             let errorMessage = 'Failed to create booking. Please check the form for errors.';
-            
+
             if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
                 errorMessage = '⏳ The request is taking longer than expected. Please check if the booking was created and refresh the page.';
             } else if (error?.response) {
                 const status = error.response.status;
                 const errorData = error.response.data;
-                
+
                 if (status === 500) {
                     const msg = errorData?.message || '';
                     if (msg.includes('Duplicate entry') || msg.includes('1062')) {
@@ -2011,7 +3245,7 @@ const BookingQuotationManagement = () => {
                     }
                 } else if (status === 422 && errorData.errors) {
                     const errors = errorData.errors;
-                    const errorMessages = Object.keys(errors).map(key => 
+                    const errorMessages = Object.keys(errors).map(key =>
                         `${key}: ${Array.isArray(errors[key]) ? errors[key].join(', ') : errors[key]}`
                     );
                     errorMessage = errorMessages.join('\n');
@@ -2029,7 +3263,7 @@ const BookingQuotationManagement = () => {
                 duration: 6,
                 style: { whiteSpace: 'pre-wrap' }
             });
-            
+
         } finally {
             saveLockRef.current = false;
             if (isMounted.current) {
@@ -2038,11 +3272,6 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // STEP RENDER FUNCTIONS - Simplified for readability
-    // ========================================================
-
-    // Step 1: Customer & Event Information
     const renderCustomerEventStep = () => {
         const safeEventTypes = safeArray(eventTypes);
 
@@ -2299,7 +3528,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // Step 2: Service & Scope Configuration
     const renderServiceScopeStep = () => {
         return (
             <div className="bqm-step-professional">
@@ -2477,26 +3705,9 @@ const BookingQuotationManagement = () => {
                                                 />
                                             </div>
                                         </Col>
-                                        <Col span={8}>
+                                        <Col span={4}>
                                             <div className="bqm-meal-field">
-                                                <span className="bqm-meal-label">Menu Selection</span>
-                                                <Button
-                                                    type="primary"
-                                                    ghost
-                                                    size="middle"
-                                                    onClick={() => openMenuSelection(meal.id)}
-                                                    icon={<MenuOutlined />}
-                                                    style={{ width: '100%' }}
-                                                >
-                                                    {meal.custom_items?.length > 0
-                                                        ? `${meal.custom_items.length} items selected`
-                                                        : 'Select Menu Items'}
-                                                </Button>
-                                            </div>
-                                        </Col>
-                                        <Col span={6}>
-                                            <div className="bqm-meal-field">
-                                                <span className="bqm-meal-label">Price per Head</span>
+                                                <span className="bqm-meal-label">Price/Head</span>
                                                 <InputNumber
                                                     min={0}
                                                     value={meal.price_per_head}
@@ -2522,7 +3733,24 @@ const BookingQuotationManagement = () => {
                                                 </div>
                                             </div>
                                         </Col>
-                                        <Col span={14}>
+                                        <Col span={8}>
+                                            <div className="bqm-meal-field">
+                                                <span className="bqm-meal-label">Menu Selection</span>
+                                                <Button
+                                                    type="primary"
+                                                    ghost
+                                                    size="middle"
+                                                    onClick={() => openMenuSelection(meal.id)}
+                                                    icon={<MenuOutlined />}
+                                                    style={{ width: '100%' }}
+                                                >
+                                                    {meal.custom_items?.length > 0
+                                                        ? `${meal.custom_items.length} items selected`
+                                                        : 'Select Menu Items'}
+                                                </Button>
+                                            </div>
+                                        </Col>
+                                        <Col span={16}>
                                             <div className="bqm-meal-field">
                                                 <span className="bqm-meal-label">Notes</span>
                                                 <Input
@@ -2538,11 +3766,22 @@ const BookingQuotationManagement = () => {
                                         <div className="bqm-meal-selected-items">
                                             <div className="bqm-selected-items-label">Selected Items:</div>
                                             <div className="bqm-selected-items-list">
-                                                {meal.custom_items.map((item, idx) => (
-                                                    <Tag key={idx} closable onClose={() => removeMealCustomItem(meal.id, item.menu_item_id)}>
-                                                        {item.item_name} (₱{item.unit_price})
-                                                    </Tag>
-                                                ))}
+                                                {meal.custom_items.map((item, idx) => {
+                                                    const isTray = item.is_tray || item.pricing_type === 'tray';
+                                                    return (
+                                                        <Tag key={idx} closable onClose={() => removeMealCustomItem(meal.id, item.menu_item_id)}>
+                                                            {item.item_name}
+                                                            {isTray
+                                                                ? ` (Tray: ${formatCurrency(item.unit_price)} × ${safeNumber(item.tray_quantity || 1)})`
+                                                                : ` (${formatCurrency(item.unit_price)})`}
+                                                            {isTray && item.tray_description && (
+                                                                <span style={{ fontSize: 10, color: '#6b7280', marginLeft: 4 }}>
+                                                                    {item.tray_description}
+                                                                </span>
+                                                            )}
+                                                        </Tag>
+                                                    );
+                                                })}
                                             </div>
                                         </div>
                                     )}
@@ -2615,7 +3854,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // Step 3: Payment & Additional Charges
     const renderPaymentStep = () => {
         const mealServicesTotal = calculateMealServicesTotal();
         const adjustmentTotal = calculateBillingAdjustmentsTotal();
@@ -2725,7 +3963,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // Step 4: Review & Confirm
     const renderReviewStep = () => {
         const currentValues = quotationForm.getFieldsValue();
         const allValues = { ...formValues, ...currentValues };
@@ -2889,7 +4126,7 @@ const BookingQuotationManagement = () => {
                                         { title: 'Meal', dataIndex: 'meal_type', width: 90 },
                                         { title: 'Time', dataIndex: 'serving_time', width: 90 },
                                         { title: 'Pax', dataIndex: 'pax', width: 60 },
-                                        { title: 'Items', width: 120, render: (_, r) => r.custom_items?.length || 0 },
+                                        { title: 'Items', width: 100, render: (_, r) => r.custom_items?.length || 0 },
                                         { title: 'Total', width: 100, render: (_, r) => formatCurrency(safeNumber(r.pax) * safeNumber(r.price_per_head)) }
                                     ]}
                                 />
@@ -2966,9 +4203,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // ========================================================
-    // ADD MEAL MODAL
-    // ========================================================
     const renderAddMealModal = () => (
         <Modal
             title="Add Meal"
@@ -3031,12 +4265,9 @@ const BookingQuotationManagement = () => {
         </Modal>
     );
 
-    // ========================================================
-    // MENU SELECTION MODAL
-    // ========================================================
     const renderMenuSelectionModal = () => {
         const meal = mealServices.find(m => m.id === selectedMealId);
-        const selectedIds = meal?.custom_items?.map(item => String(item.menu_item_id || item.id)) || [];
+        const selectedIds = modalSelectedIds;
 
         const categories = [...new Set(menuItemsList
             .map(item => {
@@ -3071,6 +4302,8 @@ const BookingQuotationManagement = () => {
                 code.toLowerCase().includes(menuSearchTerm.toLowerCase());
         });
 
+        const hasAnyTrayItems = filteredItems.some(item => item.pricing_type === 'tray' || item.pricing_type === 'both');
+
         return (
             <Modal
                 title={
@@ -3084,7 +4317,7 @@ const BookingQuotationManagement = () => {
                     </div>
                 }
                 open={menuSelectionModalVisible}
-                onCancel={() => setMenuSelectionModalVisible(false)}
+                onCancel={handleCancelMenuSelection}
                 maskClosable={false}
                 keyboard={false}
                 width={950}
@@ -3094,14 +4327,20 @@ const BookingQuotationManagement = () => {
                     <div className="bqm-menu-modal-footer">
                         <div className="bqm-menu-modal-selected-count">
                             {selectedIds.length} items selected
+                            {modalPricingType === 'tray' && (
+                                <Tag color="orange" style={{ marginLeft: 8 }}>Tray Pricing Mode</Tag>
+                            )}
+                            {modalPricingType === 'per_pax' && (
+                                <Tag color="blue" style={{ marginLeft: 8 }}>Per Pax Pricing Mode</Tag>
+                            )}
                         </div>
                         <Space>
-                            <Button onClick={() => setMenuSelectionModalVisible(false)}>
-                                Cancel
+                            <Button onClick={handleCancelMenuSelection}>
+                                Cancel (Clear All)
                             </Button>
                             <Button
                                 type="primary"
-                                onClick={() => handleSelectMenuItems(selectedIds)}
+                                onClick={handleSelectMenuItems}
                                 icon={<CheckCircleOutlined />}
                             >
                                 Confirm Selection
@@ -3148,6 +4387,43 @@ const BookingQuotationManagement = () => {
                         </Radio.Group>
                     </div>
 
+                    <div className="bqm-pricing-global-toggle" style={{
+                        padding: '12px 16px',
+                        background: '#f8fafc',
+                        borderRadius: 8,
+                        marginBottom: 12,
+                        border: '1px solid #e2e8f0',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between'
+                    }}>
+                        <div>
+                            <Text strong>Pricing Type:</Text>
+                            <Text style={{ marginLeft: 8, color: '#6b7280' }}>
+                                {modalPricingType === 'tray' ? 'Tray Pricing' : 'Per Pax Pricing'}
+                            </Text>
+                            {modalPricingType === 'tray' && (
+                                <Tag color="orange" style={{ marginLeft: 8 }}>All items will use tray prices</Tag>
+                            )}
+                            {modalPricingType === 'per_pax' && (
+                                <Tag color="blue" style={{ marginLeft: 8 }}>All items will use per pax prices</Tag>
+                            )}
+                        </div>
+                        <Radio.Group
+                            value={modalPricingType}
+                            onChange={(e) => toggleGlobalPricingType(e.target.value)}
+                            buttonStyle="solid"
+                            size="middle"
+                        >
+                            <Radio.Button value="per_pax">
+                                <UserOutlined /> Per Pax
+                            </Radio.Button>
+                            <Radio.Button value="tray">
+                                <AppstoreOutlined /> Tray
+                            </Radio.Button>
+                        </Radio.Group>
+                    </div>
+
                     <Tabs
                         activeKey={menuSelectionMode}
                         onChange={(key) => setMenuSelectionMode(key)}
@@ -3167,15 +4443,25 @@ const BookingQuotationManagement = () => {
                                                     const itemCategory = typeof item.category === 'string'
                                                         ? item.category
                                                         : item.category?.name || item.category?.category_name || '';
+                                                    const isTray = item.pricing_type === 'tray' || item.pricing_type === 'both';
+                                                    const effectivePricingType = modalPricingType;
+                                                    const isEffectiveTray = effectivePricingType === 'tray' && isTray;
+                                                    const displayPrice = isEffectiveTray
+                                                        ? safeNumber(item.tray_price, 0)
+                                                        : safeNumber(item.price, 0);
+                                                    const trayDesc = isEffectiveTray && item.tray_description
+                                                        ? item.tray_description
+                                                        : `Good for ${safeNumber(item.tray_min_pax, 20)}–${safeNumber(item.tray_max_pax, 25)} pax`;
+
                                                     return (
                                                         <div
                                                             key={item.menu_item_id || item.id}
                                                             className={`bqm-menu-grid-item ${isSelected ? 'selected' : ''}`}
                                                             onClick={() => {
                                                                 if (isSelected) {
-                                                                    setMealCustomItems(selectedMealId, selectedIds.filter(id => id !== String(item.menu_item_id || item.id)));
+                                                                    setModalSelectedIds(prev => prev.filter(id => id !== String(item.menu_item_id || item.id)));
                                                                 } else {
-                                                                    setMealCustomItems(selectedMealId, [...selectedIds, String(item.menu_item_id || item.id)]);
+                                                                    setModalSelectedIds(prev => [...prev, String(item.menu_item_id || item.id)]);
                                                                 }
                                                             }}
                                                         >
@@ -3194,7 +4480,31 @@ const BookingQuotationManagement = () => {
                                                             <div className="bqm-menu-item-info">
                                                                 <div className="bqm-menu-item-name">{item.name}</div>
                                                                 <div className="bqm-menu-item-category">{itemCategory}</div>
-                                                                <div className="bqm-menu-item-price">{formatCurrency(item.price)}</div>
+                                                                <div className="bqm-menu-item-price">
+                                                                    {isTray && (
+                                                                        <div className="bqm-menu-item-pricing-toggle">
+                                                                            <Tag color={isEffectiveTray ? 'orange' : 'blue'}>
+                                                                                {isEffectiveTray ? 'Tray' : 'Per Pax'}
+                                                                            </Tag>
+                                                                            <span style={{ fontSize: 13, fontWeight: 600 }}>
+                                                                                {formatCurrency(displayPrice)} / {isEffectiveTray ? 'tray' : 'pax'}
+                                                                            </span>
+                                                                        </div>
+                                                                    )}
+                                                                    {!isTray && (
+                                                                        <div className="bqm-menu-item-pricing-toggle">
+                                                                            <Tag color="blue">Per Pax</Tag>
+                                                                            <span style={{ fontSize: 13, fontWeight: 600 }}>
+                                                                                {formatCurrency(item.price)} / pax
+                                                                            </span>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                {isEffectiveTray && item.tray_description && (
+                                                                    <div className="bqm-menu-item-tray-desc" style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                                                                        {trayDesc}
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         </div>
                                                     );
@@ -3209,14 +4519,24 @@ const BookingQuotationManagement = () => {
                                                     const itemCategory = typeof item.category === 'string'
                                                         ? item.category
                                                         : item.category?.name || item.category?.category_name || '';
+                                                    const isTray = item.pricing_type === 'tray' || item.pricing_type === 'both';
+                                                    const effectivePricingType = modalPricingType;
+                                                    const isEffectiveTray = effectivePricingType === 'tray' && isTray;
+                                                    const displayPrice = isEffectiveTray
+                                                        ? safeNumber(item.tray_price, 0)
+                                                        : safeNumber(item.price, 0);
+                                                    const trayDesc = isEffectiveTray && item.tray_description
+                                                        ? item.tray_description
+                                                        : `Good for ${safeNumber(item.tray_min_pax, 20)}–${safeNumber(item.tray_max_pax, 25)} pax`;
+
                                                     return (
                                                         <List.Item
                                                             className={`bqm-menu-list-item ${isSelected ? 'selected' : ''}`}
                                                             onClick={() => {
                                                                 if (isSelected) {
-                                                                    setMealCustomItems(selectedMealId, selectedIds.filter(id => id !== String(item.menu_item_id || item.id)));
+                                                                    setModalSelectedIds(prev => prev.filter(id => id !== String(item.menu_item_id || item.id)));
                                                                 } else {
-                                                                    setMealCustomItems(selectedMealId, [...selectedIds, String(item.menu_item_id || item.id)]);
+                                                                    setModalSelectedIds(prev => [...prev, String(item.menu_item_id || item.id)]);
                                                                 }
                                                             }}
                                                         >
@@ -3228,8 +4548,23 @@ const BookingQuotationManagement = () => {
                                                                     <div className="bqm-menu-list-item-name">{item.name}</div>
                                                                     <div className="bqm-menu-list-item-meta">
                                                                         <Tag>{itemCategory}</Tag>
-                                                                        <span className="bqm-menu-list-item-price">{formatCurrency(item.price)}</span>
+                                                                        {isTray && (
+                                                                            <Tag color={isEffectiveTray ? 'orange' : 'blue'}>
+                                                                                {isEffectiveTray ? 'Tray' : 'Per Pax'}
+                                                                            </Tag>
+                                                                        )}
+                                                                        {!isTray && (
+                                                                            <Tag color="blue">Per Pax</Tag>
+                                                                        )}
+                                                                        <span className="bqm-menu-list-item-price">
+                                                                            {formatCurrency(displayPrice)} / {isEffectiveTray ? 'tray' : 'pax'}
+                                                                        </span>
                                                                     </div>
+                                                                    {isEffectiveTray && trayDesc && (
+                                                                        <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+                                                                            {trayDesc}
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         </List.Item>
@@ -3337,9 +4672,6 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    // ========================================================
-    // CALENDAR AVAILABILITY
-    // ========================================================
     const handleCalendarDayClick = (dateValue) => {
         const date = dayjs(dateValue);
         if (date.isBefore(dayjs().startOf('day'))) {
@@ -3419,9 +4751,6 @@ const BookingQuotationManagement = () => {
         });
     };
 
-    // ========================================================
-    // CALENDAR DATE CELL RENDER
-    // ========================================================
     const approvedCalendarEvents = useMemo(() => {
         return events.filter((event) => {
             return ['confirmed', 'rescheduled'].includes(safeString(event.status));
@@ -3438,10 +4767,10 @@ const BookingQuotationManagement = () => {
 
         const hasCustomSetting = availability !== undefined && availability !== null;
         const shouldShowBadge = hasCustomSetting && availability.status !== 'available';
-        const hasLimitedSlots = hasCustomSetting && 
-                               availability.status === 'available' && 
+        const hasLimitedSlots = hasCustomSetting &&
+                               availability.status === 'available' &&
                                (availability.operation_mode === 'limited_slot' || availability.max_bookings !== null) &&
-                               availability.max_bookings !== null && 
+                               availability.max_bookings !== null &&
                                availability.max_bookings !== undefined;
 
         return (
@@ -3464,14 +4793,14 @@ const BookingQuotationManagement = () => {
                     <div
                         className="bqm-calendar-availability-badge"
                         style={{
-                            backgroundColor: shouldShowBadge 
-                                ? getAvailabilityConfig(availability.status).background 
+                            backgroundColor: shouldShowBadge
+                                ? getAvailabilityConfig(availability.status).background
                                 : '#f0fdf4',
-                            color: shouldShowBadge 
-                                ? getAvailabilityConfig(availability.status).color 
+                            color: shouldShowBadge
+                                ? getAvailabilityConfig(availability.status).color
                                 : '#10b981',
-                            borderLeft: `3px solid ${shouldShowBadge 
-                                ? getAvailabilityConfig(availability.status).color 
+                            borderLeft: `3px solid ${shouldShowBadge
+                                ? getAvailabilityConfig(availability.status).color
                                 : '#10b981'}`
                         }}
                     >
@@ -3521,6 +4850,10 @@ const BookingQuotationManagement = () => {
     };
 
     const openCalendarBookingDetails = async (event) => {
+        if (!event || !event.id) {
+            message.warning('Invalid event data');
+            return;
+        }
         try {
             const response = await api.get(`/bookings/${event.id}`);
             const booking = response?.data?.data || response?.data || null;
@@ -3535,10 +4868,22 @@ const BookingQuotationManagement = () => {
     };
 
     const openEditBooking = async (booking) => {
+        if (!booking) {
+            message.error('No booking selected for editing');
+            return;
+        }
         const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
         try {
             const response = await api.get(`/bookings/${bookingId}`);
             const details = response?.data?.data || response?.data || booking;
+            if (!details) {
+                message.error('Failed to load booking details');
+                return;
+            }
             setEditingBooking(details);
             setSelectedBooking(details);
             setCreateBookingStep(0);
@@ -3547,6 +4892,7 @@ const BookingQuotationManagement = () => {
             setEventScope(details.is_multi_day || details.booking_scope === 'multi_day' ? 'multi_day' : 'regular');
             guestCountRef.current = safeNumber(details.guests_count, 10);
             setMultiDayDays(safeNumber(details.days, 1) > 1 ? safeNumber(details.days, 1) : 2);
+
             const addressParts = splitAddressParts(details);
             quotationForm.setFieldsValue({
                 customer_name: details.customer_name,
@@ -3579,19 +4925,34 @@ const BookingQuotationManagement = () => {
                 service_date: meal.service_date ? dayjs(meal.service_date) : null,
                 menu_source: meal.menu_source || (meal.package_id ? 'package' : 'custom'),
                 filters: safeArray(meal.filters).map(f => f.filter_key || f),
+                pricing_type: meal.pricing_type || 'per_pax',
+                tray_price: safeNumber(meal.tray_price, 0),
+                tray_servings: safeNumber(meal.tray_servings, 25),
+                tray_min_pax: safeNumber(meal.tray_min_pax, 20),
+                tray_max_pax: safeNumber(meal.tray_max_pax, 25),
+                tray_description: meal.tray_description || `Good for ${safeNumber(meal.tray_min_pax, 20)}–${safeNumber(meal.tray_max_pax, 25)} pax`,
+                tray_quantity: safeNumber(meal.tray_quantity, 1),
                 custom_items: safeArray(meal.custom_items).map(item => ({
                     menu_item_id: item.menu_item_id,
                     item_name: item.item_name || item.name,
                     description: item.description,
                     quantity: safeNumber(item.quantity, 1),
                     unit_price: safeNumber(item.unit_price),
-                    notes: item.notes || ''
+                    notes: item.notes || '',
+                    pricing_type: item.pricing_type || meal.pricing_type || 'per_pax',
+                    tray_price: safeNumber(item.tray_price || meal.tray_price, 0),
+                    tray_servings: safeNumber(item.tray_servings || meal.tray_servings, 25),
+                    tray_min_pax: safeNumber(item.tray_min_pax || meal.tray_min_pax, 20),
+                    tray_max_pax: safeNumber(item.tray_max_pax || meal.tray_max_pax, 25),
+                    tray_quantity: safeNumber(item.tray_quantity || meal.tray_quantity, 1)
                 }))
             }));
             setMealServices(sortMealServicesChronologically(loadedMeals.length ? loadedMeals.map(meal => {
                 const customItems = safeArray(meal.custom_items);
                 const customPrice = customItems.length ? calculateCustomItemsPrice(customItems) : safeNumber(meal.price_per_head);
-                return customItems.length ? { ...meal, menu_source: 'custom', price_per_head: customPrice, total_meal_amount: safeNumber(meal.pax) * customPrice } : meal;
+                return customItems.length ? { ...meal, menu_source: 'custom', price_per_head: customPrice, total_meal_amount: meal.pricing_type === 'tray'
+                    ? safeNumber(meal.tray_price) * safeNumber(meal.tray_quantity, 1)
+                    : safeNumber(meal.pax) * customPrice } : meal;
             }) : []));
             setQuotationModalVisible(true);
         } catch (error) {
@@ -3599,29 +4960,91 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // ACTION BUTTONS
-    // ========================================================
+    const handleTodayBookingApprove = async () => {
+        if (!todayBookingData) return;
+        const bookingId = getBookingId(todayBookingData);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+        const bookingNo = safeString(todayBookingData.booking_no);
+
+        try {
+            const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+            await confirmBookingMutation.mutateAsync(bookingId);
+            hideLoading();
+            setTodayBookingModalVisible(false);
+            setTodayBookingData(null);
+            setTodayBookingAction(null);
+            await refreshAllData();
+        } catch (error) {
+            console.error('Approval error:', error);
+            const errorMsg = error?.response?.data?.message || error?.message || 'Failed to approve booking';
+            message.error(errorMsg);
+        }
+    };
+
+    const handleTodayBookingReject = () => {
+        if (!todayBookingData) return;
+        setTodayBookingModalVisible(false);
+        openRejectModal(todayBookingData);
+    };
+
+    // ============================================================
+    // ⭐ BOOKING ACTIONS — WITH CUSTOMER RESCHEDULE RESPONSE
+    // ============================================================
     const renderBookingActions = (booking) => {
+        if (!booking) return null;
         const status = safeString(booking.booking_status).toLowerCase();
         const isPending = ['pending', 'pending_approval', 'draft'].includes(status);
         const isOperational = ['confirmed', 'approved', 'ongoing'].includes(status);
+        const isToday = isBookingToday(booking);
+        const isConfirmedToday = isBookingConfirmedAndToday(booking);
+
+        const refundPending = isRefundPending(booking);
+        const refundApproved = isRefundApproved(booking);
+
+        // ⭐ Detect pending admin reschedule proposal
+        const hasPendingAdminReschedule =
+            safeString(booking?.reschedule_status).toLowerCase() === 'pending' &&
+            safeString(booking?.reschedule_proposed_by).toLowerCase() === 'admin';
+
+        // ⭐ Detect pending customer reschedule request
+        const hasPendingCustomerReschedule =
+            safeString(booking?.reschedule_status).toLowerCase() === 'pending' &&
+            safeString(booking?.reschedule_proposed_by).toLowerCase() === 'customer';
+
+        const adminDirectCancelFlag =
+            Boolean(booking?.refund_admin_direct) ||
+            Boolean(booking?.refund_request_state?.admin_direct) ||
+            Boolean(booking?.cancellation_in_progress);
+
+        const refundNeedsAttention =
+            refundPending ||
+            refundApproved ||
+            adminDirectCancelFlag;
 
         return (
             <div className="bqm-action-group">
                 <Tooltip title="View details">
                     <button className="bqm-action-icon view" onClick={() => openBookingDetails(booking)}><EyeOutlined /></button>
                 </Tooltip>
+
                 {(isPending || (canApproveOperations && status === 'confirmed')) && (
                     <Tooltip title="Edit booking meals and information">
                         <button className="bqm-action-icon edit" onClick={() => openEditBooking(booking)}><EditOutlined /></button>
                     </Tooltip>
                 )}
-                {canApproveOperations && status === 'pending_approval' && (
+
+                {canApproveOperations && isPending && (
                     <>
-                        <Tooltip title="Approve booking">
-                            <button className="bqm-action-icon confirm" onClick={() => confirmBooking(booking)}>
-                                <CheckCircleOutlined />
+                        <Tooltip title={isToday ? "⚠️ Booking scheduled for today" : "Approve booking"}>
+                            <button
+                                className={`bqm-action-icon confirm ${isToday ? 'bqm-today-warning' : ''}`}
+                                onClick={() => confirmBooking(booking)}
+                                style={isToday ? { borderColor: '#f97316', backgroundColor: '#fff7ed' } : {}}
+                            >
+                                {isToday ? <FireOutlined style={{ color: '#f97316' }} /> : <CheckCircleOutlined />}
                             </button>
                         </Tooltip>
                         <Tooltip title="Reject or reschedule booking">
@@ -3631,20 +5054,123 @@ const BookingQuotationManagement = () => {
                         </Tooltip>
                     </>
                 )}
+
                 {isOperational && (
                     <>
-                        {canApproveOperations && (
-                            <Tooltip title="Cancel booking">
-                                <button className="bqm-action-icon delete" onClick={() => openCancelModal(booking)}>
-                                    <StopOutlined />
+                        {isConfirmedToday && canApproveOperations && (
+                            <Tooltip title="🎯 Event starts today - Start now">
+                                <button
+                                    className="bqm-action-icon start-event"
+                                    onClick={() => openStartEventModal(booking)}
+                                    style={{ borderColor: '#10b981', backgroundColor: '#ecfdf5' }}
+                                >
+                                    <FireOutlined style={{ color: '#10b981' }} />
                                 </button>
                             </Tooltip>
                         )}
-                        <Tooltip title={isCashierOnly ? 'Request reschedule' : 'Reschedule booking'}>
-                            <button className="bqm-action-icon edit" onClick={() => openRescheduleModal(booking)}>
-                                <SyncOutlined />
+
+                        {canApproveOperations && isDepositOverdue(booking) && (
+                            <Tooltip title="⚠️ Deposit overdue — extend, waive, or cancel">
+                                <button
+                                    className="bqm-action-icon bqm-deposit-overdue"
+                                    onClick={() => openDepositOverdueModal(booking)}
+                                    style={{ borderColor: '#ef4444', backgroundColor: '#fef2f2' }}
+                                >
+                                    <WarningOutlined style={{ color: '#ef4444' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+
+                        <Tooltip
+                            title={
+                                refundPending
+                                    ? '⚠️ Refund request pending — review in Cancel modal'
+                                    : refundApproved
+                                        ? '⚠️ Refund approved — confirm and release'
+                                        : adminDirectCancelFlag
+                                            ? '⚠️ Cancellation/refund in progress — review in Cancel modal'
+                                            : isDepositOverdue(booking)
+                                                ? '⚠️ Deposit overdue — review in Cancel modal'
+                                                : 'Cancel booking'
+                            }
+                        >
+                            <button
+                                className={`bqm-action-icon delete ${refundNeedsAttention ? 'bqm-cancel-pending-refund' : ''}`}
+                                onClick={() => openCancelModal(booking)}
+                            >
+                                <StopOutlined />
                             </button>
                         </Tooltip>
+
+                                               {/* ⭐ Reschedule button — hidden when reschedule is pending */}
+                        {!hasPendingAdminReschedule && !hasPendingCustomerReschedule && (
+                            <Tooltip title={isCashierOnly ? 'Request reschedule' : 'Reschedule booking'}>
+                                <button className="bqm-action-icon edit" onClick={() => openRescheduleModal(booking)}>
+                                    <SyncOutlined />
+                                </button>
+                            </Tooltip>
+                        )}
+
+                        {/* ⭐ Admin responds to CUSTOMER-initiated reschedule */}
+                        {hasPendingCustomerReschedule && canApproveOperations && (
+                            <>
+                                <Tooltip title="✅ Approve the customer's proposed new schedule">
+                                    <button
+                                        className="bqm-action-icon confirm"
+                                        onClick={() => handleApproveCustomerReschedule(booking)}
+                                        style={{ borderColor: '#10b981', backgroundColor: '#ecfdf5' }}
+                                    >
+                                        <CheckCircleOutlined style={{ color: '#10b981' }} />
+                                    </button>
+                                </Tooltip>
+
+                                <Tooltip title="❌ Reject the customer's reschedule request">
+                                    <button
+                                        className="bqm-action-icon reject"
+                                        onClick={() => handleRejectCustomerReschedule(booking)}
+                                    >
+                                        <CloseCircleOutlined />
+                                    </button>
+                                </Tooltip>
+
+                                <Tooltip title="🚫 Cancel / withdraw the customer's reschedule request">
+                                    <button
+                                        className="bqm-action-icon cancel-proposal"
+                                        onClick={() => handleCancelCustomerRescheduleRequest(booking)}
+                                        style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                                    >
+                                        <CloseCircleOutlined style={{ color: '#f59e0b' }} />
+                                    </button>
+                                </Tooltip>
+                            </>
+                        )}
+
+                        {/* ⭐ Cancel ADMIN's own pending reschedule proposal */}
+                        {hasPendingAdminReschedule && canApproveOperations && (
+                            <Tooltip title="Withdraw the pending reschedule proposal">
+                                <button
+                                    className="bqm-action-icon cancel-proposal"
+                                    onClick={() => openCancelRescheduleModal(booking)}
+                                    style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                                >
+                                    <CloseCircleOutlined style={{ color: '#f59e0b' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+
+                        {/* ⭐ Cancel ADMIN's own pending reschedule proposal */}
+                        {hasPendingAdminReschedule && canApproveOperations && (
+                            <Tooltip title="Cancel the pending reschedule proposal">
+                                <button
+                                    className="bqm-action-icon cancel-proposal"
+                                    onClick={() => openCancelRescheduleModal(booking)}
+                                    style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                                >
+                                    <CloseCircleOutlined style={{ color: '#f59e0b' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+
                         {canApproveOperations && (
                             <Tooltip title="Mark as completed">
                                 <button className="bqm-action-icon confirm" onClick={() => handleCompleteBooking(booking)}>
@@ -3654,13 +5180,34 @@ const BookingQuotationManagement = () => {
                         )}
                     </>
                 )}
+
+                {canApproveOperations && refundPending && (
+                    <Tooltip title="💰 Refund request pending approval — approve or reject">
+                        <button
+                            className="bqm-action-icon refund-approval"
+                            onClick={() => openRefundApprovalModal(booking)}
+                            style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                        >
+                            <DollarOutlined style={{ color: '#f59e0b' }} />
+                        </button>
+                    </Tooltip>
+                )}
+
+                {isCashierOnly && refundApproved && (
+                    <Tooltip title="💵 Refund approved — confirm and release payment">
+                        <button
+                            className="bqm-action-icon refund-confirm"
+                            onClick={() => openConfirmRefundModal(booking)}
+                            style={{ borderColor: '#10b981', backgroundColor: '#ecfdf5' }}
+                        >
+                            <WalletOutlined style={{ color: '#10b981' }} />
+                        </button>
+                    </Tooltip>
+                )}
             </div>
         );
     };
 
-    // ========================================================
-    // TABLE COLUMNS - MEAL SERVICES COLUMN REMOVED
-    // ========================================================
     const regularBookingColumns = [
         {
             title: 'BOOKING #',
@@ -3673,29 +5220,78 @@ const BookingQuotationManagement = () => {
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200, render: (value, record) => (
             <div className="bqm-customer-cell">
                 <div className="bqm-customer-name">{safeString(value)}</div>
-                <div className="bqm-customer-contact"><MailOutlined /> {safeString(record.customer_email, 'No email')}</div>
-                <div className="bqm-customer-contact"><PhoneOutlined /> {safeString(record.customer_phone, 'No phone')}</div>
+                <div className="bqm-customer-contact"><MailOutlined /> {safeString(record?.customer_email, 'No email')}</div>
+                <div className="bqm-customer-contact"><PhoneOutlined /> {safeString(record?.customer_phone, 'No phone')}</div>
             </div>
         ) },
         {
             title: 'EVENT DATE & LOCATION',
             key: 'event_location',
             width: 220,
-            render: (_, record) => (
-                <div className="bqm-event-location-cell">
-                    <div className="bqm-event-date"><CalendarOutlined /> {safeString(record.event_date, 'N/A')}</div>
-                    <div className="bqm-event-date"><ScheduleOutlined /> {safeString(record.event_time, 'N/A')}</div>
-                    <div className="bqm-event-location"><EnvironmentOutlined /> {getBookingLocation(record)}</div>
-                </div>
-            )
+            render: (_, record) => {
+                if (!record) return <span>N/A</span>;
+                return (
+                    <div className="bqm-event-location-cell">
+                        <div className="bqm-event-date"><CalendarOutlined /> {safeString(record.event_date, 'N/A')}</div>
+                        <div className="bqm-event-date"><ScheduleOutlined /> {safeString(record.event_time, 'N/A')}</div>
+                        <div className="bqm-event-location"><EnvironmentOutlined /> {getBookingLocation(record)}</div>
+                        {isBookingToday(record) && (
+                            <Tag color="orange" className="bqm-today-tag"><FireOutlined /> Today</Tag>
+                        )}
+                    </div>
+                );
+            }
         },
-        // MEAL SERVICES COLUMN REMOVED
         { title: 'SERVICE', key: 'service_type', width: 130, render: (_, record) => <span className="bqm-service-text">{getServiceType(record)}</span> },
-        { title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record.event_type_id)}</span> },
+        { title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record?.event_type_id)}</span> },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
         { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 150, align: 'center', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
-        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 140, render: (value) => { const config = getStatusConfig(value); return <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>; } },
-        { title: 'ACTION', key: 'action', width: 200, fixed: 'right', render: (_, record) => renderBookingActions(record) }
+        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 200, render: (value, record) => {
+            const config = getStatusConfig(value);
+            const refundConfig = getRefundStatusConfig(record?.refund_status);
+            const depositConfig = getDepositStateLabel(record?.deposit_decision_status);
+            const depositOverdue = isDepositOverdue(record);
+
+            const rescheduleProposedBy = safeString(record?.reschedule_proposed_by).toLowerCase();
+            const rescheduleStatus = safeString(record?.reschedule_status).toLowerCase();
+            const hasPendingAdminProposal = rescheduleStatus === 'pending' && rescheduleProposedBy === 'admin';
+            const hasPendingCustomerRequest = rescheduleStatus === 'pending' && rescheduleProposedBy === 'customer';
+
+            return (
+                <div className="bqm-status-stack">
+                    <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>
+
+                    {hasPendingAdminProposal && (
+                        <span className="bqm-status" style={{ color: '#9C27B0', background: '#F3E5F5' }}>
+                            <SyncOutlined /> Date Proposed to Customer
+                        </span>
+                    )}
+
+                    {hasPendingCustomerRequest && (
+                        <span className="bqm-status" style={{ color: '#FF9800', background: '#FFF3E0' }}>
+                            <ClockCircleOutlined /> Customer Reschedule Pending
+                        </span>
+                    )}
+
+                    {depositOverdue && (
+                        <span className="bqm-status bqm-deposit-warning" style={{ color: '#ef4444', background: '#fef2f2' }}>
+                            <WarningOutlined /> Deposit Overdue
+                        </span>
+                    )}
+                    {depositConfig && (
+                        <span className="bqm-status bqm-deposit-status" style={{ color: depositConfig.color, background: depositConfig.background }}>
+                            {depositConfig.icon}{depositConfig.text}
+                        </span>
+                    )}
+                    {refundConfig && (
+                        <span className="bqm-status bqm-refund-status" style={{ color: refundConfig.color, background: refundConfig.background }}>
+                            {refundConfig.icon}{refundConfig.text}
+                        </span>
+                    )}
+                </div>
+            );
+        } },
+        { title: 'ACTION', key: 'action', width: 300, fixed: 'right', render: (_, record) => renderBookingActions(record) }
     ];
 
     const multiDayColumns = [
@@ -3703,36 +5299,85 @@ const BookingQuotationManagement = () => {
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200, render: (value, record) => (
             <div className="bqm-customer-cell">
                 <div className="bqm-customer-name">{safeString(value)}</div>
-                <div className="bqm-customer-contact"><MailOutlined /> {safeString(record.customer_email, 'No email')}</div>
+                <div className="bqm-customer-contact"><MailOutlined /> {safeString(record?.customer_email, 'No email')}</div>
             </div>
         ) },
         {
             title: 'EVENT PERIOD',
             key: 'event_period',
             width: 220,
-            render: (_, record) => (
-                <div className="bqm-event-period-cell">
-                    <div className="bqm-event-date"><CalendarOutlined /> {safeString(record.event_date, 'N/A')} - {safeString(record.event_end_date || record.end_date || record.event_date, 'N/A')}</div>
-                    <div className="bqm-event-days"><ScheduleOutlined /> {safeString(record.event_time, 'N/A')} • {formatDays(record.event_date, record.event_end_date || record.end_date || record.event_date)} days</div>
-                </div>
-            )
+            render: (_, record) => {
+                if (!record) return <span>N/A</span>;
+                return (
+                    <div className="bqm-event-period-cell">
+                        <div className="bqm-event-date"><CalendarOutlined /> {safeString(record.event_date, 'N/A')} - {safeString(record.event_end_date || record.end_date || record.event_date, 'N/A')}</div>
+                        <div className="bqm-event-days"><ScheduleOutlined /> {safeString(record.event_time, 'N/A')} • {formatDays(record.event_date, record.event_end_date || record.end_date || record.event_date)} days</div>
+                        {isBookingToday(record) && (
+                            <Tag color="orange" className="bqm-today-tag"><FireOutlined /> Starts Today</Tag>
+                        )}
+                    </div>
+                );
+            }
         },
-        // MEAL SERVICES COLUMN REMOVED
         {
             title: 'LOCATION',
             key: 'location',
             width: 220,
             ellipsis: true,
-            render: (_, record) => (
-                <div className="bqm-event-location-cell">
-                    <EnvironmentOutlined /> {getBookingLocation(record)}
-                </div>
-            )
+            render: (_, record) => {
+                if (!record) return <span>N/A</span>;
+                return (
+                    <div className="bqm-event-location-cell">
+                        <EnvironmentOutlined /> {getBookingLocation(record)}
+                    </div>
+                );
+            }
         },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
         { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 140, align: 'right', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
-        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 140, render: (value) => { const config = getStatusConfig(value); return <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>; } },
-        { title: 'ACTION', key: 'action', width: 200, fixed: 'right', render: (_, record) => renderBookingActions(record) }
+        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 200, render: (value, record) => {
+            const config = getStatusConfig(value);
+            const refundConfig = getRefundStatusConfig(record?.refund_status);
+            const depositConfig = getDepositStateLabel(record?.deposit_decision_status);
+            const depositOverdue = isDepositOverdue(record);
+
+            const rescheduleProposedBy = safeString(record?.reschedule_proposed_by).toLowerCase();
+            const rescheduleStatus = safeString(record?.reschedule_status).toLowerCase();
+            const hasPendingAdminProposal = rescheduleStatus === 'pending' && rescheduleProposedBy === 'admin';
+            const hasPendingCustomerRequest = rescheduleStatus === 'pending' && rescheduleProposedBy === 'customer';
+
+            return (
+                <div className="bqm-status-stack">
+                    <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>
+                    {hasPendingAdminProposal && (
+                        <span className="bqm-status" style={{ color: '#9C27B0', background: '#F3E5F5' }}>
+                            <SyncOutlined /> Date Proposed to Customer
+                        </span>
+                    )}
+                    {hasPendingCustomerRequest && (
+                        <span className="bqm-status" style={{ color: '#FF9800', background: '#FFF3E0' }}>
+                            <ClockCircleOutlined /> Customer Reschedule Pending
+                        </span>
+                    )}
+                    {depositOverdue && (
+                        <span className="bqm-status bqm-deposit-warning" style={{ color: '#ef4444', background: '#fef2f2' }}>
+                            <WarningOutlined /> Deposit Overdue
+                        </span>
+                    )}
+                    {depositConfig && (
+                        <span className="bqm-status bqm-deposit-status" style={{ color: depositConfig.color, background: depositConfig.background }}>
+                            {depositConfig.icon}{depositConfig.text}
+                        </span>
+                    )}
+                    {refundConfig && (
+                        <span className="bqm-status bqm-refund-status" style={{ color: refundConfig.color, background: refundConfig.background }}>
+                            {refundConfig.icon}{refundConfig.text}
+                        </span>
+                    )}
+                </div>
+            );
+        } },
+        { title: 'ACTION', key: 'action', width: 300, fixed: 'right', render: (_, record) => renderBookingActions(record) }
     ];
 
     const historyColumns = [
@@ -3759,6 +5404,130 @@ const BookingQuotationManagement = () => {
             )
         }
     ];
+
+    const refundRequestColumns = useMemo(() => [
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
+            width: 140,
+            render: (value) => <span className="bqm-id-text">{safeString(value)}</span>,
+        },
+        {
+            title: 'CUSTOMER',
+            dataIndex: 'customer_name',
+            key: 'customer_name',
+            width: 200,
+            render: (value, record) => (
+                <div className="bqm-customer-cell">
+                    <div className="bqm-customer-name">{safeString(value)}</div>
+                    <div className="bqm-customer-contact">
+                        <MailOutlined /> {safeString(record?.customer_email, 'No email')}
+                    </div>
+                </div>
+            ),
+        },
+        {
+            title: 'EVENT DATE',
+            dataIndex: 'event_date',
+            key: 'event_date',
+            width: 130,
+            render: (value) => formatDateSafe(value),
+        },
+        {
+            title: 'DEPOSIT',
+            key: 'deposit',
+            width: 130,
+            align: 'right',
+            render: (_, record) => (
+                <span className="bqm-amount">{formatCurrency(getDepositAmount(record))}</span>
+            ),
+        },
+        {
+            title: 'STATUS',
+            key: 'refund_status',
+            width: 180,
+            render: (_, record) => {
+                const config = getRefundStatusConfig(record?.refund_status);
+                if (!config) return <Tag>—</Tag>;
+                return (
+                    <span
+                        className="bqm-status"
+                        style={{ color: config.color, background: config.background }}
+                    >
+                        {config.icon}
+                        {config.text}
+                    </span>
+                );
+            },
+        },
+        {
+            title: 'REQUESTED',
+            key: 'requested_at',
+            width: 180,
+            render: (_, record) => (
+                <span>{formatDateSafe(record?.refund_requested_at, 'MMM DD, YYYY hh:mm A')}</span>
+            ),
+        },
+        {
+            title: 'REASON',
+            dataIndex: 'refund_reason',
+            key: 'refund_reason',
+            ellipsis: true,
+            render: (value) => safeString(value, '—'),
+        },
+        {
+            title: 'ACTION',
+            key: 'action',
+            width: 200,
+            fixed: 'right',
+            render: (_, record) => {
+                const pending = isRefundPending(record);
+                const approved = isRefundApproved(record);
+                return (
+                    <div className="bqm-action-group">
+                        <Tooltip title="View booking details">
+                            <button
+                                className="bqm-action-icon view"
+                                onClick={() => openBookingDetails(record)}
+                            >
+                                <EyeOutlined />
+                            </button>
+                        </Tooltip>
+                        {pending && (
+                            <Tooltip title="Review refund request">
+                                <button
+                                    className="bqm-action-icon refund-approval"
+                                    onClick={() => openRefundApprovalModal(record)}
+                                    style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                                >
+                                    <DollarOutlined style={{ color: '#f59e0b' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+                        {approved && (
+                            <Tooltip title="Awaiting cashier to release refund">
+                                <button
+                                    className="bqm-action-icon"
+                                    style={{ borderColor: '#3b82f6', backgroundColor: '#eff6ff', cursor: 'default' }}
+                                >
+                                    <ClockCircleOutlined style={{ color: '#3b82f6' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+                        <Tooltip title="Open cancellation sheet">
+                            <button
+                                className="bqm-action-icon delete"
+                                onClick={() => openCancelModal(record)}
+                            >
+                                <StopOutlined />
+                            </button>
+                        </Tooltip>
+                    </div>
+                );
+            },
+        },
+    ], [canApproveOperations]);
 
     const getQuotationLatestSend = (record) => {
         const history = safeArray(record.send_history);
@@ -3845,9 +5614,6 @@ const BookingQuotationManagement = () => {
         ) }
     ];
 
-    // ========================================================
-    // BOOKING DETAILS STEPS - ENHANCED WITH MEAL SERVICES
-    // ========================================================
     const bookingSteps = [
         { title: 'Customer', icon: <UserOutlined /> },
         { title: 'Event', icon: <CalendarOutlined /> },
@@ -3857,7 +5623,13 @@ const BookingQuotationManagement = () => {
     ];
 
     const renderBookingStepContent = () => {
-        if (!selectedBooking) return null;
+        if (!selectedBooking) {
+            return (
+                <div className="bqm-step-content">
+                    <Text type="secondary">No booking selected.</Text>
+                </div>
+            );
+        }
 
         switch (bookingStep) {
             case 0:
@@ -3880,6 +5652,9 @@ const BookingQuotationManagement = () => {
                             <div className="bqm-info-row"><span className="bqm-info-label"><EnvironmentOutlined /> Venue/Location</span><span className="bqm-info-value">{getBookingLocation(selectedBooking)}</span></div>
                             <div className="bqm-info-row"><span className="bqm-info-label"><ForkOutlined /> Service Type</span><span className="bqm-info-value">{getServiceType(selectedBooking)}</span></div>
                             <div className="bqm-info-row"><span className="bqm-info-label"><TeamOutlined /> Number of Guests</span><span className="bqm-info-value">{safeNumber(selectedBooking.guests_count)} PAX</span></div>
+                            {isBookingToday(selectedBooking) && (
+                                <div className="bqm-info-row"><span className="bqm-info-label"><FireOutlined /> Status</span><span className="bqm-info-value"><Tag color="orange">Event is TODAY</Tag></span></div>
+                            )}
                         </div>
                     </div>
                 );
@@ -3891,7 +5666,6 @@ const BookingQuotationManagement = () => {
                                 <span className="bqm-info-label"><MenuOutlined /> Menu Type</span>
                                 <span className="bqm-info-value"><Tag color={getMenuType(selectedBooking) === 'Package' ? '#8b5cf6' : '#f59e0b'}>{getMenuType(selectedBooking)} Menu</Tag></span>
                             </div>
-                            {/* ENHANCED MEAL SERVICES RENDERER */}
                             {renderMealServicesInModal(selectedBooking)}
                         </div>
                     </div>
@@ -3927,9 +5701,343 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    // ========================================================
-    // UI CLASSES
-    // ========================================================
+    const renderLateCancellationStrip = (booking) => {
+        const withinCutoff = isBookingWithinCancellationCutoff(booking);
+        const cutoffDays = getCancellationCutoffDays(booking);
+
+        return (
+            <>
+                <div className="bqm-formal-strip">
+                    <div className="bqm-formal-strip-item">
+                        <span className="bqm-formal-strip-label">Customer</span>
+                        <span className="bqm-formal-strip-value">{safeString(booking?.customer_name)}</span>
+                    </div>
+                    <div className="bqm-formal-strip-item">
+                        <span className="bqm-formal-strip-label">Event Date</span>
+                        <span className="bqm-formal-strip-value">{formatDateSafe(booking?.event_date)}</span>
+                    </div>
+                    <div className="bqm-formal-strip-item">
+                        <span className="bqm-formal-strip-label">Deposit on File</span>
+                        <span className="bqm-formal-strip-value bqm-formal-strip-value--money">
+                            {formatCurrency(getDepositAmount(booking))}
+                        </span>
+                    </div>
+                </div>
+
+                {withinCutoff && (
+                    <div className="bqm-formal-note bqm-formal-note--danger">
+                        <WarningOutlined />
+                        <span>
+                            This booking is <strong>inside the {cutoffDays}-day cancellation
+                            cutoff</strong>. The deposit is non-refundable by default —
+                            an administrator may still choose to refund at their discretion.
+                        </span>
+                    </div>
+                )}
+            </>
+        );
+    };
+
+    const renderAdminDecisionSheet = () => {
+        const pending = isRefundPending(selectedBooking);
+        const approved = isRefundApproved(selectedBooking);
+
+        return (
+            <>
+                <div className="bqm-formal-section">
+                    <div className="bqm-formal-section-head">
+                        <span className="bqm-formal-section-index">01</span>
+                        <span className="bqm-formal-section-title">Cancellation Reason</span>
+                        <span className="bqm-formal-section-rule" />
+                    </div>
+                    <Form form={cancelWithRefundForm} layout="vertical" className="bqm-formal-form">
+                        <Form.Item
+                            name="reason"
+                            rules={[{ required: true, message: 'Please provide a reason' }]}
+                            style={{ marginBottom: 0 }}
+                        >
+                            <TextArea
+                                rows={3}
+                                placeholder="State the reason for cancellation. This will be recorded in the audit trail."
+                                maxLength={500}
+                                showCount
+                            />
+                        </Form.Item>
+                    </Form>
+                </div>
+
+                <div className="bqm-formal-section">
+                    <div className="bqm-formal-section-head">
+                        <span className="bqm-formal-section-index">02</span>
+                        <span className="bqm-formal-section-title">Administrative Decision</span>
+                        <span className="bqm-formal-chip bqm-formal-chip--restricted">
+                            Restricted · Admin
+                        </span>
+                    </div>
+
+                    <Form
+                        form={adminDepositForm}
+                        layout="vertical"
+                        className="bqm-formal-form"
+                        initialValues={{
+                            action: 'cancel',
+                            notes: '',
+                            refund_amount: 0,
+                            refund_method: 'cash',
+                            refund_reference: '',
+                        }}
+                    >
+                        <Form.Item name="action" initialValue="cancel" hidden>
+                            <Input />
+                        </Form.Item>
+
+                        <div className="bqm-formal-panel bqm-formal-panel--danger">
+                            <div className="bqm-formal-panel-head">
+                                <DollarOutlined />
+                                <span>Refund Instructions</span>
+                            </div>
+                            <Row gutter={12}>
+                                <Col span={12}>
+                                    <Form.Item
+                                        name="refund_amount"
+                                        label="Refund Amount"
+                                        rules={[
+                                            { required: true, message: 'Enter the refund amount (0 for none).' },
+                                            { type: 'number', min: 0, message: 'Cannot be negative.' },
+                                        ]}
+                                        tooltip="Enter 0 for cancel without refund."
+                                    >
+                                        <InputNumber
+                                            min={0}
+                                            step={0.01}
+                                            size="large"
+                                            style={{ width: '100%' }}
+                                            placeholder="0.00"
+                                            formatter={(v) => `₱ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                                            parser={(v) => v?.replace(/₱\s?|(,*)/g, '')}
+                                        />
+                                    </Form.Item>
+                                </Col>
+                                <Col span={12}>
+                                    <Form.Item name="refund_method" label="Disbursement Method">
+                                        <Select size="large">
+                                            <Option value="cash">Cash</Option>
+                                            <Option value="gcash">GCash</Option>
+                                            <Option value="maya">Maya</Option>
+                                            <Option value="bank_transfer">Bank Transfer</Option>
+                                            <Option value="card">Card</Option>
+                                            <Option value="check">Check</Option>
+                                        </Select>
+                                    </Form.Item>
+                                </Col>
+                            </Row>
+                            <Form.Item
+                                name="refund_reference"
+                                label="Reference Number"
+                                tooltip="Bank ref, GCash ref, cheque number, etc."
+                                style={{ marginBottom: 0 }}
+                            >
+                                <Input size="large" placeholder="Optional" />
+                            </Form.Item>
+                        </div>
+
+                        <Form.Item
+                            name="notes"
+                            label="Internal Note"
+                            style={{ marginTop: 16, marginBottom: 16 }}
+                        >
+                            <TextArea
+                                rows={2}
+                                placeholder="Optional — recorded in the audit log"
+                                maxLength={500}
+                                showCount
+                            />
+                        </Form.Item>
+
+                        <Button
+                            type="primary"
+                            block
+                            size="large"
+                            icon={<CheckCircleOutlined />}
+                            className="bqm-formal-btn bqm-formal-btn--danger"
+                            onClick={() => {
+                                adminDepositForm.validateFields()
+                                    .then(() => handleAdminDepositAction(adminDepositForm.getFieldsValue()))
+                                    .catch(() => {});
+                            }}
+                        >
+                            Confirm Cancellation &amp; Refund
+                        </Button>
+                    </Form>
+                </div>
+
+                {(pending || approved) && (
+                    <div className="bqm-formal-section">
+                        <div className="bqm-formal-section-head">
+                            <span className="bqm-formal-section-index">03</span>
+                            <span className="bqm-formal-section-title">Cashier's Cancellation Request</span>
+                            <span className="bqm-formal-chip bqm-formal-chip--readonly">Read Only</span>
+                        </div>
+                        <div className="bqm-formal-dossier">
+                            <div className="bqm-formal-dossier-row">
+                                <span className="bqm-formal-dossier-label">Requested By</span>
+                                <span className="bqm-formal-dossier-value">
+                                    {safeString(
+                                        selectedBooking?.refund_requested_by_name
+                                        || selectedBooking?.refund_requested_by
+                                        || 'Cashier',
+                                    )}
+                                </span>
+                            </div>
+                            <div className="bqm-formal-dossier-row">
+                                <span className="bqm-formal-dossier-label">Requested At</span>
+                                <span className="bqm-formal-dossier-value">
+                                    {formatDateSafe(
+                                        selectedBooking?.refund_requested_at,
+                                        'MMM DD, YYYY • hh:mm A',
+                                    )}
+                                </span>
+                            </div>
+                            <div className="bqm-formal-dossier-row">
+                                <span className="bqm-formal-dossier-label">Status</span>
+                                <span className="bqm-formal-dossier-value">
+                                    <span className={`bqm-formal-pill bqm-formal-pill--${pending ? 'warn' : 'info'}`}>
+                                        {getRefundStatusConfig(selectedBooking?.refund_status)?.text || 'Pending'}
+                                    </span>
+                                </span>
+                            </div>
+                            <div className="bqm-formal-dossier-row bqm-formal-dossier-row--stack">
+                                <span className="bqm-formal-dossier-label">Reason</span>
+                                <span className="bqm-formal-dossier-value bqm-formal-dossier-value--block">
+                                    {safeString(selectedBooking?.refund_reason, '—')}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </>
+        );
+    };
+
+    const renderCashierRequestForm = () => {
+        const pending = isRefundPending(selectedBooking) || hasPendingRefundRequest(selectedBooking);
+        const approved = isRefundApproved(selectedBooking);
+        const finalized = isRefundFinalized(selectedBooking);
+        const withinCutoff = isBookingWithinCancellationCutoff(selectedBooking);
+        const locked = pending || approved || finalized;
+
+        return (
+            <div className="bqm-formal-section">
+                <div className="bqm-formal-section-head">
+                    <span className="bqm-formal-section-index">01</span>
+                    <span className="bqm-formal-section-title">Cancellation Request</span>
+                    <span className="bqm-formal-section-rule" />
+                </div>
+
+                {pending && (
+                    <div className="bqm-formal-note">
+                        <ClockCircleOutlined />
+                        <span>
+                            Your cancellation request is <strong>pending admin review</strong>.
+                            You will be notified once it has been decided.
+                        </span>
+                    </div>
+                )}
+                {approved && (
+                    <div className="bqm-formal-note bqm-formal-note--success">
+                        <CheckCircleOutlined />
+                        <span>
+                            Your request was <strong>approved</strong>. Open the booking row
+                            and use <strong>Confirm Refund</strong> to enter the amount and release it.
+                        </span>
+                    </div>
+                )}
+                {finalized && (
+                    <div className="bqm-formal-note">
+                        <InfoCircleOutlined />
+                        <span>This cancellation has already been finalized.</span>
+                    </div>
+                )}
+
+                <Form
+                    form={cancelWithRefundForm}
+                    layout="vertical"
+                    className="bqm-formal-form"
+                    disabled={locked}
+                >
+                    <Form.Item
+                        name="reason"
+                        label="Reason for Cancellation"
+                        rules={[{ required: true, message: 'Please provide a reason' }]}
+                    >
+                        <TextArea
+                            rows={3}
+                            placeholder="State the reason for cancelling this booking..."
+                            maxLength={500}
+                            showCount
+                        />
+                    </Form.Item>
+                </Form>
+
+                <div className="bqm-formal-options" style={{ marginTop: 16 }}>
+                    {!withinCutoff && (
+                        <button
+                            type="button"
+                            className={`bqm-formal-option bqm-formal-option--forfeit ${locked ? 'is-disabled' : ''}`}
+                            disabled={locked}
+                            onClick={() => {
+                                cancelWithRefundForm.validateFields(['reason'])
+                                    .then(() => handleCancelWithoutRefund(cancelWithRefundForm.getFieldsValue()))
+                                    .catch(() => {});
+                            }}
+                        >
+                            <div className="bqm-formal-option-head">
+                                <StopOutlined className="bqm-formal-option-icon" />
+                                <span className="bqm-formal-option-title">Cancel Without Refund</span>
+                            </div>
+                            <p className="bqm-formal-option-text">
+                                Terminate immediately. Deposit is forfeited per policy.
+                                No approval required.
+                            </p>
+                            <span className="bqm-formal-option-action">Proceed →</span>
+                        </button>
+                    )}
+
+                    <button
+                        type="button"
+                        className={`bqm-formal-option bqm-formal-option--refund ${locked ? 'is-disabled' : ''}`}
+                        disabled={locked}
+                        onClick={() => {
+                            cancelWithRefundForm.validateFields(['reason'])
+                                .then(() => handleSubmitRefundRequest(cancelWithRefundForm.getFieldsValue()))
+                                .catch(() => {});
+                        }}
+                    >
+                        <div className="bqm-formal-option-head">
+                            <SyncOutlined className="bqm-formal-option-icon" />
+                            <span className="bqm-formal-option-title">
+                                Submit Cancellation &amp; Refund Request
+                            </span>
+                        </div>
+                        <p className="bqm-formal-option-text">
+                            Route this to administration for review. If approved, you will be
+                            prompted to enter the actual refund amount to release.
+                        </p>
+                        <span className="bqm-formal-option-action">
+                            {pending
+                                ? 'Request Pending'
+                                : approved
+                                    ? 'Awaiting Your Confirmation'
+                                    : finalized
+                                        ? 'Already Processed'
+                                        : 'Route to Admin →'}
+                        </span>
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
     const containerClass = `bqm-container ${isDarkMode ? 'bqm-dark-mode' : ''}`;
     const headerClass = `bqm-header ${isDarkMode ? 'bqm-header-dark' : ''}`;
     const mainCardClass = `bqm-main-card ${isDarkMode ? 'bqm-main-card-dark' : ''}`;
@@ -3938,9 +6046,6 @@ const BookingQuotationManagement = () => {
     const tableClass = `bqm-table ${isDarkMode ? 'bqm-table-dark' : ''}`;
     const isLoading = regularBookingsLoading || multiDayBookingsLoading || completedBookingsLoading || quotationsLoading;
 
-    // ========================================================
-    // RENDER
-    // ========================================================
     return (
         <App>
             <ConfigProvider theme={{ algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}>
@@ -3990,7 +6095,7 @@ const BookingQuotationManagement = () => {
                                         <>
                                             <div className={filtersClass}>
                                                 <div className={filterGroupClass}><FilterOutlined /><Select value={filterStatus} onChange={(value) => { setFilterStatus(value); }} className="bqm-filter-select" placeholder="Status">{bookingStatusOptions.map((option) => (<Option key={option.value} value={option.value}>{option.label}</Option>))}</Select></div>
-                                                
+
                                                 <div className={filterGroupClass}>
                                                     <CalendarOutlined />
                                                     <RangePicker
@@ -4005,7 +6110,7 @@ const BookingQuotationManagement = () => {
                                                         style={{ minWidth: 220 }}
                                                     />
                                                 </div>
-                                                
+
                                                 <div className={filterGroupClass}><AppstoreOutlined /><Select value={filterEventType} onChange={(value) => { setFilterEventType(value); }} className="bqm-filter-select" placeholder="Event Type"><Option value="all">All Event Types</Option>{eventTypes.map((eventType) => (<Option key={eventType.event_type_id || eventType.id} value={eventType.event_type_id || eventType.id}>{eventType.name}</Option>))}</Select></div>
                                                 <div className={`${filterGroupClass} bqm-search`}><SearchOutlined /><Input value={searchText} onChange={(event) => { setSearchText(event.target.value); }} placeholder="Search booking or customer..." allowClear className="bqm-search-input" /></div>
                                                 <Button type="primary" icon={<PlusOutlined />} onClick={openCreateBookingModal}>Create Booking</Button>
@@ -4027,7 +6132,7 @@ const BookingQuotationManagement = () => {
                                                                         dataSource={regularBookings}
                                                                         rowKey={(record) => getBookingId(record)}
                                                                         className={tableClass}
-                                                                        scroll={{ x: 1200, y: TABLE_SCROLL_HEIGHT }}
+                                                                        scroll={{ x: 1400, y: TABLE_SCROLL_HEIGHT }}
                                                                         pagination={false}
                                                                         bordered={false}
                                                                         size="middle"
@@ -4052,7 +6157,7 @@ const BookingQuotationManagement = () => {
                                                                         dataSource={multiDayBookings}
                                                                         rowKey={(record) => getBookingId(record)}
                                                                         className={tableClass}
-                                                                        scroll={{ x: 1200, y: TABLE_SCROLL_HEIGHT }}
+                                                                        scroll={{ x: 1400, y: TABLE_SCROLL_HEIGHT }}
                                                                         pagination={false}
                                                                         bordered={false}
                                                                         size="middle"
@@ -4101,6 +6206,79 @@ const BookingQuotationManagement = () => {
                                         </div>
                                     )
                                 },
+                                ...(canApproveOperations ? [{
+                                    key: 'refund-requests',
+                                    label: (
+                                        <span>
+                                            <DollarOutlined /> Refund Requests
+                                            {refundRequestsPendingCount > 0 && (
+                                                <Badge
+                                                    count={refundRequestsPendingCount}
+                                                    overflowCount={99}
+                                                    style={{ marginLeft: 6 }}
+                                                />
+                                            )}
+                                        </span>
+                                    ),
+                                    children: (
+                                        <div className="bqm-tab-content">
+                                            <Alert
+                                                message="Cashier Cancellation & Refund Requests"
+                                                description={
+                                                    <span>
+                                                        All cancellation/refund requests submitted by cashiers appear here.
+                                                        Approve or reject pending requests, and monitor approved refunds
+                                                        awaiting cashier release.
+                                                    </span>
+                                                }
+                                                type="warning"
+                                                showIcon
+                                                className="bqm-info-alert"
+                                                style={{ marginBottom: 16 }}
+                                            />
+
+                                            <div className={filtersClass} style={{ marginBottom: 12 }}>
+                                                <Space size="middle" wrap>
+                                                    <Tag color="orange">
+                                                        Pending: {refundRequestsPendingCount}
+                                                    </Tag>
+                                                    <Tag color="blue">
+                                                        Approved (awaiting cashier): {refundRequestsApprovedCount}
+                                                    </Tag>
+                                                    <Tag color="default">
+                                                        Total: {refundRequests.length}
+                                                    </Tag>
+                                                </Space>
+                                            </div>
+
+                                            <div className="bqm-scrollable-table-wrapper">
+                                                <Table
+                                                    columns={refundRequestColumns}
+                                                    dataSource={refundRequests}
+                                                    rowKey={(record) => getBookingId(record)}
+                                                    className={tableClass}
+                                                    scroll={{ x: 1200, y: TABLE_SCROLL_HEIGHT }}
+                                                    pagination={false}
+                                                    bordered={false}
+                                                    size="middle"
+                                                    locale={{
+                                                        emptyText: (
+                                                            <Empty
+                                                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                                                description="No refund requests at the moment."
+                                                            />
+                                                        ),
+                                                    }}
+                                                    footer={() => (
+                                                        <div className="bqm-table-footer-info">
+                                                            <span>Showing {refundRequests.length} refund requests</span>
+                                                        </div>
+                                                    )}
+                                                />
+                                            </div>
+                                        </div>
+                                    ),
+                                }] : []),
                                 {
                                     key: 'history',
                                     label: <span><CheckCircleOutlined /> Booking History</span>,
@@ -4207,15 +6385,1113 @@ const BookingQuotationManagement = () => {
                         />
                     </Card>
 
-                    {/* ====================================================
-                        BOOKING DETAILS MODAL - ENHANCED
-                    ==================================================== */}
+                    {/* THREE-DAY WARNING MODAL */}
+                    <Modal
+                        title={null}
+                        open={threeDayWarningModalVisible}
+                        onCancel={handleThreeDayWarningCancel}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={620}
+                        className="bqm-modal-clean bqm-pro-modal bqm-three-day-warning-modal"
+                        destroyOnHidden={true}
+                        closable={true}
+                    >
+                        <div className="bqm-pro-modal-shell">
+                            <div className="bqm-pro-modal-header bqm-pro-header-warning">
+                                <div className="bqm-pro-modal-icon">
+                                    <WarningOutlined />
+                                </div>
+                                <div className="bqm-pro-modal-header-text">
+                                    <div className="bqm-pro-modal-eyebrow">Approval Deadline</div>
+                                    <div className="bqm-pro-modal-title">Event is Within 3 Days</div>
+                                    <div className="bqm-pro-modal-subtitle">
+                                        This booking is very close to the event date. Please review before approving.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bqm-pro-modal-body">
+                                <div className="bqm-pro-highlight-card bqm-pro-highlight-warning">
+                                    <div className="bqm-pro-highlight-message">
+                                        <FireOutlined />
+                                        <span>
+                                            Approving will insert this booking into <strong>Orders &amp; Events</strong> immediately.
+                                            Make sure all preparations can be completed in time.
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-pro-info-grid">
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Booking No.</span>
+                                        <span className="bqm-pro-info-value bqm-mono">{safeString(threeDayWarningBooking?.booking_no)}</span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Customer</span>
+                                        <span className="bqm-pro-info-value">{safeString(threeDayWarningBooking?.customer_name)}</span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Event Date</span>
+                                        <span className="bqm-pro-info-value bqm-highlight">
+                                            {formatDateSafe(threeDayWarningBooking?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Days Remaining</span>
+                                        <span className="bqm-pro-info-value bqm-countdown">
+                                            {getDaysUntilEvent(threeDayWarningBooking)} day(s)
+                                        </span>
+                                    </div>
+                                    <div className="bqm-pro-info-row bqm-pro-info-full">
+                                        <span className="bqm-pro-info-label">Venue</span>
+                                        <span className="bqm-pro-info-value">{getBookingLocation(threeDayWarningBooking)}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bqm-pro-modal-footer">
+                                <Button
+                                    onClick={handleThreeDayWarningCancel}
+                                    size="large"
+                                    className="bqm-pro-btn-secondary"
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    onClick={handleThreeDayWarningApprove}
+                                    icon={<CheckCircleOutlined />}
+                                    size="large"
+                                    className="bqm-pro-btn-primary bqm-pro-btn-warning"
+                                >
+                                    Proceed with Approval
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* LATE BOOKING APPROVAL MODAL */}
+                    <Modal
+                        title={null}
+                        open={lateApprovalModalVisible}
+                        onCancel={closeLateBookingApprovalModal}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={720}
+                        className="bqm-modal-clean bqm-formal-modal bqm-late-approval-modal"
+                        destroyOnHidden={true}
+                        closable={true}
+                        centered
+                    >
+                        <div className="bqm-formal-shell">
+                            <div className="bqm-formal-header bqm-formal-header--warning">
+                                <div className="bqm-formal-header-icon">
+                                    <WarningOutlined />
+                                </div>
+                                <div className="bqm-formal-header-body">
+                                    <div className="bqm-formal-eyebrow">
+                                        Booking Reference · {safeString(lateApprovalBooking?.booking_no)}
+                                    </div>
+                                    <h2 className="bqm-formal-title">Late Booking — Deposit Decision</h2>
+                                    <p className="bqm-formal-subtitle">
+                                        This booking was created inside the deposit window.
+                                        Choose how to handle the deposit before confirming.
+                                    </p>
+                                </div>
+                                <div className="bqm-formal-stamp bqm-formal-stamp--amber">
+                                    <span className="bqm-formal-stamp-label">Days to Event</span>
+                                    <span className="bqm-formal-stamp-value">
+                                        {getDaysUntilEvent(lateApprovalBooking) ?? 0}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-body">
+                                <div className="bqm-formal-strip">
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Customer</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {safeString(lateApprovalBooking?.customer_name)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Event Date</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {formatDateSafe(lateApprovalBooking?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Deposit Window</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {getDepositPaymentDays(lateApprovalBooking)} days
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-formal-section">
+                                    <div className="bqm-formal-section-head">
+                                        <span className="bqm-formal-section-index">01</span>
+                                        <span className="bqm-formal-section-title">Deposit Decision</span>
+                                        <span className="bqm-formal-chip bqm-formal-chip--restricted">
+                                            Restricted · Admin
+                                        </span>
+                                    </div>
+
+                                    <div className="bqm-formal-choicegrid">
+                                        <Radio.Group
+                                            onChange={(e) => setLateApprovalAction(e.target.value)}
+                                            className="bqm-formal-choicegrid-inner"
+                                            value={lateApprovalAction}
+                                        >
+                                            <Radio.Button
+                                                value="waive"
+                                                className="bqm-formal-choice bqm-formal-choice--success"
+                                            >
+                                                <span className="bqm-formal-choice-label">Waive Deposit</span>
+                                                <span className="bqm-formal-choice-hint">
+                                                    Skip the deposit — proceed with full payment due
+                                                </span>
+                                            </Radio.Button>
+                                            <Radio.Button
+                                                value="extend"
+                                                className="bqm-formal-choice bqm-formal-choice--info"
+                                            >
+                                                <span className="bqm-formal-choice-label">Extend Deadline</span>
+                                                <span className="bqm-formal-choice-hint">
+                                                    Give the customer extra days to pay
+                                                </span>
+                                            </Radio.Button>
+                                        </Radio.Group>
+                                    </div>
+
+                                    {lateApprovalAction === 'waive' && (
+                                        <div className="bqm-formal-panel bqm-formal-panel--success">
+                                            <div className="bqm-formal-panel-head">
+                                                <CheckCircleOutlined />
+                                                <span>Deposit Requirement Waived</span>
+                                            </div>
+                                            <p className="bqm-formal-panel-text">
+                                                The booking will be confirmed without requiring a deposit.
+                                                The full amount becomes due per the standard payment schedule.
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {lateApprovalAction === 'extend' && (
+                                        <div className="bqm-formal-panel bqm-formal-panel--info">
+                                            <div className="bqm-formal-panel-head">
+                                                <ScheduleOutlined />
+                                                <span>Extension Details</span>
+                                            </div>
+                                            <div className="bqm-formal-panel-text" style={{ marginBottom: 12 }}>
+                                                New deposit deadline will be set to <strong>today + {safeNumber(lateApprovalExtensionDays, 7)} day(s)</strong>.
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                <InputNumber
+                                                    min={1}
+                                                    max={90}
+                                                    size="large"
+                                                    style={{ width: 160 }}
+                                                    value={lateApprovalExtensionDays}
+                                                    onChange={(value) => setLateApprovalExtensionDays(safeNumber(value, 7))}
+                                                    placeholder="Days"
+                                                />
+                                                <Text type="secondary">day(s) from today</Text>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <Form layout="vertical" className="bqm-formal-form" style={{ marginTop: 16 }}>
+                                        <Form.Item label="Internal Note (Optional)" style={{ marginBottom: 0 }}>
+                                            <TextArea
+                                                rows={2}
+                                                maxLength={500}
+                                                showCount
+                                                value={lateApprovalNotes}
+                                                onChange={(e) => setLateApprovalNotes(e.target.value)}
+                                                placeholder="Optional — recorded in the audit trail"
+                                            />
+                                        </Form.Item>
+                                    </Form>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-footer bqm-formal-footer--split">
+                                <div className="bqm-formal-footer-left">
+                                    <Button
+                                        size="large"
+                                        className="bqm-formal-btn bqm-formal-btn--ghost"
+                                        onClick={closeLateBookingApprovalModal}
+                                        disabled={lateApprovalSubmitting}
+                                    >
+                                        Cancel
+                                    </Button>
+                                </div>
+                                <div className="bqm-formal-footer-right">
+                                    <Button
+                                        type="primary"
+                                        size="large"
+                                        icon={<CheckCircleOutlined />}
+                                        loading={lateApprovalSubmitting}
+                                        onClick={handleLateBookingApproval}
+                                        className={
+                                            lateApprovalAction === 'waive'
+                                                ? 'bqm-formal-btn bqm-formal-btn--success'
+                                                : 'bqm-formal-btn bqm-formal-btn--info'
+                                        }
+                                    >
+                                        {lateApprovalAction === 'waive'
+                                            ? 'Approve & Waive Deposit'
+                                            : 'Approve & Extend Deadline'}
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* LATE CANCELLATION NOTICE */}
+                    <Modal
+                        title={null}
+                        open={cancelWithRefundModalVisible}
+                        onCancel={closeCancelWithRefundModal}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={canApproveOperations ? 840 : 560}
+                        className="bqm-modal-clean bqm-formal-modal bqm-lc-sheet"
+                        destroyOnHidden={true}
+                        closable={true}
+                        centered
+                    >
+                        <div className="bqm-formal-shell">
+                            <div className="bqm-formal-header bqm-formal-header--warning">
+                                <div className="bqm-formal-header-icon">
+                                    <WarningOutlined />
+                                </div>
+                                <div className="bqm-formal-header-body">
+                                    <div className="bqm-formal-eyebrow">
+                                        Booking Reference · {safeString(selectedBooking?.booking_no)}
+                                    </div>
+                                    <h2 className="bqm-formal-title">
+                                        {canApproveOperations
+                                            ? 'Late Cancellation Notice'
+                                            : 'Cancellation Request'}
+                                    </h2>
+                                    <p className="bqm-formal-subtitle">
+                                        {canApproveOperations
+                                            ? `Policy window: ${getCancellationCutoffDays(selectedBooking)} days before event.`
+                                            : 'Your request will be reviewed by an administrator.'}
+                                    </p>
+                                </div>
+                                <div className="bqm-formal-stamp">
+                                    <span className="bqm-formal-stamp-label">Days to Event</span>
+                                    <span className="bqm-formal-stamp-value">
+                                        {getDaysUntilEvent(selectedBooking)}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-body">
+                                {renderLateCancellationStrip(selectedBooking)}
+
+                                {canApproveOperations
+                                    ? renderAdminDecisionSheet()
+                                    : renderCashierRequestForm()}
+                            </div>
+
+                            <div className="bqm-formal-footer">
+                                <div className="bqm-formal-footer-note">
+                                    Recorded to the booking audit trail upon submission.
+                                </div>
+                                <Button
+                                    size="large"
+                                    className="bqm-formal-btn bqm-formal-btn--ghost"
+                                    onClick={closeCancelWithRefundModal}
+                                >
+                                    Close
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* DEPOSIT OVERDUE MODAL */}
+                    <Modal
+                        title={null}
+                        open={depositOverdueModalVisible}
+                        onCancel={closeDepositOverdueModal}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={720}
+                        className="bqm-modal-clean bqm-formal-modal bqm-deposit-overdue-modal"
+                        destroyOnHidden={true}
+                        closable={true}
+                        centered
+                    >
+                        <div className="bqm-formal-shell">
+                            <div className="bqm-formal-header bqm-formal-header--danger">
+                                <div className="bqm-formal-header-icon">
+                                    <WarningOutlined />
+                                </div>
+                                <div className="bqm-formal-header-body">
+                                    <div className="bqm-formal-eyebrow">
+                                        Booking Reference · {safeString(depositOverdueBooking?.booking_no)}
+                                    </div>
+                                    <h2 className="bqm-formal-title">Deposit Overdue</h2>
+                                    <p className="bqm-formal-subtitle">
+                                        The deposit deadline has passed. Choose how to resolve this booking.
+                                    </p>
+                                </div>
+                                <div className="bqm-formal-stamp bqm-formal-stamp--danger">
+                                    <span className="bqm-formal-stamp-label">Due Date</span>
+                                    <span className="bqm-formal-stamp-value" style={{ fontSize: 14 }}>
+                                        {formatDateSafe(depositOverdueBooking?.deposit_due_date, 'MMM DD')}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-body">
+                                <div className="bqm-formal-strip">
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Customer</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {safeString(depositOverdueBooking?.customer_name)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Event Date</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {formatDateSafe(depositOverdueBooking?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Days to Event</span>
+                                        <span className="bqm-formal-strip-value bqm-highlight">
+                                            {getDaysUntilEvent(depositOverdueBooking)} day(s)
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-formal-section">
+                                    <div className="bqm-formal-section-head">
+                                        <span className="bqm-formal-section-index">01</span>
+                                        <span className="bqm-formal-section-title">Administrative Decision</span>
+                                        <span className="bqm-formal-chip bqm-formal-chip--restricted">
+                                            Restricted · Admin
+                                        </span>
+                                    </div>
+
+                                    <Form
+                                        form={depositDecisionForm}
+                                        layout="vertical"
+                                        className="bqm-formal-form"
+                                        initialValues={{
+                                            action: 'extend',
+                                            extension_days: 7,
+                                            notes: '',
+                                            refund_amount: 0,
+                                            refund_method: 'cash',
+                                            refund_reference: '',
+                                        }}
+                                    >
+                                        <div className="bqm-formal-choicegrid">
+                                            <Radio.Group
+                                                onChange={(e) => setDepositDecisionAction(e.target.value)}
+                                                className="bqm-formal-choicegrid-inner"
+                                                value={depositDecisionAction}
+                                            >
+                                                <Radio.Button value="extend" className="bqm-formal-choice bqm-formal-choice--info">
+                                                    <span className="bqm-formal-choice-label">Extend Deadline</span>
+                                                    <span className="bqm-formal-choice-hint">
+                                                        Give the customer more time to pay
+                                                    </span>
+                                                </Radio.Button>
+                                                <Radio.Button value="waive" className="bqm-formal-choice bqm-formal-choice--success">
+                                                    <span className="bqm-formal-choice-label">Waive Deposit</span>
+                                                    <span className="bqm-formal-choice-hint">
+                                                        Keep booking confirmed
+                                                    </span>
+                                                </Radio.Button>
+                                                <Radio.Button value="cancel" className="bqm-formal-choice bqm-formal-choice--danger">
+                                                    <span className="bqm-formal-choice-label">Cancel Booking</span>
+                                                    <span className="bqm-formal-choice-hint">
+                                                        Terminate and optionally refund
+                                                    </span>
+                                                </Radio.Button>
+                                            </Radio.Group>
+                                        </div>
+
+                                        {depositDecisionAction === 'extend' && (
+                                            <div className="bqm-formal-panel bqm-formal-panel--info">
+                                                <div className="bqm-formal-panel-head">
+                                                    <ScheduleOutlined />
+                                                    <span>Extension Details</span>
+                                                </div>
+                                                <Form.Item
+                                                    name="extension_days"
+                                                    label="Extend By (Days)"
+                                                    rules={[
+                                                        { required: true, message: 'Please enter the extension days.' },
+                                                        { type: 'number', min: 1, max: 90, message: 'Between 1 and 90 days.' },
+                                                    ]}
+                                                    style={{ marginBottom: 0 }}
+                                                >
+                                                    <InputNumber
+                                                        min={1}
+                                                        max={90}
+                                                        size="large"
+                                                        style={{ width: '100%' }}
+                                                        placeholder="Number of days"
+                                                    />
+                                                </Form.Item>
+                                            </div>
+                                        )}
+
+                                        {depositDecisionAction === 'waive' && (
+                                            <div className="bqm-formal-panel bqm-formal-panel--success">
+                                                <div className="bqm-formal-panel-head">
+                                                    <CheckCircleOutlined />
+                                                    <span>Deposit Requirement Waived</span>
+                                                </div>
+                                                <p className="bqm-formal-panel-text">
+                                                    The booking remains confirmed. No deposit will be collected
+                                                    from the customer.
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        {depositDecisionAction === 'cancel' && (
+                                            <div className="bqm-formal-panel bqm-formal-panel--danger">
+                                                <div className="bqm-formal-panel-head">
+                                                    <DollarOutlined />
+                                                    <span>Refund Instructions</span>
+                                                </div>
+                                                <Row gutter={12}>
+                                                    <Col span={12}>
+                                                        <Form.Item
+                                                            name="refund_amount"
+                                                            label="Refund Amount"
+                                                            rules={[
+                                                                { required: true, message: 'Enter the refund amount (0 for none).' },
+                                                                { type: 'number', min: 0, message: 'Cannot be negative.' },
+                                                            ]}
+                                                            tooltip="Enter 0 for cancel without refund."
+                                                        >
+                                                            <InputNumber
+                                                                min={0}
+                                                                step={0.01}
+                                                                size="large"
+                                                                style={{ width: '100%' }}
+                                                                placeholder="0.00"
+                                                                formatter={(v) => `₱ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                                                                parser={(v) => v?.replace(/₱\s?|(,*)/g, '')}
+                                                            />
+                                                        </Form.Item>
+                                                    </Col>
+                                                    <Col span={12}>
+                                                        <Form.Item name="refund_method" label="Disbursement Method">
+                                                            <Select size="large">
+                                                                <Option value="cash">Cash</Option>
+                                                                <Option value="gcash">GCash</Option>
+                                                                <Option value="maya">Maya</Option>
+                                                                <Option value="bank_transfer">Bank Transfer</Option>
+                                                                <Option value="card">Card</Option>
+                                                                <Option value="check">Check</Option>
+                                                            </Select>
+                                                        </Form.Item>
+                                                    </Col>
+                                                </Row>
+                                                <Form.Item
+                                                    name="refund_reference"
+                                                    label="Reference Number"
+                                                    tooltip="Bank ref, GCash ref, cheque number, etc."
+                                                    style={{ marginBottom: 0 }}
+                                                >
+                                                    <Input size="large" placeholder="Optional" />
+                                                </Form.Item>
+                                            </div>
+                                        )}
+
+                                        <Form.Item
+                                            name="notes"
+                                            label="Internal Note"
+                                            style={{ marginTop: 16, marginBottom: 16 }}
+                                        >
+                                            <TextArea
+                                                rows={2}
+                                                placeholder="Optional — recorded in the audit log"
+                                                maxLength={500}
+                                                showCount
+                                            />
+                                        </Form.Item>
+
+                                        <Button
+                                            type="primary"
+                                            block
+                                            size="large"
+                                            icon={<CheckCircleOutlined />}
+                                            className={
+                                                depositDecisionAction === 'extend'
+                                                    ? 'bqm-formal-btn bqm-formal-btn--info'
+                                                    : depositDecisionAction === 'waive'
+                                                        ? 'bqm-formal-btn bqm-formal-btn--success'
+                                                        : 'bqm-formal-btn bqm-formal-btn--danger'
+                                            }
+                                            onClick={() => {
+                                                depositDecisionForm.validateFields()
+                                                    .then((values) => {
+                                                        return handleDepositDecision({
+                                                            ...values,
+                                                            action: depositDecisionAction,
+                                                        });
+                                                    })
+                                                    .catch((err) => {
+                                                        console.error('Deposit decision validation failed:', err);
+                                                        if (err?.errorFields?.length > 0) {
+                                                            message.error('Please fill in the required fields.');
+                                                        }
+                                                    });
+                                            }}
+                                        >
+                                            {depositDecisionAction === 'extend'
+                                                ? 'Confirm Extension'
+                                                : depositDecisionAction === 'waive'
+                                                    ? 'Confirm Waiver'
+                                                    : 'Confirm Cancellation & Refund'}
+                                        </Button>
+                                    </Form>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-footer">
+                                <div className="bqm-formal-footer-note">
+                                    Recorded to the booking audit trail upon submission.
+                                </div>
+                                <Button
+                                    size="large"
+                                    className="bqm-formal-btn bqm-formal-btn--ghost"
+                                    onClick={closeDepositOverdueModal}
+                                >
+                                    Close
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* REFUND REQUEST — TREASURY REVIEW SHEET */}
+                    <Modal
+                        title={null}
+                        open={refundApprovalModalVisible}
+                        onCancel={() => {
+                            setRefundApprovalModalVisible(false);
+                            refundApprovalForm.resetFields();
+                            setRefundApprovalAction('with_refund');
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={720}
+                        className="bqm-modal-clean bqm-formal-modal bqm-refund-review-sheet"
+                        destroyOnHidden={true}
+                        closable={true}
+                        centered
+                    >
+                        <div className="bqm-formal-shell">
+                            <div className="bqm-formal-header bqm-formal-header--amber">
+                                <div className="bqm-formal-header-icon">
+                                    <DollarOutlined />
+                                </div>
+                                <div className="bqm-formal-header-body">
+                                    <div className="bqm-formal-eyebrow">
+                                        Booking Reference · {safeString(refundApprovalBooking?.booking_no)}
+                                    </div>
+                                    <h2 className="bqm-formal-title">Cashier Cancellation Request</h2>
+                                    <p className="bqm-formal-subtitle">
+                                        Review the reason below, then choose how to handle this request.
+                                    </p>
+                                </div>
+                                <div className="bqm-formal-stamp bqm-formal-stamp--amber">
+                                    <span className="bqm-formal-stamp-label">Status</span>
+                                    <span className="bqm-formal-stamp-value">Pending</span>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-body">
+                                <div className="bqm-formal-strip">
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Customer</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {safeString(refundApprovalBooking?.customer_name)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Event Date</span>
+                                        <span className="bqm-formal-strip-value">
+                                            {formatDateSafe(refundApprovalBooking?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-formal-strip-item">
+                                        <span className="bqm-formal-strip-label">Deposit on File</span>
+                                        <span className="bqm-formal-strip-value bqm-formal-strip-value--money">
+                                            {formatCurrency(getDepositAmount(refundApprovalBooking))}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-formal-section">
+                                    <div className="bqm-formal-section-head">
+                                        <span className="bqm-formal-section-index">01</span>
+                                        <span className="bqm-formal-section-title">Cashier's Request</span>
+                                        <span className="bqm-formal-chip bqm-formal-chip--readonly">Read Only</span>
+                                    </div>
+
+                                    <div className="bqm-formal-dossier bqm-formal-dossier--tight">
+                                        <div className="bqm-formal-dossier-row">
+                                            <span className="bqm-formal-dossier-label">Requested By</span>
+                                            <span className="bqm-formal-dossier-value">
+                                                {safeString(
+                                                    refundApprovalBooking?.refund_requested_by_name
+                                                    || refundApprovalBooking?.refund_requested_by
+                                                    || 'Cashier',
+                                                )}
+                                            </span>
+                                        </div>
+                                        <div className="bqm-formal-dossier-row">
+                                            <span className="bqm-formal-dossier-label">Requested At</span>
+                                            <span className="bqm-formal-dossier-value">
+                                                {formatDateSafe(
+                                                    refundApprovalBooking?.refund_requested_at,
+                                                    'MMM DD, YYYY • hh:mm A',
+                                                )}
+                                            </span>
+                                        </div>
+                                        <div className="bqm-formal-dossier-row bqm-formal-dossier-row--stack">
+                                            <span className="bqm-formal-dossier-label">Reason</span>
+                                            <span className="bqm-formal-dossier-value bqm-formal-dossier-value--block">
+                                                {safeString(refundApprovalBooking?.refund_reason, '—')}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-formal-section">
+                                    <div className="bqm-formal-section-head">
+                                        <span className="bqm-formal-section-index">02</span>
+                                        <span className="bqm-formal-section-title">Administrative Decision</span>
+                                        <span className="bqm-formal-chip bqm-formal-chip--restricted">
+                                            Restricted · Admin
+                                        </span>
+                                    </div>
+
+                                    <div className="bqm-refund-choicegrid">
+                                        <button
+                                            type="button"
+                                            className={`bqm-refund-choice bqm-refund-choice--success ${refundApprovalAction === 'with_refund' ? 'is-selected' : ''}`}
+                                            onClick={() => setRefundApprovalAction('with_refund')}
+                                        >
+                                            <div className="bqm-refund-choice-head">
+                                                <CheckCircleOutlined className="bqm-refund-choice-icon" />
+                                                <span className="bqm-refund-choice-title">Approve With Refund</span>
+                                            </div>
+                                            <p className="bqm-refund-choice-text">
+                                                Cancel the booking and refund the customer. The cashier will
+                                                enter the actual amount to release.
+                                            </p>
+                                            <span className="bqm-refund-choice-action">
+                                                {refundApprovalAction === 'with_refund' ? '✓ Selected' : 'Select'}
+                                            </span>
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            className={`bqm-refund-choice bqm-refund-choice--danger ${refundApprovalAction === 'without_refund' ? 'is-selected' : ''}`}
+                                            onClick={() => setRefundApprovalAction('without_refund')}
+                                        >
+                                            <div className="bqm-refund-choice-head">
+                                                <StopOutlined className="bqm-refund-choice-icon" />
+                                                <span className="bqm-refund-choice-title">Approve Without Refund</span>
+                                            </div>
+                                            <p className="bqm-refund-choice-text">
+                                                Cancel the booking immediately. Deposit is forfeited per policy —
+                                                no amount will be released.
+                                            </p>
+                                            <span className="bqm-refund-choice-action">
+                                                {refundApprovalAction === 'without_refund' ? '✓ Selected' : 'Select'}
+                                            </span>
+                                        </button>
+                                    </div>
+
+                                    {refundApprovalAction === 'with_refund' && (
+                                        <div className="bqm-formal-note bqm-formal-note--success">
+                                            <InfoCircleOutlined />
+                                            <span>
+                                                After approval, the cashier will see a <strong>Confirm Refund</strong>
+                                                {' '}button on their end to enter the amount and release it.
+                                            </span>
+                                        </div>
+                                    )}
+                                    {refundApprovalAction === 'without_refund' && (
+                                        <div className="bqm-formal-note bqm-formal-note--danger">
+                                            <WarningOutlined />
+                                            <span>
+                                                The booking will be <strong>cancelled immediately</strong> when you
+                                                click the confirm button below. No refund will be issued.
+                                            </span>
+                                        </div>
+                                    )}
+
+                                    <Form
+                                        form={refundApprovalForm}
+                                        layout="vertical"
+                                        className="bqm-formal-form"
+                                        initialValues={{ notes: '' }}
+                                        style={{ marginTop: 16 }}
+                                    >
+                                        <Form.Item
+                                            name="notes"
+                                            label="Decision Note"
+                                            tooltip="Optional for approval, recommended for rejection."
+                                            style={{ marginBottom: 0 }}
+                                        >
+                                            <TextArea
+                                                rows={3}
+                                                placeholder="State the basis for this decision. Recorded in the audit trail."
+                                                maxLength={500}
+                                                showCount
+                                            />
+                                        </Form.Item>
+                                    </Form>
+                                </div>
+                            </div>
+
+                            <div className="bqm-formal-footer bqm-formal-footer--split">
+                                <div className="bqm-formal-footer-left">
+                                    <Button
+                                        size="large"
+                                        icon={<CloseCircleOutlined />}
+                                        className="bqm-formal-btn bqm-formal-btn--ghost-danger"
+                                        onClick={() => {
+                                            const notes = refundApprovalForm.getFieldValue('notes');
+                                            handleRejectRefund({
+                                                reason: (notes && safeString(notes).trim())
+                                                    || 'Refund request rejected by admin.',
+                                            });
+                                        }}
+                                    >
+                                        Reject Request
+                                    </Button>
+                                </div>
+
+                                <div className="bqm-formal-footer-right">
+                                    {refundApprovalAction === 'with_refund' ? (
+                                        <Button
+                                            type="primary"
+                                            size="large"
+                                            icon={<CheckCircleOutlined />}
+                                            className="bqm-formal-btn bqm-formal-btn--success"
+                                            onClick={handleApproveRefundWithRefund}
+                                        >
+                                            Approve With Refund
+                                        </Button>
+                                    ) : (
+                                        <Button
+                                            type="primary"
+                                            danger
+                                            size="large"
+                                            icon={<StopOutlined />}
+                                            className="bqm-formal-btn bqm-formal-btn--danger"
+                                            onClick={handleApproveRefundWithoutRefund}
+                                        >
+                                            Approve Without Refund
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* CONFIRM REFUND MODAL */}
+                    <Modal
+                        title={null}
+                        open={confirmRefundModalVisible}
+                        onCancel={() => {
+                            setConfirmRefundModalVisible(false);
+                            confirmRefundForm.resetFields();
+                            setConfirmRefundBooking(null);
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={640}
+                        className="bqm-modal-clean bqm-pro-modal bqm-confirm-refund-modal"
+                        destroyOnHidden={true}
+                        closable={true}
+                    >
+                        <div className="bqm-pro-modal-shell">
+                            <div className="bqm-pro-modal-header bqm-pro-header-info">
+                                <div className="bqm-pro-modal-icon">
+                                    <WalletOutlined />
+                                </div>
+                                <div className="bqm-pro-modal-header-text">
+                                    <div className="bqm-pro-modal-eyebrow">
+                                        Booking {safeString(confirmRefundBooking?.booking_no)}
+                                    </div>
+                                    <div className="bqm-pro-modal-title">Confirm Refund</div>
+                                    <div className="bqm-pro-modal-subtitle">
+                                        Refund approved by admin — enter the amount to release.
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bqm-pro-modal-body">
+                                <div className="bqm-pro-highlight-card bqm-pro-highlight-info">
+                                    <div className="bqm-pro-highlight-message">
+                                        <InfoCircleOutlined />
+                                        <span>
+                                            Enter the <strong>actual amount</strong> you are handing back
+                                            to the customer. This will be recorded as a refund payment.
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-pro-info-grid">
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Customer</span>
+                                        <span className="bqm-pro-info-value">{safeString(confirmRefundBooking?.customer_name)}</span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Event Date</span>
+                                        <span className="bqm-pro-info-value">
+                                            {formatDateSafe(confirmRefundBooking?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-pro-info-row bqm-pro-info-full">
+                                        <span className="bqm-pro-info-label">Deposit on file</span>
+                                        <span className="bqm-pro-info-value bqm-amount-amber">
+                                            {formatCurrency(getDepositAmount(confirmRefundBooking))}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <Form
+                                    form={confirmRefundForm}
+                                    layout="vertical"
+                                    className="bqm-pro-form"
+                                    initialValues={{ refund_amount: 0, payment_method: 'cash', reference_number: '', notes: '' }}
+                                >
+                                    <div className="bqm-pro-section">
+                                        <div className="bqm-pro-section-title">
+                                            <span className="bqm-pro-section-number">1</span>
+                                            Refund Amount
+                                        </div>
+                                        <Form.Item
+                                            name="refund_amount"
+                                            rules={[
+                                                { required: true, message: 'Please enter the refund amount.' },
+                                                { type: 'number', min: 0.01, message: 'Amount must be greater than 0.' },
+                                            ]}
+                                        >
+                                            <InputNumber
+                                                min={0}
+                                                step={0.01}
+                                                size="large"
+                                                style={{ width: '100%' }}
+                                                placeholder="Enter refund amount to release"
+                                                formatter={(value) => `₱ ${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                                                parser={(value) => value?.replace(/₱\s?|(,*)/g, '')}
+                                            />
+                                        </Form.Item>
+                                    </div>
+
+                                    <div className="bqm-pro-section">
+                                        <div className="bqm-pro-section-title">
+                                            <span className="bqm-pro-section-number">2</span>
+                                            Payment Method
+                                        </div>
+                                        <Row gutter={12}>
+                                            <Col span={12}>
+                                                <Form.Item name="payment_method" rules={[{ required: true }]}>
+                                                    <Select size="large" placeholder="Select method">
+                                                        <Option value="cash">Cash</Option>
+                                                        <Option value="gcash">GCash</Option>
+                                                        <Option value="maya">Maya</Option>
+                                                        <Option value="bank_transfer">Bank Transfer</Option>
+                                                        <Option value="card">Card</Option>
+                                                        <Option value="check">Check</Option>
+                                                    </Select>
+                                                </Form.Item>
+                                            </Col>
+                                            <Col span={12}>
+                                                <Form.Item name="reference_number">
+                                                    <Input
+                                                        size="large"
+                                                        placeholder="Reference # (optional)"
+                                                    />
+                                                </Form.Item>
+                                            </Col>
+                                        </Row>
+                                    </div>
+
+                                    <div className="bqm-pro-section">
+                                        <div className="bqm-pro-section-title">
+                                            <span className="bqm-pro-section-number">3</span>
+                                            Notes (Optional)
+                                        </div>
+                                        <Form.Item name="notes" style={{ marginBottom: 0 }}>
+                                            <TextArea
+                                                rows={2}
+                                                placeholder="Notes about this refund release..."
+                                                maxLength={500}
+                                                showCount
+                                            />
+                                        </Form.Item>
+                                    </div>
+                                </Form>
+                            </div>
+
+                            <div className="bqm-pro-modal-footer">
+                                <Button
+                                    size="large"
+                                    className="bqm-pro-btn-secondary"
+                                    onClick={() => {
+                                        setConfirmRefundModalVisible(false);
+                                        confirmRefundForm.resetFields();
+                                        setConfirmRefundBooking(null);
+                                    }}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    size="large"
+                                    icon={<CheckCircleOutlined />}
+                                    className="bqm-pro-btn-success"
+                                    onClick={() => {
+                                        confirmRefundForm.validateFields()
+                                            .then(() => handleConfirmRefund(confirmRefundForm.getFieldsValue()))
+                                            .catch(() => {});
+                                    }}
+                                >
+                                    Release Refund
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* TODAY BOOKING MODAL */}
+                    <Modal
+                        title={
+                            <div className="bqm-modal-header-clean">
+                                <div className="bqm-modal-title-icon"><FireOutlined style={{ color: '#f97316' }} /></div>
+                                <div className="bqm-modal-title-text">Booking Scheduled for Today</div>
+                            </div>
+                        }
+                        open={todayBookingModalVisible}
+                        onCancel={() => {
+                            setTodayBookingModalVisible(false);
+                            setTodayBookingData(null);
+                            setTodayBookingAction(null);
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={550}
+                        className="bqm-modal-clean"
+                        destroyOnHidden={true}
+                    >
+                        <div className="bqm-modal-clean-content">
+                            <Alert
+                                type="warning"
+                                showIcon
+                                message="This booking is scheduled for today"
+                                description={
+                                    <div>
+                                        <p><strong>Booking:</strong> {safeString(todayBookingData?.booking_no)}</p>
+                                        <p><strong>Customer:</strong> {safeString(todayBookingData?.customer_name)}</p>
+                                        <p><strong>Event Date:</strong> {safeString(todayBookingData?.event_date)} at {safeString(todayBookingData?.event_time)}</p>
+                                        <p><strong>Venue:</strong> {getBookingLocation(todayBookingData)}</p>
+                                        <p style={{ marginTop: 8 }}>Do you want to approve or reject this booking?</p>
+                                    </div>
+                                }
+                                className="bqm-warning-alert"
+                            />
+                            <div className="bqm-modal-buttons-clean" style={{ marginTop: 20 }}>
+                                <Button onClick={() => {
+                                    setTodayBookingModalVisible(false);
+                                    setTodayBookingData(null);
+                                    setTodayBookingAction(null);
+                                }}>Cancel</Button>
+                                <Button danger onClick={handleTodayBookingReject}>
+                                    <CloseCircleOutlined /> Reject Booking
+                                </Button>
+                                <Button type="primary" onClick={handleTodayBookingApprove} icon={<CheckCircleOutlined />}>
+                                    Approve Booking
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* START EVENT MODAL */}
+                    <Modal
+                        title={
+                            <div className="bqm-modal-header-clean">
+                                <div className="bqm-modal-title-icon"><FireOutlined style={{ color: '#10b981' }} /></div>
+                                <div className="bqm-modal-title-text">Event Starts Today</div>
+                            </div>
+                        }
+                        open={startEventModalVisible}
+                        onCancel={() => {
+                            setStartEventModalVisible(false);
+                            setStartEventBookingData(null);
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={550}
+                        className="bqm-modal-clean"
+                        destroyOnHidden={true}
+                    >
+                        <div className="bqm-modal-clean-content">
+                            <Alert
+                                type="success"
+                                showIcon
+                                message="This confirmed booking starts today"
+                                description={
+                                    <div>
+                                        <p><strong>Booking:</strong> {safeString(startEventBookingData?.booking_no)}</p>
+                                        <p><strong>Customer:</strong> {safeString(startEventBookingData?.customer_name)}</p>
+                                        <p><strong>Event Date:</strong> {safeString(startEventBookingData?.event_date)} at {safeString(startEventBookingData?.event_time)}</p>
+                                        <p><strong>Venue:</strong> {getBookingLocation(startEventBookingData)}</p>
+                                        <p style={{ marginTop: 8 }}>Do you want to start the event now?</p>
+                                    </div>
+                                }
+                                className="bqm-success-alert"
+                            />
+                            <div className="bqm-modal-buttons-clean" style={{ marginTop: 20 }}>
+                                <Button onClick={() => {
+                                    setStartEventModalVisible(false);
+                                    setStartEventBookingData(null);
+                                }}>Later</Button>
+                                <Button type="primary" onClick={() => handleStartEvent(startEventBookingData)} icon={<FireOutlined />}>
+                                    Start Event Now
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                    {/* BOOKING DETAILS MODAL */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">
                                 <div className="bqm-modal-title-icon"><EyeOutlined /></div>
                                 <div className="bqm-modal-title-text">Booking Details</div>
                                 <div className="bqm-modal-badge">{safeString(selectedBooking?.booking_no)}</div>
+                                {selectedBooking && isBookingToday(selectedBooking) && (
+                                    <Tag color="orange" className="bqm-today-tag"><FireOutlined /> Today</Tag>
+                                )}
                             </div>
                         }
                         open={bookingDetailsModalVisible}
@@ -4267,9 +7543,7 @@ const BookingQuotationManagement = () => {
                         </div>
                     </Modal>
 
-                    {/* ====================================================
-                        CREATE BOOKING MODAL - FIXED SUBMIT BUTTON
-                    ==================================================== */}
+                    {/* CREATE BOOKING MODAL */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean bqm-create-header">
@@ -4299,6 +7573,8 @@ const BookingQuotationManagement = () => {
                                         setSelectedMenuItems([]);
                                         setSelectedPackage(null);
                                         setSelectedPromo(null);
+                                        setModalPricingType('per_pax');
+                                        setModalSelectedIds([]);
                                         setIsSaving(false);
                                     }
                                 });
@@ -4381,6 +7657,8 @@ const BookingQuotationManagement = () => {
                                                             setSelectedMenuItems([]);
                                                             setSelectedPackage(null);
                                                             setSelectedPromo(null);
+                                                            setModalPricingType('per_pax');
+                                                            setModalSelectedIds([]);
                                                             setMealServices([]);
                                                             setBillingAdjustments({
                                                                 transportation_fee: 0,
@@ -4417,7 +7695,7 @@ const BookingQuotationManagement = () => {
                                                 type="primary"
                                                 onClick={async () => {
                                                     if (saveLockRef.current || isSaving) return;
-                                                    
+
                                                     try {
                                                         const values = await quotationForm.validateFields();
                                                         await saveBooking(values);
@@ -4440,7 +7718,7 @@ const BookingQuotationManagement = () => {
                                                             };
                                                             const label = fieldLabels[fieldName] || fieldName;
                                                             message.error(`❌ ${label} is required`);
-                                                            
+
                                                             const errorElement = document.querySelector(`[name="${fieldName}"]`);
                                                             if (errorElement) {
                                                                 errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -4465,15 +7743,10 @@ const BookingQuotationManagement = () => {
                         </div>
                     </Modal>
 
-                    {/* ====================================================
-                        ADD MEAL / MENU SELECTION MODALS
-                    ==================================================== */}
                     {renderAddMealModal()}
                     {renderMenuSelectionModal()}
 
-                    {/* ====================================================
-                        REJECT MODAL
-                    ==================================================== */}
+                    {/* REJECT MODAL */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">
@@ -4510,67 +7783,246 @@ const BookingQuotationManagement = () => {
                         </div>
                     </Modal>
 
-                    {/* ====================================================
-                        RESCHEDULE MODAL
-                    ==================================================== */}
+                    {/* RESCHEDULE MODAL — Reason Required */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">
                                 <div className="bqm-modal-title-icon"><SyncOutlined /></div>
-                                <div className="bqm-modal-title-text">Request Reschedule</div>
+                                <div className="bqm-modal-title-text">Propose New Schedule</div>
                                 <div className="bqm-modal-badge">{safeString(selectedBooking?.booking_no)}</div>
                             </div>
                         }
                         open={rescheduleModalVisible}
-                        onCancel={() => setRescheduleModalVisible(false)}
+                        onCancel={() => {
+                            setRescheduleModalVisible(false);
+                            rescheduleForm.resetFields();
+                        }}
                         maskClosable={false}
                         keyboard={false}
                         footer={null}
-                        width={500}
+                        width={540}
                         className="bqm-modal-clean"
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
                             <Alert
-                                message="Customer-Requested Reschedule"
-                                description={`Current event date: ${formatDateSafe(selectedBooking?.event_date)} at ${selectedBooking?.event_time}`}
+                                message="Propose a New Schedule"
+                                description={`Current event: ${formatDateSafe(selectedBooking?.event_date)} at ${selectedBooking?.event_time || 'N/A'}`}
                                 type="info"
                                 showIcon
                                 style={{ marginBottom: 16 }}
                             />
+
                             <Form form={rescheduleForm} layout="vertical" onFinish={handleReschedule}>
                                 <Form.Item
                                     name="new_date"
-                                    label="Requested New Date"
-                                    rules={[{ required: true }]}
-                                    extra="This is the date the customer has requested"
+                                    label="Proposed New Date"
+                                    rules={[{ required: true, message: 'Please select a new date.' }]}
+                                    extra="Choose the date you want to propose to the customer."
                                 >
-                                    <DatePicker style={{ width: '100%' }} disabledDate={(current) => current && current < dayjs().startOf('day')} />
+                                    <DatePicker
+                                        style={{ width: '100%' }}
+                                        format="YYYY-MM-DD"
+                                        placeholder="Select new date"
+                                        disabledDate={(current) => current && current < dayjs().startOf('day')}
+                                    />
                                 </Form.Item>
+
                                 <Form.Item
                                     name="new_time"
-                                    label="Requested New Time"
-                                    rules={[{ required: true }]}
-                                    extra="This is the time the customer has requested"
+                                    label="Proposed New Time"
+                                    rules={[{ required: true, message: 'Please select a new time.' }]}
+                                    extra="Choose the time slot for the proposed date."
                                 >
-                                    <Select placeholder="Select time">
-                                        {timeOptions.map(time => <Option key={time} value={time}>{time}</Option>)}
+                                    <Select placeholder="Select time" size="large">
+                                        {timeOptions.map((time) => (
+                                            <Option key={time} value={time}>{time}</Option>
+                                        ))}
                                     </Select>
                                 </Form.Item>
-                                <Form.Item name="reason" label="Reason for Reschedule" rules={[{ required: true }]}>
-                                    <TextArea rows={3} placeholder="Please provide a reason for the reschedule..." />
+
+                                <Form.Item
+                                    name="reason"
+                                    label={
+                                        <span>
+                                            Reason for Reschedule{' '}
+                                            <span style={{ color: '#ef4444' }}>*</span>
+                                        </span>
+                                    }
+                                    rules={[
+                                        { required: true, message: 'Please state the reason for the reschedule.' },
+                                        { min: 5, message: 'Reason must be at least 5 characters.' },
+                                        { max: 500, message: 'Reason must be 500 characters or fewer.' },
+                                    ]}
+                                    extra="This reason will be shown to the customer and recorded in the audit trail."
+                                >
+                                    <TextArea
+                                        rows={4}
+                                        placeholder="Explain why this booking needs to be rescheduled..."
+                                        maxLength={500}
+                                        showCount
+                                    />
                                 </Form.Item>
+
+                                <Alert
+                                    type="warning"
+                                    showIcon
+                                    icon={<WarningOutlined />}
+                                    message="The customer will receive this proposal"
+                                    description="They will have 24 hours to accept, counter-propose, or cancel the booking. If they do not respond within 24 hours, the booking will be automatically cancelled."
+                                    style={{ marginBottom: 16 }}
+                                />
+
                                 <div className="bqm-modal-buttons-clean">
-                                    <Button onClick={() => setRescheduleModalVisible(false)}>Cancel</Button>
-                                    <Button type="primary" htmlType="submit">Submit Reschedule Request</Button>
+                                    <Button
+                                        onClick={() => {
+                                            setRescheduleModalVisible(false);
+                                            rescheduleForm.resetFields();
+                                        }}
+                                        size="large"
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        type="primary"
+                                        htmlType="submit"
+                                        size="large"
+                                        icon={<SendOutlined />}
+                                    >
+                                        Send Proposal
+                                    </Button>
                                 </div>
                             </Form>
                         </div>
                     </Modal>
 
-                    {/* ====================================================
-                        CANCEL MODAL
-                    ==================================================== */}
+                    {/* CANCEL RESCHEDULE PROPOSAL MODAL */}
+                    <Modal
+                        title={
+                            <div className="bqm-modal-header-clean">
+                                <div className="bqm-modal-title-icon">
+                                    <CloseCircleOutlined style={{ color: '#f59e0b' }} />
+                                </div>
+                                <div className="bqm-modal-title-text">Cancel Reschedule Proposal</div>
+                                <div className="bqm-modal-badge">
+                                    {safeString(cancelRescheduleBooking?.booking_no)}
+                                </div>
+                            </div>
+                        }
+                        open={cancelRescheduleModalVisible}
+                        onCancel={closeCancelRescheduleModal}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={560}
+                        className="bqm-modal-clean"
+                        destroyOnHidden={true}
+                    >
+                        <div className="bqm-modal-clean-content">
+                            {cancelRescheduleBooking && (
+                                <>
+                                    <Alert
+                                        message="Withdraw the pending reschedule proposal"
+                                        description={
+                                            <div>
+                                                <p>
+                                                    The customer will <strong>no longer see</strong> the proposed new date.
+                                                </p>
+                                                <p>
+                                                    Your booking will return to <strong>Confirmed</strong> with the
+                                                    original schedule:
+                                                </p>
+                                                <p style={{ marginTop: 8 }}>
+                                                    <strong>
+                                                        {formatDateSafe(
+                                                            cancelRescheduleBooking?.original_event_date ||
+                                                                cancelRescheduleBooking?.event_date
+                                                        )}
+                                                    </strong>
+                                                    {' at '}
+                                                    <strong>
+                                                        {cancelRescheduleBooking?.original_event_time ||
+                                                            cancelRescheduleBooking?.event_time ||
+                                                            'N/A'}
+                                                    </strong>
+                                                </p>
+                                            </div>
+                                        }
+                                        type="warning"
+                                        showIcon
+                                        icon={<WarningOutlined />}
+                                        style={{ marginBottom: 16 }}
+                                    />
+
+                                    <Alert
+                                        message="Previously Proposed Schedule"
+                                        description={
+                                            <div>
+                                                <strong>New Date:</strong>{' '}
+                                                {formatDateSafe(cancelRescheduleBooking?.requested_date)}{' '}
+                                                <strong style={{ marginLeft: 12 }}>New Time:</strong>{' '}
+                                                {cancelRescheduleBooking?.requested_time || 'N/A'}
+                                                {cancelRescheduleBooking?.reschedule_reason && (
+                                                    <>
+                                                        <br />
+                                                        <strong>Reason Given:</strong>{' '}
+                                                        {cancelRescheduleBooking.reschedule_reason}
+                                                    </>
+                                                )}
+                                            </div>
+                                        }
+                                        type="info"
+                                        showIcon
+                                        style={{ marginBottom: 16 }}
+                                    />
+
+                                    <div style={{ marginBottom: 16 }}>
+                                        <label
+                                            style={{
+                                                display: 'block',
+                                                marginBottom: 6,
+                                                fontWeight: 600,
+                                                color: '#5A5A5E',
+                                            }}
+                                        >
+                                            Reason for Withdrawing (optional)
+                                        </label>
+                                        <TextArea
+                                            rows={3}
+                                            placeholder="e.g., Customer confirmed original date works, found a better slot..."
+                                            maxLength={500}
+                                            showCount
+                                            value={cancelRescheduleReason}
+                                            onChange={(e) => setCancelRescheduleReason(e.target.value)}
+                                            disabled={cancelRescheduleSubmitting}
+                                        />
+                                    </div>
+
+                                    <div className="bqm-modal-buttons-clean">
+                                        <Button
+                                            onClick={closeCancelRescheduleModal}
+                                            disabled={cancelRescheduleSubmitting}
+                                            size="large"
+                                        >
+                                            Keep Proposal
+                                        </Button>
+                                        <Button
+                                            type="primary"
+                                            danger
+                                            onClick={handleCancelRescheduleProposal}
+                                            loading={cancelRescheduleSubmitting}
+                                            icon={<CloseCircleOutlined />}
+                                            size="large"
+                                        >
+                                            Cancel Proposal
+                                        </Button>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </Modal>
+
+                    {/* CANCEL MODAL */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">
@@ -4601,9 +8053,7 @@ const BookingQuotationManagement = () => {
                         </div>
                     </Modal>
 
-                    {/* ====================================================
-                        CALENDAR AVAILABILITY MODAL
-                    ==================================================== */}
+                    {/* CALENDAR AVAILABILITY MODAL */}
                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">

@@ -1,6 +1,6 @@
-// src/components/CustomerManagement.jsx - ENHANCED MESSENGER WITH CLICKABLE HEADER
+// src/components/CustomerManagement.jsx - ENHANCED MESSENGER + CLEAN DIRECTORY
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
     Card, Table, Button, Space, Input, Select, Modal, Tabs, Tag, message, Divider, Tooltip, Typography, Row, Col,
     Descriptions, Alert, DatePicker, Popconfirm, Badge, Empty, Form, Dropdown, Progress, Statistic, InputNumber,
@@ -10,15 +10,15 @@ import {
     UserOutlined, PlusOutlined, EditOutlined, DeleteOutlined, EyeOutlined, SearchOutlined, ReloadOutlined,
     PrinterOutlined, ExportOutlined, FilterOutlined, CalendarOutlined, StarOutlined, StarFilled, MessageOutlined,
     PhoneOutlined, MailOutlined, EnvironmentOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined,
-    SmileOutlined, FrownOutlined, MehOutlined, TeamOutlined, WalletOutlined, FileTextOutlined, 
+    SmileOutlined, FrownOutlined, MehOutlined, TeamOutlined, WalletOutlined, FileTextOutlined,
     SendOutlined, MoreOutlined, ArrowLeftOutlined, PaperClipOutlined, CameraOutlined, SaveOutlined,
     CheckCircleFilled, ClockCircleFilled, RiseOutlined, TrophyOutlined, LeftOutlined, RightOutlined,
     CrownOutlined, FireOutlined, GiftOutlined, DollarOutlined, VideoCameraOutlined, PictureOutlined,
-    SmileFilled, CustomerServiceOutlined, NotificationOutlined, SoundOutlined, 
+    SmileFilled, CustomerServiceOutlined, NotificationOutlined, SoundOutlined,
     CheckOutlined, CloseOutlined, EllipsisOutlined, InfoCircleOutlined
 } from '@ant-design/icons';
 import { useCustomers, useCreateCustomer, useUpdateCustomer, useDeleteCustomer, useCustomerBookings,
-     useCustomerFeedback, useCustomerReviews, useCustomerMessages, useSendCustomerMessage, 
+     useCustomerFeedback, useCustomerReviews, useCustomerMessages, useSendCustomerMessage,
      useRespondToFeedback, useApproveReview, useHideReview, useFeatureReview } from '../../../hooks/useCustomerQueries';
 import { format, formatDistanceToNow } from 'date-fns';
 import { formatDate, formatDateTime, isValidDate } from '../../../utils/dateUtils';
@@ -31,6 +31,32 @@ const { Title, Text, Paragraph } = Typography;
 const { Option } = Select;
 const { TabPane } = Tabs;
 const { TextArea } = Input;
+
+// ============================================================
+// HELPERS (outside component so they don't get re-created)
+// ============================================================
+const getInitials = (customer) => {
+    const first = customer?.person?.first_name?.[0] || '';
+    const last = customer?.person?.last_name?.[0] || '';
+    return (first + last).toUpperCase() || '?';
+};
+
+const safeMessages = (list) => (Array.isArray(list) ? list : []);
+
+const groupMessagesByDate = (list) => {
+    const groups = [];
+    let current = null;
+    safeMessages(list).forEach((msg) => {
+        const d = msg.created_at ? new Date(msg.created_at) : new Date();
+        const dayKey = d.toDateString();
+        if (!current || current.key !== dayKey) {
+            current = { key: dayKey, date: d, messages: [] };
+            groups.push(current);
+        }
+        current.messages.push(msg);
+    });
+    return groups;
+};
 
 const CustomerManagement = () => {
     const { user } = useAuth();
@@ -59,13 +85,13 @@ const CustomerManagement = () => {
     const messagesEndRef = useRef(null);
     const fileInputRef = useRef(null);
     const chatContainerRef = useRef(null);
-    
+
     const [customerModalVisible, setCustomerModalVisible] = useState(false);
     const [customerDetailsVisible, setCustomerDetailsVisible] = useState(false);
     const [feedbackModalVisible, setFeedbackModalVisible] = useState(false);
     const [messageModalVisible, setMessageModalVisible] = useState(false);
     const [selectedItem, setSelectedItem] = useState(null);
-    
+
     const [customerForm] = Form.useForm();
     const [feedbackForm] = Form.useForm();
     const [messageForm] = Form.useForm();
@@ -98,11 +124,12 @@ const CustomerManagement = () => {
     const totalCustomers = customersData?.total || 0;
     const activeCustomers = customers.filter(c => c.is_active !== false).length;
     const totalRevenue = customers.reduce((sum, c) => sum + (c.total_spent || 0), 0);
-    const avgRating = feedbacks.length > 0 
-        ? (feedbacks.reduce((sum, f) => sum + (f.overall_rating || 0), 0) / feedbacks.length).toFixed(1) 
+    const avgRating = feedbacks.length > 0
+        ? (feedbacks.reduce((sum, f) => sum + (f.overall_rating || 0), 0) / feedbacks.length).toFixed(1)
         : '0';
     const positiveSentiment = feedbacks.filter(f => f.sentiment === 'positive').length;
     const pendingReviews = reviews.filter(r => !r.is_approved).length;
+    const unreadMessageCount = messages.filter(m => !m.read_at && m.sender_type === 'customer').length;
 
     // ==================== TIER CALCULATION ====================
     const getCustomerTier = (customerOrTier) => {
@@ -124,7 +151,7 @@ const CustomerManagement = () => {
     useEffect(() => {
         const savedTheme = localStorage.getItem('theme');
         setIsDarkMode(savedTheme === 'dark' || (savedTheme !== 'light' && document.body.classList.contains('dark-mode')));
-        
+
         const observer = new MutationObserver(() => {
             setIsDarkMode(document.body.classList.contains('dark-mode'));
         });
@@ -140,12 +167,13 @@ const CustomerManagement = () => {
             .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
     }, [messages]);
 
-    const openMessageView = (customer) => {
+    const openMessageView = useCallback((customer) => {
+        if (!customer) return;
         setSelectedChatCustomer(customer);
         setChatMessages(getCustomerMessages(customer));
         setIsMessageViewOpen(true);
         setIsTyping(false);
-    };
+    }, [getCustomerMessages]);
 
     const closeMessageView = () => {
         setIsMessageViewOpen(false);
@@ -160,9 +188,9 @@ const CustomerManagement = () => {
             : selectedChatCustomer;
         const messageContent = (values?.message ?? newMessage).trim();
         if (!messageContent || !targetCustomer) return;
-        
+
         setNewMessage('');
-        
+
         const tempMessage = {
             id: `temp-${Date.now()}`,
             customer_id: targetCustomer.customer_id,
@@ -176,13 +204,13 @@ const CustomerManagement = () => {
         setChatMessages(prev => [...prev, tempMessage]);
         setSelectedChatCustomer(targetCustomer);
         setIsTyping(true);
-        
+
         try {
             await sendMessage.mutateAsync({
                 customer_id: targetCustomer.customer_id,
                 message: messageContent,
             });
-            
+
             setIsTyping(false);
             await refetchMessages();
 
@@ -275,7 +303,7 @@ const CustomerManagement = () => {
                 dietary_restrictions: values.dietary_restrictions,
                 notes: values.notes,
             };
-            
+
             if (selectedItem) {
                 await updateCustomer.mutateAsync({ id: selectedItem.customer_id, data: customerData });
                 message.success('Customer updated successfully');
@@ -339,83 +367,84 @@ const CustomerManagement = () => {
     };
 
     const getUnreadCount = (customerId) => {
-        return messages.filter(m => 
-            String(m.customer_id) === String(customerId) && 
-            !m.read_at && 
+        return messages.filter(m =>
+            String(m.customer_id) === String(customerId) &&
+            !m.read_at &&
             m.sender_type === 'customer'
         ).length;
     };
 
-    const chatCustomers = customers.filter(c => 
-        messages.some(m => String(m.customer_id) === String(c.customer_id)) || 
-        c.person?.first_name?.toLowerCase().includes(messageSearchTerm.toLowerCase()) ||
-        c.person?.last_name?.toLowerCase().includes(messageSearchTerm.toLowerCase()) ||
-        c.person?.email?.toLowerCase().includes(messageSearchTerm.toLowerCase())
-    );
+    const chatCustomers = useMemo(() => {
+        return customers.filter(c =>
+            messages.some(m => String(m.customer_id) === String(c.customer_id)) ||
+            c.person?.first_name?.toLowerCase().includes(messageSearchTerm.toLowerCase()) ||
+            c.person?.last_name?.toLowerCase().includes(messageSearchTerm.toLowerCase()) ||
+            c.person?.email?.toLowerCase().includes(messageSearchTerm.toLowerCase())
+        );
+    }, [customers, messages, messageSearchTerm]);
 
     // ==================== TABLE COLUMNS ====================
     const customerColumns = [
-        { 
-            title: 'CUSTOMER ID', 
-            dataIndex: 'customer_code', 
-            key: 'code', 
-            width: 120, 
-            render: (text) => <span className="cm-id-text">{text || 'N/A'}</span> 
+        {
+            title: 'CUSTOMER ID',
+            dataIndex: 'customer_code',
+            key: 'code',
+            width: 120,
+            render: (text) => <span className="cm-id-text">{text || 'N/A'}</span>
         },
-        { 
-            title: 'CUSTOMER NAME', 
-            key: 'name', 
-            width: 200, 
+        {
+            title: 'CUSTOMER',
+            key: 'name',
+            width: 260,
             render: (_, r) => (
                 <div className="cm-customer-cell">
-                    <div className="cm-customer-name">{r.person?.first_name || ''} {r.person?.last_name || ''}</div>
-                    <div className="cm-customer-contact"><MailOutlined /> {r.person?.email || 'N/A'}</div>
+                    <Avatar
+                        size={38}
+                        className="cm-table-avatar"
+                        style={{ backgroundColor: getCustomerTier(r).color }}
+                    >
+                        {getInitials(r)}
+                    </Avatar>
+                    <div className="cm-customer-cell-text">
+                        <div className="cm-customer-name">{r.person?.first_name || ''} {r.person?.last_name || ''}</div>
+                        <div className="cm-customer-contact"><MailOutlined /> {r.person?.email || 'N/A'}</div>
+                    </div>
                 </div>
             )
         },
-        { 
-            title: 'CONTACT', 
-            key: 'phone', 
-            width: 140, 
-            render: (_, r) => <div className="cm-contact-info"><PhoneOutlined /> {r.person?.phone || 'N/A'}</div> 
+        {
+            title: 'CONTACT',
+            key: 'phone',
+            width: 140,
+            render: (_, r) => <div className="cm-contact-info"><PhoneOutlined /> {r.person?.phone || 'N/A'}</div>
         },
-        { 
-            title: 'BOOKINGS', 
-            key: 'bookings', 
-            width: 90, 
-            align: 'center', 
+        {
+            title: 'BOOKINGS',
+            key: 'bookings',
+            width: 90,
+            align: 'center',
             render: (_, r) => {
                 const count = r.total_bookings || 0;
                 return <Badge count={count} showZero style={{ backgroundColor: count > 0 ? '#3b82f6' : '#94a3b8' }} />;
-            } 
+            }
         },
-        { 
-            title: 'TOTAL SPENT', 
-            key: 'spent', 
-            width: 140, 
-            align: 'right', 
+        {
+            title: 'TOTAL SPENT',
+            key: 'spent',
+            width: 140,
+            align: 'right',
             render: (_, r) => {
                 const amount = r.total_spent || 0;
                 return <span className="cm-amount" style={{ fontWeight: amount > 0 ? 'bold' : 'normal' }}>
                     ₱{amount.toLocaleString()}
                 </span>;
-            } 
-        },
-        { 
-            title: 'LOYALTY PTS', 
-            key: 'loyalty', 
-            width: 100, 
-            align: 'center',
-            render: (_, r) => {
-                const points = getLoyaltyPoints(r);
-                return <span className="cm-loyalty-points"><GiftOutlined /> {points}</span>;
             }
         },
-        { 
-            title: 'TIER', 
-            key: 'tier', 
-            width: 100, 
-            align: 'center', 
+        {
+            title: 'TIER',
+            key: 'tier',
+            width: 110,
+            align: 'center',
             render: (_, r) => {
                 const tierInfo = getCustomerTier(r);
                 return (
@@ -423,22 +452,22 @@ const CustomerManagement = () => {
                         {tierInfo.icon} {tierInfo.tier}
                     </span>
                 );
-            } 
+            }
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'is_active', 
-            key: 'status', 
-            width: 100, 
-            align: 'center', 
+        {
+            title: 'STATUS',
+            dataIndex: 'is_active',
+            key: 'status',
+            width: 100,
+            align: 'center',
             render: (s) => <span className={`cm-status ${s !== false ? 'active' : 'inactive'}`}>
                 {s !== false ? 'Active' : 'Inactive'}
-            </span> 
+            </span>
         },
-        { 
-            title: 'ACTIONS', 
-            key: 'actions', 
-            width: 200, 
+        {
+            title: 'ACTIONS',
+            key: 'actions',
+            width: 200,
             fixed: 'right',
             render: (_, record) => (
                 <div className="cm-action-group">
@@ -453,21 +482,27 @@ const CustomerManagement = () => {
                         </button>
                     </Tooltip>
                     <Tooltip title="Chat">
-                        <button className="cm-action-icon chat" onClick={() => openMessageView(record)}>
+                        <button
+                            className="cm-action-icon chat"
+                            onClick={() => {
+                                setActiveMainTab('messages');
+                                openMessageView(record);
+                            }}
+                        >
                             <MessageOutlined />
                         </button>
                     </Tooltip>
                     {canManageCustomerModeration && (
-                        <Dropdown menu={{ 
+                        <Dropdown menu={{
                             items: [
-                                { 
-                                    key: 'delete', 
-                                    label: 'Delete Customer', 
-                                    icon: <DeleteOutlined />, 
-                                    danger: true, 
-                                    onClick: () => handleDeleteCustomer(record) 
+                                {
+                                    key: 'delete',
+                                    label: 'Delete Customer',
+                                    icon: <DeleteOutlined />,
+                                    danger: true,
+                                    onClick: () => handleDeleteCustomer(record)
                                 }
-                            ] 
+                            ]
                         }} placement="bottomRight">
                             <button className="cm-action-icon more">
                                 <MoreOutlined />
@@ -480,57 +515,57 @@ const CustomerManagement = () => {
     ];
 
     const bookingColumns = [
-        { 
-            title: 'BOOKING ID', 
-            dataIndex: 'booking_no', 
-            key: 'id', 
-            width: 120, 
-            render: (text) => <span className="cm-id-text">{text || 'N/A'}</span> 
+        {
+            title: 'BOOKING ID',
+            dataIndex: 'booking_no',
+            key: 'id',
+            width: 120,
+            render: (text) => <span className="cm-id-text">{text || 'N/A'}</span>
         },
-        { 
-            title: 'EVENT TYPE', 
-            dataIndex: ['service_event', 'event_type', 'name'], 
-            key: 'type', 
+        {
+            title: 'EVENT TYPE',
+            dataIndex: ['service_event', 'event_type', 'name'],
+            key: 'type',
             width: 130,
             render: (text) => text || 'N/A'
         },
-        { 
-            title: 'EVENT DATE', 
-            dataIndex: ['service_event', 'event_date'], 
-            key: 'date', 
-            width: 120, 
-            render: (text) => text ? formatDate(text, 'MMM dd, yyyy') : 'N/A' 
+        {
+            title: 'EVENT DATE',
+            dataIndex: ['service_event', 'event_date'],
+            key: 'date',
+            width: 120,
+            render: (text) => text ? formatDate(text, 'MMM dd, yyyy') : 'N/A'
         },
-        { 
-            title: 'VENUE', 
-            dataIndex: ['service_event', 'venue'], 
-            key: 'venue', 
-            width: 180, 
+        {
+            title: 'VENUE',
+            dataIndex: ['service_event', 'venue'],
+            key: 'venue',
+            width: 180,
             ellipsis: true,
             render: (text) => text || 'N/A'
         },
-        { 
-            title: 'PAX', 
-            dataIndex: ['service_event', 'guests_count'], 
-            key: 'pax', 
-            width: 80, 
-            align: 'center', 
-            render: (v) => <span className="cm-pax">{v || 0}</span> 
+        {
+            title: 'PAX',
+            dataIndex: ['service_event', 'guests_count'],
+            key: 'pax',
+            width: 80,
+            align: 'center',
+            render: (v) => <span className="cm-pax">{v || 0}</span>
         },
-        { 
-            title: 'AMOUNT', 
-            dataIndex: ['quotation', 'total_amount'], 
-            key: 'amount', 
-            width: 130, 
-            align: 'right', 
-            render: (v) => <span className="cm-amount">₱{(v || 0).toLocaleString()}</span> 
+        {
+            title: 'AMOUNT',
+            dataIndex: ['quotation', 'total_amount'],
+            key: 'amount',
+            width: 130,
+            align: 'right',
+            render: (v) => <span className="cm-amount">₱{(v || 0).toLocaleString()}</span>
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'booking_status', 
-            key: 'status', 
-            width: 110, 
-            align: 'center', 
+        {
+            title: 'STATUS',
+            dataIndex: 'booking_status',
+            key: 'status',
+            width: 110,
+            align: 'center',
             render: (s) => {
                 const config = {
                     confirmed: { color: '#10b981', bg: 'rgba(16, 185, 129, 0.1)', text: 'Confirmed' },
@@ -542,15 +577,15 @@ const CustomerManagement = () => {
                 };
                 const c = config[s] || config.pending;
                 return <span className="cm-status-badge" style={{ color: c.color, background: c.bg }}>{c.text}</span>;
-            } 
+            }
         },
     ];
 
     const feedbackColumns = [
-        { 
-            title: 'CUSTOMER', 
-            key: 'customer', 
-            width: 150, 
+        {
+            title: 'CUSTOMER',
+            key: 'customer',
+            width: 150,
             render: (_, r) => {
                 const customer = customers.find(c => String(c.customer_id) === String(r.customer_id));
                 return customer ? (
@@ -562,57 +597,57 @@ const CustomerManagement = () => {
                 );
             }
         },
-        { 
-            title: 'FOOD', 
-            dataIndex: 'food_rating', 
-            key: 'food', 
-            width: 100, 
-            align: 'center', 
-            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 12 }} /> 
+        {
+            title: 'FOOD',
+            dataIndex: 'food_rating',
+            key: 'food',
+            width: 100,
+            align: 'center',
+            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 12 }} />
         },
-        { 
-            title: 'SERVICE', 
-            dataIndex: 'service_rating', 
-            key: 'service', 
-            width: 100, 
-            align: 'center', 
-            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 12 }} /> 
+        {
+            title: 'SERVICE',
+            dataIndex: 'service_rating',
+            key: 'service',
+            width: 100,
+            align: 'center',
+            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 12 }} />
         },
-        { 
-            title: 'OVERALL', 
-            dataIndex: 'overall_rating', 
-            key: 'overall', 
-            width: 120, 
-            align: 'center', 
-            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 14 }} allowHalf /> 
+        {
+            title: 'OVERALL',
+            dataIndex: 'overall_rating',
+            key: 'overall',
+            width: 120,
+            align: 'center',
+            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 14 }} allowHalf />
         },
-        { 
-            title: 'SENTIMENT', 
-            key: 'sentiment', 
-            width: 120, 
-            align: 'center', 
-            render: (_, r) => <div className="cm-sentiment">{getSentimentIcon(r.sentiment)} {r.sentiment || 'neutral'}</div> 
+        {
+            title: 'SENTIMENT',
+            key: 'sentiment',
+            width: 120,
+            align: 'center',
+            render: (_, r) => <div className="cm-sentiment">{getSentimentIcon(r.sentiment)} {r.sentiment || 'neutral'}</div>
         },
-        { 
-            title: 'DATE', 
-            dataIndex: 'created_at', 
-            key: 'date', 
-            width: 120, 
-            render: (v) => v ? formatDate(v, 'MMM dd, yyyy') : 'N/A' 
+        {
+            title: 'DATE',
+            dataIndex: 'created_at',
+            key: 'date',
+            width: 120,
+            render: (v) => v ? formatDate(v, 'MMM dd, yyyy') : 'N/A'
         },
-        { 
-            title: 'ACTIONS', 
-            key: 'actions', 
-            width: 100, 
-            render: (_, r) => <button className="cm-action-icon view" onClick={() => { setSelectedItem(r); setFeedbackModalVisible(true); }}><EyeOutlined /></button> 
+        {
+            title: 'ACTIONS',
+            key: 'actions',
+            width: 100,
+            render: (_, r) => <button className="cm-action-icon view" onClick={() => { setSelectedItem(r); setFeedbackModalVisible(true); }}><EyeOutlined /></button>
         }
     ];
 
     const reviewColumns = [
-        { 
-            title: 'CUSTOMER', 
-            key: 'customer', 
-            width: 150, 
+        {
+            title: 'CUSTOMER',
+            key: 'customer',
+            width: 150,
             render: (_, r) => {
                 const customer = customers.find(c => String(c.customer_id) === String(r.customer_id));
                 return customer ? (
@@ -624,41 +659,41 @@ const CustomerManagement = () => {
                 );
             }
         },
-        { 
-            title: 'REVIEW', 
-            dataIndex: 'comment', 
-            key: 'review', 
-            width: 250, 
+        {
+            title: 'REVIEW',
+            dataIndex: 'comment',
+            key: 'review',
+            width: 250,
             ellipsis: true,
             render: (text) => text || 'No comment'
         },
-        { 
-            title: 'RATING', 
-            dataIndex: 'overall_rating', 
-            key: 'rating', 
-            width: 120, 
-            align: 'center', 
-            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 14 }} /> 
+        {
+            title: 'RATING',
+            dataIndex: 'overall_rating',
+            key: 'rating',
+            width: 120,
+            align: 'center',
+            render: (v) => <Rate disabled defaultValue={v || 0} style={{ fontSize: 14 }} />
         },
-        { 
-            title: 'STATUS', 
-            dataIndex: 'is_approved', 
-            key: 'status', 
-            width: 110, 
-            align: 'center', 
-            render: (v) => <span className={`cm-status-badge ${v ? 'approved' : 'pending'}`}>{v ? 'Approved' : 'Pending'}</span> 
+        {
+            title: 'STATUS',
+            dataIndex: 'is_approved',
+            key: 'status',
+            width: 110,
+            align: 'center',
+            render: (v) => <span className={`cm-status-badge ${v ? 'approved' : 'pending'}`}>{v ? 'Approved' : 'Pending'}</span>
         },
-        { 
-            title: 'FEATURED', 
-            dataIndex: 'is_featured', 
-            key: 'featured', 
-            width: 90, 
-            align: 'center', 
-            render: (v) => v ? <StarFilled style={{ color: '#f59e0b' }} /> : <StarOutlined style={{ color: '#94a3b8' }} /> 
+        {
+            title: 'FEATURED',
+            dataIndex: 'is_featured',
+            key: 'featured',
+            width: 90,
+            align: 'center',
+            render: (v) => v ? <StarFilled style={{ color: '#f59e0b' }} /> : <StarOutlined style={{ color: '#94a3b8' }} />
         },
-        { 
-            title: 'ACTIONS', 
-            key: 'actions', 
+        {
+            title: 'ACTIONS',
+            key: 'actions',
             width: 200,
             render: (_, record) => (
                 <div className="cm-action-group">
@@ -695,23 +730,6 @@ const CustomerManagement = () => {
             );
         }
         return originalElement;
-    };
-
-    const renderEmptyPaginationFooter = (label) => {
-        return (
-            <div className="cm-empty-pagination-footer">
-                <span className="cm-empty-pagination-total">Total 0 {label}</span>
-                <div className="cm-empty-pagination-controls">
-                    <Button className="cm-pagination-navigation-button" size="small" icon={<LeftOutlined />} disabled>
-                        Previous
-                    </Button>
-                    <button type="button" className="cm-empty-pagination-current-page" disabled>1</button>
-                    <Button className="cm-pagination-navigation-button" size="small" disabled>
-                        Next <RightOutlined />
-                    </Button>
-                </div>
-            </div>
-        );
     };
 
     // ==================== CSS CLASSES ====================
@@ -752,21 +770,11 @@ const CustomerManagement = () => {
                         headerColor: isDarkMode ? '#cbd5e1' : '#1a2c3e',
                         headerBorderRadius: 0,
                     },
-                    Card: {
-                        borderRadiusLG: 16,
-                    },
-                    Modal: {
-                        borderRadiusLG: 20,
-                    },
-                    Button: {
-                        borderRadius: 10,
-                    },
-                    Input: {
-                        borderRadius: 10,
-                    },
-                    Select: {
-                        borderRadius: 10,
-                    },
+                    Card: { borderRadiusLG: 16 },
+                    Modal: { borderRadiusLG: 20 },
+                    Button: { borderRadius: 10 },
+                    Input: { borderRadius: 10 },
+                    Select: { borderRadius: 10 },
                 }
             }}
         >
@@ -850,9 +858,9 @@ const CustomerManagement = () => {
 
                 {/* ==================== MAIN CARD ==================== */}
                 <Card className={mainCardClass} variant="borderless">
-                    <Tabs 
-                        activeKey={activeMainTab} 
-                        onChange={setActiveMainTab} 
+                    <Tabs
+                        activeKey={activeMainTab}
+                        onChange={setActiveMainTab}
                         className="cm-tabs"
                         destroyInactiveTabPane={true}
                         items={[
@@ -882,24 +890,24 @@ const CustomerManagement = () => {
                                             </div>
                                             <div className={`${filterGroupClass} cm-search`}>
                                                 <SearchOutlined />
-                                                <Input 
-                                                    placeholder="Search by name or email..." 
-                                                    value={searchText} 
-                                                    onChange={(e) => setSearchText(e.target.value)} 
-                                                    allowClear 
+                                                <Input
+                                                    placeholder="Search by name or email..."
+                                                    value={searchText}
+                                                    onChange={(e) => setSearchText(e.target.value)}
+                                                    allowClear
                                                     className="cm-search-input"
                                                 />
                                             </div>
                                         </div>
 
                                         <div className="cm-table-container">
-                                            <Table 
-                                                columns={customerColumns} 
-                                                dataSource={customers} 
-                                                rowKey="customer_id" 
-                                                loading={isLoading} 
+                                            <Table
+                                                columns={customerColumns}
+                                                dataSource={customers}
+                                                rowKey="customer_id"
+                                                loading={isLoading}
                                                 className={tableClass}
-                                                scroll={{ x: 1500 }}
+                                                scroll={{ x: 1400 }}
                                                 locale={{
                                                     emptyText: (
                                                         <div className="cm-empty-state">
@@ -910,9 +918,9 @@ const CustomerManagement = () => {
                                                             <p style={{ fontSize: 14, color: '#999' }}>
                                                                 Customers will appear here once they have approved bookings.
                                                             </p>
-                                                            <Button 
-                                                                type="primary" 
-                                                                icon={<PlusOutlined />} 
+                                                            <Button
+                                                                type="primary"
+                                                                icon={<PlusOutlined />}
                                                                 onClick={handleAddCustomer}
                                                                 style={{ marginTop: 12 }}
                                                             >
@@ -948,19 +956,19 @@ const CustomerManagement = () => {
                                 label: <span><CalendarOutlined /> Bookings</span>,
                                 children: (
                                     <div className={tabContentClass}>
-                                        <Alert 
-                                            message="Booking History" 
-                                            description="Track all customer bookings across all events" 
-                                            type="info" 
-                                            showIcon 
+                                        <Alert
+                                            message="Booking History"
+                                            description="Track all customer bookings across all events"
+                                            type="info"
+                                            showIcon
                                             style={{ marginBottom: 20 }}
                                             className={alertClass}
                                         />
                                         <div className="cm-table-container">
-                                            <Table 
-                                                columns={bookingColumns} 
-                                                dataSource={customerBookings} 
-                                                rowKey="booking_id" 
+                                            <Table
+                                                columns={bookingColumns}
+                                                dataSource={customerBookings}
+                                                rowKey="booking_id"
                                                 className={tableClass}
                                                 scroll={{ x: 1200 }}
                                                 locale={{
@@ -1000,19 +1008,19 @@ const CustomerManagement = () => {
                                 label: <span><StarOutlined /> Feedback</span>,
                                 children: (
                                     <div className={tabContentClass}>
-                                        <Alert 
-                                            message="Customer Satisfaction Monitoring" 
-                                            description="Monitor food, service, and overall ratings" 
-                                            type="info" 
-                                            showIcon 
+                                        <Alert
+                                            message="Customer Satisfaction Monitoring"
+                                            description="Monitor food, service, and overall ratings"
+                                            type="info"
+                                            showIcon
                                             style={{ marginBottom: 20 }}
                                             className={alertClass}
                                         />
                                         <div className="cm-table-container">
-                                            <Table 
-                                                columns={feedbackColumns} 
-                                                dataSource={feedbacks} 
-                                                rowKey="review_id" 
+                                            <Table
+                                                columns={feedbackColumns}
+                                                dataSource={feedbacks}
+                                                rowKey="review_id"
                                                 className={tableClass}
                                                 scroll={{ x: 1100 }}
                                                 locale={{
@@ -1052,11 +1060,11 @@ const CustomerManagement = () => {
                                 label: <span><FileTextOutlined /> Reviews</span>,
                                 children: (
                                     <div className={tabContentClass}>
-                                        <Alert 
-                                            message="Review Management" 
-                                            description="Approve, hide, or feature customer reviews" 
-                                            type="info" 
-                                            showIcon 
+                                        <Alert
+                                            message="Review Management"
+                                            description="Approve, hide, or feature customer reviews"
+                                            type="info"
+                                            showIcon
                                             style={{ marginBottom: 20 }}
                                             className={alertClass}
                                         />
@@ -1066,10 +1074,10 @@ const CustomerManagement = () => {
                                             </Badge>
                                         </div>
                                         <div className="cm-table-container">
-                                            <Table 
-                                                columns={reviewColumns} 
-                                                dataSource={reviews} 
-                                                rowKey="review_id" 
+                                            <Table
+                                                columns={reviewColumns}
+                                                dataSource={reviews}
+                                                rowKey="review_id"
                                                 className={tableClass}
                                                 scroll={{ x: 1200 }}
                                                 locale={{
@@ -1106,49 +1114,48 @@ const CustomerManagement = () => {
                             }] : []),
                             {
                                 key: 'messages',
-                                label: <span><MessageOutlined /> Messages</span>,
+                                label: (
+                                    <span>
+                                        <MessageOutlined /> Messages
+                                        {unreadMessageCount > 0 && (
+                                            <Badge
+                                                count={unreadMessageCount}
+                                                size="small"
+                                                style={{ marginLeft: 6, backgroundColor: '#ef4444' }}
+                                            />
+                                        )}
+                                    </span>
+                                ),
                                 children: (
                                     <div className={tabContentClass}>
-                                        <Alert 
-                                            message="Customer Communication Center" 
-                                            description="Real-time messaging with your customers. Stay connected and respond instantly." 
-                                            type="info" 
-                                            showIcon 
-                                            style={{ marginBottom: 20 }}
-                                            className={alertClass}
-                                        />
-                                        
-                                        {/* ==================== ENHANCED PREMIUM MESSENGER ==================== */}
                                         <div className={messengerClass}>
-                                            {/* Sidebar */}
+                                            {/* ============ SIDEBAR ============ */}
                                             <div className="cm-messenger-sidebar">
                                                 <div className="cm-messenger-sidebar-header">
                                                     <div className="cm-messenger-title">
-                                                        <span>Chat</span>
-                                                        <Badge 
-                                                            count={messages.filter(m => !m.read_at && m.sender_type === 'customer').length} 
-                                                            style={{ backgroundColor: '#ef4444' }}
-                                                        />
+                                                        <div className="cm-messenger-title-left">
+                                                            <MessageOutlined className="cm-messenger-title-icon" />
+                                                            <span>Messages</span>
+                                                        </div>
+                                                        <span className="cm-messenger-title-count">
+                                                            {chatCustomers.length} conversation{chatCustomers.length === 1 ? '' : 's'}
+                                                        </span>
                                                     </div>
                                                     <div className="cm-messenger-search">
-                                                        <Input 
-                                                            placeholder="Search Anything..." 
-                                                            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                                                        <Input
+                                                            placeholder="Search customers..."
+                                                            prefix={<SearchOutlined />}
                                                             value={messageSearchTerm}
                                                             onChange={(e) => setMessageSearchTerm(e.target.value)}
                                                             className="cm-messenger-search-input"
+                                                            allowClear
                                                         />
-                                                    </div>
-                                                    <div className="cm-messenger-filter-tabs">
-                                                        <Button type="text" className="cm-filter-tab active">All</Button>
-                                                        <Button type="text" className="cm-filter-tab">Unread</Button>
-                                                        <Button type="text" className="cm-filter-tab">Starred</Button>
                                                     </div>
                                                 </div>
                                                 <div className="cm-messenger-contact-list">
                                                     {chatCustomers.length === 0 ? (
                                                         <div className="cm-messenger-empty-state">
-                                                            <MessageOutlined style={{ fontSize: 48, color: '#d9d9d9' }} />
+                                                            <MessageOutlined style={{ fontSize: 42 }} />
                                                             <p>No conversations yet</p>
                                                             <span>Messages will appear here once customers start communicating.</span>
                                                         </div>
@@ -1159,31 +1166,30 @@ const CustomerManagement = () => {
                                                                 .filter(m => String(m.customer_id) === String(customer.customer_id))
                                                                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
                                                             const isActive = String(selectedChatCustomer?.customer_id) === String(customer.customer_id);
-                                                            
+                                                            const tierInfo = getCustomerTier(customer);
+
                                                             return (
-                                                                <div 
+                                                                <div
                                                                     key={customer.customer_id}
                                                                     className={`cm-messenger-contact ${isActive ? 'cm-messenger-contact-active' : ''}`}
-                                                                    onClick={() => {
-                                                                        if (String(selectedChatCustomer?.customer_id) === String(customer.customer_id)) return;
-                                                                        openMessageView(customer);
-                                                                    }}
+                                                                    onClick={() => openMessageView(customer)}
                                                                 >
-                                                                    <Avatar 
-                                                                        size={44} 
-                                                                        icon={<UserOutlined />} 
+                                                                    <Avatar
+                                                                        size={44}
                                                                         className="cm-messenger-contact-avatar"
-                                                                        style={{ 
-                                                                            backgroundColor: isActive ? '#1a7ab5' : '#64748b'
-                                                                        }}
-                                                                    />
+                                                                        style={{ backgroundColor: tierInfo.color }}
+                                                                    >
+                                                                        {getInitials(customer)}
+                                                                    </Avatar>
                                                                     <div className="cm-messenger-contact-info">
                                                                         <div className="cm-messenger-contact-name">
                                                                             <span className="cm-messenger-contact-fullname">
                                                                                 {customer.person?.first_name || ''} {customer.person?.last_name || ''}
                                                                             </span>
-                                                                            {unreadCount > 0 && (
-                                                                                <Badge count={unreadCount} style={{ backgroundColor: '#ef4444' }} />
+                                                                            {lastMessage?.created_at && (
+                                                                                <span className="cm-messenger-contact-time">
+                                                                                    {formatDistanceToNow(new Date(lastMessage.created_at), { addSuffix: false })}
+                                                                                </span>
                                                                             )}
                                                                         </div>
                                                                         <div className="cm-messenger-contact-last">
@@ -1191,16 +1197,16 @@ const CustomerManagement = () => {
                                                                                 {lastMessage ? (
                                                                                     <>
                                                                                         {lastMessage.sender_type === 'admin' && <span className="cm-messenger-sender-label">You: </span>}
-                                                                                        {lastMessage.message?.substring(0, 40) || ''}
-                                                                                        {lastMessage.message?.length > 40 ? '...' : ''}
+                                                                                        {lastMessage.message?.substring(0, 50) || ''}
+                                                                                        {lastMessage.message?.length > 50 ? '…' : ''}
                                                                                     </>
                                                                                 ) : (
                                                                                     <span className="cm-messenger-no-message">No messages yet</span>
                                                                                 )}
                                                                             </span>
-                                                                            <span className="cm-messenger-contact-time">
-                                                                                {lastMessage?.created_at ? formatDistanceToNow(new Date(lastMessage.created_at), { addSuffix: true }) : ''}
-                                                                            </span>
+                                                                            {unreadCount > 0 && (
+                                                                                <span className="cm-messenger-unread-badge">{unreadCount}</span>
+                                                                            )}
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -1210,28 +1216,24 @@ const CustomerManagement = () => {
                                                 </div>
                                             </div>
 
-                                            {/* Chat Area */}
+                                            {/* ============ CHAT AREA ============ */}
                                             <div className="cm-messenger-chat">
                                                 {selectedChatCustomer ? (
                                                     <div className="cm-messenger-chat-panel">
-                                                        {/* Chat Header - CLICKABLE CUSTOMER NAME */}
+                                                        {/* Chat Header */}
                                                         <div className="cm-messenger-chat-header">
                                                             <div className="cm-messenger-chat-header-left">
-                                                                <Button 
-                                                                    icon={<ArrowLeftOutlined />} 
-                                                                    className="cm-messenger-back-btn"
-                                                                    onClick={closeMessageView}
-                                                                />
-                                                                <Avatar 
-                                                                    size={40} 
-                                                                    icon={<UserOutlined />} 
-                                                                    style={{ backgroundColor: '#1a7ab5' }}
-                                                                />
+                                                                <Avatar
+                                                                    size={44}
+                                                                    className="cm-messenger-chat-avatar"
+                                                                    style={{ backgroundColor: getCustomerTier(selectedChatCustomer).color }}
+                                                                >
+                                                                    {getInitials(selectedChatCustomer)}
+                                                                </Avatar>
                                                                 <div className="cm-messenger-chat-header-info">
-                                                                    <div 
+                                                                    <div
                                                                         className="cm-messenger-chat-name-wrapper"
                                                                         onClick={() => handleViewCustomerDetails(selectedChatCustomer)}
-                                                                        style={{ cursor: 'pointer' }}
                                                                     >
                                                                         <span className="cm-messenger-chat-name">
                                                                             {selectedChatCustomer.person?.first_name || ''} {selectedChatCustomer.person?.last_name || ''}
@@ -1240,33 +1242,25 @@ const CustomerManagement = () => {
                                                                     </div>
                                                                     <div className="cm-messenger-chat-status">
                                                                         <span className="cm-messenger-status-dot online"></span>
-                                                                        <span className="cm-messenger-status-text">Online</span>
-                                                                        <span className="cm-messenger-status-separator">•</span>
-                                                                        <span className="cm-messenger-chat-tier" style={{ 
-                                                                            color: getCustomerTier(selectedChatCustomer).color 
-                                                                        }}>
-                                                                            {getCustomerTier(selectedChatCustomer).icon} 
+                                                                        <span className="cm-messenger-status-text">Active</span>
+                                                                        <span className="cm-messenger-status-separator">·</span>
+                                                                        <span
+                                                                            className="cm-messenger-chat-tier"
+                                                                            style={{ color: getCustomerTier(selectedChatCustomer).color }}
+                                                                        >
+                                                                            {getCustomerTier(selectedChatCustomer).icon}
                                                                             {getCustomerTier(selectedChatCustomer).tier}
                                                                         </span>
                                                                     </div>
                                                                 </div>
                                                             </div>
                                                             <div className="cm-messenger-chat-header-actions">
-                                                                <Tooltip title="Phone">
-                                                                    <Button icon={<PhoneOutlined />} className="cm-messenger-header-action" />
-                                                                </Tooltip>
-                                                                <Tooltip title="Video Call">
-                                                                    <Button icon={<VideoCameraOutlined />} className="cm-messenger-header-action" />
-                                                                </Tooltip>
-                                                                <Tooltip title="Customer Profile">
-                                                                    <Button 
-                                                                        icon={<UserOutlined />} 
+                                                                <Tooltip title="View profile">
+                                                                    <Button
+                                                                        icon={<UserOutlined />}
                                                                         className="cm-messenger-header-action"
                                                                         onClick={() => handleViewCustomerDetails(selectedChatCustomer)}
                                                                     />
-                                                                </Tooltip>
-                                                                <Tooltip title="More options">
-                                                                    <Button icon={<EllipsisOutlined />} className="cm-messenger-header-action" />
                                                                 </Tooltip>
                                                             </div>
                                                         </div>
@@ -1275,49 +1269,56 @@ const CustomerManagement = () => {
                                                         <div className="cm-messenger-chat-messages" ref={chatContainerRef}>
                                                             {chatMessages.length === 0 ? (
                                                                 <div className="cm-messenger-chat-empty-state">
-                                                                    <MessageOutlined style={{ fontSize: 48, color: '#d9d9d9' }} />
+                                                                    <MessageOutlined style={{ fontSize: 42 }} />
                                                                     <p>No messages yet</p>
                                                                     <span>Send the first message to start the conversation</span>
                                                                 </div>
                                                             ) : (
                                                                 <>
-                                                                    <div className="cm-messenger-date-divider">
-                                                                        <span className="cm-messenger-date-label">Today</span>
-                                                                    </div>
-                                                                    {chatMessages.map((msg, index) => {
-                                                                        const isAdmin = msg.isAdmin || msg.sender_type === 'admin';
-                                                                        const showAvatar = !isAdmin && (index === 0 || 
-                                                                            chatMessages[index - 1]?.sender_type !== 'customer');
-                                                                        
-                                                                        return (
-                                                                            <div
-                                                                                key={`${msg.id || msg.message_id || 'msg'}-${msg.created_at || index}`}
-                                                                                className={`cm-message-wrapper ${isAdmin ? 'cm-message-admin' : 'cm-message-customer'}`}
-                                                                            >
-                                                                                {!isAdmin && showAvatar && (
-                                                                                    <div className="cm-message-sender">
-                                                                                        <Avatar size={24} icon={<UserOutlined />} style={{ backgroundColor: '#64748b', marginRight: 6 }} />
-                                                                                        {msg.sender_name || 'Customer'}
-                                                                                    </div>
-                                                                                )}
-                                                                                <div className={`cm-message-bubble-wrapper ${isAdmin ? 'cm-message-admin' : 'cm-message-customer'}`}>
-                                                                                    <div className={`cm-message-bubble ${isAdmin ? 'cm-message-bubble-admin' : 'cm-message-bubble-customer'}`}>
-                                                                                        <div className="cm-message-text">{msg.message}</div>
-                                                                                        <div className="cm-message-meta">
-                                                                                            <span className="cm-message-time">
-                                                                                                {msg.created_at ? format(new Date(msg.created_at), 'h:mm a') : ''}
-                                                                                            </span>
-                                                                                            {isAdmin && (
-                                                                                                <span className="cm-message-status">
-                                                                                                    <CheckCircleOutlined />
-                                                                                                </span>
-                                                                                            )}
+                                                                    {groupMessagesByDate(chatMessages).map((group) => (
+                                                                        <div key={group.key} className="cm-message-day-group">
+                                                                            <div className="cm-messenger-date-divider">
+                                                                                <span className="cm-messenger-date-label">
+                                                                                    {format(group.date, 'EEEE, MMM d')}
+                                                                                </span>
+                                                                            </div>
+                                                                            {group.messages.map((msg, index) => {
+                                                                                const isAdmin = msg.isAdmin || msg.sender_type === 'admin';
+                                                                                const showAvatar = !isAdmin && (
+                                                                                    index === 0 ||
+                                                                                    group.messages[index - 1]?.sender_type !== 'customer'
+                                                                                );
+                                                                                return (
+                                                                                    <div
+                                                                                        key={`${msg.id || msg.message_id || 'msg'}-${msg.created_at || index}`}
+                                                                                        className={`cm-message-wrapper ${isAdmin ? 'cm-message-admin' : 'cm-message-customer'}`}
+                                                                                    >
+                                                                                        {!isAdmin && showAvatar && (
+                                                                                            <div className="cm-message-sender">
+                                                                                                <Avatar size={22} icon={<UserOutlined />} style={{ backgroundColor: '#64748b' }} />
+                                                                                                {msg.sender_name || 'Customer'}
+                                                                                            </div>
+                                                                                        )}
+                                                                                        <div className={`cm-message-bubble-wrapper ${isAdmin ? 'cm-message-admin' : 'cm-message-customer'}`}>
+                                                                                            <div className={`cm-message-bubble ${isAdmin ? 'cm-message-bubble-admin' : 'cm-message-bubble-customer'}`}>
+                                                                                                <div className="cm-message-text">{msg.message}</div>
+                                                                                                <div className="cm-message-meta">
+                                                                                                    <span className="cm-message-time">
+                                                                                                        {msg.created_at ? format(new Date(msg.created_at), 'h:mm a') : ''}
+                                                                                                    </span>
+                                                                                                    {isAdmin && (
+                                                                                                        <span className="cm-message-status">
+                                                                                                            <CheckCircleOutlined />
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            </div>
                                                                                         </div>
                                                                                     </div>
-                                                                                </div>
-                                                                            </div>
-                                                                        );
-                                                                    })}
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    ))}
                                                                     {isTyping && (
                                                                         <div className="cm-message-typing">
                                                                             <div className="cm-typing-indicator">
@@ -1325,7 +1326,7 @@ const CustomerManagement = () => {
                                                                                 <span></span>
                                                                                 <span></span>
                                                                             </div>
-                                                                            <span className="cm-typing-text">Admin is typing...</span>
+                                                                            <span className="cm-typing-text">Admin is typing…</span>
                                                                         </div>
                                                                     )}
                                                                     <div ref={messagesEndRef} />
@@ -1333,10 +1334,10 @@ const CustomerManagement = () => {
                                                             )}
                                                         </div>
 
-                                                        {/* Chat Input */}
+                                                        {/* Input */}
                                                         <div className="cm-messenger-chat-input">
-                                                            <Button 
-                                                                icon={<PaperClipOutlined />} 
+                                                            <Button
+                                                                icon={<PaperClipOutlined />}
                                                                 className="cm-chat-attach-btn"
                                                                 onClick={() => fileInputRef.current?.click()}
                                                             />
@@ -1344,9 +1345,9 @@ const CustomerManagement = () => {
                                                                 value={newMessage}
                                                                 onChange={(e) => setNewMessage(e.target.value)}
                                                                 onKeyDown={handleKeyPress}
-                                                                placeholder="Write a message..."
+                                                                placeholder="Write a message… (Enter to send, Shift+Enter for newline)"
                                                                 className="cm-chat-textarea"
-                                                                autoSize={{ minRows: 1, maxRows: 3 }}
+                                                                autoSize={{ minRows: 1, maxRows: 4 }}
                                                             />
                                                             <Button
                                                                 type="primary"
@@ -1361,7 +1362,9 @@ const CustomerManagement = () => {
                                                 ) : (
                                                     <div className="cm-messenger-chat-empty">
                                                         <div className="cm-messenger-chat-empty-content">
-                                                            <MessageOutlined style={{ fontSize: 64, color: '#d9d9d9', marginBottom: 16 }} />
+                                                            <div className="cm-messenger-empty-illustration">
+                                                                <MessageOutlined />
+                                                            </div>
                                                             <h3>Select a conversation</h3>
                                                             <p>Choose a customer from the sidebar to start chatting</p>
                                                         </div>
@@ -1370,10 +1373,10 @@ const CustomerManagement = () => {
                                             </div>
                                         </div>
 
-                                        <input 
-                                            type="file" 
-                                            ref={fileInputRef} 
-                                            style={{ display: 'none' }} 
+                                        <input
+                                            type="file"
+                                            ref={fileInputRef}
+                                            style={{ display: 'none' }}
                                             accept="image/*,.pdf,.doc,.docx"
                                             onChange={(e) => {
                                                 const file = e.target.files?.[0];
@@ -1486,16 +1489,22 @@ const CustomerManagement = () => {
                     {selectedCustomer ? (
                         <div className="cm-drawer-content">
                             <div className="cm-customer-profile">
-                                <Avatar size={80} icon={<UserOutlined />} style={{ backgroundColor: '#1a7ab5' }} />
+                                <Avatar
+                                    size={80}
+                                    className="cm-drawer-avatar"
+                                    style={{ backgroundColor: getCustomerTier(selectedCustomer).color }}
+                                >
+                                    {getInitials(selectedCustomer)}
+                                </Avatar>
                                 <div className="cm-profile-info">
                                     <Title level={4}>{selectedCustomer.person?.first_name || ''} {selectedCustomer.person?.last_name || ''}</Title>
                                     <div><MailOutlined /> {selectedCustomer.person?.email || 'N/A'}</div>
                                     <div><PhoneOutlined /> {selectedCustomer.person?.phone || 'N/A'}</div>
                                 </div>
                             </div>
-                            
+
                             <Divider className="cm-drawer-divider" />
-                            
+
                             <Title level={5}>Statistics</Title>
                             <Row gutter={16}>
                                 <Col span={12}>
@@ -1511,9 +1520,9 @@ const CustomerManagement = () => {
                                     </div>
                                 </Col>
                             </Row>
-                            
+
                             <Divider className="cm-drawer-divider" />
-                            
+
                             <Title level={5}>Loyalty & Tier</Title>
                             <Row gutter={16}>
                                 <Col span={12}>
@@ -1536,23 +1545,23 @@ const CustomerManagement = () => {
                                     </div>
                                 </Col>
                             </Row>
-                            
+
                             <Divider className="cm-drawer-divider" />
-                            
+
                             <Title level={5}>Preferences</Title>
                             <Descriptions column={1} size="small" className="cm-descriptions-drawer">
                                 <Descriptions.Item label="Dietary Restrictions">{selectedCustomer.dietary_restrictions || 'None'}</Descriptions.Item>
                                 <Descriptions.Item label="Notes">{selectedCustomer.notes || 'No notes'}</Descriptions.Item>
                             </Descriptions>
-                            
+
                             <Divider className="cm-drawer-divider" />
-                            
+
                             <Title level={5}>Booking History</Title>
-                            <Table 
-                                dataSource={customerBookings} 
-                                columns={bookingColumns.slice(0, 5)} 
-                                pagination={false} 
-                                size="small" 
+                            <Table
+                                dataSource={customerBookings}
+                                columns={bookingColumns.slice(0, 5)}
+                                pagination={false}
+                                size="small"
                                 className={tableClass}
                                 rowKey="booking_id"
                                 locale={{
@@ -1640,9 +1649,9 @@ const CustomerManagement = () => {
                     <div className="cm-modal-clean-content">
                         <Form form={messageForm} layout="vertical" onFinish={handleSendMessage}>
                             <Form.Item name="customer_id" label="To" rules={[{ required: true }]}>
-                                <Select 
-                                    placeholder="Select customer" 
-                                    showSearch 
+                                <Select
+                                    placeholder="Select customer"
+                                    showSearch
                                     optionFilterProp="children"
                                     className="cm-select-enhanced"
                                 >

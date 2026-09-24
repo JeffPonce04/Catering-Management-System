@@ -3,25 +3,25 @@
 import { API_BASE_URL, API_ORIGIN } from '../../../config/env';
 import moment from 'moment';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-  CalendarOutlined, ClockCircleOutlined, TeamOutlined, 
+import {
+  CalendarOutlined, ClockCircleOutlined, TeamOutlined,
   UserOutlined, DollarOutlined, PlusOutlined, ExportOutlined,
-  CloseOutlined, CheckCircleOutlined, WarningOutlined, 
-  ScheduleOutlined, BarChartOutlined, BankOutlined, IdcardOutlined, 
-  DeleteOutlined, EditOutlined, EyeOutlined, 
-  HistoryOutlined, LeftOutlined, RightOutlined, DownOutlined, 
-  FileExcelOutlined, FilePdfOutlined, SearchOutlined, TableOutlined, 
-  InfoCircleOutlined, PercentageOutlined, MailOutlined, PhoneOutlined, 
-  EnvironmentOutlined, LoadingOutlined, InboxOutlined, RollbackOutlined, 
+  CloseOutlined, CheckCircleOutlined, WarningOutlined,
+  ScheduleOutlined, BarChartOutlined, BankOutlined, IdcardOutlined,
+  DeleteOutlined, EditOutlined, EyeOutlined,
+  HistoryOutlined, LeftOutlined, RightOutlined, DownOutlined,
+  FileExcelOutlined, FilePdfOutlined, SearchOutlined, TableOutlined,
+  InfoCircleOutlined, PercentageOutlined, MailOutlined, PhoneOutlined,
+  EnvironmentOutlined, LoadingOutlined, InboxOutlined, RollbackOutlined,
   EnvironmentFilled, CalendarFilled, SaveOutlined, FileTextOutlined,
-  ReloadOutlined, PrinterOutlined, CheckSquareOutlined, 
+  ReloadOutlined, PrinterOutlined, CheckSquareOutlined,
   FilterOutlined, SettingOutlined, TagsOutlined,
   ThunderboltOutlined,
   MessageOutlined, FormOutlined, SwapOutlined, AlertOutlined
 } from '@ant-design/icons';
-import { 
+import {
   useEmployees,
-  useShifts, 
+  useShifts,
   useArchivedShifts,
   useTimeOffRequests,
   useCreateShift,
@@ -70,50 +70,40 @@ const getEmployeeSalaryGrade = (employee) => {
 
 const getEmployeeHourlyRate = (employee) => {
   if (!employee) return 0;
-  if (employee.hourly_rate && employee.hourly_rate > 0) {
-    return employee.hourly_rate;
-  }
-  if (employee.hourly_rate_override && employee.hourly_rate_override > 0) {
-    return employee.hourly_rate_override;
-  }
-  if (employee.monthly_salary && employee.monthly_salary > 0) {
-    return employee.monthly_salary / 160;
-  }
-  if (employee.daily_rate && employee.daily_rate > 0) {
-    return employee.daily_rate / 8;
-  }
-  if (employee.position?.salary_grade?.hourly_rate) {
-    return employee.position.salary_grade.hourly_rate;
-  }
+  if (employee.hourly_rate && employee.hourly_rate > 0) return employee.hourly_rate;
+  if (employee.hourly_rate_override && employee.hourly_rate_override > 0) return employee.hourly_rate_override;
+  if (employee.monthly_salary && employee.monthly_salary > 0) return employee.monthly_salary / 160;
+  if (employee.daily_rate && employee.daily_rate > 0) return employee.daily_rate / 8;
+  if (employee.position?.salary_grade?.hourly_rate) return employee.position.salary_grade.hourly_rate;
   return 0;
 };
 
 const getProfilePhotoUrl = (employee, apiUrl = API_ORIGIN) => {
   if (!employee) return null;
-  
+
   if (employee.profile_photo_url) {
     if (employee.profile_photo_url.startsWith('http')) return employee.profile_photo_url;
     if (employee.profile_photo_url.startsWith('/')) return `${apiUrl}${employee.profile_photo_url}`;
     return `${apiUrl}/storage/${employee.profile_photo_url}`;
   }
-  
+
   if (employee.profile_photo) {
     if (employee.profile_photo.startsWith('http')) return employee.profile_photo;
     if (employee.profile_photo.startsWith('/')) return `${apiUrl}${employee.profile_photo}`;
     const cleanPath = employee.profile_photo.replace(/^storage\//, '');
     return `${apiUrl}/storage/${cleanPath}`;
   }
-  
+
   return null;
 };
 
 const formatCurrency = (amount) => {
   const numAmount = Math.max(0, Number(amount) || 0);
-  return new Intl.NumberFormat('en-PH', { 
-    style: 'currency', 
-    currency: 'PHP', 
-    minimumFractionDigits: 2, 
-    maximumFractionDigits: 2 
+  return new Intl.NumberFormat('en-PH', {
+    style: 'currency',
+    currency: 'PHP',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }).format(numAmount);
 };
 
@@ -168,18 +158,18 @@ const timeToMinutes = (timeStr) => {
 
 const calculateDurationHours = (startTime, endTime) => {
   if (!startTime || !endTime || startTime === 'null' || endTime === 'null' || startTime === '' || endTime === '') return 0;
-  
+
   const startMinutes = timeToMinutes(startTime);
   let endMinutes = timeToMinutes(endTime);
-  
+
   if (isNaN(startMinutes) || isNaN(endMinutes)) return 0;
   if (startMinutes === 0 && endMinutes === 0) return 0;
-  
+
   if (endMinutes < startMinutes && endMinutes !== 0) endMinutes += 24 * 60;
-  
+
   const durationMinutes = endMinutes - startMinutes;
   if (durationMinutes <= 0) return 0;
-  
+
   return Math.round((durationMinutes / 60) * 100) / 100;
 };
 
@@ -244,7 +234,7 @@ const getRequestStatusLabel = (status) => {
   }
 };
 
-// ==================== SKELETON LOADING COMPONENTS ====================
+// ==================== SKELETON COMPONENTS ====================
 const SkeletonStat = () => (
   <div className="sdf-stat-compact skeleton">
     <div className="skeleton-icon"></div>
@@ -284,9 +274,9 @@ const SkeletonScheduleRow = () => (
     <td><div className="skeleton-text"></div></td>
     <td><div className="skeleton-badge"></div></td>
     <td><div className="skeleton-shift-block">
-        <div className="skeleton-text"></div>
-        <div className="skeleton-text short"></div>
-      </div></td>
+      <div className="skeleton-text"></div>
+      <div className="skeleton-text short"></div>
+    </div></td>
     <td><div className="skeleton-text small"></div></td>
     <td><div className="skeleton-text small"></div></td>
     <td><div className="skeleton-icon-btn"></div></td>
@@ -316,33 +306,34 @@ const SkeletonScheduleTable = () => (
 const EmployeeAvatar = ({ employee, size = 'small' }) => {
   const [imageError, setImageError] = useState(false);
   const photoUrl = employee?.profile_photo_url || getProfilePhotoUrl(employee);
-  
+
   const sizeConfig = {
     small: { width: '32px', height: '32px', fontSize: '14px', borderRadius: '16px' },
     large: { width: '64px', height: '64px', fontSize: '28px', borderRadius: '32px' },
+    xlarge: { width: '96px', height: '96px', fontSize: '40px', borderRadius: '48px' },
     default: { width: '40px', height: '40px', fontSize: '18px', borderRadius: '20px' }
   };
-  
+
   const config = sizeConfig[size] || sizeConfig.default;
-  
+
   if (photoUrl && !imageError) {
     return (
-      <img 
-        src={photoUrl} 
-        alt={employee?.name || 'Employee'} 
+      <img
+        src={photoUrl}
+        alt={employee?.name || 'Employee'}
         style={{
           width: config.width,
           height: config.height,
           borderRadius: config.borderRadius,
           objectFit: 'cover',
-          border: '2px solid #fff',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          border: '3px solid #fff',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)'
         }}
         onError={() => setImageError(true)}
       />
     );
   }
-  
+
   const initials = employee?.name ? employee.name.charAt(0).toUpperCase() : 'U';
   return (
     <div style={{
@@ -356,8 +347,8 @@ const EmployeeAvatar = ({ employee, size = 'small' }) => {
       color: 'white',
       fontWeight: 'bold',
       fontSize: config.fontSize,
-      border: '2px solid #fff',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+      border: '3px solid #fff',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.12)'
     }}>
       {initials}
     </div>
@@ -389,10 +380,10 @@ const Staff_Scheduling = () => {
   const [printSchedule, setPrintSchedule] = useState(null);
   const [selectedBulkIds, setSelectedBulkIds] = useState([]);
   const [overlapError, setOverlapError] = useState(null);
-  
+
   // Schedule Warning State
   const [scheduleWarning, setScheduleWarning] = useState(null);
-  
+
   // Saved Schedules Stats
   const [savedSchedulesStats, setSavedSchedulesStats] = useState({
     totalShifts: 0,
@@ -400,11 +391,11 @@ const Staff_Scheduling = () => {
     totalHours: 0,
     totalCost: 0
   });
-  
+
   // Completed Shifts
   const [completedShiftsHistory, setCompletedShiftsHistory] = useState([]);
   const [completedShiftsLoading, setCompletedShiftsLoading] = useState(false);
-  
+
   // Employee Requests stats
   const [employeeRequestsStats, setEmployeeRequestsStats] = useState({
     total: 0,
@@ -412,7 +403,7 @@ const Staff_Scheduling = () => {
     approved: 0,
     rejected: 0
   });
-  
+
   const [employeeRequests, setEmployeeRequests] = useState([]);
   const [employeeRequestsLoading, setEmployeeRequestsLoading] = useState(false);
   const [selectedRequestFilter, setSelectedRequestFilter] = useState('all');
@@ -420,7 +411,7 @@ const Staff_Scheduling = () => {
   const [showRequestDetailModal, setShowRequestDetailModal] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [adminNotes, setAdminNotes] = useState('');
-  
+
   // Batch scheduling states
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [selectedEmployees, setSelectedEmployees] = useState([]);
@@ -430,6 +421,13 @@ const Staff_Scheduling = () => {
     employeeType: 'all',
     searchTerm: ''
   });
+
+  // Request Approval state
+  const [showRequestApprovalModal, setShowRequestApprovalModal] = useState(false);
+  const [pendingApprovalRequest, setPendingApprovalRequest] = useState(null);
+  const [pendingApprovalAction, setPendingApprovalAction] = useState(null);
+  const [pendingApprovalPayload, setPendingApprovalPayload] = useState(null);
+
   const [batchScheduleData, setBatchScheduleData] = useState({
     date: '',
     startTime: '09:00',
@@ -438,7 +436,7 @@ const Staff_Scheduling = () => {
     placement: '',
     notes: ''
   });
-  
+
   const [formData, setFormData] = useState({
     employeeId: '',
     date: '',
@@ -453,11 +451,11 @@ const Staff_Scheduling = () => {
   const selectedDateStr = selectedDate.toISOString().split('T')[0];
 
   // ==================== REACT QUERY HOOKS ====================
-  const { data: employeesData = [], isLoading: employeesLoading, refetch: refetchEmployees } = useEmployees({ 
+  const { data: employeesData = [], isLoading: employeesLoading, refetch: refetchEmployees } = useEmployees({
     status: 'active',
     all: true,
     per_page: 1000
-  });  
+  });
   const { data: shiftsData = [], isLoading: shiftsLoading, refetch: refetchShifts } = useShifts({ date: selectedDateStr });
   const { data: archivedShiftsData = [], isLoading: archivedLoading, refetch: refetchArchived } = useArchivedShifts();
   const { data: requestsData = [], isLoading: requestsLoading, refetch: refetchRequests } = useTimeOffRequests();
@@ -477,11 +475,11 @@ const Staff_Scheduling = () => {
     if (!employeesData || !Array.isArray(employeesData)) return [];
     return employeesData.map(emp => {
       const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || emp.name || 'Unknown';
-      
+
       let profilePhotoUrl = null;
       if (emp.profile_photo_url) {
-        profilePhotoUrl = emp.profile_photo_url.startsWith('http') 
-          ? emp.profile_photo_url 
+        profilePhotoUrl = emp.profile_photo_url.startsWith('http')
+          ? emp.profile_photo_url
           : `${API_URL}${emp.profile_photo_url.startsWith('/') ? '' : '/storage/'}${emp.profile_photo_url}`;
       } else if (emp.profile_photo) {
         if (emp.profile_photo.startsWith('http')) {
@@ -491,16 +489,16 @@ const Staff_Scheduling = () => {
           profilePhotoUrl = `${API_URL}/storage/${cleanPath}`;
         }
       }
-      
+
       let hourlyRate = getEmployeeHourlyRate(emp);
-      
+
       let salaryGrade = null;
       if (emp.position?.salary_grade?.grade_name) {
         salaryGrade = emp.position.salary_grade.grade_name;
       } else if (emp.salary_grade) {
         salaryGrade = emp.salary_grade;
       }
-      
+
       return {
         ...emp,
         id: emp.id || emp.employee_id,
@@ -523,7 +521,7 @@ const Staff_Scheduling = () => {
   // Process shifts data
   const shifts = useMemo(() => {
     if (!shiftsData || !Array.isArray(shiftsData)) return [];
-    
+
     return shiftsData.map(shift => {
       const employeeData = employees.find(e => String(e.id) === String(shift.employee_id));
       const startTime = shift.start_time || shift.startTime;
@@ -531,7 +529,7 @@ const Staff_Scheduling = () => {
       const duration = shift.duration_hours || shift.duration || calculateDurationHours(startTime, endTime);
       const hourlyRate = employeeData ? getEmployeeHourlyRate(employeeData) : 0;
       const totalCost = calculateTotalEarnings(hourlyRate, duration);
-      
+
       return {
         id: shift.id,
         employee_id: shift.employee_id,
@@ -566,11 +564,11 @@ const Staff_Scheduling = () => {
   // Calculate labor costs
   const laborCosts = useMemo(() => {
     let regularHours = 0, oncallHours = 0, regularCost = 0, oncallCost = 0;
-    
+
     shifts.forEach(shift => {
       const duration = shift.duration || calculateDurationHours(shift.start_time, shift.end_time);
       const cost = shift.total_cost || 0;
-      
+
       if (shift.shift_type === 'regular') {
         regularHours += duration;
         regularCost += cost;
@@ -579,10 +577,10 @@ const Staff_Scheduling = () => {
         oncallCost += cost;
       }
     });
-    
+
     const totalHours = regularHours + oncallHours;
     const totalCostSum = regularCost + oncallCost;
-    
+
     return {
       regularHours: Math.max(0, Number(regularHours.toFixed(2))),
       oncallHours: Math.max(0, Number(oncallHours.toFixed(2))),
@@ -599,7 +597,7 @@ const Staff_Scheduling = () => {
     let totalSchedules = schedules.length;
     let totalHours = 0;
     let totalCost = 0;
-    
+
     schedules.forEach(schedule => {
       if (schedule.shifts) {
         totalShifts += schedule.shifts.length;
@@ -607,7 +605,7 @@ const Staff_Scheduling = () => {
         totalCost += schedule.totalCost || 0;
       }
     });
-    
+
     setSavedSchedulesStats({
       totalShifts,
       totalSchedules,
@@ -620,7 +618,7 @@ const Staff_Scheduling = () => {
     const pending = requests.filter(r => r.status === 'pending').length;
     const approved = requests.filter(r => r.status === 'approved').length;
     const rejected = requests.filter(r => r.status === 'rejected').length;
-    
+
     setEmployeeRequestsStats({
       total: requests.length,
       pending,
@@ -632,16 +630,16 @@ const Staff_Scheduling = () => {
   const autoCompletePastShifts = useCallback(async () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     const updatedSchedules = [...savedSchedules];
     let hasChanges = false;
     const newlyCompletedShifts = [];
-    
+
     for (let i = 0; i < updatedSchedules.length; i++) {
       const schedule = updatedSchedules[i];
       const scheduleDate = new Date(schedule.date);
       scheduleDate.setHours(0, 0, 0, 0);
-      
+
       if (scheduleDate < today && !schedule.completed) {
         updatedSchedules[i] = {
           ...schedule,
@@ -649,7 +647,7 @@ const Staff_Scheduling = () => {
           completedAt: new Date().toISOString()
         };
         hasChanges = true;
-        
+
         if (schedule.shifts && schedule.shifts.length > 0) {
           schedule.shifts.forEach(shift => {
             newlyCompletedShifts.push({
@@ -662,7 +660,7 @@ const Staff_Scheduling = () => {
         }
       }
     }
-    
+
     if (hasChanges) {
       setSavedSchedules(updatedSchedules);
       localStorage.setItem('savedSchedules', JSON.stringify(updatedSchedules));
@@ -674,13 +672,13 @@ const Staff_Scheduling = () => {
   const loadCompletedShiftsFromSaved = useCallback(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     const completed = [];
-    
+
     savedSchedules.forEach(schedule => {
       const scheduleDate = new Date(schedule.date);
       scheduleDate.setHours(0, 0, 0, 0);
-      
+
       if (scheduleDate < today || schedule.completed) {
         if (schedule.shifts && schedule.shifts.length > 0) {
           schedule.shifts.forEach(shift => {
@@ -694,7 +692,7 @@ const Staff_Scheduling = () => {
         }
       }
     });
-    
+
     setCompletedShiftsHistory(completed);
   }, [savedSchedules]);
 
@@ -710,19 +708,19 @@ const Staff_Scheduling = () => {
     try {
       const token = getAuthToken();
       if (!token) return;
-      
+
       const targetDate = new Date();
       targetDate.setDate(targetDate.getDate() + 2);
       const dateToCheck = targetDate.toISOString().split('T')[0];
-      
+
       const response = await fetch(`${API_BASE_URL}/schedules?date=${dateToCheck}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
-      
+
       const schedulesCount = data.success ? (data.data?.data?.length || data.data?.length || 0) : 0;
       const activeEmployees = employees.length;
-      
+
       if (schedulesCount === 0) {
         setScheduleWarning({
           type: 'danger',
@@ -756,14 +754,14 @@ const Staff_Scheduling = () => {
         setEmployeeRequestsLoading(false);
         return;
       }
-      
+
       const params = new URLSearchParams();
       if (selectedRequestFilter !== 'all') params.append('status', selectedRequestFilter);
       if (selectedRequestType !== 'all') params.append('type', selectedRequestType);
       params.append('per_page', '100');
-      
+
       const url = `${API_BASE_URL}/employee-requests${params.toString() ? `?${params.toString()}` : ''}`;
-      
+
       const response = await fetch(url, {
         method: 'GET',
         headers: {
@@ -772,20 +770,20 @@ const Staff_Scheduling = () => {
           'Content-Type': 'application/json'
         }
       });
-      
+
       const data = await response.json();
-      
+
       if (response.status === 401) {
         setEmployeeRequestsLoading(false);
         return;
       }
-      
+
       if (data.success) {
         const requestsData = data.data?.data || data.data || [];
-        
+
         const requestsWithEmployees = await Promise.all(requestsData.map(async (req) => {
           let employeeData = req.employee;
-          
+
           if (!employeeData && req.employee_id) {
             try {
               const empResponse = await fetch(`${API_BASE_URL}/employees/${req.employee_id}`, {
@@ -799,7 +797,7 @@ const Staff_Scheduling = () => {
               console.error(`Failed to fetch employee ${req.employee_id}:`, err);
             }
           }
-          
+
           let swapEmployeeData = req.swap_employee;
           if (req.type === 'swap' && !swapEmployeeData && req.swap_with_employee_id) {
             try {
@@ -814,19 +812,19 @@ const Staff_Scheduling = () => {
               console.error(`Failed to fetch swap employee ${req.swap_with_employee_id}:`, err);
             }
           }
-          
+
           return {
             ...req,
             employee: employeeData,
             swap_employee: swapEmployeeData,
             type_color: getRequestTypeInfo(req.type).color,
-            employee_name: employeeData ? 
-              `${employeeData.first_name || ''} ${employeeData.last_name || ''}`.trim() || employeeData.name : 
+            employee_name: employeeData ?
+              `${employeeData.first_name || ''} ${employeeData.last_name || ''}`.trim() || employeeData.name :
               'Unknown Employee',
             employee_code: employeeData?.employee_code || employeeData?.employee_id || 'N/A'
           };
         }));
-        
+
         setEmployeeRequests(requestsWithEmployees);
         updateEmployeeRequestsStats(requestsWithEmployees);
       }
@@ -841,12 +839,12 @@ const Staff_Scheduling = () => {
     try {
       const token = getAuthToken();
       if (!token) return;
-      
+
       const response = await fetch(`${API_BASE_URL}/employee-requests?per_page=1000`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await response.json();
-      
+
       if (data.success) {
         const requests = data.data?.data || data.data || [];
         updateEmployeeRequestsStats(requests);
@@ -863,9 +861,7 @@ const Staff_Scheduling = () => {
     const startTime = request.start_time || request.time_in;
     const endTime = request.end_time || request.time_out;
 
-    if (!employeeId || !workDate || !startTime || !endTime) {
-      return;
-    }
+    if (!employeeId || !workDate || !startTime || !endTime) return;
 
     const token = getAuthToken();
     if (!token) return;
@@ -904,21 +900,21 @@ const Staff_Scheduling = () => {
 
   const handleRequestAction = async (request, action) => {
     const status = action === 'approve' ? 'approved' : 'rejected';
-    
+
     if (!adminNotes.trim() && status === 'rejected') {
       showNotification('Please provide a reason for rejection', 'error');
       return;
     }
-    
+
     try {
       const token = getAuthToken();
       if (!token) {
         showNotification('Please login again', 'error');
         return;
       }
-      
+
       const url = `${API_BASE_URL}/employee-requests/${request.id}/status`;
-      
+
       const response = await fetch(url, {
         method: 'PUT',
         headers: {
@@ -931,14 +927,14 @@ const Staff_Scheduling = () => {
           admin_notes: adminNotes.trim() || null
         })
       });
-      
+
       const data = await response.json();
-      
+
       if (response.status === 401) {
         showNotification('Session expired. Please login again.', 'error');
         return;
       }
-      
+
       if (data.success) {
         showNotification(`Request ${status} successfully`, 'success');
         if (status === 'approved') {
@@ -949,7 +945,7 @@ const Staff_Scheduling = () => {
         setSelectedRequest(null);
         loadEmployeeRequests();
         fetchEmployeeRequestsStats();
-        
+
         if (activeTab === 'requests') {
           refetchRequests();
         }
@@ -1014,82 +1010,91 @@ const Staff_Scheduling = () => {
     setShowModal(true);
   }, [selectedDateStr]);
 
-
-  const submitScheduleWithRequestWarning = async (payload, action) => {
+  // Submit with request warning
+  const submitScheduleWithRequestWarning = useCallback(async (payload, action, actionType = 'create') => {
     try {
       return await action(payload);
     } catch (error) {
       const data = error.response?.data;
       if (data?.requires_request_acknowledgement) {
-        const ok = window.confirm(
-          `${data.message || 'This employee has an approved request on this date.'}\n\nOK = continue creating/updating the schedule anyway.\nCancel = follow the approved request and do not schedule.`
-        );
-
-        if (!ok) {
-          showNotification('Schedule cancelled. Approved employee request was followed.', 'info');
-          return null;
-        }
-
-        return await action({ ...payload, acknowledge_approved_request: true });
+        setPendingApprovalRequest(data.request);
+        setPendingApprovalAction(actionType);
+        setPendingApprovalPayload(payload);
+        setShowRequestApprovalModal(true);
+        return null;
       }
-
       throw error;
     }
-  };
+  }, []);
 
-  // ==================== FIXED: CREATE SHIFT HANDLER ====================
-  const handleCreateShift = async () => {
-    console.log('📝 Creating shift with data:', {
-      employeeId: formData.employeeId,
-      date: formData.date,
-      startTime: formData.startTime,
-      endTime: formData.endTime,
-      shift_type: formData.shift_type,
-      placement: formData.placement,
-      notes: formData.notes
-    });
+  // Handle request approval decision
+  const handleRequestApprovalDecision = useCallback(async (continueWithSchedule) => {
+    setShowRequestApprovalModal(false);
 
-    // Validate all required fields
+    if (!continueWithSchedule) {
+      showNotification('Schedule cancelled. Approved employee request was followed.', 'info');
+      setPendingApprovalRequest(null);
+      setPendingApprovalAction(null);
+      setPendingApprovalPayload(null);
+      return;
+    }
+
+    try {
+      const finalPayload = { ...pendingApprovalPayload, acknowledge_approved_request: true };
+
+      if (pendingApprovalAction === 'create') {
+        await createShiftMutation.mutateAsync(finalPayload);
+        showNotification('Shift created successfully', 'success');
+      } else if (pendingApprovalAction === 'update') {
+        await updateShiftMutation.mutateAsync({ id: selectedShift.id, data: finalPayload });
+        showNotification('Shift updated successfully', 'success');
+      }
+
+      setShowModal(false);
+      setSelectedShift(null);
+      refetchShifts();
+      checkScheduleWarning();
+    } catch (error) {
+      console.error('❌ Error after approval:', error);
+      showNotification(error.response?.data?.message || 'Failed to save shift', 'error');
+    }
+
+    setPendingApprovalRequest(null);
+    setPendingApprovalAction(null);
+    setPendingApprovalPayload(null);
+  }, [pendingApprovalPayload, pendingApprovalAction, selectedShift, createShiftMutation, updateShiftMutation, refetchShifts, checkScheduleWarning, showNotification]);
+
+  // ==================== CREATE SHIFT HANDLER ====================
+  const handleCreateShift = useCallback(async () => {
+    console.log('📝 Creating shift with data:', formData);
+
     const errors = [];
-    
-    if (!formData.employeeId) {
-      errors.push('Please select an employee');
-    }
-    if (!formData.date) {
-      errors.push('Please select a date');
-    }
-    if (!formData.startTime) {
-      errors.push('Please select start time');
-    }
-    if (!formData.endTime) {
-      errors.push('Please select end time');
-    }
-    
-    // Validate time range
+
+    if (!formData.employeeId) errors.push('Please select an employee');
+    if (!formData.date) errors.push('Please select a date');
+    if (!formData.startTime) errors.push('Please select start time');
+    if (!formData.endTime) errors.push('Please select end time');
+
     if (formData.startTime && formData.endTime) {
       const startMinutes = timeToMinutes(formData.startTime);
       let endMinutes = timeToMinutes(formData.endTime);
       if (endMinutes < startMinutes) endMinutes += 24 * 60;
-      
+
       if (endMinutes <= startMinutes) {
         errors.push('End time must be after start time');
       }
     }
-    
+
     if (errors.length > 0) {
-      const errorMessage = errors.join('\n');
-      console.log('❌ Validation errors:', errors);
-      showNotification(errorMessage, 'error');
+      showNotification(errors.join(' • '), 'error');
       return;
     }
-    
-    // Check if date is within 15 days
+
     if (!isWithin15DayWindow(formData.date)) {
       showNotification('Cannot create shift for dates beyond 15 days from today', 'error');
       return;
     }
-    
-    // Check if employee already has a shift on this date
+
     const employeeId = parseInt(formData.employeeId);
     const hasExistingShift = shifts.some(s =>
       (s.employee_id === employeeId || s.employeeId === employeeId) &&
@@ -1100,15 +1105,13 @@ const Staff_Scheduling = () => {
       showNotification(`Employee already has a shift on ${formData.date}.`, 'error');
       return;
     }
-    
-    // Check for overlap (time conflict - same day, overlapping times)
+
     if (overlapError) {
       showNotification('Cannot create shift: ' + overlapError, 'error');
       return;
     }
-    
+
     try {
-      // Prepare payload
       const payload = {
         employee_id: parseInt(formData.employeeId),
         work_date: formData.date,
@@ -1118,17 +1121,17 @@ const Staff_Scheduling = () => {
         placement: formData.placement?.trim() || '',
         notes: formData.notes?.trim() || ''
       };
-      
-      console.log('📤 Sending payload:', payload);
-      
-      const response = await submitScheduleWithRequestWarning(payload, (finalPayload) => createShiftMutation.mutateAsync(finalPayload));
-      if (!response) return;
-      console.log('✅ Shift created:', response);
-      
+
+      const response = await submitScheduleWithRequestWarning(
+        payload,
+        (finalPayload) => createShiftMutation.mutateAsync(finalPayload),
+        'create'
+      );
+      if (response === null) return;
+
       showNotification('Shift created successfully', 'success');
       setShowModal(false);
-      
-      // Reset form
+
       setFormData({
         employeeId: '',
         date: selectedDateStr,
@@ -1138,62 +1141,52 @@ const Staff_Scheduling = () => {
         placement: '',
         notes: ''
       });
-      
-      // Refresh data
+
       refetchShifts();
       checkScheduleWarning();
-      
+
     } catch (error) {
       console.error('❌ Create shift error:', error);
-      
+
       if (error.response) {
-        console.error('Error response data:', error.response.data);
-        console.error('Error response status:', error.response.status);
-        
         let errorMsg = error.response.data?.message || 'Failed to create shift.';
-        
-        // Check for duplicate key error
         if (errorMsg.includes('Duplicate entry') || errorMsg.includes('1062')) {
           errorMsg = 'This employee already has a shift on this date.';
         }
-        
         showNotification(errorMsg, 'error');
       } else if (error.request) {
-        console.error('No response received:', error.request);
         showNotification('No response from server. Please check your connection.', 'error');
       } else {
-        console.error('Error setting up request:', error.message);
         showNotification('Failed to create shift: ' + error.message, 'error');
       }
     }
-  };
+  }, [formData, shifts, overlapError, selectedDateStr, createShiftMutation, refetchShifts, checkScheduleWarning, showNotification, submitScheduleWithRequestWarning]);
 
-  // ==================== FIXED: UPDATE SHIFT HANDLER ====================
-  const handleUpdateShift = async () => {
+  // ==================== UPDATE SHIFT HANDLER ====================
+  const handleUpdateShift = useCallback(async () => {
     if (!selectedShift) return;
-    
-    // Validate
+
     const errors = [];
     if (!formData.employeeId) errors.push('Please select an employee');
     if (!formData.date) errors.push('Please select a date');
     if (!formData.startTime) errors.push('Please select start time');
     if (!formData.endTime) errors.push('Please select end time');
-    
+
     if (errors.length > 0) {
-      showNotification(errors.join('\n'), 'error');
+      showNotification(errors.join(' • '), 'error');
       return;
     }
-    
+
     if (!isWithin15DayWindow(formData.date)) {
       showNotification('Cannot update shift for dates beyond 15 days from today', 'error');
       return;
     }
-    
+
     if (overlapError) {
       showNotification(overlapError, 'error');
       return;
     }
-    
+
     try {
       const payload = {
         employee_id: parseInt(formData.employeeId),
@@ -1204,11 +1197,15 @@ const Staff_Scheduling = () => {
         placement: formData.placement?.trim() || '',
         notes: formData.notes?.trim() || ''
       };
-      
-      console.log('📤 Updating shift with payload:', payload);
-      
-      const response = await submitScheduleWithRequestWarning(payload, (finalPayload) => updateShiftMutation.mutateAsync({ id: selectedShift.id, data: finalPayload }));
-      if (!response) return;
+
+      const result = await submitScheduleWithRequestWarning(
+        payload,
+        (finalPayload) => updateShiftMutation.mutateAsync({ id: selectedShift.id, data: finalPayload }),
+        'update'
+      );
+
+      if (result === null) return;
+
       showNotification('Shift updated successfully', 'success');
       setShowModal(false);
       setSelectedShift(null);
@@ -1218,19 +1215,18 @@ const Staff_Scheduling = () => {
       const errorMsg = error.response?.data?.message || error.message || 'Failed to update shift';
       showNotification(errorMsg, 'error');
     }
-  };
+  }, [selectedShift, formData, overlapError, updateShiftMutation, refetchShifts, showNotification, submitScheduleWithRequestWarning]);
 
-  const handleSaveShift = useCallback(() => {
+  const handleSaveShift = () => {
     if (modalMode === 'add') {
       handleCreateShift();
     } else {
       handleUpdateShift();
     }
-  }, [modalMode]);
+  };
 
-  // ==================== FIXED: BATCH SCHEDULE HANDLER ====================
+  // ==================== BATCH SCHEDULE HANDLER ====================
   const handleBatchSchedule = async () => {
-    // Validate inputs
     if (selectedEmployees.length === 0) {
       showNotification('Please select at least one employee', 'error');
       return;
@@ -1246,7 +1242,6 @@ const Staff_Scheduling = () => {
       return;
     }
 
-    // Build a set of employee IDs that already have shifts on this date
     const employeesWithShifts = new Set();
     shifts.forEach(shift => {
       const shiftDate = shift.date || shift.work_date;
@@ -1256,19 +1251,8 @@ const Staff_Scheduling = () => {
       }
     });
 
-    console.log('📋 Employees with existing shifts on this date:', [...employeesWithShifts]);
+    const availableEmployees = selectedEmployees.filter(empId => !employeesWithShifts.has(empId));
 
-    // Filter out employees who already have shifts
-    const availableEmployees = selectedEmployees.filter(empId => {
-      const hasShift = employeesWithShifts.has(empId);
-      if (hasShift) {
-        const employee = employees.find(e => e.id === empId);
-        console.log(`⏭️ Skipping ${employee?.name || empId} - already has a shift on ${batchScheduleData.date}`);
-      }
-      return !hasShift;
-    });
-
-    // Check if any employees are available
     if (availableEmployees.length === 0) {
       const employeeNames = selectedEmployees.map(id => {
         const emp = employees.find(e => e.id === id);
@@ -1278,7 +1262,6 @@ const Staff_Scheduling = () => {
       return;
     }
 
-    // Process only available employees
     let successCount = 0;
     let failCount = 0;
     const errors = [];
@@ -1297,30 +1280,25 @@ const Staff_Scheduling = () => {
           notes: batchScheduleData.notes?.trim() || ''
         };
 
-        console.log(`📤 Creating batch shift for employee ${employeeId}:`, payload);
-        
         await createShiftMutation.mutateAsync(payload);
         successCount++;
       } catch (error) {
         failCount++;
         const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
-        
-        // Check if it's a duplicate key error
+
         if (errorMsg.includes('Duplicate entry') || errorMsg.includes('1062')) {
           errors.push(`Employee ${employeeId}: Already has a shift on this date (skipped)`);
         } else {
           errors.push(`Employee ${employeeId}: ${errorMsg}`);
         }
-        console.error(`❌ Failed to create shift for employee ${employeeId}:`, error);
       }
     }
-    
-    // Show summary message
+
     const skippedCount = selectedEmployees.length - availableEmployees.length;
     let message = `✅ Successfully created ${successCount} shifts`;
     if (skippedCount > 0) message += `, ⏭️ ${skippedCount} skipped (already scheduled)`;
     if (failCount > 0) message += `, ❌ ${failCount} failed`;
-    
+
     if (successCount > 0) {
       showNotification(message, failCount > 0 ? 'warning' : 'success');
       refetchShifts();
@@ -1361,15 +1339,15 @@ const Staff_Scheduling = () => {
       showNotification('No shifts to save', 'error');
       return;
     }
-    
+
     const fileName = scheduleFileName.trim() || `Schedule_${selectedDateStr}`;
-    
+
     const existingSchedule = savedSchedules.find(s => s.date === selectedDateStr);
     if (existingSchedule) {
       showNotification(`Schedule for ${selectedDateStr} already exists.`, 'error');
       return;
     }
-    
+
     const scheduleData = {
       id: Date.now(),
       name: fileName,
@@ -1386,12 +1364,12 @@ const Staff_Scheduling = () => {
       totalCost: laborCosts.totalCost,
       completed: false
     };
-    
+
     const updatedSchedules = [scheduleData, ...savedSchedules];
     setSavedSchedules(updatedSchedules);
     localStorage.setItem('savedSchedules', JSON.stringify(updatedSchedules));
     updateSavedSchedulesStats(updatedSchedules);
-    
+
     setShowScheduleFileModal(false);
     setScheduleFileName('');
     showNotification(`Schedule "${fileName}" saved successfully`, 'success');
@@ -1409,16 +1387,16 @@ const Staff_Scheduling = () => {
       archivedAt: new Date().toISOString(),
       isArchived: true
     };
-    
+
     const existingArchived = JSON.parse(localStorage.getItem('archivedSchedules') || '[]');
     existingArchived.unshift(archivedSchedule);
     localStorage.setItem('archivedSchedules', JSON.stringify(existingArchived));
-    
+
     const updatedSchedules = savedSchedules.filter(s => s.id !== schedule.id);
     setSavedSchedules(updatedSchedules);
     localStorage.setItem('savedSchedules', JSON.stringify(updatedSchedules));
     updateSavedSchedulesStats(updatedSchedules);
-    
+
     showNotification(`Schedule "${schedule.name}" archived successfully!`, 'success');
     setActiveTab('archived');
   };
@@ -1431,7 +1409,7 @@ const Staff_Scheduling = () => {
     const archivedSchedulesList = JSON.parse(localStorage.getItem('archivedSchedules') || '[]');
     const updatedArchived = archivedSchedulesList.filter(s => s.id !== schedule.id);
     localStorage.setItem('archivedSchedules', JSON.stringify(updatedArchived));
-    
+
     const restoredSchedule = {
       ...schedule,
       isArchived: false,
@@ -1441,7 +1419,7 @@ const Staff_Scheduling = () => {
     setSavedSchedules(updatedSchedules);
     localStorage.setItem('savedSchedules', JSON.stringify(updatedSchedules));
     updateSavedSchedulesStats(updatedSchedules);
-    
+
     showNotification(`Schedule "${schedule.name}" restored successfully`, 'success');
     setActiveTab('schedule');
   };
@@ -1470,11 +1448,6 @@ const Staff_Scheduling = () => {
     setBatchScheduleData(prev => ({ ...prev, [name]: value }));
   };
 
-  const getShiftForEmployeeAndDate = (employeeId) => {
-    if (!employeeId) return null;
-    return shifts.find(s => String(s.employee_id || s.employeeId) === String(employeeId)) || null;
-  };
-
   const calculateShiftTotal = () => {
     if (!formData.employeeId || !formData.startTime || !formData.endTime) return 0;
     const employee = employees.find(e => e.id === parseInt(formData.employeeId));
@@ -1498,30 +1471,30 @@ const Staff_Scheduling = () => {
 
   const checkOverlap = useCallback(() => {
     if (!formData.employeeId || !formData.date || !formData.startTime || !formData.endTime) return null;
-    
-    const existingShifts = shifts.filter(s => 
+
+    const existingShifts = shifts.filter(s =>
       (s.employee_id === parseInt(formData.employeeId) || s.employeeId === parseInt(formData.employeeId)) &&
-      (s.date === formData.date || s.work_date === formData.date) && 
+      (s.date === formData.date || s.work_date === formData.date) &&
       s.id !== selectedShift?.id
     );
-    
+
     const newStartMinutes = timeToMinutes(formData.startTime);
     let newEndMinutes = timeToMinutes(formData.endTime);
     if (newEndMinutes < newStartMinutes) newEndMinutes += 24 * 60;
-    
+
     for (const shift of existingShifts) {
       const shiftStart = shift.start_time || shift.startTime;
       const shiftEnd = shift.end_time || shift.endTime;
       let shiftStartMinutes = timeToMinutes(shiftStart);
       let shiftEndMinutes = timeToMinutes(shiftEnd);
-      
+
       if (shiftEndMinutes < shiftStartMinutes) shiftEndMinutes += 24 * 60;
-      
+
       if ((newStartMinutes < shiftEndMinutes && newEndMinutes > shiftStartMinutes)) {
         return `Employee already has a shift from ${formatTo12Hour(shiftStart)} to ${formatTo12Hour(shiftEnd)} on this day`;
       }
     }
-    
+
     return null;
   }, [formData.employeeId, formData.date, formData.startTime, formData.endTime, shifts, selectedShift?.id]);
 
@@ -1533,7 +1506,7 @@ const Staff_Scheduling = () => {
       setOverlapError(null);
     }
   }, [formData.employeeId, formData.date, formData.startTime, formData.endTime, checkOverlap]);
-  
+
   const getShiftBreakdownDisplay = () => {
     const breakdown = getShiftBreakdown();
     if (!breakdown) return null;
@@ -1571,8 +1544,8 @@ const Staff_Scheduling = () => {
   };
 
   const handleSelectEmployee = (employeeId) => {
-    setSelectedEmployees(prev => 
-      prev.includes(employeeId) 
+    setSelectedEmployees(prev =>
+      prev.includes(employeeId)
         ? prev.filter(id => id !== employeeId)
         : [...prev, employeeId]
     );
@@ -1588,9 +1561,7 @@ const Staff_Scheduling = () => {
     setSelectAll(!selectAll);
   };
 
-  // ==================== FIXED: getFilteredEmployeesForBatch ====================
   const getFilteredEmployeesForBatch = useCallback(() => {
-    // Build a set of employee IDs that have shifts on the selected date
     const employeesWithShifts = new Set();
     shifts.forEach(shift => {
       const shiftDate = shift.date || shift.work_date;
@@ -1600,35 +1571,23 @@ const Staff_Scheduling = () => {
       }
     });
 
-    // Filter employees
     return employees.filter(emp => {
-      // Check basic filters
       if (emp.status !== 'active') return false;
       if (batchFilters.department !== 'all' && emp.department?.name !== batchFilters.department) return false;
       if (batchFilters.employeeType !== 'all' && emp.employee_type !== batchFilters.employeeType) return false;
       if (batchFilters.searchTerm && !emp.name.toLowerCase().includes(batchFilters.searchTerm.toLowerCase())) return false;
-      
-      // Filter out employees who already have a shift on this date
       if (employeesWithShifts.has(emp.id)) return false;
-      
       return true;
     });
   }, [employees, batchFilters, shifts, batchScheduleData.date]);
 
-  // ==================== FIXED: filteredEmployeesForBatch using useMemo ====================
   const filteredEmployeesForBatch = useMemo(() => {
-    const result = getFilteredEmployeesForBatch();
-    console.log('🔍 filteredEmployeesForBatch computed:', {
-      count: result.length,
-      employees: result.map(e => ({ id: e.id, name: e.name }))
-    });
-    return result;
+    return getFilteredEmployeesForBatch();
   }, [getFilteredEmployeesForBatch]);
 
-  // ==================== FIXED: isAllSelected ====================
   const isAllSelected = useMemo(() => {
-    return filteredEmployeesForBatch.length > 0 && 
-      selectedEmployees.length === filteredEmployeesForBatch.length && 
+    return filteredEmployeesForBatch.length > 0 &&
+      selectedEmployees.length === filteredEmployeesForBatch.length &&
       filteredEmployeesForBatch.every(emp => selectedEmployees.includes(emp.id));
   }, [filteredEmployeesForBatch, selectedEmployees]);
 
@@ -1706,7 +1665,7 @@ const Staff_Scheduling = () => {
       showNotification('No data to export', 'info');
       return;
     }
-    
+
     let tableHTML = `<html><head><meta charset="utf-8"><title>Staff Schedule - ${selectedDateStr}</title><style>
       body{font-family: 'Segoe UI', Arial, sans-serif; padding: 20px}
       table{width:100%;border-collapse:collapse;margin-top:20px}
@@ -1751,7 +1710,7 @@ const Staff_Scheduling = () => {
     </tbody>
   </table>
   </body></html>`;
-    
+
     const blob = new Blob([tableHTML], { type: 'application/vnd.ms-excel' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
@@ -1824,7 +1783,7 @@ const Staff_Scheduling = () => {
   const handlePrint = () => {
     const printWindow = window.open('', '_blank');
     if (!printWindow) return;
-    
+
     printWindow.document.write(`
       <html><head><title>Schedule Report</title><style>
         body{font-family: 'Segoe UI', Arial, sans-serif; padding: 20px}
@@ -1886,7 +1845,7 @@ const Staff_Scheduling = () => {
       autoCompletePastShifts();
       loadCompletedShiftsFromSaved();
     }, 3600000);
-    
+
     return () => clearInterval(interval);
   }, []);
 
@@ -1897,29 +1856,29 @@ const Staff_Scheduling = () => {
   }, [selectedDate, refetchShifts]);
 
   const statistics = [
-    { 
-      label: 'Schedule Created', 
-      value: savedSchedulesStats.totalSchedules, 
-      icon: <SaveOutlined />, 
-      trend: `${savedSchedulesStats.totalShifts} total shifts saved` 
+    {
+      label: 'Schedule Created',
+      value: savedSchedulesStats.totalSchedules,
+      icon: <SaveOutlined />,
+      trend: `${savedSchedulesStats.totalShifts} total shifts saved`
     },
-    { 
-      label: 'Staff Scheduled', 
-      value: new Set(shifts.map(s => s.employee_id)).size, 
-      icon: <TeamOutlined />, 
-      trend: `${employees.filter(e => e.status === 'active').length} active` 
+    {
+      label: 'Staff Scheduled',
+      value: new Set(shifts.map(s => s.employee_id)).size,
+      icon: <TeamOutlined />,
+      trend: `${employees.filter(e => e.status === 'active').length} active`
     },
-    { 
-      label: 'Employee Requests', 
-      value: employeeRequestsStats.total, 
-      icon: <FormOutlined />, 
-      trend: `${employeeRequestsStats.pending} pending approval` 
+    {
+      label: 'Employee Requests',
+      value: employeeRequestsStats.total,
+      icon: <FormOutlined />,
+      trend: `${employeeRequestsStats.pending} pending approval`
     },
-    { 
-      label: 'Total Hours', 
-      value: laborCosts.totalHours.toFixed(1), 
-      icon: <ClockCircleOutlined />, 
-      trend: `For ${selectedDateStr}` 
+    {
+      label: 'Total Hours',
+      value: laborCosts.totalHours.toFixed(1),
+      icon: <ClockCircleOutlined />,
+      trend: `For ${selectedDateStr}`
     },
   ];
 
@@ -2093,10 +2052,10 @@ const Staff_Scheduling = () => {
                   <thead>
                     <tr>
                       <th style={{ width: '40px' }}>
-                        <input 
-                          type="checkbox" 
-                          onChange={(e) => setSelectedBulkIds(e.target.checked ? shifts.map(s => s.id) : [])} 
-                          checked={selectedBulkIds.length === shifts.length && shifts.length > 0} 
+                        <input
+                          type="checkbox"
+                          onChange={(e) => setSelectedBulkIds(e.target.checked ? shifts.map(s => s.id) : [])}
+                          checked={selectedBulkIds.length === shifts.length && shifts.length > 0}
                         />
                       </th>
                       <th>Employee</th>
@@ -2113,30 +2072,30 @@ const Staff_Scheduling = () => {
                   <tbody>
                     {employees
                       .filter(e => selectedDepartment === 'all' || e.department?.name === selectedDepartment)
-                      .filter(e => 
-                        e.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                      .filter(e =>
+                        e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         (e.employee_code || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
                         (e.employee_id || '').toLowerCase().includes(searchQuery.toLowerCase())
                       )
                       .sort((a, b) => a.name.localeCompare(b.name))
                       .map(emp => {
-                        const shift = shifts.find(s => 
+                        const shift = shifts.find(s =>
                           String(s.employee_id || s.employeeId) === String(emp.id)
                         );
-                        
+
                         const duration = shift ? Math.max(0, shift.duration || calculateDurationHours(shift.start_time, shift.end_time)) : 0;
                         const totalCost = shift ? Math.max(0, shift.total_cost || 0) : 0;
                         const salaryGrade = getEmployeeSalaryGrade(emp);
                         const hourlyRate = getEmployeeHourlyRate(emp);
-                        
+
                         return (
                           <tr key={emp.id}>
                             <td>
-                              <input 
-                                type="checkbox" 
-                                onChange={() => shift && toggleShiftSelection(shift.id)} 
-                                checked={shift ? selectedBulkIds.includes(shift.id) : false} 
-                                disabled={!shift} 
+                              <input
+                                type="checkbox"
+                                onChange={() => shift && toggleShiftSelection(shift.id)}
+                                checked={shift ? selectedBulkIds.includes(shift.id) : false}
+                                disabled={!shift}
                               />
                             </td>
                             <td>
@@ -2154,10 +2113,10 @@ const Staff_Scheduling = () => {
                             <td><span className={`sdf-type-badge ${emp.employee_type}`}>{emp.employee_type === 'regular' ? 'Regular' : 'On-Call'}</span></td>
                             <td>
                               {shift ? (
-                                <div className={`sdf-shift-block ${shift.shift_type || 'regular'}`} onClick={() => { 
-                                  setSelectedShift(shift); 
-                                  setModalMode('view'); 
-                                  setShowModal(true); 
+                                <div className={`sdf-shift-block ${shift.shift_type || 'regular'}`} onClick={() => {
+                                  setSelectedShift(shift);
+                                  setModalMode('view');
+                                  setShowModal(true);
                                 }}>
                                   <div className="sdf-shift-time"><ClockCircleOutlined /> {formatTimeRange(shift.start_time, shift.end_time)}</div>
                                   <div className="sdf-shift-placement"><EnvironmentFilled /> {shift.placement || 'Not Assigned'}</div>
@@ -2165,21 +2124,21 @@ const Staff_Scheduling = () => {
                                   <div className="sdf-shift-rate">{formatCurrency(hourlyRate)}/hr</div>
                                 </div>
                               ) : (
-                                <button 
-                                  className="sdf-add-shift-btn" 
-                                  onClick={() => { 
-                                    setFormData({ 
-                                      employeeId: emp.id, 
+                                <button
+                                  className="sdf-add-shift-btn"
+                                  onClick={() => {
+                                    setFormData({
+                                      employeeId: emp.id,
                                       date: selectedDateStr,
-                                      startTime: '09:00', 
-                                      endTime: '17:00', 
-                                      shift_type: 'regular', 
-                                      placement: '', 
-                                      notes: '' 
-                                    }); 
-                                    setModalMode('add'); 
-                                    setShowModal(true); 
-                                  }} 
+                                      startTime: '09:00',
+                                      endTime: '17:00',
+                                      shift_type: 'regular',
+                                      placement: '',
+                                      notes: ''
+                                    });
+                                    setModalMode('add');
+                                    setShowModal(true);
+                                  }}
                                   disabled={!isDateEditable}
                                 >
                                   <PlusOutlined /> Add Shift
@@ -2189,27 +2148,27 @@ const Staff_Scheduling = () => {
                             <td><span className="sdf-hours-badge">{duration.toFixed(1)} hrs</span></td>
                             <td className="sdf-cost-cell">{formatCurrency(totalCost)}</td>
                             <td>
-                              <button 
-                                className="sdf-action-icon" 
-                                onClick={() => { setSelectedEmployeeDetail(emp); setShowEmployeeModal(true); }} 
+                              <button
+                                className="sdf-action-icon"
+                                onClick={() => { setSelectedEmployeeDetail(emp); setShowEmployeeModal(true); }}
                                 title="View Employee Profile"
                               >
                                 <EyeOutlined />
                               </button>
                               {shift && (
                                 <>
-                                  <button 
-                                    className="sdf-action-icon" 
-                                    onClick={() => openEditModal(shift)} 
-                                    disabled={!isDateEditable} 
+                                  <button
+                                    className="sdf-action-icon"
+                                    onClick={() => openEditModal(shift)}
+                                    disabled={!isDateEditable}
                                     title="Edit Shift"
                                   >
                                     <EditOutlined />
                                   </button>
-                                  <button 
-                                    className="sdf-action-icon" 
-                                    onClick={() => { setDeleteItemId(shift.id); setShowDeleteConfirm(true); }} 
-                                    disabled={!isDateEditable} 
+                                  <button
+                                    className="sdf-action-icon"
+                                    onClick={() => { setDeleteItemId(shift.id); setShowDeleteConfirm(true); }}
+                                    disabled={!isDateEditable}
                                     title="Archive Shift"
                                   >
                                     <DeleteOutlined />
@@ -2233,7 +2192,7 @@ const Staff_Scheduling = () => {
               <h2><HistoryOutlined /> Schedule History</h2>
               <p>View all saved schedules and completed shifts</p>
             </div>
-            
+
             <div className="sdf-stats-overview-card">
               <div className="sdf-stats-overview-header">
                 <div className="sdf-stats-overview-icon">
@@ -2248,8 +2207,8 @@ const Staff_Scheduling = () => {
                     </span>
                   </div>
                 </div>
-                <button 
-                  className="sdf-stats-overview-refresh" 
+                <button
+                  className="sdf-stats-overview-refresh"
                   onClick={loadSavedSchedules}
                   title="Refresh"
                 >
@@ -2257,7 +2216,7 @@ const Staff_Scheduling = () => {
                 </button>
               </div>
             </div>
-            
+
             {savedSchedules.length > 0 ? (
               <div className="sdf-saved-schedules-list">
                 <h3>Saved Schedules</h3>
@@ -2266,7 +2225,7 @@ const Staff_Scheduling = () => {
                   const today = new Date();
                   today.setHours(0, 0, 0, 0);
                   const isPast = scheduleDate < today;
-                  
+
                   return (
                     <div key={schedule.id} className={`sdf-saved-schedule-item ${isPast ? 'completed' : ''}`}>
                       <div className="sdf-schedule-info">
@@ -2294,7 +2253,7 @@ const Staff_Scheduling = () => {
                 <HistoryOutlined /><h3>No Saved Schedules</h3><p>Save schedules from the Schedule tab to see them here</p>
               </div>
             )}
-            
+
             <div className="sdf-completed-shifts-section">
               <div className="sdf-section-header">
                 <h3><CheckCircleOutlined /> Completed Shifts (History)</h3>
@@ -2471,7 +2430,6 @@ const Staff_Scheduling = () => {
               </button>
             </div>
 
-            {/* Compact Request Grid - Similar to Employee Cards */}
             <div className="sdf-requests-compact-grid">
               {employeeRequestsLoading ? (
                 [...Array(6)].map((_, i) => (
@@ -2500,15 +2458,15 @@ const Staff_Scheduling = () => {
                   const statusColor = getRequestStatusColor(req.status);
                   const statusBgColor = getRequestStatusBgColor(req.status);
                   const statusLabel = getRequestStatusLabel(req.status);
-                  
+
                   return (
-                    <div 
-                      key={req.id} 
+                    <div
+                      key={req.id}
                       className="sdf-request-compact-card"
-                      onClick={() => { 
-                        setSelectedRequest(req); 
-                        setAdminNotes(req.admin_notes || ''); 
-                        setShowRequestDetailModal(true); 
+                      onClick={() => {
+                        setSelectedRequest(req);
+                        setAdminNotes(req.admin_notes || '');
+                        setShowRequestDetailModal(true);
                       }}
                     >
                       <div className="sdf-request-compact-header">
@@ -2519,8 +2477,8 @@ const Staff_Scheduling = () => {
                             <div className="sdf-request-compact-code">{req.employee_code || req.employee?.employee_code || 'N/A'}</div>
                           </div>
                         </div>
-                        <div 
-                          className="sdf-request-compact-type" 
+                        <div
+                          className="sdf-request-compact-type"
                           style={{ backgroundColor: typeInfo.bgColor, color: typeInfo.color }}
                         >
                           <span>{typeInfo.icon}</span>
@@ -2551,7 +2509,7 @@ const Staff_Scheduling = () => {
                       </div>
 
                       <div className="sdf-request-compact-footer">
-                        <div 
+                        <div
                           className="sdf-request-compact-status"
                           style={{ backgroundColor: statusBgColor, color: statusColor }}
                         >
@@ -2564,21 +2522,21 @@ const Staff_Scheduling = () => {
                         </div>
                         {req.status === 'pending' && (
                           <div className="sdf-request-compact-actions">
-                            <button 
-                              className="sdf-request-btn approve" 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                handleRequestAction(req, 'approve'); 
+                            <button
+                              className="sdf-request-btn approve"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRequestAction(req, 'approve');
                               }}
                             >
                               <CheckCircleOutlined />
                             </button>
-                            <button 
-                              className="sdf-request-btn reject" 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                setSelectedRequest(req); 
-                                setShowRequestDetailModal(true); 
+                            <button
+                              className="sdf-request-btn reject"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedRequest(req);
+                                setShowRequestDetailModal(true);
                               }}
                             >
                               <CloseOutlined />
@@ -2633,7 +2591,7 @@ const Staff_Scheduling = () => {
                   </div>
                 ))
               ) : (
-                employees.filter(e => 
+                employees.filter(e =>
                   e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                   (e.employee_code || '').toLowerCase().includes(searchQuery.toLowerCase())
                 ).map(emp => {
@@ -2802,7 +2760,7 @@ const Staff_Scheduling = () => {
         )}
       </main>
 
-      {/* Request Detail Modal */}
+      {/* ==================== REQUEST DETAIL MODAL ==================== */}
       {showRequestDetailModal && selectedRequest && (
         <div className="sdf-modal-overlay" onClick={() => setShowRequestDetailModal(false)}>
           <div className="sdf-modal sdf-modal-large" onClick={(e) => e.stopPropagation()}>
@@ -2895,13 +2853,15 @@ const Staff_Scheduling = () => {
         </div>
       )}
 
-      {/* Save Schedule Modal */}
+      {/* ==================== SAVE SCHEDULE MODAL ==================== */}
       {showScheduleFileModal && (
         <div className="sdf-modal-overlay" onClick={() => setShowScheduleFileModal(false)}>
-          <div className="sdf-modal sdf-modal-small" onClick={(e) => e.stopPropagation()}>
+          <div className="sdf-modal sdf-modal-medium" onClick={(e) => e.stopPropagation()}>
             <div className="sdf-modal-header">
               <h2><SaveOutlined /> Save Schedule</h2>
-              <button className="sdf-modal-close" onClick={() => setShowScheduleFileModal(false)}><CloseOutlined /></button>
+              <button className="sdf-modal-close" onClick={() => setShowScheduleFileModal(false)}>
+                <CloseOutlined />
+              </button>
             </div>
             <div className="sdf-modal-body">
               <div className="sdf-form-group">
@@ -2914,20 +2874,40 @@ const Staff_Scheduling = () => {
                   className="sdf-form-input"
                   autoFocus
                 />
-                <small className="sdf-form-hint">This schedule will be saved with {shifts.length} shifts for {selectedDateStr}</small>
+                <small className="sdf-form-hint">
+                  This schedule will be saved with {shifts.length} shifts for {selectedDateStr}
+                </small>
               </div>
-              <div className="sdf-schedule-preview">
-                <p><strong>Preview:</strong></p>
-                <ul>
-                  <li>📅 Date: {selectedDateStr}</li>
-                  <li>👥 Total Shifts: {shifts.length}</li>
-                  <li>⏱️ Total Hours: {laborCosts.totalHours.toFixed(1)}</li>
-                  <li>💰 Total Cost: {formatCurrency(laborCosts.totalCost)}</li>
-                </ul>
+
+              <div className="sdf-schedule-preview-card">
+                <div className="sdf-preview-header">
+                  <CalendarOutlined />
+                  <span>Schedule Preview</span>
+                </div>
+                <div className="sdf-preview-grid">
+                  <div className="sdf-preview-item">
+                    <span className="sdf-preview-label">Date</span>
+                    <span className="sdf-preview-value">{selectedDateStr}</span>
+                  </div>
+                  <div className="sdf-preview-item">
+                    <span className="sdf-preview-label">Total Shifts</span>
+                    <span className="sdf-preview-value">{shifts.length}</span>
+                  </div>
+                  <div className="sdf-preview-item">
+                    <span className="sdf-preview-label">Total Hours</span>
+                    <span className="sdf-preview-value">{laborCosts.totalHours.toFixed(1)} hrs</span>
+                  </div>
+                  <div className="sdf-preview-item">
+                    <span className="sdf-preview-label">Total Cost</span>
+                    <span className="sdf-preview-value highlight">{formatCurrency(laborCosts.totalCost)}</span>
+                  </div>
+                </div>
               </div>
             </div>
             <div className="sdf-modal-footer">
-              <button className="sdf-btn sdf-btn-secondary" onClick={() => setShowScheduleFileModal(false)}>Cancel</button>
+              <button className="sdf-btn sdf-btn-secondary" onClick={() => setShowScheduleFileModal(false)}>
+                Cancel
+              </button>
               <button className="sdf-btn sdf-btn-primary" onClick={saveScheduleToHistory}>
                 <SaveOutlined /> Save Schedule
               </button>
@@ -2935,82 +2915,120 @@ const Staff_Scheduling = () => {
           </div>
         </div>
       )}
-
-      {/* Print Modal */}
+      {/* ==================== VIEW SCHEDULE MODAL ==================== */}
       {showPrintModal && printSchedule && (
         <div className="sdf-modal-overlay" onClick={() => setShowPrintModal(false)}>
-          <div className="sdf-modal sdf-modal-large" onClick={(e) => e.stopPropagation()}>
-            <div className="sdf-modal-header">
-              <h2><FileTextOutlined /> {printSchedule.name}</h2>
-              <button className="sdf-modal-close" onClick={() => setShowPrintModal(false)}><CloseOutlined /></button>
-            </div>
-            <div className="sdf-modal-body">
-              <div id="print-schedule-content">
-                <div className="sdf-print-header">
-                  <h1>Staff Schedule Report</h1>
-                  <p><strong>Schedule Name:</strong> {printSchedule.name}</p>
-                  <p><strong>Date:</strong> {printSchedule.date}</p>
-                  <p><strong>Created:</strong> {new Date(printSchedule.createdAt).toLocaleString()}</p>
+          <div className="sdf-modal sdf-view-modal" onClick={(e) => e.stopPropagation()}>
+
+            {/* Header */}
+            <div className="sdf-view-modal-header">
+              <div className="sdf-view-modal-title">
+                <div className="sdf-view-modal-icon">
+                  <FileTextOutlined />
                 </div>
-                <div className="sdf-schedule-detail-info">
-                  <p><strong>Total Shifts:</strong> {printSchedule.employeeCount}</p>
-                  <p><strong>Total Hours:</strong> {printSchedule.totalHours.toFixed(1)}</p>
-                  <p><strong>Total Cost:</strong> {formatCurrency(printSchedule.totalCost)}</p>
-                </div>
-                <div className="sdf-schedule-shifts-list">
-                  <h4>Shift Details</h4>
-                  <table className="sdf-print-table">
-                    <thead>
-                      <tr>
-                        <th>Employee Code</th>
-                        <th>Employee</th>
-                        <th>Position</th>
-                        <th>Time In</th>
-                        <th>Time Out</th>
-                        <th>Placement</th>
-                        <th>Hours</th>
-                        <th>Cost</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {printSchedule.shifts.map((shift, idx) => {
-                        const duration = shift.duration || calculateDurationHours(shift.start_time, shift.end_time);
-                        return (
-                          <tr key={idx}>
-                            <td>{shift.employee?.employee_code || 'N/A'}</td>
-                            <td>{shift.employee?.name || 'Unknown'}</td>
-                            <td>{getPositionTitle(shift.employee?.position)}</td>
-                            <td>{formatTo12Hour(shift.start_time)}</td>
-                            <td>{formatTo12Hour(shift.end_time)}</td>
-                            <td>{shift.placement || 'N/A'}</td>
-                            <td>{duration.toFixed(1)}h</td>
-                            <td className="sdf-cost-cell">{formatCurrency(shift.total_cost)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr className="sdf-print-total">
-                        <td colSpan="6"><strong>Total</strong></td>
-                        <td><strong>{printSchedule.totalHours.toFixed(1)} hrs</strong></td>
-                        <td><strong>{formatCurrency(printSchedule.totalCost)}</strong></td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                <div>
+                  <h2>{printSchedule.name}</h2>
+                  <p>Schedule Report · {formatDate(printSchedule.date)}</p>
                 </div>
               </div>
-            </div>
-            <div className="sdf-modal-footer">
-              <button className="sdf-btn sdf-btn-secondary" onClick={() => setShowPrintModal(false)}>Close</button>
-              <button className="sdf-btn sdf-btn-primary" onClick={handlePrint}>
-                <PrinterOutlined /> Print / Save as PDF
+              <button className="sdf-view-modal-close" onClick={() => setShowPrintModal(false)}>
+                <CloseOutlined />
               </button>
             </div>
+
+            {/* Summary Row */}
+            <div className="sdf-view-modal-summary">
+              <div className="sdf-view-summary-item">
+                <span className="sdf-view-summary-label">Total Shifts</span>
+                <span className="sdf-view-summary-value">{printSchedule.employeeCount}</span>
+              </div>
+              <div className="sdf-view-summary-divider" />
+              <div className="sdf-view-summary-item">
+                <span className="sdf-view-summary-label">Total Hours</span>
+                <span className="sdf-view-summary-value">{printSchedule.totalHours.toFixed(1)}h</span>
+              </div>
+              <div className="sdf-view-summary-divider" />
+              <div className="sdf-view-summary-item">
+                <span className="sdf-view-summary-label">Total Cost</span>
+                <span className="sdf-view-summary-value accent">{formatCurrency(printSchedule.totalCost)}</span>
+              </div>
+              <div className="sdf-view-summary-divider" />
+              <div className="sdf-view-summary-item">
+                <span className="sdf-view-summary-label">Created</span>
+                <span className="sdf-view-summary-value small">
+                  {new Date(printSchedule.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="sdf-view-modal-body">
+              <div className="sdf-view-table-wrap">
+                <table className="sdf-view-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '44px' }}>#</th>
+                      <th>Employee</th>
+                      <th>Code</th>
+                      <th>Position</th>
+                      <th>Shift</th>
+                      <th>Placement</th>
+                      <th className="text-right">Hours</th>
+                      <th className="text-right">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {printSchedule.shifts.map((shift, idx) => {
+                      const duration = shift.duration || calculateDurationHours(shift.start_time, shift.end_time);
+                      return (
+                        <tr key={idx}>
+                          <td className="sdf-view-table-index">{idx + 1}</td>
+                          <td>
+                            <div className="sdf-view-table-employee">
+                              <EmployeeAvatar employee={shift.employee} size="small" />
+                              <span>{shift.employee?.name || 'Unknown'}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="sdf-view-table-code">{shift.employee?.employee_code || 'N/A'}</span>
+                          </td>
+                          <td className="sdf-view-table-muted">{getPositionTitle(shift.employee?.position)}</td>
+                          <td className="sdf-view-table-time">
+                            {formatTo12Hour(shift.start_time)} – {formatTo12Hour(shift.end_time)}
+                          </td>
+                          <td className="sdf-view-table-muted">{shift.placement || '—'}</td>
+                          <td className="sdf-view-table-hours text-right">{duration.toFixed(1)}h</td>
+                          <td className="sdf-view-table-cost text-right">{formatCurrency(shift.total_cost)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan="6" className="sdf-view-table-total-label">Total</td>
+                      <td className="sdf-view-table-total text-right">{printSchedule.totalHours.toFixed(1)}h</td>
+                      <td className="sdf-view-table-total text-right">{formatCurrency(printSchedule.totalCost)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sdf-view-modal-footer">
+              <button className="sdf-view-btn sdf-view-btn-secondary" onClick={() => setShowPrintModal(false)}>
+                Close
+              </button>
+              <button className="sdf-view-btn sdf-view-btn-primary" onClick={handlePrint}>
+                <PrinterOutlined /> Print / Save PDF
+              </button>
+            </div>
+
           </div>
         </div>
       )}
-
-      {/* Batch Schedule Modal */}
+      
+      {/* ==================== BATCH SCHEDULE MODAL ==================== */}
       {showBatchModal && (
         <div className="sdf-modal-overlay" onClick={() => setShowBatchModal(false)}>
           <div className="sdf-batch-modal" onClick={(e) => e.stopPropagation()}>
@@ -3031,7 +3049,6 @@ const Staff_Scheduling = () => {
 
             <div className="sdf-batch-modal-body">
               <div className="sdf-batch-two-columns">
-                {/* Left Panel - Shift Configuration */}
                 <div className="sdf-batch-left-panel">
                   <div className="sdf-panel-section-title">
                     <SettingOutlined /> Shift Configuration
@@ -3162,7 +3179,6 @@ const Staff_Scheduling = () => {
                   </div>
                 </div>
 
-                {/* Right Panel - Employee Selection */}
                 <div className="sdf-batch-right-panel">
                   <div className="sdf-panel-section-title">
                     <TeamOutlined /> Employee Selection
@@ -3216,10 +3232,10 @@ const Staff_Scheduling = () => {
                         (s.employee_id === emp.id || s.employeeId === emp.id) &&
                         (s.date === batchScheduleData.date || s.work_date === batchScheduleData.date)
                       );
-                      
+
                       return (
-                        <label 
-                          key={emp.id} 
+                        <label
+                          key={emp.id}
                           className={`sdf-batch-employee-item ${hasExistingShift ? 'disabled' : ''}`}
                         >
                           <input
@@ -3255,8 +3271,8 @@ const Staff_Scheduling = () => {
                       <div className="sdf-batch-empty">
                         <FilterOutlined />
                         <p>
-                          {shifts.some(s => s.date === batchScheduleData.date || s.work_date === batchScheduleData.date) 
-                            ? 'All employees already have shifts on this date' 
+                          {shifts.some(s => s.date === batchScheduleData.date || s.work_date === batchScheduleData.date)
+                            ? 'All employees already have shifts on this date'
                             : 'No employees match your filters'}
                         </p>
                       </div>
@@ -3282,65 +3298,152 @@ const Staff_Scheduling = () => {
         </div>
       )}
 
-      {/* Employee Detail Modal */}
+      {/* ==================== ENHANCED EMPLOYEE PROFILE MODAL ==================== */}
       {showEmployeeModal && selectedEmployeeDetail && (
         <div className="sdf-modal-overlay" onClick={() => setShowEmployeeModal(false)}>
-          <div className="sdf-modal sdf-modal-large" onClick={(e) => e.stopPropagation()}>
-            <div className="sdf-modal-header">
-              <h2><UserOutlined /> Employee Profile</h2>
+          <div className="sdf-modal sdf-modal-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="sdf-modal-header sdf-profile-modal-header">
+              <div className="sdf-profile-title-wrap">
+                <div className="sdf-profile-title-icon">
+                  <UserOutlined />
+                </div>
+                <div>
+                  <h2>Employee Profile</h2>
+                  <p>Complete employee information and schedule summary</p>
+                </div>
+              </div>
               <button className="sdf-modal-close" onClick={() => setShowEmployeeModal(false)}><CloseOutlined /></button>
             </div>
-            <div className="sdf-modal-body">
-              <div className="sdf-employee-profile">
-                <div className="sdf-profile-header">
-                  <EmployeeAvatar employee={selectedEmployeeDetail} size="large" />
-                  <div>
+            <div className="sdf-modal-body sdf-profile-modal-body">
+              {/* Profile Banner */}
+              <div className="sdf-profile-banner">
+                <div className="sdf-profile-banner-bg"></div>
+                <div className="sdf-profile-banner-content">
+                  <EmployeeAvatar employee={selectedEmployeeDetail} size="xlarge" />
+                  <div className="sdf-profile-banner-info">
                     <h3>{selectedEmployeeDetail.name}</h3>
-                    <p className="sdf-employee-code">{selectedEmployeeDetail.employee_code || selectedEmployeeDetail.employee_id || 'N/A'}</p>
-                    <p>{getPositionTitle(selectedEmployeeDetail.position)}</p>
-                    <div className="sdf-profile-badges">
+                    <p className="sdf-profile-banner-role">
+                      {getPositionTitle(selectedEmployeeDetail.position)}
+                      {selectedEmployeeDetail.department?.name && ` • ${selectedEmployeeDetail.department.name}`}
+                    </p>
+                    <div className="sdf-profile-banner-badges">
                       <span className={`sdf-status-badge ${selectedEmployeeDetail.status}`}>
-                        {selectedEmployeeDetail.status === 'active' ? 'Active' : selectedEmployeeDetail.status === 'onleave' ? 'On Leave' : selectedEmployeeDetail.status}
+                        <span className="sdf-status-badge-dot"></span>
+                        {selectedEmployeeDetail.status === 'active' ? 'Active' :
+                          selectedEmployeeDetail.status === 'onleave' ? 'On Leave' :
+                            selectedEmployeeDetail.status}
                       </span>
                       <span className={`sdf-type-badge ${selectedEmployeeDetail.employee_type}`}>
-                        {selectedEmployeeDetail.employee_type === 'regular' ? 'Regular' : selectedEmployeeDetail.employee_type === 'oncall' ? 'On-Call' : 'Contract'}
+                        {selectedEmployeeDetail.employee_type === 'regular' ? 'Regular' :
+                          selectedEmployeeDetail.employee_type === 'oncall' ? 'On-Call' : 'Contract'}
+                      </span>
+                      <span className="sdf-employee-code-badge">
+                        <IdcardOutlined /> {selectedEmployeeDetail.employee_code || selectedEmployeeDetail.employee_id || 'N/A'}
                       </span>
                     </div>
                   </div>
                 </div>
-                <div className="sdf-profile-details">
-                  <div className="sdf-detail-section">
-                    <h4>Contact Information</h4>
-                    <div><MailOutlined /> {selectedEmployeeDetail.email || 'N/A'}</div>
-                    <div><PhoneOutlined /> {selectedEmployeeDetail.phone || 'N/A'}</div>
-                    <div><EnvironmentOutlined /> {selectedEmployeeDetail.location || selectedEmployeeDetail.address || 'Not specified'}</div>
+              </div>
+
+              {/* Stat Cards */}
+              <div className="sdf-profile-stats">
+                <div className="sdf-profile-stat-card blue">
+                  <div className="sdf-profile-stat-icon"><ScheduleOutlined /></div>
+                  <div className="sdf-profile-stat-info">
+                    <span className="sdf-profile-stat-label">Total Shifts</span>
+                    <strong className="sdf-profile-stat-value">
+                      {shifts.filter(s => s.employee_id === selectedEmployeeDetail.id).length}
+                    </strong>
                   </div>
-                  <div className="sdf-detail-section">
-                    <h4>Employment Details</h4>
-                    <div><IdcardOutlined /> Employee Code: {selectedEmployeeDetail.employee_code || selectedEmployeeDetail.employee_id || 'N/A'}</div>
-                    <div><BankOutlined /> Department: {selectedEmployeeDetail.department?.name || 'N/A'}</div>
-                    <div><DollarOutlined /> Salary Grade: {getEmployeeSalaryGrade(selectedEmployeeDetail)}</div>
-                    <div><DollarOutlined /> Hourly Rate: {formatCurrency(getEmployeeHourlyRate(selectedEmployeeDetail))}/hr</div>
+                </div>
+                <div className="sdf-profile-stat-card green">
+                  <div className="sdf-profile-stat-icon"><ClockCircleOutlined /></div>
+                  <div className="sdf-profile-stat-info">
+                    <span className="sdf-profile-stat-label">Total Hours</span>
+                    <strong className="sdf-profile-stat-value">
+                      {shifts.filter(s => s.employee_id === selectedEmployeeDetail.id)
+                        .reduce((t, s) => t + (s.duration || 0), 0).toFixed(1)}h
+                    </strong>
                   </div>
-                  <div className="sdf-detail-section">
-                    <h4>Schedule Summary</h4>
-                    <div>📋 Shifts: {shifts.filter(s => s.employee_id === selectedEmployeeDetail.id).length}</div>
-                    <div>⏱️ Hours: {shifts.filter(s => s.employee_id === selectedEmployeeDetail.id).reduce((t, s) => t + (s.duration || 0), 0).toFixed(1)} hrs</div>
-                    <div>💰 Earnings: {formatCurrency(shifts.filter(s => s.employee_id === selectedEmployeeDetail.id).reduce((t, s) => t + (s.total_cost || 0), 0))}</div>
+                </div>
+                <div className="sdf-profile-stat-card amber">
+                  <div className="sdf-profile-stat-icon"><DollarOutlined /></div>
+                  <div className="sdf-profile-stat-info">
+                    <span className="sdf-profile-stat-label">Total Earnings</span>
+                    <strong className="sdf-profile-stat-value small">
+                      {formatCurrency(shifts.filter(s => s.employee_id === selectedEmployeeDetail.id)
+                        .reduce((t, s) => t + (s.total_cost || 0), 0))}
+                    </strong>
+                  </div>
+                </div>
+                <div className="sdf-profile-stat-card purple">
+                  <div className="sdf-profile-stat-icon"><PercentageOutlined /></div>
+                  <div className="sdf-profile-stat-info">
+                    <span className="sdf-profile-stat-label">Hourly Rate</span>
+                    <strong className="sdf-profile-stat-value small">
+                      {formatCurrency(getEmployeeHourlyRate(selectedEmployeeDetail))}/hr
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Details Grid */}
+              <div className="sdf-profile-details-grid">
+                <div className="sdf-profile-detail-card">
+                  <div className="sdf-profile-detail-card-header">
+                    <MailOutlined />
+                    <span>Contact Information</span>
+                  </div>
+                  <div className="sdf-profile-detail-card-body">
+                    <div className="sdf-profile-detail-row">
+                      <span>Email</span>
+                      <strong>{selectedEmployeeDetail.email || 'N/A'}</strong>
+                    </div>
+                    <div className="sdf-profile-detail-row">
+                      <span>Phone</span>
+                      <strong>{selectedEmployeeDetail.phone || 'N/A'}</strong>
+                    </div>
+                    <div className="sdf-profile-detail-row">
+                      <span>Location</span>
+                      <strong>{selectedEmployeeDetail.location || selectedEmployeeDetail.address || 'Not specified'}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="sdf-profile-detail-card">
+                  <div className="sdf-profile-detail-card-header">
+                    <BankOutlined />
+                    <span>Employment Details</span>
+                  </div>
+                  <div className="sdf-profile-detail-card-body">
+                    <div className="sdf-profile-detail-row">
+                      <span>Employee Code</span>
+                      <strong>{selectedEmployeeDetail.employee_code || selectedEmployeeDetail.employee_id || 'N/A'}</strong>
+                    </div>
+                    <div className="sdf-profile-detail-row">
+                      <span>Department</span>
+                      <strong>{selectedEmployeeDetail.department?.name || 'N/A'}</strong>
+                    </div>
+                    <div className="sdf-profile-detail-row">
+                      <span>Position</span>
+                      <strong>{getPositionTitle(selectedEmployeeDetail.position)}</strong>
+                    </div>
+                    <div className="sdf-profile-detail-row">
+                      <span>Salary Grade</span>
+                      <strong>{getEmployeeSalaryGrade(selectedEmployeeDetail)}</strong>
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
             <div className="sdf-modal-footer">
-              <div className="sdf-btn-group">
-                <button className="sdf-btn sdf-btn-secondary" onClick={() => setShowEmployeeModal(false)}>Close</button>
-              </div>
+              <button className="sdf-btn sdf-btn-secondary" onClick={() => setShowEmployeeModal(false)}>Close</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Shift Modal */}
+      {/* ==================== SHIFT MODAL ==================== */}
       {showModal && (
         <div className="sdf-modal-overlay" onClick={() => setShowModal(false)}>
           <div className="sdf-shift-modal" onClick={(e) => e.stopPropagation()}>
@@ -3371,7 +3474,6 @@ const Staff_Scheduling = () => {
 
             <div className="sdf-shift-modal-body">
               {modalMode === 'view' && selectedShift ? (
-                /* View Mode */
                 <div className="sdf-shift-view-mode">
                   <div className="sdf-shift-employee-section">
                     <EmployeeAvatar employee={selectedShift.employee} size="large" />
@@ -3443,16 +3545,15 @@ const Staff_Scheduling = () => {
                   )}
                 </div>
               ) : (
-                /* Add/Edit Mode - Form */
                 <form onSubmit={(e) => { e.preventDefault(); handleSaveShift(); }} className="sdf-shift-form">
                   <div className="sdf-form-field">
                     <label><UserOutlined /> Select Employee <span className="sdf-required">*</span></label>
-                    <select 
-                      name="employeeId" 
-                      value={formData.employeeId} 
-                      onChange={handleInputChange} 
-                      required 
-                      disabled={!isDateEditable} 
+                    <select
+                      name="employeeId"
+                      value={formData.employeeId}
+                      onChange={handleInputChange}
+                      required
+                      disabled={!isDateEditable}
                       className="sdf-form-select-modern"
                     >
                       <option value="">Choose employee...</option>
@@ -3467,23 +3568,23 @@ const Staff_Scheduling = () => {
                   <div className="sdf-form-row-modern">
                     <div className="sdf-form-field">
                       <label><CalendarOutlined /> Date <span className="sdf-required">*</span></label>
-                      <input 
-                        type="date" 
-                        name="date" 
-                        value={formData.date} 
-                        onChange={handleInputChange} 
-                        required 
-                        disabled={!isDateEditable} 
-                        className="sdf-form-input-modern" 
+                      <input
+                        type="date"
+                        name="date"
+                        value={formData.date}
+                        onChange={handleInputChange}
+                        required
+                        disabled={!isDateEditable}
+                        className="sdf-form-input-modern"
                       />
                     </div>
                     <div className="sdf-form-field">
                       <label><TagsOutlined /> Shift Type</label>
-                      <select 
-                        name="shift_type" 
-                        value={formData.shift_type} 
-                        onChange={handleInputChange} 
-                        disabled={!isDateEditable} 
+                      <select
+                        name="shift_type"
+                        value={formData.shift_type}
+                        onChange={handleInputChange}
+                        disabled={!isDateEditable}
                         className="sdf-form-select-modern"
                       >
                         <option value="regular">Regular</option>
@@ -3541,27 +3642,27 @@ const Staff_Scheduling = () => {
 
                   <div className="sdf-form-field">
                     <label><EnvironmentOutlined /> Work Location</label>
-                    <input 
-                      type="text" 
-                      name="placement" 
-                      value={formData.placement} 
-                      onChange={handleInputChange} 
-                      placeholder="e.g., Main Hall, Kitchen, Reception" 
-                      disabled={!isDateEditable} 
-                      className="sdf-form-input-modern" 
+                    <input
+                      type="text"
+                      name="placement"
+                      value={formData.placement}
+                      onChange={handleInputChange}
+                      placeholder="e.g., Main Hall, Kitchen, Reception"
+                      disabled={!isDateEditable}
+                      className="sdf-form-input-modern"
                     />
                   </div>
 
                   <div className="sdf-form-field">
                     <label><FileTextOutlined /> Notes</label>
-                    <textarea 
-                      name="notes" 
-                      value={formData.notes} 
-                      onChange={handleInputChange} 
-                      rows="2" 
-                      placeholder="Optional: Add any additional notes..." 
-                      disabled={!isDateEditable} 
-                      className="sdf-form-textarea-modern" 
+                    <textarea
+                      name="notes"
+                      value={formData.notes}
+                      onChange={handleInputChange}
+                      rows="2"
+                      placeholder="Optional: Add any additional notes..."
+                      disabled={!isDateEditable}
+                      className="sdf-form-textarea-modern"
                     />
                   </div>
 
@@ -3572,7 +3673,7 @@ const Staff_Scheduling = () => {
                   )}
 
                   {getShiftBreakdownDisplay()}
-                  
+
                   <div className="sdf-shift-summary-modern">
                     <div className="sdf-summary-title">Shift Summary</div>
                     <div className="sdf-summary-grid">
@@ -3609,9 +3710,9 @@ const Staff_Scheduling = () => {
                     </div>
                   </div>
 
-                  <button 
-                    type="submit" 
-                    className="sdf-shift-submit-btn" 
+                  <button
+                    type="submit"
+                    className="sdf-shift-submit-btn"
                     disabled={createShiftMutation.isPending || updateShiftMutation.isPending || overlapError || !isDateEditable}
                   >
                     {createShiftMutation.isPending || updateShiftMutation.isPending ? <LoadingOutlined spin /> : <PlusOutlined />}
@@ -3624,7 +3725,112 @@ const Staff_Scheduling = () => {
         </div>
       )}
 
-      {/* Delete Confirm Modal */}
+      {/* ==================== ENHANCED APPROVED REQUEST CONFLICT MODAL ==================== */}
+      {showRequestApprovalModal && pendingApprovalRequest && (
+        <div className="sdf-modal-overlay" onClick={() => handleRequestApprovalDecision(false)}>
+          <div className="sdf-modal sdf-modal-approval" onClick={(e) => e.stopPropagation()}>
+            <div className="sdf-approval-modal-header">
+              <div className="sdf-approval-modal-icon">
+                <AlertOutlined />
+              </div>
+              <div className="sdf-approval-modal-title">
+                <h2>Schedule Conflict Detected</h2>
+                <p>Employee has an approved request for this date</p>
+              </div>
+              <button className="sdf-approval-modal-close" onClick={() => handleRequestApprovalDecision(false)}>
+                <CloseOutlined />
+              </button>
+            </div>
+
+            <div className="sdf-approval-modal-body">
+              {/* Employee Card */}
+              <div className="sdf-approval-employee-card">
+                <EmployeeAvatar employee={pendingApprovalRequest.employee} size="large" />
+                <div className="sdf-approval-employee-info">
+                  <h3>{pendingApprovalRequest.employee?.name || pendingApprovalRequest.employee_name || 'Unknown Employee'}</h3>
+                  <p>{pendingApprovalRequest.employee?.employee_code || pendingApprovalRequest.employee_code || 'N/A'}</p>
+                </div>
+                <span
+                  className="sdf-approval-type-tag"
+                  style={{
+                    backgroundColor: getRequestTypeInfo(pendingApprovalRequest.type).bgColor,
+                    color: getRequestTypeInfo(pendingApprovalRequest.type).color
+                  }}
+                >
+                  {getRequestTypeInfo(pendingApprovalRequest.type).icon} {getRequestTypeInfo(pendingApprovalRequest.type).label}
+                </span>
+              </div>
+
+              {/* Warning Message */}
+              <div className="sdf-approval-warning-msg">
+                <InfoCircleOutlined />
+                <div>
+                  <strong>Heads up!</strong>
+                  <p>
+                    This employee has an approved <strong>{getRequestTypeInfo(pendingApprovalRequest.type).label}</strong> request
+                    covering the date you're trying to schedule. Creating a shift will override the approved request.
+                  </p>
+                </div>
+              </div>
+
+              {/* Request Details */}
+              <div className="sdf-approval-details-grid">
+                <div className="sdf-approval-detail-item">
+                  <div className="sdf-approval-detail-item-label"><CalendarOutlined /> Start Date</div>
+                  <div className="sdf-approval-detail-item-value">{formatDate(pendingApprovalRequest.start_date)}</div>
+                </div>
+                <div className="sdf-approval-detail-item">
+                  <div className="sdf-approval-detail-item-label"><CalendarOutlined /> End Date</div>
+                  <div className="sdf-approval-detail-item-value">{formatDate(pendingApprovalRequest.end_date)}</div>
+                </div>
+                <div className="sdf-approval-detail-item">
+                  <div className="sdf-approval-detail-item-label"><ClockCircleOutlined /> Duration</div>
+                  <div className="sdf-approval-detail-item-value">
+                    {moment(pendingApprovalRequest.end_date).diff(moment(pendingApprovalRequest.start_date), 'days') + 1} day(s)
+                  </div>
+                </div>
+                <div className="sdf-approval-detail-item">
+                  <div className="sdf-approval-detail-item-label"><InfoCircleOutlined /> Status</div>
+                  <div className="sdf-approval-detail-item-value">
+                    <span className="sdf-approval-status-badge">Approved</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Reason */}
+              {pendingApprovalRequest.reason && (
+                <div className="sdf-approval-reason-box">
+                  <div className="sdf-approval-reason-label"><MessageOutlined /> Reason for Request</div>
+                  <div className="sdf-approval-reason-text">{pendingApprovalRequest.reason}</div>
+                </div>
+              )}
+
+              {/* Question */}
+              <div className="sdf-approval-question-box">
+                <WarningOutlined />
+                <span>What would you like to do?</span>
+              </div>
+            </div>
+
+            <div className="sdf-approval-modal-footer">
+              <button
+                className="sdf-approval-btn sdf-approval-btn-cancel"
+                onClick={() => handleRequestApprovalDecision(false)}
+              >
+                <CloseOutlined /> Cancel Schedule
+              </button>
+              <button
+                className="sdf-approval-btn sdf-approval-btn-continue"
+                onClick={() => handleRequestApprovalDecision(true)}
+              >
+                <CheckCircleOutlined /> Continue Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== DELETE CONFIRM MODAL ==================== */}
       {showDeleteConfirm && (
         <div className="sdf-modal-overlay" onClick={() => setShowDeleteConfirm(false)}>
           <div className="sdf-modal sdf-modal-small" onClick={(e) => e.stopPropagation()}>

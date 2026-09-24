@@ -92,7 +92,7 @@ const KpiGrid = ({ items, animate }) => (
             <span className="dash-kpi-label">{item.label}</span>
             <span className="dash-kpi-value">{item.value}</span>
             <div className="dash-kpi-footer">
-              <span className="dash-kpi-change dash-kpi-neutral">{item.note || 'Backend record'}</span>
+              {/* <span className="dash-kpi-change dash-kpi-neutral">{item.note || 'Backend record'}</span> */}
             </div>
           </div>
         </div>

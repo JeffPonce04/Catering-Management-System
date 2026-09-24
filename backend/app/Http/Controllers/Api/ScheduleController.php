@@ -3,12 +3,14 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\LeaveRequest;
+use App\Models\AuditLog;
 use App\Models\Schedule;
 use App\Models\ShiftType;
 use App\Services\NotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
@@ -155,6 +157,7 @@ class ScheduleController extends Controller
         }
 
         $schedule = Schedule::create($payload);
+        AuditLog::log('schedule_created', AuditLog::MODULE_SCHEDULES, $schedule->schedule_id, null, $schedule->getAttributes());
 
         // ✅ Notification: Schedule assigned to employee
         $employee = $schedule->employee;
@@ -172,12 +175,13 @@ class ScheduleController extends Controller
             'schedules.*' => 'required|array',
         ]);
 
-        $created = collect($validated['schedules'])->map(function (array $row) {
+        $created = DB::transaction(fn () => collect($validated['schedules'])->map(function (array $row) {
             $rowRequest = Request::create('/', 'POST', $row);
             $payload = $this->validatedDatabasePayload($rowRequest);
             $this->assertAvailable($payload['employee_id'], $payload['work_date']);
 
             $schedule = Schedule::create($payload);
+            AuditLog::log('schedule_created', AuditLog::MODULE_SCHEDULES, $schedule->schedule_id, null, $schedule->getAttributes());
 
             // ✅ Notification: Schedule assigned for each employee in bulk
             $employee = $schedule->employee;
@@ -186,7 +190,7 @@ class ScheduleController extends Controller
             }
 
             return $schedule->load(['employee.person', 'employee.department', 'shiftTypeDefinition']);
-        });
+        }));
 
         return $this->ok($created, 'Schedules created');
     }
@@ -196,6 +200,7 @@ class ScheduleController extends Controller
         $oldEmployeeId = $schedule->employee_id;
         $oldWorkDate = $schedule->work_date;
         $oldStatus = $schedule->status;
+        $oldValues = $schedule->getAttributes();
 
         $payload = $this->validatedDatabasePayload($request, $schedule);
         $this->assertAvailable($payload['employee_id'], $payload['work_date'], $schedule->schedule_id);
@@ -203,6 +208,7 @@ class ScheduleController extends Controller
             return $warning;
         }
         $schedule->update($payload);
+        AuditLog::log('schedule_edited', AuditLog::MODULE_SCHEDULES, $schedule->schedule_id, $oldValues, $schedule->fresh()->getAttributes());
 
         // ✅ Notification: Schedule updated for employee
         $employee = $schedule->employee;

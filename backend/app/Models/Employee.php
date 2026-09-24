@@ -42,6 +42,7 @@ class Employee extends Model
         'country',
         'birth_date',
         'gender',
+        'can_login',
     ];
 
     public function person()
@@ -153,6 +154,7 @@ class Employee extends Model
 
         return url(Storage::disk('public')->url($path));
     }
+
     public function getAddressAttribute(): ?string
     {
         return $this->person?->address_line_1;
@@ -198,4 +200,37 @@ class Employee extends Model
         return $this->person?->gender;
     }
 
+    /**
+     * ⭐ #2 — Whether this employee is allowed to log into Attendance Tracking.
+     *
+     * Returns true only when BOTH:
+     *   - The employee record status is "active" or "on_leave"
+     *   - The linked user account (if it exists) is active
+     */
+    public function getCanLoginAttribute(): bool
+    {
+        $status = strtolower((string) $this->status) ?: 'active';
+        $allowedStatuses = ['active', 'on_leave', 'onleave', 'on-leave'];
+
+        if (! in_array($status, $allowedStatuses, true)) {
+            return false;
+        }
+
+        if ($this->user && ! $this->user->is_active) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function isActive(): bool
+    {
+        $status = strtolower((string) $this->status) ?: 'active';
+        return $status === 'active';
+    }
+
+    public function isInactive(): bool
+    {
+        return ! $this->getCanLoginAttribute();
+    }
 }

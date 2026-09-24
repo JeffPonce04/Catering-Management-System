@@ -38,6 +38,11 @@ use App\Http\Controllers\Api\FinancialReportController;
 use App\Http\Controllers\Api\ShiftTypeController;
 use App\Http\Controllers\Api\DepositController;
 use App\Http\Controllers\Api\CartController;
+use App\Http\Controllers\Api\ProfitabilityController;
+use App\Http\Controllers\Api\RefundController;
+use App\Http\Controllers\Api\SystemAnnouncementController;
+use App\Http\Controllers\Api\Auth\SocialAuthController;
+
 
 Route::prefix('v1')->group(function () {
 
@@ -79,11 +84,22 @@ Route::prefix('v1')->group(function () {
     Route::get('/public/promotions', [PromotionController::class, 'index']);
     Route::get('/public/meal-categories', [MealCategoryController::class, 'index']);
 
+
+    // Public delivery zones — used by the customer booking form to look up the
+    // delivery fee for a selected location. Returns only active zones.
+    Route::get('/public/delivery-zones', function () {
+        return response()->json([
+            'success' => true,
+            'data' => \App\Models\DeliveryZone::where('is_active', true)
+                ->orderBy('name')
+                ->get(['delivery_zone_id', 'name', 'delivery_fee', 'description']),
+        ]);
+    });
+
     // ============================================================
     // AUTHENTICATED ROUTES
     // ============================================================
     Route::middleware(['auth:sanctum', 'role.access'])->group(function () {
-
         // ==================== AUTH & PROFILE ====================
         Route::get('/auth/user', [AuthController::class, 'user']);
         Route::get('/auth/profile', [AuthController::class, 'profile']);
@@ -92,6 +108,12 @@ Route::prefix('v1')->group(function () {
         Route::post('/auth/profile-photo', [AuthController::class, 'updateProfilePhoto']);
         Route::delete('/auth/profile-photo', [AuthController::class, 'removeProfilePhoto']);
         Route::post('/auth/logout', [AuthController::class, 'logout']);
+        Route::post('/auth/login-status', [AuthController::class, 'loginStatus']);
+
+        // ⭐ Self-profile update — used by the mobile app so employees can
+        //    update their own Person fields (name, email, phone, address, etc.)
+        //    without admin privileges.
+        Route::match(['put', 'post'], '/auth/self-profile', [AuthController::class, 'updateSelfProfile']);
 
         // ==================== CART ====================
         Route::get('/cart', [CartController::class, 'show']);
@@ -101,6 +123,10 @@ Route::prefix('v1')->group(function () {
         Route::delete('/cart', [CartController::class, 'clear']);
         Route::post('/auth/send-otp', [AuthController::class, 'sendEmailOtp']);
         Route::post('/auth/verify-email-otp', [AuthController::class, 'verifyEmailOtp']);
+
+
+        // ==================== ACTIVE ANNOUNCEMENTS (all authenticated users) ====================
+        Route::get('/announcements/active', [SystemAnnouncementController::class, 'active']);
 
         // ==================== PROMOTIONS ====================
         Route::prefix('promotions')->group(function () {
@@ -132,7 +158,9 @@ Route::prefix('v1')->group(function () {
         Route::get('/dashboard/revenue-chart', [DashboardController::class, 'revenueChart']);
         Route::get('/dashboard/event-distribution', [DashboardController::class, 'eventDistribution']);
 
-        // ==================== EMPLOYEES ====================
+        // ============================================================
+        // EMPLOYEES
+        // ============================================================
         Route::get('/employees/eligible-for-payroll', [EmployeeController::class, 'eligibleForPayroll']);
         Route::get('/employees/stats', [EmployeeController::class, 'stats']);
         Route::get('/employees/archived', [EmployeeController::class, 'archived']);
@@ -142,6 +170,10 @@ Route::prefix('v1')->group(function () {
         Route::get('/employees/birthdays', [CompatibilityController::class, 'employeesBirthdays']);
         Route::get('/employees/on-leave', [CompatibilityController::class, 'employeesOnLeave']);
         Route::get('/employees/search', [CompatibilityController::class, 'employeesSearch']);
+
+        Route::get('/employees/without-accounts', [SettingController::class, 'getEmployeesWithoutAccounts']);
+        Route::get('/employees/{employee}/for-account', [SettingController::class, 'getEmployeeForAccount']);
+
         Route::post('/employees/bulk-archive', [CompatibilityController::class, 'employeesBulkArchive']);
         Route::post('/employees/bulk-delete', [CompatibilityController::class, 'employeesBulkDelete']);
         Route::post('/employees/bulk-update-status', [EmployeeController::class, 'bulkStatus']);
@@ -239,6 +271,27 @@ Route::prefix('v1')->group(function () {
         Route::post('/bookings/{booking}/cancel-with-reason', [BookingController::class, 'cancelWithReason']);
         Route::get('/bookings/check-conflicts-notify', [BookingController::class, 'checkConflictsAndNotify']);
         Route::post('/bookings/{booking}/create-event', [BookingController::class, 'createEvent']);
+        Route::post('/bookings/{booking}/cancel-reschedule-proposal', [BookingController::class, 'cancelRescheduleProposal']);
+
+        Route::post('/bookings/{booking}/request-refund',   [BookingController::class, 'requestRefund']);
+        Route::post('/bookings/{booking}/approve-refund',   [BookingController::class, 'approveRefund']);
+        Route::post('/bookings/{booking}/reject-refund',    [BookingController::class, 'rejectRefund']);
+        Route::post('/bookings/{booking}/deposit-decision', [BookingController::class, 'depositDecision']);
+        Route::post('/bookings/{booking}/confirm-refund',      [BookingController::class, 'confirmRefund']);
+        Route::post('/bookings/{booking}/admin-direct-refund', [BookingController::class, 'adminDirectRefund']);
+
+
+       Route::post('/bookings/{booking}/customer-update', [BookingController::class, 'customerUpdate']);
+Route::post('/bookings/{booking}/customer-reschedule-response', [BookingController::class, 'customerRescheduleResponse']);
+Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::class, 'customerPostRejectionDecision']);
+        // ============================================================
+        // ⭐ NEW: BOOKING AVAILABILITY + RESCHEDULE VALIDATION ROUTES
+        // ============================================================
+        Route::post('/bookings/validate-slot', [BookingController::class, 'validateSlot']);
+        Route::post('/bookings/{booking}/admin-reschedule', [BookingController::class, 'adminRescheduleWithValidation']);
+        Route::post('/bookings/{booking}/customer-request-reschedule', [BookingController::class, 'customerRequestRescheduleWithValidation']);
+        Route::post('/bookings/{booking}/customer-cancel', [BookingController::class, 'customerCancelWithValidation']);
+        Route::post('/bookings/{booking}/customer-respond-reschedule', [BookingController::class, 'customerRespondToAdminReschedule']);
 
         // ============================================================
         // BOOKING INGREDIENTS MANAGEMENT ROUTES
@@ -279,6 +332,12 @@ Route::prefix('v1')->group(function () {
         Route::get('/inventory/history/{type}/{id}', [InventoryController::class, 'history']);
         Route::get('/inventory-history/item/{type}/{id}', [InventoryController::class, 'history']);
 
+        // ==================== DELIVERY ZONES ====================
+        // IMPORTANT: The literal toggle route MUST be declared BEFORE the
+        // apiResource('delivery-zones') call, otherwise Laravel matches
+        // {deliveryZone} = "toggle" and routes to the show() method.
+        Route::post('/delivery-zones/{deliveryZone}/toggle', [DeliveryZoneController::class, 'toggleStatus']);
+
         // ==================== OTHER RESOURCES ====================
         Route::apiResources([
             'departments' => DepartmentController::class,
@@ -300,22 +359,74 @@ Route::prefix('v1')->group(function () {
         Route::put('/settings', [SettingController::class, 'updateCompatibility']);
         Route::prefix('settings')->group(function () {
             Route::get('/', [SettingController::class, 'index']);
+            Route::post('/reset', [SettingController::class, 'reset']);
+
+            // Literal routes — MUST come before `/{section}`
+
+            // Backup configuration
+            Route::get('/system-backup-config', [SettingController::class, 'getBackupConfig']);
+            Route::put('/system-backup-config', [SettingController::class, 'updateBackupConfig']);
+
+            // Role restrictions
+            Route::get('/role-restrictions/{roleSlug}', [SettingController::class, 'getRoleRestrictions']);
+            Route::put('/role-restrictions/{roleSlug}', [SettingController::class, 'updateRoleRestrictions']);
+
+            // User account settings
+            Route::get('/user-account-settings', [SettingController::class, 'getUserAccountSettings']);
+            Route::put('/user-account-settings', [SettingController::class, 'updateUserAccountSettings']);
+
+            // Maintenance configuration & actions
+            Route::get('/maintenance-config', [SettingController::class, 'getMaintenanceConfig']);
+            Route::put('/maintenance-config', [SettingController::class, 'updateMaintenanceConfig']);
+            Route::post('/clear-temp-files', [SettingController::class, 'clearTemporaryFiles']);
+            Route::post('/run-database-maintenance', [SettingController::class, 'runDatabaseMaintenance']);
+            Route::post('/force-logout-all', [SettingController::class, 'forceLogoutAllSessions']);
+
+            // Staff snapshot + group updates
+            Route::get('/staff/snapshot', [SettingController::class, 'staffSnapshot']);
+            Route::put('/staff/{group}', [SettingController::class, 'updateStaffGroup']);
+
+            // Super Admin snapshot + group updates
+            Route::get('/system/snapshot', [SettingController::class, 'superAdminSnapshot']);
+            Route::put('/system/{group}', [SettingController::class, 'updateSystemGroup']);
+
+            // Login logs
+            Route::get('/login-logs', [SettingController::class, 'loginLogs']);
+
+            // Backups
+            Route::get('/backups', [SettingController::class, 'listBackups']);
+            Route::post('/backups', [SettingController::class, 'createBackup']);
+            Route::get('/backups/{filename}/download', [SettingController::class, 'downloadBackup']);
+            Route::post('/backups/{filename}/restore', [SettingController::class, 'restoreBackup']);
+            Route::delete('/backups/{filename}', [SettingController::class, 'deleteBackup']);
+
+            // System status & cache
+            Route::get('/system-status', [SettingController::class, 'systemStatus']);
+            Route::post('/clear-cache', [SettingController::class, 'clearSystemCache']);
+
+            // Wildcard MUST be last
             Route::get('/{section}', [SettingController::class, 'getSection']);
             Route::put('/{section}', [SettingController::class, 'updateSection']);
-            Route::post('/reset', [SettingController::class, 'reset']);
         });
 
         // ==================== USERS & ROLES ====================
         Route::get('/users', [SettingController::class, 'getUsers']);
         Route::post('/users', [SettingController::class, 'createUser']);
+        Route::post('/users/from-employee', [SettingController::class, 'createUserFromEmployee']);
         Route::get('/users/{user}', [SettingController::class, 'getUser']);
+        Route::put('/users/{user}', [SettingController::class, 'updateUser']);
+        Route::put('/users/{user}/role', [SettingController::class, 'updateUserRole']);
+        Route::post('/users/{user}/toggle-active', [SettingController::class, 'toggleUserActive']);
+        Route::post('/users/{user}/ban', [SettingController::class, 'banUser']);
+        Route::post('/users/{user}/unban', [SettingController::class, 'unbanUser']);
+        Route::post('/users/{user}/force-logout', [SettingController::class, 'forceLogoutUser']);
+        Route::post('/users/{user}/force-password', [SettingController::class, 'forceChangePassword']);
+
         Route::get('/roles/{role}', [SettingController::class, 'getRole']);
         Route::post('/roles', [SettingController::class, 'createRole']);
         Route::put('/roles/{role}', [SettingController::class, 'updateRole']);
         Route::delete('/roles/{role}', [SettingController::class, 'deleteRole']);
         Route::get('/roles', [SettingController::class, 'getRoles']);
-        Route::put('/users/{user}/role', [SettingController::class, 'updateUserRole']);
-        Route::post('/users/{user}/toggle-active', [SettingController::class, 'toggleUserActive']);
 
         // ==================== AUDIT LOGS ====================
         Route::get('/audit-logs', [SettingController::class, 'getAuditLogs']);
@@ -392,6 +503,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/attendance/range', [AttendanceController::class, 'index']);
         Route::get('/attendance/needs-approval', [AttendanceController::class, 'needsApproval']);
         Route::get('/attendance/employee/{employee}', [AttendanceController::class, 'employee']);
+        Route::get('/attendance/employee-saved-records', [AttendanceController::class, 'employeeSavedRecords']);
         Route::post('/attendance/time-in', [AttendanceController::class, 'timeIn']);
         Route::post('/attendance/time-out', [AttendanceController::class, 'timeOut']);
         Route::put('/attendance/{attendance}/times', [AttendanceController::class, 'updateTimes']);
@@ -401,9 +513,12 @@ Route::prefix('v1')->group(function () {
         Route::post('/attendance/{attendance}/approve-unscheduled', [AttendanceController::class, 'approveUnscheduled']);
         Route::post('/attendance/{attendance}/approve-overtime', [AttendanceController::class, 'approveOvertime']);
         Route::post('/attendance/{attendance}/reject-overtime', [AttendanceController::class, 'rejectOvertime']);
+        Route::post('/attendance/{attendance}/approve-undertime', [AttendanceController::class, 'approveUndertime']);
+        Route::post('/attendance/{attendance}/reject-undertime', [AttendanceController::class, 'rejectUndertime']);
         Route::post('/attendance/overtime/bulk-decision', [AttendanceController::class, 'bulkOvertimeDecision']);
         Route::get('/attendance/check-missing-timeouts', [AttendanceController::class, 'checkMissingTimeouts']);
-
+        Route::post('/attendance/create', [AttendanceController::class, 'createManual']);
+        Route::post('/attendance/{attendance}/flag', [AttendanceController::class, 'flagAttendance']);
         // ==================== PAYROLL ====================
         Route::get('/payroll', [PayrollController::class, 'index']);
         Route::get('/payroll/history', [PayrollController::class, 'history']);
@@ -490,7 +605,16 @@ Route::prefix('v1')->group(function () {
         Route::get('/equipment/{equipment}/history', [EquipmentController::class, 'history']);
         Route::apiResource('/equipment', EquipmentController::class);
 
-        // Reports Module Routes
+        // ==================== PROFITABILITY ANALYTICS ====================
+        Route::get('/profitability/dashboard', [ProfitabilityController::class, 'dashboard']);
+        Route::get('/profitability/report', [ProfitabilityController::class, 'report']);
+        Route::get('/profitability/menus', [ProfitabilityController::class, 'menuPerformance']);
+
+        Route::get('/bookings/{booking}/profitability', [ProfitabilityController::class, 'show']);
+        Route::post('/bookings/{booking}/profitability/snapshot', [ProfitabilityController::class, 'saveSnapshot']);
+        Route::put('/bookings/{booking}/profitability/costs', [ProfitabilityController::class, 'saveCosts']);
+
+        // ==================== REPORTS MODULE ====================
         Route::prefix('reports')->group(function () {
             Route::get('/sales', [ReportController::class, 'sales']);
             Route::get('/inventory', [ReportController::class, 'inventory']);
@@ -501,7 +625,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/additional', [ReportController::class, 'additional']);
         });
 
-        // Event Sub-resources
+        // ==================== EVENT SUB-RESOURCES ====================
         Route::prefix('events')->group(function () {
             Route::get('/{id}/pending-deductions', [EventController::class, 'getPendingDeductions']);
             Route::post('/{id}/confirm-deductions', [EventController::class, 'confirmDeductions']);
@@ -620,5 +744,37 @@ Route::prefix('v1')->group(function () {
         // ==================== INGREDIENTS ====================
         Route::get('/bookings/{booking}/ingredients-summary', [BookingController::class, 'getIngredientsSummary']);
         Route::post('/bookings/{booking}/ingredients-purchased', [BookingController::class, 'markIngredientsPurchased']);
+
+        // ==================== REFUNDS (ADMIN + SUPER ADMIN ONLY) ====================
+        Route::middleware(['role:admin,super-admin'])
+            ->prefix('refunds')
+            ->group(function () {
+                Route::get('/', [RefundController::class, 'index']);
+                Route::get('/statistics', [RefundController::class, 'statistics']);
+                Route::get('/pending', [RefundController::class, 'pending']);
+                Route::get('/approved', [RefundController::class, 'approved']);
+
+                Route::get('/booking/{bookingId}', [RefundController::class, 'byBooking']);
+                Route::get('/invoice/{invoiceId}', [RefundController::class, 'byInvoice']);
+
+                Route::post('/', [RefundController::class, 'store']);
+                Route::get('/{refund}', [RefundController::class, 'show']);
+                Route::post('/{refund}/approve', [RefundController::class, 'approve']);
+                Route::post('/{refund}/release', [RefundController::class, 'release']);
+                Route::post('/{refund}/reject', [RefundController::class, 'reject']);
+                Route::post('/admin-direct', [RefundController::class, 'adminDirect']);
+            });
+
+        // ==================== SUPER ADMIN ONLY ====================
+        Route::middleware(['role:super-admin'])->group(function () {
+
+            // System Announcements (CRUD)
+            Route::prefix('system-announcements')->group(function () {
+                Route::get('/', [SystemAnnouncementController::class, 'index']);
+                Route::post('/', [SystemAnnouncementController::class, 'store']);
+                Route::put('/{id}', [SystemAnnouncementController::class, 'update']);
+                Route::delete('/{id}', [SystemAnnouncementController::class, 'destroy']);
+            });
+        });
     });
 });

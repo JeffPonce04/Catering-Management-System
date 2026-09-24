@@ -25,9 +25,23 @@ class MenuItem extends Model
         'is_vegan' => 'boolean',
         'is_gluten_free' => 'boolean',
         'is_halal' => 'boolean',
+        // New tray pricing casts
+        'tray_price' => 'float',
+        'tray_servings' => 'integer',
+        'tray_min_pax' => 'integer',
+        'tray_max_pax' => 'integer',
+        'pricing_type' => 'string',
     ];
 
-    protected $appends = ['image_full_url'];
+    protected $appends = [
+        'image_full_url',
+        'tray_display_description',
+        'has_tray_pricing',
+        'has_per_pax_pricing',
+        'pricing_label'
+    ];
+
+    // ==================== RELATIONSHIPS ====================
 
     public function category()
     {
@@ -67,24 +81,90 @@ class MenuItem extends Model
         return $this->hasMany(BookingItem::class, 'menu_item_id', 'menu_item_id');
     }
 
-    // Accessor for full image URL
+    // ==================== ACCESSORS ====================
+
     public function getImageFullUrlAttribute()
     {
         if (!$this->image_url) {
             return null;
         }
 
-        // If it's already a full URL or inline data image, return it
         if (str_starts_with($this->image_url, 'data:image/') || filter_var($this->image_url, FILTER_VALIDATE_URL)) {
             return $this->image_url;
         }
 
-        // Check if file exists in storage
         if (Storage::disk('public')->exists($this->image_url)) {
             return Storage::disk('public')->url($this->image_url);
         }
 
-        // Fallback to default
+        return null;
+    }
+
+    /**
+     * Get the pricing display label
+     */
+    public function getPricingLabelAttribute(): string
+    {
+        $labels = [
+            'per_pax' => 'Per Pax',
+            'per_tray' => 'Per Tray',
+            'both' => 'Both',
+        ];
+        return $labels[$this->pricing_type] ?? 'Per Pax';
+    }
+
+    /**
+     * Check if item has tray pricing
+     */
+    public function hasTrayPricing(): bool
+    {
+        return in_array($this->pricing_type, ['per_tray', 'both']) && $this->tray_price > 0;
+    }
+
+    /**
+     * Check if item has per pax pricing
+     */
+    public function hasPerPaxPricing(): bool
+    {
+        return in_array($this->pricing_type, ['per_pax', 'both']) && $this->price > 0;
+    }
+
+    /**
+     * Get tray description with pax range
+     */
+    public function getTrayDisplayDescriptionAttribute(): ?string
+    {
+        if ($this->tray_description) {
+            return $this->tray_description;
+        }
+
+        if ($this->tray_min_pax && $this->tray_max_pax) {
+            return "Good for {$this->tray_min_pax}–{$this->tray_max_pax} pax";
+        }
+
+        return null;
+    }
+
+    /**
+     * Get the formatted tray display for frontend
+     */
+    public function getTrayDisplayAttribute(): ?string
+    {
+        if ($this->tray_price > 0) {
+            $desc = $this->tray_display_description;
+            return $desc ? "₱" . number_format($this->tray_price, 2) . " (Tray) " . $desc : "₱" . number_format($this->tray_price, 2) . " (Tray)";
+        }
+        return null;
+    }
+
+    /**
+     * Get the formatted per pax display for frontend
+     */
+    public function getPerPaxDisplayAttribute(): ?string
+    {
+        if ($this->price > 0) {
+            return "₱" . number_format($this->price, 2) . " (Pax)";
+        }
         return null;
     }
 }

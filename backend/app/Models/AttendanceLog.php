@@ -22,6 +22,8 @@ class AttendanceLog extends Model
         'break_start' => 'datetime',
         'break_end' => 'datetime',
         'approved_at' => 'datetime',
+        'payroll_ready_at' => 'datetime',
+        'flagged_at' => 'datetime',
         'face_verified' => 'boolean',
         'overtime_approved' => 'boolean',
         'regular_hours' => 'float',
@@ -49,7 +51,19 @@ class AttendanceLog extends Model
         'late_minutes',
         'undertime_minutes',
         'total_hours',
+        'payroll_ready',
+        // ⭐ FIX #6, #7, #9 — flags
+        'attendance_flag',
+        'attendance_flag_label',
+        'is_awol',
+        'is_emergency_absent',
+        'is_on_leave',
+        'is_late_in',
     ];
+
+    /* =========================================================
+       RELATIONSHIPS
+       ========================================================= */
 
     public function employee()
     {
@@ -66,10 +80,19 @@ class AttendanceLog extends Model
         return $this->belongsTo(User::class, 'approved_by', 'user_id');
     }
 
+    public function flagger()
+    {
+        return $this->belongsTo(User::class, 'flagged_by', 'user_id');
+    }
+
     public function overtimeRequest()
     {
         return $this->hasOne(OvertimeRequest::class, 'attendance_id', 'attendance_id');
     }
+
+    /* =========================================================
+       BASIC ACCESSORS
+       ========================================================= */
 
     public function getIdAttribute()
     {
@@ -125,6 +148,10 @@ class AttendanceLog extends Model
         return $this->time_in ? 'IN' : 'OUT';
     }
 
+    /* =========================================================
+       SELFIE URL ACCESSORS
+       ========================================================= */
+
     public function getSelfieUrlAttribute(): ?string
     {
         return $this->normalizeStorageUrl($this->time_in_photo ?: $this->time_out_photo);
@@ -140,6 +167,10 @@ class AttendanceLog extends Model
         return $this->normalizeStorageUrl($this->time_out_photo);
     }
 
+    /* =========================================================
+       SCHEDULE / STATE HELPERS
+       ========================================================= */
+
     public function getScheduleTimeAttribute(): string
     {
         if (! $this->schedule) {
@@ -151,6 +182,10 @@ class AttendanceLog extends Model
 
     public function getAttendanceStateAttribute(): string
     {
+        if ($this->schedule_id && ! $this->time_in && ! $this->time_out && $this->status === 'absent') {
+            return 'Absent/AWOL';
+        }
+
         if (! $this->time_in) {
             return 'No time in';
         }
@@ -198,16 +233,73 @@ class AttendanceLog extends Model
         return round(((float) $this->regular_hours) + ((float) $this->overtime_hours), 2);
     }
 
+    public function getPayrollReadyAttribute(): bool
+    {
+        return $this->payroll_ready_at !== null;
+    }
+
+    /* =========================================================
+       ⭐ ATTENDANCE FLAG ACCESSORS (#6, #7, #9)
+       ========================================================= */
+
+    public function getAttendanceFlagAttribute(): ?string
+    {
+        return $this->attributes['attendance_flag'] ?? null;
+    }
+
+    public function getAttendanceFlagLabelAttribute(): ?string
+    {
+        return match ($this->attributes['attendance_flag'] ?? null) {
+            'awol' => 'AWOL',
+            'emergency_absent' => 'Emergency Absent',
+            'on_leave' => 'On Leave',
+            'late_in' => 'Late In',
+            default => null,
+        };
+    }
+
+    public function getIsAwolAttribute(): bool
+    {
+        return ($this->attributes['attendance_flag'] ?? null) === 'awol';
+    }
+
+    public function getIsEmergencyAbsentAttribute(): bool
+    {
+        return ($this->attributes['attendance_flag'] ?? null) === 'emergency_absent';
+    }
+
+    public function getIsOnLeaveAttribute(): bool
+    {
+        return ($this->attributes['attendance_flag'] ?? null) === 'on_leave';
+    }
+
+    public function getIsLateInAttribute(): bool
+    {
+        return ($this->attributes['attendance_flag'] ?? null) === 'late_in';
+    }
+
+    /* =========================================================
+       URL NORMALIZER
+       ========================================================= */
+
     private function normalizeStorageUrl(?string $path): ?string
     {
         if (! $path) {
             return null;
         }
 
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://') || str_starts_with($path, '/')) {
+        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
             return $path;
         }
 
-        return Storage::url($path);
+        if (str_starts_with($path, '/storage/')) {
+            return url($path);
+        }
+
+        if (str_starts_with($path, '/')) {
+            return url($path);
+        }
+
+        return url('storage/' . ltrim($path, '/'));
     }
 }
