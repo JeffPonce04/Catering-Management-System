@@ -31,10 +31,11 @@ import {
     ConfigProvider,
     theme as antdTheme,
     Radio,
-    Image,
+     Image,
     Avatar,
     Progress,
     Checkbox,
+    Skeleton,
 } from 'antd';
 import {
     DollarOutlined,
@@ -73,11 +74,14 @@ import {
     FileSearchOutlined,
     UnorderedListOutlined,
     FileImageOutlined,
-    RollbackOutlined,
+       RollbackOutlined,
     AuditOutlined,
     HistoryOutlined,
     SwapOutlined,
     InfoCircleOutlined,
+    EyeInvisibleOutlined,
+    LeftOutlined,
+    RightOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
@@ -94,6 +98,13 @@ const { TabPane } = Tabs;
 const { RangePicker } = DatePicker;
 const { TextArea } = Input;
 const { confirm } = Modal;
+
+// ─────────────────────────────────────────────────────────────
+// Module-level flag: true only for the FIRST mount after a hard
+// page load (F5 / direct URL). Survives in-app React Router nav
+// because the JS module stays in memory. Resets on hard refresh.
+// ─────────────────────────────────────────────────────────────
+let __biFirstMountAfterPageLoad = true;
 
 // ============================================================
 // MEAL ORDER CONFIGURATION
@@ -273,13 +284,339 @@ const getRefundStatusConfig = (status) => {
     };
     return config[status] || config.pending;
 };
+// ============================================================
+// SKELETON LOADING COMPONENTS
+// ============================================================
+const SkeletonBlock = ({ width = '100%', height = 14, radius = 8, style = {}, className = '' }) => (
+    <div
+        className={`bi-skeleton-block ${className}`}
+        style={{ width, height, borderRadius: radius, flexShrink: 0, ...style }}
+        aria-hidden="true"
+    />
+);
 
+/* ---------- Reusable: Fake table row ---------- */
+const SkeletonTableRow = ({ columns, isDarkMode }) => {
+    const borderCol = isDarkMode ? '#1e2340' : '#e8edf2';
+    return (
+        <div
+            style={{
+                display: 'grid',
+                gridTemplateColumns: columns,
+                alignItems: 'center',
+                gap: 16,
+                padding: '14px 16px',
+                borderBottom: `1px solid ${borderCol}`,
+            }}
+        >
+            <SkeletonBlock width="80%" height={12} radius={6} />
+            <SkeletonBlock width="75%" height={12} radius={6} />
+            <div>
+                <SkeletonBlock width="70%" height={12} radius={6} style={{ marginBottom: 6 }} />
+                <SkeletonBlock width="50%" height={9} radius={6} />
+            </div>
+            <SkeletonBlock width="60%" height={12} radius={6} />
+            <SkeletonBlock width="65%" height={12} radius={6} />
+            <SkeletonBlock width="65%" height={12} radius={6} />
+            <SkeletonBlock width="65%" height={12} radius={6} />
+            <SkeletonBlock width="70%" height={12} radius={6} />
+            <SkeletonBlock width={70} height={22} radius={12} style={{ margin: '0 auto' }} />
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                <SkeletonBlock width={28} height={28} radius={8} />
+                <SkeletonBlock width={28} height={28} radius={8} />
+                <SkeletonBlock width={28} height={28} radius={8} />
+                <SkeletonBlock width={28} height={28} radius={8} />
+            </div>
+        </div>
+    );
+};
+
+/* ---------- Reusable: Fake table (header + rows) ---------- */
+const SkeletonTable = ({ columnTemplate, rowCount = 8, isDarkMode }) => {
+    const cardBg = isDarkMode ? '#13172b' : '#ffffff';
+    const pageBg = isDarkMode ? '#0a0e1a' : '#f8fafc';
+    const borderCol = isDarkMode ? '#1e2340' : '#e8edf2';
+
+    return (
+        <div
+            style={{
+                background: cardBg,
+                border: `1px solid ${borderCol}`,
+                borderRadius: 12,
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minHeight: 0,
+            }}
+        >
+                     {/* Header row */}
+            <div
+                style={{
+                    display: 'grid',
+                    gridTemplateColumns: columnTemplate,
+                    gap: 16,
+                    padding: '14px 16px',
+                    background: pageBg,
+                    borderBottom: `1px solid ${borderCol}`,
+                }}
+            >
+                {Array.from({ length: columnTemplate.split(' ').length }).map((_, i) => (
+                    <SkeletonBlock key={i} width="70%" height={10} radius={4} />
+                ))}
+            </div>
+
+            {/* Rows */}
+            <div style={{ overflow: 'hidden' }}>
+                {Array.from({ length: rowCount }).map((_, i) => (
+                    <SkeletonTableRow key={i} columns={columnTemplate} isDarkMode={isDarkMode} />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+/* ---------- Main skeleton that mirrors the billing page ---------- */
+const BillingSkeleton = ({ isDarkMode, activeTab = 'invoices' }) => {
+    const cardBg = isDarkMode ? '#13172b' : '#ffffff';
+    const borderCol = isDarkMode ? '#1e2340' : '#e8edf2';
+    const pageBg = isDarkMode ? '#0a0e1a' : '#f8fafc';
+
+    const cardStyle = {
+        background: cardBg,
+        border: `1px solid ${borderCol}`,
+        borderRadius: 12,
+    };
+
+    // Column templates match the real tables (invoices / payments / debts / refunds)
+    const columnTemplates = {
+        invoices: '1.2fr 1.4fr 2fr 1.4fr 1.3fr 1.3fr 1.3fr 1.2fr 1.1fr 2.6fr',
+        payments: '1.5fr 2fr 1.3fr 1.2fr 1fr 1.3fr 1.5fr 1.2fr 1.1fr 1.6fr',
+        debts:    '2fr 1.3fr 1.4fr 1.4fr 1.4fr 1.7fr 1.2fr 1.3fr 1.2fr 1.1fr 1.1fr 1.5fr 1.5fr',
+        refunds:  '1.5fr 1.8fr 2fr 1.3fr 1.4fr 1.3fr 1.5fr 1.8fr 2.4fr',
+        history:  '1.5fr 2fr 1.3fr 1.2fr 1fr 1.3fr 1.5fr 1.2fr 1.1fr 1.6fr',
+        mobile:   '2fr 1.3fr 1.3fr 1.2fr 1.5fr 1.5fr 1.2fr 1.1fr 2fr',
+        pdf:      '1.5fr 2fr 1.3fr 1.3fr 1.4fr 1.2fr 1.2fr',
+    };
+
+    const columnTemplate = columnTemplates[activeTab] || columnTemplates.invoices;
+
+    return (
+        <ConfigProvider
+            theme={{
+                algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
+            }}
+        >
+            <div
+                className={`bi-billing-container ${isDarkMode ? 'bi-dark-mode' : ''}`}
+                style={{ background: pageBg }}
+            >
+                {/* ===== HEADER (matches real header) ===== */}
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '12px 32px',
+                    background: cardBg,
+                    borderBottom: `1px solid ${borderCol}`,
+                    minHeight: 72,
+                    flexShrink: 0,
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                        <SkeletonBlock width={40} height={40} radius={12} />
+                        <div>
+                            <SkeletonBlock width={180} height={14} radius={6} style={{ marginBottom: 6 }} />
+                            <SkeletonBlock width={140} height={9} radius={6} />
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <SkeletonBlock width={180} height={32} radius={10} />
+                        <SkeletonBlock width={90} height={36} radius={10} />
+                        <SkeletonBlock width={90} height={36} radius={10} />
+                        <SkeletonBlock width={80} height={36} radius={10} />
+                    </div>
+                </div>
+
+                {/* ===== KPI CARDS (5 across, matching canProcessRefunds layout) ===== */}
+                <div className="bi-kpi-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 20, padding: '20px 32px 4px', marginBottom: 20 }}>
+                    {Array.from({ length: 5 }).map((_, i) => (
+                        <div key={i} className="bi-kpi-card" style={{ display: 'flex', alignItems: 'center', gap: 18, padding: '20px 24px', minHeight: 88 }}>
+                            <SkeletonBlock width={44} height={44} radius={12} />
+                            <div style={{ flex: 1 }}>
+                                <SkeletonBlock width="80%" height={18} radius={6} style={{ marginBottom: 8 }} />
+                                <SkeletonBlock width="60%" height={10} radius={6} />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* ===== MAIN CARD with TABS + FILTERS + TABLE ===== */}
+                <div className="bi-main-card" style={{ ...cardStyle, margin: '0 32px 32px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+
+                    {/* Tab bar */}
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 24,
+                        padding: '14px 24px',
+                        borderBottom: `1px solid ${borderCol}`,
+                        flexShrink: 0,
+                    }}>
+                        {['Invoices', 'Payment Tracking', 'Payment History', 'Mobile Payments', 'Debt Management', 'Refunds', 'PDF Overview'].map((_, i) => (
+                            <SkeletonBlock key={i} width={90 + (i % 2) * 30} height={12} radius={6} />
+                        ))}
+                    </div>
+
+                    {/* Filters bar */}
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '12px 16px',
+                        background: pageBg,
+                        borderBottom: `1px solid ${borderCol}`,
+                        flexShrink: 0,
+                    }}>
+                        <SkeletonBlock width={140} height={36} radius={10} />
+                        <SkeletonBlock width={220} height={36} radius={10} />
+                        <SkeletonBlock width={280} height={36} radius={10} />
+                        <div style={{ flex: 1 }} />
+                        <SkeletonBlock width={140} height={36} radius={10} />
+                    </div>
+
+                    {/* Table skeleton */}
+                    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', padding: 0 }}>
+                        <SkeletonTable
+                            columnTemplate={columnTemplate}
+                            rowCount={8}
+                            isDarkMode={isDarkMode}
+                        />
+                    </div>
+                </div>
+            </div>
+        </ConfigProvider>
+    );
+};
+
+/* ---------- Modal skeleton (for invoice/payment/refund detail loading) ---------- */
+const ModalSkeleton = ({ isDarkMode, variant = 'invoice' }) => {
+    const cardBg = isDarkMode ? '#13172b' : '#ffffff';
+    const borderCol = isDarkMode ? '#1e2340' : '#e8edf2';
+    const pageBg = isDarkMode ? '#0a0e1a' : '#f8fafc';
+
+    return (
+        <div style={{ background: cardBg }}>
+            {/* Modal header */}
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '16px 24px',
+                borderBottom: `1px solid ${borderCol}`,
+            }}>
+                <SkeletonBlock width={36} height={36} radius={10} />
+                <div style={{ flex: 1 }}>
+                    <SkeletonBlock width={180} height={14} radius={6} style={{ marginBottom: 6 }} />
+                    <SkeletonBlock width={220} height={10} radius={6} />
+                </div>
+                <SkeletonBlock width={140} height={26} radius={20} />
+            </div>
+
+            {/* Modal body */}
+            <div style={{ padding: '20px 24px', background: cardBg }}>
+                {/* 4-up summary cards (invoice / refund variants) */}
+                {(variant === 'invoice' || variant === 'refund') && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', border: `1px solid ${borderCol}`, borderRadius: 12 }}>
+                                <SkeletonBlock width={40} height={40} radius={10} />
+                                <div style={{ flex: 1 }}>
+                                    <SkeletonBlock width="60%" height={10} radius={6} style={{ marginBottom: 6 }} />
+                                    <SkeletonBlock width="80%" height={16} radius={6} />
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Payment modal summary block */}
+                {variant === 'payment' && (
+                    <div style={{ padding: '16px 20px', background: pageBg, border: `1px solid ${borderCol}`, borderRadius: 12, marginBottom: 20 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
+                            {Array.from({ length: 4 }).map((_, i) => (
+                                <div key={i}>
+                                    <SkeletonBlock width="60%" height={10} radius={6} style={{ marginBottom: 8 }} />
+                                    <SkeletonBlock width="80%" height={15} radius={6} />
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Section: header + 2-col info grid */}
+                <div style={{ marginBottom: 20 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 8, marginBottom: 12, borderBottom: `2px solid ${borderCol}` }}>
+                        <SkeletonBlock width={16} height={16} radius={4} />
+                        <SkeletonBlock width={180} height={12} radius={6} />
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 24px' }}>
+                        {Array.from({ length: 6 }).map((_, i) => (
+                            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: `1px solid ${borderCol}` }}>
+                                <SkeletonBlock width="35%" height={12} radius={6} />
+                                <SkeletonBlock width="45%" height={12} radius={6} />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Section: mini table (items / payments list) */}
+                <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 8, marginBottom: 12, borderBottom: `2px solid ${borderCol}` }}>
+                        <SkeletonBlock width={16} height={16} radius={4} />
+                        <SkeletonBlock width={150} height={12} radius={6} />
+                    </div>
+                    <div style={{ border: `1px solid ${borderCol}`, borderRadius: 10, overflow: 'hidden' }}>
+                        {Array.from({ length: 4 }).map((_, i) => (
+                            <div
+                                key={i}
+                                style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: '2fr 1fr 1fr 1fr',
+                                    gap: 12,
+                                    padding: '12px 14px',
+                                    borderBottom: i < 3 ? `1px solid ${borderCol}` : 'none',
+                                }}
+                            >
+                                <SkeletonBlock width="80%" height={12} radius={6} />
+                                <SkeletonBlock width="60%" height={12} radius={6} />
+                                <SkeletonBlock width="60%" height={12} radius={6} />
+                                <SkeletonBlock width="60%" height={12} radius={6} />
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            {/* Modal footer */}
+            <div style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 10,
+                padding: '14px 24px',
+                borderTop: `1px solid ${borderCol}`,
+            }}>
+                <SkeletonBlock width={100} height={38} radius={10} />
+                <SkeletonBlock width={140} height={38} radius={10} />
+            </div>
+        </div>
+    );
+};
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
 const BillingInvoicing = () => {
     const location = useLocation();
-    const { user } = useAuth();
+       const { user, businessSettings: sharedBusinessSettings } = useAuth();
     const canApproveFinancialAdjustments = hasAllowedRole(user, ADMIN_ROLES);
     const canProcessRefunds = hasAllowedRole(user, ADMIN_ROLES);
     const isCashier = hasAllowedRole(user, ['cashier', 'finance', 'finance-staff', 'finance_staff']);
@@ -302,6 +639,52 @@ const BillingInvoicing = () => {
     const [paymentHistoryMethod, setPaymentHistoryMethod] = useState('all');
     const [paymentHistoryDateRange, setPaymentHistoryDateRange] = useState([]);
     const [activeMainTab, setActiveMainTab] = useState('invoices');
+
+    // ⭐ Billing KPI visibility (Hide/Unhide) — mirrors financial-visibility.
+    const BILLING_VISIBILITY_KEY = 'bi_billing_visibility';
+    const BILLING_VISIBILITY_CHANNEL = 'bi_billing_visibility_channel';
+
+    const readCachedBillingVisibility = () => {
+        try {
+            const raw = localStorage.getItem(BILLING_VISIBILITY_KEY);
+            if (!raw) return { total_revenue: false, total_collected: false, outstanding_balance: false, total_refunds: false };
+            const p = JSON.parse(raw) || {};
+            return {
+                total_revenue: Boolean(p.total_revenue),
+                total_collected: Boolean(p.total_collected),
+                outstanding_balance: Boolean(p.outstanding_balance),
+                total_refunds: Boolean(p.total_refunds),
+            };
+        } catch {
+            return { total_revenue: false, total_collected: false, outstanding_balance: false, total_refunds: false };
+        }
+    };
+
+    const [billingVisibility, setBillingVisibility] = useState(readCachedBillingVisibility);
+    const effectiveBillingVisibility = billingVisibility;
+
+    // ⭐ Period Behavior — Weekly / Monthly / Yearly + anchor
+    const [dashboardPeriod, setDashboardPeriod] = useState(
+        () => sessionStorage.getItem('bi_dashboardPeriod') || 'monthly'
+    );
+    const [dashboardAnchor, setDashboardAnchor] = useState(
+        () => sessionStorage.getItem('bi_dashboardAnchor') || dayjs().format('YYYY-MM-DD')
+    );
+    const [periodToolbarHidden, setPeriodToolbarHidden] = useState(
+        () => sessionStorage.getItem('bi_periodToolbarHidden') === 'true'
+    );
+
+    useEffect(() => {
+        sessionStorage.setItem('bi_dashboardPeriod', dashboardPeriod);
+    }, [dashboardPeriod]);
+
+    useEffect(() => {
+        sessionStorage.setItem('bi_dashboardAnchor', dashboardAnchor);
+    }, [dashboardAnchor]);
+
+    useEffect(() => {
+        sessionStorage.setItem('bi_periodToolbarHidden', String(periodToolbarHidden));
+    }, [periodToolbarHidden]);
 
     // Refund state
     const [refunds, setRefunds] = useState([]);
@@ -344,7 +727,7 @@ const BillingInvoicing = () => {
     // Modal states
     const [invoiceModalVisible, setInvoiceModalVisible] = useState(false);
     const [invoiceDetailsModalVisible, setInvoiceDetailsModalVisible] = useState(false);
-    const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+    const [invoiceDetailsLoading, setInvoiceDetailsLoading] = useState(false);    const [paymentModalVisible, setPaymentModalVisible] = useState(false);
     const [reminderModalVisible, setReminderModalVisible] = useState(false);
     const [discountModalVisible, setDiscountModalVisible] = useState(false);
     const [selectedInvoice, setSelectedInvoice] = useState(null);
@@ -404,6 +787,175 @@ const BillingInvoicing = () => {
     const isMounted = useRef(true);
     const paymentSubmitLock = useRef(false);
     const queryClient = useQueryClient();
+    // Show the skeleton ONLY on the first mount after a hard page load
+    // AND when there's no cached data yet. Combined with `staleTime: Infinity`,
+    // this means back-navigation renders instantly from cache.
+     const [showSkeleton, setShowSkeleton] = useState(() => {
+        const shouldShow = __biFirstMountAfterPageLoad;
+        __biFirstMountAfterPageLoad = false;
+        return shouldShow;
+    });
+
+    // ── Load billing visibility from the server ──────────────────
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await api.get('/settings/billing-visibility');
+                const payload = res?.data?.data?.data || res?.data?.data || res?.data || {};
+                if (cancelled) return;
+                const resolved = {
+                    total_revenue: Boolean(payload?.total_revenue),
+                    total_collected: Boolean(payload?.total_collected),
+                    outstanding_balance: Boolean(payload?.outstanding_balance),
+                    total_refunds: Boolean(payload?.total_refunds),
+                };
+                setBillingVisibility(resolved);
+                try { localStorage.setItem(BILLING_VISIBILITY_KEY, JSON.stringify(resolved)); } catch {}
+            } catch {}
+        })();
+        return () => { cancelled = true; };
+    }, []);
+
+    // ── Cross-tab instant sync ───────────────────────────────────
+    useEffect(() => {
+        let channel;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel(BILLING_VISIBILITY_CHANNEL);
+                channel.onmessage = (event) => {
+                    const next = event?.data?.payload;
+                    if (!next) return;
+                    setBillingVisibility({
+                        total_revenue: Boolean(next.total_revenue),
+                        total_collected: Boolean(next.total_collected),
+                        outstanding_balance: Boolean(next.outstanding_balance),
+                        total_refunds: Boolean(next.total_refunds),
+                    });
+                };
+            }
+        } catch {}
+        const handleStorage = (event) => {
+            if (event.key !== BILLING_VISIBILITY_KEY) return;
+            try {
+                const next = JSON.parse(event.newValue || '{}');
+                setBillingVisibility({
+                    total_revenue: Boolean(next.total_revenue),
+                    total_collected: Boolean(next.total_collected),
+                    outstanding_balance: Boolean(next.outstanding_balance),
+                    total_refunds: Boolean(next.total_refunds),
+                });
+            } catch {}
+        };
+        window.addEventListener('storage', handleStorage);
+        return () => {
+            if (channel) channel.close();
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, []);
+
+    // ── Poll every 10s so other devices see the toggle ───────────
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            try {
+                const res = await api.get('/settings/billing-visibility');
+                const payload = res?.data?.data?.data || res?.data?.data || res?.data || {};
+                const resolved = {
+                    total_revenue: Boolean(payload?.total_revenue),
+                    total_collected: Boolean(payload?.total_collected),
+                    outstanding_balance: Boolean(payload?.outstanding_balance),
+                    total_refunds: Boolean(payload?.total_refunds),
+                };
+                setBillingVisibility((prev) => {
+                    const changed = prev.total_revenue !== resolved.total_revenue
+                        || prev.total_collected !== resolved.total_collected
+                        || prev.outstanding_balance !== resolved.outstanding_balance
+                        || prev.total_refunds !== resolved.total_refunds;
+                    if (changed) {
+                        try { localStorage.setItem(BILLING_VISIBILITY_KEY, JSON.stringify(resolved)); } catch {}
+                    }
+                    return changed ? resolved : prev;
+                });
+            } catch {}
+        }, 10000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const handleToggleBillingVisibility = useCallback(async (key) => {
+        if (!canProcessRefunds) {
+            message.warning('Only administrators can hide or unhide billing values.');
+            return;
+        }
+        const current = billingVisibility;
+        const next = { ...current, [key]: !current[key] };
+        setBillingVisibility(next);
+        try { localStorage.setItem(BILLING_VISIBILITY_KEY, JSON.stringify(next)); } catch {}
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                const ch = new BroadcastChannel(BILLING_VISIBILITY_CHANNEL);
+                ch.postMessage({ payload: next });
+                ch.close();
+            }
+        } catch {}
+        try {
+            await api.put('/settings/billing-visibility', next);
+        } catch (e) {
+            setBillingVisibility(current);
+            try { localStorage.setItem(BILLING_VISIBILITY_KEY, JSON.stringify(current)); } catch {}
+            message.error(e?.response?.data?.message || 'Failed to save visibility.');
+        }
+    }, [billingVisibility, canProcessRefunds]);
+
+    const maskMatchingValue = (visibleValue) => {
+        const str = String(visibleValue ?? '');
+        if (!str) return '**********';
+        const hasCurrency = str.startsWith('₱');
+        const digits = str.replace(/[^\d.,]/g, '').length;
+        return (hasCurrency ? '₱' : '') + '*'.repeat(Math.max(3, digits));
+    };
+
+    // ⭐ Period helpers
+    const periodRange = useMemo(() => {
+        const anchor = dayjs(dashboardAnchor);
+        switch (dashboardPeriod) {
+            case 'weekly': {
+                const start = anchor.startOf('isoWeek');
+                const end   = anchor.endOf('isoWeek');
+                return { start, end, label: `${start.format('MMM D')} – ${end.format('MMM D, YYYY')}`, navUnit: 'week' };
+            }
+            case 'yearly': {
+                const start = anchor.startOf('year');
+                const end   = anchor.endOf('year');
+                return { start, end, label: start.format('YYYY'), navUnit: 'year' };
+            }
+            case 'monthly':
+            default: {
+                const start = anchor.startOf('month');
+                const end   = anchor.endOf('month');
+                return { start, end, label: start.format('MMMM YYYY'), navUnit: 'month' };
+            }
+        }
+    }, [dashboardPeriod, dashboardAnchor]);
+
+    const handleShiftPeriod = useCallback((direction) => {
+        const unit = periodRange.navUnit;
+        const next = direction === 'next'
+            ? dayjs(dashboardAnchor).add(1, unit)
+            : dayjs(dashboardAnchor).subtract(1, unit);
+        setDashboardAnchor(next.format('YYYY-MM-DD'));
+    }, [dashboardAnchor, periodRange.navUnit]);
+
+    const handleJumpToToday = useCallback(() => {
+        setDashboardAnchor(dayjs().format('YYYY-MM-DD'));
+    }, []);
+
+    const handleTogglePeriodToolbar = useCallback(() => {
+        setPeriodToolbarHidden((prev) => {
+            const next = !prev;
+            message.success(next ? 'Period selector hidden' : 'Period selector shown');
+            return next;
+        });
+    }, []);
 
     useEffect(() => {
         if (paymentModalVisible) {
@@ -448,8 +1000,22 @@ const BillingInvoicing = () => {
             window.removeEventListener('storage', handleStorageChange);
         };
     }, []);
-
     // ==================== LOAD DATA FROM BACKEND (REACT QUERY) ====================
+    // Billing queries share the same cache philosophy as Booking / Orders / Menu:
+    //   • data stays fresh for the whole session
+    //   • back-navigation resolves instantly from cache
+    //   • only mutations invalidate
+    const BILLING_QUERY_OPTIONS = {
+        staleTime: Infinity,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnWindowFocus: false,
+        refetchOnMount: false,
+        refetchOnReconnect: false,  
+        refetchInterval: false,
+        placeholderData: (prev) => prev,
+        retry: 1,
+    };
+
     const paymentDateParams = useMemo(() => ({
         date_from: paymentTrackingDateRange?.[0]
             ? paymentTrackingDateRange[0].format('YYYY-MM-DD HH:mm:ss')
@@ -459,92 +1025,148 @@ const BillingInvoicing = () => {
             : undefined,
     }), [paymentTrackingDateRange]);
 
+        const invoicePeriodParams = useMemo(() => ({
+        period: dashboardPeriod,
+        anchor: dashboardAnchor,
+    }), [dashboardPeriod, dashboardAnchor]);
+
     const invoicesQuery = useQuery({
-        queryKey: ['billing', 'invoices'],
-        queryFn: async () => extractDataFromResponse(await api.get('/invoices', { params: { per_page: 1000 } })),
+        queryKey: ['billing', 'invoices', invoicePeriodParams],
+        queryFn: async () => extractDataFromResponse(await api.get('/invoices', {
+            params: { per_page: 100, ...invoicePeriodParams },
+        })),
+        ...BILLING_QUERY_OPTIONS,
     });
+     // Only fire these queries when the user is actually on the tab that
+    // needs them. This shrinks the cold-start waterfall from 7 requests
+    // to 3 (invoices + confirmed-bookings + settings).
 
     const paymentTrackingQuery = useQuery({
         queryKey: ['billing', 'payments', 'tracking', paymentDateParams],
         queryFn: async () => extractDataFromResponse(await api.get('/payments/tracking', {
-            params: { per_page: 1000, ...paymentDateParams },
+            params: { per_page: 100, ...paymentDateParams },
         })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: activeMainTab === 'payments' || activeMainTab === 'invoices',
     });
 
     const paymentHistoryQuery = useQuery({
         queryKey: ['billing', 'payments', 'history'],
-        queryFn: async () => extractDataFromResponse(await api.get('/payments/history', { params: { per_page: 1000 } })),
+        queryFn: async () => extractDataFromResponse(await api.get('/payments/history', { params: { per_page: 100 } })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: activeMainTab === 'payment_history',
     });
 
     const mobilePaymentsQuery = useQuery({
         queryKey: ['billing', 'payments', 'mobile'],
-        queryFn: async () => extractDataFromResponse(await api.get('/payments/mobile', { params: { per_page: 1000 } })),
+        queryFn: async () => extractDataFromResponse(await api.get('/payments/mobile', { params: { per_page: 100 } })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: activeMainTab === 'mobile',
     });
 
     const debtsQuery = useQuery({
         queryKey: ['billing', 'debts'],
-        queryFn: async () => extractDataFromResponse(await api.get('/debts', { params: { per_page: 1000 } })),
+        queryFn: async () => extractDataFromResponse(await api.get('/debts', { params: { per_page: 100 } })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: activeMainTab === 'debts',
+    });
+       const confirmedBookingsQuery = useQuery({
+        // ⭐ v2 key so the older empty cache is not served
+        queryKey: ['billing', 'confirmed-bookings', 'v2'],
+        queryFn: async () => extractDataFromResponse(await api.get('/invoices/confirmed-bookings', {
+            params: { per_page: 200 },
+        })),
+        ...BILLING_QUERY_OPTIONS,
     });
 
-    const confirmedBookingsQuery = useQuery({
-        queryKey: ['billing', 'confirmed-bookings'],
-        queryFn: async () => extractDataFromResponse(await api.get('/invoices/confirmed-bookings')),
-    });
-
-    const pdfBookingsQuery = useQuery({
+    // `pdf-bookings` is only needed on the PDF Overview tab.
+    // Gate it on that tab so we don't pull 1000 rows on every visit.
+      const pdfBookingsQuery = useQuery({
         queryKey: ['billing', 'pdf-bookings'],
-        queryFn: async () => extractDataFromResponse(await api.get('/bookings', { params: { per_page: 1000 } })),
+        queryFn: async () => extractDataFromResponse(await api.get('/bookings', { params: { per_page: 100 } })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: activeMainTab === 'pdf_overview',
     });
-
+    // `/settings/business` requires admin permission. Cashiers and finance
+    // staff get a 403. Gate it on `canApproveFinancialAdjustments` and let
+    // the PDF generator fall back to hardcoded defaults when it's missing.
+    // Business settings are owned by AuthProvider — this component only
+    // subscribes to the shared `['settings', 'business']` cache slot.
+    // `enabled: false` means this hook never fires its own request; it
+    // just re-renders when AuthProvider populates or refreshes the cache.
     const settingsQuery = useQuery({
-        queryKey: ['billing', 'settings'],
-        queryFn: async () => extractObjectFromResponse(await api.get('/settings/business')),
+        queryKey: ['settings', 'business'],
+        queryFn: async () => ({}),
+        staleTime: Infinity,
+        gcTime: 24 * 60 * 60 * 1000,
+        enabled: false,
     });
-
     // ==================== REFUND QUERIES (ADMIN ONLY) ====================
     // ⚠️ Enabled ONLY for admin / super-admin. Cashiers must never fire these
     //    calls — the backend blocks them at RoleAccessMiddleware anyway, but
     //    avoiding the request prevents 403 noise in the console.
     const refundsQuery = useQuery({
-        queryKey: ['billing', 'refunds'],
-        queryFn: async () => extractDataFromResponse(await api.get('/refunds', { params: { per_page: 1000 } })),
-        enabled: canProcessRefunds,
+        queryKey: ['billing', 'refunds', invoicePeriodParams],
+        queryFn: async () => extractDataFromResponse(await api.get('/refunds', {
+            params: { per_page: 1000, ...invoicePeriodParams },
+        })),
+        ...BILLING_QUERY_OPTIONS,
+        enabled: canProcessRefunds && activeMainTab === 'refunds',
     });
-
-    const refundStatisticsQuery = useQuery({
+     const refundStatisticsQuery = useQuery({
         queryKey: ['billing', 'refunds', 'statistics'],
         queryFn: async () => extractObjectFromResponse(await api.get('/refunds/statistics')),
-        enabled: canProcessRefunds,
+        ...BILLING_QUERY_OPTIONS,
+        enabled: canProcessRefunds && activeMainTab === 'refunds',
     });
+
 
     const pendingRefundsQuery = useQuery({
         queryKey: ['billing', 'refunds', 'pending'],
         queryFn: async () => extractDataFromResponse(await api.get('/refunds/pending')),
-        enabled: canProcessRefunds,
+        ...BILLING_QUERY_OPTIONS,
+        enabled: canProcessRefunds && activeMainTab === 'refunds',
     });
 
     const approvedRefundsQuery = useQuery({
         queryKey: ['billing', 'refunds', 'approved'],
         queryFn: async () => extractDataFromResponse(await api.get('/refunds/approved')),
-        enabled: canProcessRefunds,
+        ...BILLING_QUERY_OPTIONS,
+        enabled: canProcessRefunds && activeMainTab === 'refunds',
     });
 
-    const businessSettings = useMemo(() => {
-        const settings = settingsQuery.data || {};
-        return settings.business || settings.company || settings.general || settings || {};
-    }, [settingsQuery.data]);
+      const businessSettings = useMemo(() => {
+        const fromAuth = sharedBusinessSettings || {};
+        const fromQuery = settingsQuery.data || {};
+        const resolved = fromQuery.business || fromQuery.company || fromQuery.general || fromQuery || {};
+        return {
+            ...fromAuth,
+            ...resolved,
+        };
+    }, [sharedBusinessSettings, settingsQuery.data]);
+    // Only the queries that are actually enabled should gate the skeleton.
+    // `isPending` is `true` for disabled queries — we must check `isEnabled`
+    // (v5) / `fetchStatus !== 'idle'` before consulting `isPending`.
+    const querySettled = (q) => !q.isEnabled || !q.isPending;
 
-    const loading = [
-        invoicesQuery,
-        paymentTrackingQuery,
-        paymentHistoryQuery,
-        mobilePaymentsQuery,
-        debtsQuery,
-        confirmedBookingsQuery,
-        pdfBookingsQuery,
-        settingsQuery,
-        refundsQuery,
-    ].some(query => query.isLoading || query.isFetching);
+    const primaryQueriesSettled =
+        querySettled(invoicesQuery) &&
+        querySettled(paymentTrackingQuery) &&
+        querySettled(paymentHistoryQuery) &&
+        querySettled(mobilePaymentsQuery) &&
+        querySettled(debtsQuery) &&
+        querySettled(confirmedBookingsQuery) &&
+        querySettled(pdfBookingsQuery) &&
+        querySettled(settingsQuery) &&
+        querySettled(refundsQuery);
+
+    // Hide the skeleton as soon as the initial load settles on the first mount.
+    // On back-navigation, `showSkeleton` is already `false`, so we skip it entirely.
+    useEffect(() => {
+        if (showSkeleton && primaryQueriesSettled) {
+            setShowSkeleton(false);
+        }
+    }, [primaryQueriesSettled, showSkeleton]);
 
     useEffect(() => {
         const invoiceData = invoicesQuery.data || [];
@@ -956,9 +1578,24 @@ const BillingInvoicing = () => {
         }
     };
     // ==================== INVOICE FUNCTIONS ====================
-    const handleViewInvoice = (record) => {
+    const handleViewInvoice = async (record) => {
         setSelectedInvoice(record);
         setInvoiceDetailsModalVisible(true);
+        setInvoiceDetailsLoading(true);
+        try {
+            // Optional: re-fetch freshest invoice detail for the modal
+            if (record?.invoice_id) {
+                const res = await api.get(`/invoices/${record.invoice_id}`);
+                const fresh = res?.data?.data || res?.data;
+                if (fresh && typeof fresh === 'object' && !Array.isArray(fresh)) {
+                    setSelectedInvoice(prev => ({ ...prev, ...fresh }));
+                }
+            }
+        } catch (_) {
+            // Silently fall back to the list row already in state
+        } finally {
+            setInvoiceDetailsLoading(false);
+        }
     };
 
     const handleCreateInvoice = () => {
@@ -969,11 +1606,19 @@ const BillingInvoicing = () => {
             due_date: dayjs().add(30, 'days'),
             discount_type: 'fixed',
             discount: 0,
-            additional_charges: 0
+            additional_charges: 0,
         });
         setInvoiceModalVisible(true);
-    };
 
+        // ⭐ Force a fresh fetch every time the modal opens so a booking
+        //    approved in another tab (or a new invoice created elsewhere)
+        //    shows up immediately without a hard reload.
+        try {
+            confirmedBookingsQuery.refetch();
+        } catch (e) {
+            // query ref may not exist on first render
+        }
+    };
     const handleEditInvoice = (record) => {
         setEditingInvoice(record);
         setCreateInvoiceBookingId(record.booking_id);
@@ -997,25 +1642,35 @@ const BillingInvoicing = () => {
         setInvoiceModalVisible(true);
     };
 
-    const handleSelectBooking = (bookingId) => {
+        const handleSelectBooking = (bookingId) => {
         setCreateInvoiceBookingId(bookingId);
         const booking = confirmedBookings.find(b => b.booking_id === bookingId);
-        if (booking) {
-            invoiceForm.setFieldsValue({
-                booking_id: booking.booking_id,
-                booking_no: booking.booking_no,
-                customer_name: booking.customer_name,
-                customer_email: booking.customer_email,
-                customer_phone: booking.customer_phone,
-                customer_address: booking.customer_address,
-                event_type: booking.event_type,
-                event_date: booking.event_date ? dayjs(booking.event_date) : null,
-                subtotal: booking.subtotal || booking.total_amount || 0,
-                total_amount: booking.total_amount || booking.subtotal || 0,
-                guests_count: booking.guests_count,
-                venue: booking.venue
-            });
+        if (!booking) return;
+
+        // ⭐ Warn (but don't block) if this booking already has an invoice.
+        //    The backend will reject the duplicate anyway, but we surface the
+        //    reason up front so the operator is not confused.
+        if (booking.has_invoice) {
+            message.warning(
+                `Booking ${booking.booking_no} already has invoice ${booking.invoice_number}. ` +
+                'Creating a new invoice will be rejected by the server.'
+            );
         }
+
+        invoiceForm.setFieldsValue({
+            booking_id: booking.booking_id,
+            booking_no: booking.booking_no,
+            customer_name: booking.customer_name,
+            customer_email: booking.customer_email,
+            customer_phone: booking.customer_phone,
+            customer_address: booking.customer_address,
+            event_type: booking.event_type,
+            event_date: booking.event_date ? dayjs(booking.event_date) : null,
+            subtotal: booking.subtotal || booking.total_amount || 0,
+            total_amount: booking.total_amount || booking.subtotal || 0,
+            guests_count: booking.guests_count,
+            venue: booking.venue,
+        });
     };
 
     const handleSaveInvoice = async (values) => {
@@ -1259,6 +1914,8 @@ const BillingInvoicing = () => {
                 return;
             }
             setSelectedPayment(payment);
+            setReceiptModalVisible(true);
+            setReceiptData(null); // show skeleton while fetching
             const response = await api.get(`/payments/${paymentId}/receipt`);
             const data = response.data?.data || response.data;
             setReceiptData({
@@ -1267,12 +1924,11 @@ const BillingInvoicing = () => {
                     data?.receipt_html || generateReceiptHTML(data?.payment || payment)
                 ),
             });
-            setReceiptModalVisible(true);
         } catch (error) {
             message.error('Failed to load receipt');
+            setReceiptModalVisible(false);
         }
     };
-
     // ==================== PDF GENERATION ====================
     const generatePDFHTML = (booking) => {
         const logoBase64 = resolveBackendUrl(
@@ -3169,6 +3825,11 @@ const BillingInvoicing = () => {
 
     const today = new Date();
     const formattedDate = today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    // ===== SKELETON LOADING STATE =====
+    // Only on the very first mount after a hard page load.
+    if (showSkeleton) {
+        return <BillingSkeleton isDarkMode={isDarkMode} activeTab={activeMainTab} />;
+    }
 
     const containerClass = `bi-billing-container ${isDarkMode ? 'bi-dark-mode' : ''}`;
     const headerClass = `bi-header ${isDarkMode ? 'bi-header-dark' : ''}`;
@@ -3215,11 +3876,24 @@ const BillingInvoicing = () => {
                             <span>Financial Management Dashboard</span>
                         </div>
                     </div>
-                    <div className="bi-header-right">
+                                       <div className="bi-header-right">
                         <div className={dateDisplayClass}>
                             <CalendarOutlined />
                             <span>{formattedDate}</span>
                         </div>
+
+                        {/* ⭐ Hide/unhide the Period Behavior toolbar */}
+                        <Tooltip title={periodToolbarHidden ? 'Show Period selector' : 'Hide Period selector'}>
+                            <button
+                                type="button"
+                                className={`bi-period-toggle-btn ${periodToolbarHidden ? 'is-hidden' : ''}`}
+                                onClick={handleTogglePeriodToolbar}
+                                aria-pressed={periodToolbarHidden}
+                            >
+                                {periodToolbarHidden ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                            </button>
+                        </Tooltip>
+
                         <Divider type="vertical" />
                         <Button icon={<ReloadOutlined />} onClick={loadInvoices}>Refresh</Button>
                         <Button icon={<ExportOutlined />} onClick={() => {
@@ -3235,29 +3909,102 @@ const BillingInvoicing = () => {
 
                 {/* MAIN CONTENT */}
                 <div className="bi-main-content">
+                                      {/* ⭐ Period Behavior toolbar */}
+                    {!periodToolbarHidden && (
+                    <div className="bi-period-bar">
+                        <div className="bi-period-bar-left">
+                            <span className="bi-period-bar-label">Reporting Period</span>
+                            <div className="bi-period-segmented" role="tablist">
+                                {[
+                                    { value: 'weekly',  label: 'Weekly'  },
+                                    { value: 'monthly', label: 'Monthly' },
+                                    { value: 'yearly',  label: 'Yearly'  },
+                                ].map((opt) => (
+                                    <button
+                                        key={opt.value}
+                                        type="button"
+                                        className={`bi-period-seg-btn ${dashboardPeriod === opt.value ? 'active' : ''}`}
+                                        onClick={() => setDashboardPeriod(opt.value)}
+                                    >
+                                        {opt.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="bi-period-bar-right">
+                            <button type="button" className="bi-period-arrow-btn" onClick={() => handleShiftPeriod('prev')}>
+                                <LeftOutlined />
+                            </button>
+                            <span className="bi-period-range-text">{periodRange.label}</span>
+                            <button type="button" className="bi-period-arrow-btn" onClick={() => handleShiftPeriod('next')}>
+                                <RightOutlined />
+                            </button>
+                            <button type="button" className="bi-period-today-btn" onClick={handleJumpToToday}>
+                                Today
+                            </button>
+                        </div>
+                    </div>
+                    )}
+
                     {/* KPI Cards */}
                     <div className={`bi-kpi-grid ${canProcessRefunds ? '' : 'bi-kpi-grid-4'}`}>
-                        <div className={kpiCardClass}>
-                            <div className="bi-kpi-icon blue"><FileTextOutlined /></div>
-                            <div>
-                                <div className="bi-kpi-value">₱{Number(totalRevenue).toLocaleString()}</div>
-                                <div className="bi-kpi-label">Total Revenue</div>
+                        <Tooltip title={!canProcessRefunds ? 'Only administrators can hide this value' : (effectiveBillingVisibility.total_revenue ? 'Unhide value' : 'Hide value')}>
+                            <div className={`${kpiCardClass} bi-kpi-card-hideable`}>
+                                {canProcessRefunds && (
+                                    <button type="button" className="bi-kpi-hide-btn" onClick={() => handleToggleBillingVisibility('total_revenue')}>
+                                        {effectiveBillingVisibility.total_revenue ? <EyeOutlined /> : <EyeInvisibleOutlined />}
+                                    </button>
+                                )}
+                                <div className="bi-kpi-icon blue"><FileTextOutlined /></div>
+                                <div>
+                                    <div className="bi-kpi-value">
+                                        {effectiveBillingVisibility.total_revenue
+                                            ? maskMatchingValue(`₱${Number(totalRevenue).toLocaleString()}`)
+                                            : `₱${Number(totalRevenue).toLocaleString()}`}
+                                    </div>
+                                    <div className="bi-kpi-label">Total Revenue</div>
+                                </div>
                             </div>
-                        </div>
-                        <div className={kpiCardClass}>
-                            <div className="bi-kpi-icon green"><CheckCircleOutlined /></div>
-                            <div>
-                                <div className="bi-kpi-value">₱{Number(totalPaid).toLocaleString()}</div>
-                                <div className="bi-kpi-label">Total Collected</div>
+                        </Tooltip>
+
+                        <Tooltip title={!canProcessRefunds ? 'Only administrators can hide this value' : (effectiveBillingVisibility.total_collected ? 'Unhide value' : 'Hide value')}>
+                            <div className={`${kpiCardClass} bi-kpi-card-hideable`}>
+                                {canProcessRefunds && (
+                                    <button type="button" className="bi-kpi-hide-btn" onClick={() => handleToggleBillingVisibility('total_collected')}>
+                                        {effectiveBillingVisibility.total_collected ? <EyeOutlined /> : <EyeInvisibleOutlined />}
+                                    </button>
+                                )}
+                                <div className="bi-kpi-icon green"><CheckCircleOutlined /></div>
+                                <div>
+                                    <div className="bi-kpi-value">
+                                        {effectiveBillingVisibility.total_collected
+                                            ? maskMatchingValue(`₱${Number(totalPaid).toLocaleString()}`)
+                                            : `₱${Number(totalPaid).toLocaleString()}`}
+                                    </div>
+                                    <div className="bi-kpi-label">Total Collected</div>
+                                </div>
                             </div>
-                        </div>
-                        <div className={kpiCardClass}>
-                            <div className="bi-kpi-icon orange"><WarningOutlined /></div>
-                            <div>
-                                <div className="bi-kpi-value">₱{Number(totalOutstanding).toLocaleString()}</div>
-                                <div className="bi-kpi-label">Outstanding Balance</div>
+                        </Tooltip>
+
+                        <Tooltip title={!canProcessRefunds ? 'Only administrators can hide this value' : (effectiveBillingVisibility.outstanding_balance ? 'Unhide value' : 'Hide value')}>
+                            <div className={`${kpiCardClass} bi-kpi-card-hideable`}>
+                                {canProcessRefunds && (
+                                    <button type="button" className="bi-kpi-hide-btn" onClick={() => handleToggleBillingVisibility('outstanding_balance')}>
+                                        {effectiveBillingVisibility.outstanding_balance ? <EyeOutlined /> : <EyeInvisibleOutlined />}
+                                    </button>
+                                )}
+                                <div className="bi-kpi-icon orange"><WarningOutlined /></div>
+                                <div>
+                                    <div className="bi-kpi-value">
+                                        {effectiveBillingVisibility.outstanding_balance
+                                            ? maskMatchingValue(`₱${Number(totalOutstanding).toLocaleString()}`)
+                                            : `₱${Number(totalOutstanding).toLocaleString()}`}
+                                    </div>
+                                    <div className="bi-kpi-label">Outstanding Balance</div>
+                                </div>
                             </div>
-                        </div>
+                        </Tooltip>
+
                         <div className={kpiCardClass}>
                             <div className="bi-kpi-icon red"><ClockCircleOutlined /></div>
                             <div>
@@ -3265,14 +4012,24 @@ const BillingInvoicing = () => {
                                 <div className="bi-kpi-label">Overdue Invoices</div>
                             </div>
                         </div>
+
                         {canProcessRefunds && (
-                            <div className={kpiCardClass}>
-                                <div className="bi-kpi-icon purple"><RollbackOutlined /></div>
-                                <div>
-                                    <div className="bi-kpi-value">{refundStatistics.total_refunds || 0}</div>
-                                    <div className="bi-kpi-label">Total Refunds</div>
+                            <Tooltip title={effectiveBillingVisibility.total_refunds ? 'Unhide value' : 'Hide value'}>
+                                <div className={`${kpiCardClass} bi-kpi-card-hideable`}>
+                                    <button type="button" className="bi-kpi-hide-btn" onClick={() => handleToggleBillingVisibility('total_refunds')}>
+                                        {effectiveBillingVisibility.total_refunds ? <EyeOutlined /> : <EyeInvisibleOutlined />}
+                                    </button>
+                                    <div className="bi-kpi-icon purple"><RollbackOutlined /></div>
+                                    <div>
+                                        <div className="bi-kpi-value">
+                                            {effectiveBillingVisibility.total_refunds
+                                                ? maskMatchingValue(String(refundStatistics.total_refunds || 0))
+                                                : (refundStatistics.total_refunds || 0)}
+                                        </div>
+                                        <div className="bi-kpi-label">Total Refunds</div>
+                                    </div>
                                 </div>
-                            </div>
+                            </Tooltip>
                         )}
                     </div>
 
@@ -3313,11 +4070,10 @@ const BillingInvoicing = () => {
                                 </div>
 
                                 <div className="bi-table-scroll-container">
-                                    <Table
+                                                               <Table
                                         columns={invoiceColumns}
                                         dataSource={filteredInvoices}
                                         rowKey="invoice_id"
-                                        loading={loading}
                                         locale={{ emptyText: renderEmptyTable() }}
                                         pagination={false}
                                         className={tableClass}
@@ -3622,11 +4378,10 @@ const BillingInvoicing = () => {
 
                                         {/* Refunds Table */}
                                         <div className="bi-table-scroll-container">
-                                            <Table
+                                                                                <Table
                                                 columns={refundColumns}
                                                 dataSource={filteredRefunds}
                                                 rowKey="refund_id"
-                                                loading={loading}
                                                 locale={{ emptyText: renderEmptyTable() }}
                                                 pagination={false}
                                                 className={tableClass}
@@ -3667,11 +4422,11 @@ const BillingInvoicing = () => {
                                     </div>
 
                                     <div className="bi-table-scroll-container">
-                                        <Table
+                                                                  <Table
                                             columns={pdfOverviewColumns}
                                             dataSource={filteredPDFBookings}
                                             rowKey="booking_id"
-                                            loading={loading || pdfOverviewLoading}
+                                            loading={pdfOverviewLoading}
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
                                             className={tableClass}
@@ -3866,9 +4621,12 @@ const BillingInvoicing = () => {
                             </Space>
                         </div>
                     }
-                    destroyOnClose
+                                       destroyOnClose
                 >
-                    {selectedInvoice && (
+                    {invoiceDetailsLoading && (
+                        <ModalSkeleton isDarkMode={isDarkMode} variant="invoice" />
+                    )}
+                    {!invoiceDetailsLoading && selectedInvoice && (
                         <div className="bi-modal-body-enhanced">
                             {/* Invoice Summary Cards */}
                             <div className="bi-invoice-summary-grid">
@@ -4376,8 +5134,11 @@ const BillingInvoicing = () => {
                             </Space>
                         </div>
                     }
-                    destroyOnClose
+                        destroyOnClose
                 >
+                    {!receiptData && (
+                        <ModalSkeleton isDarkMode={isDarkMode} variant="payment" />
+                    )}
                     {receiptData && (
                         <div className="bi-modal-body-enhanced">
                             {/* Receipt Header */}
@@ -4549,7 +5310,7 @@ const BillingInvoicing = () => {
                             <div className="bi-form-section">
                                 <div className="bi-form-section-title">Booking Selection</div>
                                 <Form.Item name="booking_id" label="Select Booking" rules={[{ required: true, message: 'Please select a booking' }]}>
-                                    <Select
+                                                                       <Select
                                         placeholder="Search and select a booking..."
                                         onChange={handleSelectBooking}
                                         showSearch
@@ -4557,12 +5318,33 @@ const BillingInvoicing = () => {
                                         className="bi-booking-select"
                                         value={createInvoiceBookingId}
                                         allowClear
+                                        notFoundContent={
+                                            <div style={{ padding: 12, textAlign: 'center', color: '#8b93a8' }}>
+                                                No approved bookings available
+                                            </div>
+                                        }
                                     >
-                                        {confirmedBookings.map(booking => (
-                                            <Option key={booking.booking_id} value={booking.booking_id}>
-                                                {booking.booking_no} - {booking.customer_name} ({booking.event_date})
-                                            </Option>
-                                        ))}
+                                                                               {confirmedBookings
+                                            .filter((booking) => !booking.has_invoice)
+                                            .map(booking => {
+                                            // ⭐ If the booking already has an invoice, still show it
+                                            //    but label it clearly. Selection is allowed when
+                                            //    creating a new invoice is impossible — the backend
+                                            //    will reject duplicates anyway.
+                                            const label = booking.has_invoice
+                                                ? `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})  · Already invoiced: ${booking.invoice_number}`
+                                                : `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})`;
+
+                                            return (
+                                                <Option
+                                                    key={booking.booking_id}
+                                                    value={booking.booking_id}
+                                                    label={label}
+                                                >
+                                                    {label}
+                                                </Option>
+                                            );
+                                        })}
                                     </Select>
                                 </Form.Item>
                             </div>
@@ -4880,15 +5662,17 @@ const BillingInvoicing = () => {
                         </div>
                     }
                     destroyOnClose
-                    bodyStyle={{
-                        padding: '20px',
-                        background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
-                        maxHeight: '80vh',
-                        overflow: 'auto',
-                        display: 'flex',
-                        justifyContent: 'center',
-                        alignItems: 'flex-start'
-                    }}
+                    styles={{
+    body: {
+        padding: '20px',
+        background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
+        maxHeight: '80vh',
+        overflow: 'auto',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'flex-start'
+    }
+}}
                 >
                     <div style={{
                         transform: `scale(${pdfViewerZoom / 100})`,
@@ -4941,15 +5725,17 @@ const BillingInvoicing = () => {
                         </div>
                     }
                     destroyOnClose
-                    bodyStyle={{
-                        padding: '20px',
-                        background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
-                        maxHeight: '80vh',
-                        overflow: 'auto',
-                        display: 'flex',
-                        justifyContent: 'center',
-                        alignItems: 'flex-start'
-                    }}
+                styles={{
+    body: {
+        padding: '20px',
+        background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
+        maxHeight: '80vh',
+        overflow: 'auto',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'flex-start'
+    }
+}}
                 >
                     <div style={{
                         transform: `scale(${receiptPreviewZoom / 100})`,

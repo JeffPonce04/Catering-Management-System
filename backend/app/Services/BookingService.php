@@ -841,8 +841,11 @@ class BookingService
             if ($booking->quotation) {
                 $booking->quotation->update(['total_amount' => $newTotal]);
             }
+                    $defaultDepositPct = $this->policyService->depositPercentage();
+            $computedDeposit = $data['required_deposit'] ?? round($newTotal * ($defaultDepositPct / 100), 2);
+
             $booking->update([
-                'required_deposit' => $data['required_deposit'] ?? ($newTotal * 0.3),
+                'required_deposit' => $computedDeposit,
                 'requested_date' => $data['event_date'] ?? $booking->requested_date,
                 'requested_time' => $data['event_time'] ?? $booking->requested_time,
             ]);
@@ -1098,13 +1101,19 @@ class BookingService
             $serviceEvent = $this->createOrUpdateServiceEvent($customer, $data);
             $totalAmount = $data['total_amount'] ?? $this->calculateTotalAmount($data);
 
-            $requiredDeposit = $data['required_deposit'] ?? null;
+                      $requiredDeposit = $data['required_deposit'] ?? null;
             if ($requiredDeposit === null) {
-                $requiredDeposit = $this->policyService->requireDeposit()
-                    ? $this->policyService->depositAmount()
-                    : ($totalAmount * ($this->policyService->depositPercentage() / 100));
+                if ($this->policyService->requireDeposit()) {
+                    $depositPct = $this->policyService->depositPercentage();
+                    if ($depositPct > 0) {
+                        $requiredDeposit = round($totalAmount * ($depositPct / 100), 2);
+                    } else {
+                        $requiredDeposit = $this->policyService->depositAmount();
+                    }
+                } else {
+                    $requiredDeposit = 0;
+                }
             }
-
             $quotation = Quotation::create([
                 'quote_no' => $this->generateQuoteNumber(),
                 'service_event_id' => $serviceEvent->service_event_id,
@@ -1212,77 +1221,36 @@ class BookingService
                 $quotation->update(['status' => 'approved']);
                 $booking->setRelation('quotation', $quotation);
 
-                $order = $this->createOrderFromBooking($booking);
-                $invoice = $this->createInvoiceFromBooking($booking);
+                               $order = $this->createOrderFromBooking($booking);
 
+                // ⭐ Invoices are NOT auto-created on approval. The cashier
+                //    creates them manually from the "Select Booking" list on
+                //    the Payment page (POST /invoices). This keeps
+                //    `whereDoesntHave('invoice')` bookings visible until the
+                //    cashier explicitly generates the invoice.
                 $this->saveProfitabilitySnapshot($booking, 'projected', true);
-
                 $bookingId = $booking->booking_id;
                 $orderId = $order?->order_id;
 
-                app()->terminating(function () use ($bookingId, $orderId, $shouldSendQuotation) {
-                    try {
-                        $freshBooking = Booking::find($bookingId);
-                        $freshOrder = $orderId ? Order::find($orderId) : null;
-
-                        if (!$freshBooking) {
-                            return;
-                        }
-
-                        if ($shouldSendQuotation) {
-                            try {
-                                $freshBooking->loadMissing('quotation');
-                                if ($freshBooking->quotation) {
-                                    app(QuotationDeliveryService::class)->send($freshBooking->quotation);
-                                    Log::info('Quotation automatically sent after booking approval', [
-                                        'booking_id' => $freshBooking->booking_id,
-                                        'quotation_id' => $freshBooking->quotation->quotation_id,
-                                    ]);
-                                }
-                            } catch (\Throwable $deliveryError) {
-                                Log::warning('Booking approved, but automatic quotation delivery failed: ' . $deliveryError->getMessage(), [
-                                    'booking_id' => $freshBooking->booking_id,
-                                ]);
-                            }
-                        }
-
-                        try {
-                            event(new BookingApproved($freshBooking));
-                            Log::info('BookingApproved event dispatched after response', [
-                                'booking_id' => $freshBooking->booking_id,
-                                'booking_no' => $freshBooking->booking_no,
-                            ]);
-                        } catch (\Throwable $broadcastError) {
-                            Log::warning('Failed to dispatch BookingApproved event: ' . $broadcastError->getMessage());
-                        }
-
-                        if ($freshOrder) {
-                            dispatch(new \App\Jobs\CreateKitchenPreparationJob($freshBooking, $freshOrder));
-                            dispatch(new \App\Jobs\CreateDeliveryPreparationJob($freshBooking, $freshOrder));
-                        }
-
-                        dispatch(new \App\Jobs\CreateIngredientsManagementJob($freshBooking));
-                        dispatch(new \App\Jobs\CreateEventTrackingJob($freshBooking));
-                    } catch (\Throwable $jobError) {
-                        Log::warning('Booking approved, but background preparation jobs failed: ' . $jobError->getMessage(), [
-                            'booking_id' => $bookingId,
-                            'trace' => $jobError->getTraceAsString(),
-                        ]);
-                    }
-                });
+                // Dispatch a single background job so the HTTP response returns immediately.
+                // This job will handle: quotation delivery, BookingApproved event,
+                // kitchen prep, delivery prep, ingredients management, and event tracking.
+                \App\Jobs\ProcessBookingApprovalSideEffects::dispatch(
+                    $bookingId,
+                    $orderId,
+                    $shouldSendQuotation
+                );
 
                 Log::info('Booking approved - background jobs scheduled after response', [
                     'booking_id' => $booking->booking_id,
                     'booking_no' => $booking->booking_no,
                     'order_id' => $order->order_id ?? null,
-                    'invoice_id' => $invoice->invoice_id ?? null,
                 ]);
 
                 return $booking->fresh([
                     'serviceEvent.customer.person',
                     'order',
                     'quotation',
-                    'invoice',
                 ]);
             } catch (\Exception $e) {
                 Log::error('Error in booking approval: ' . $e->getMessage(), [
@@ -1412,37 +1380,9 @@ class BookingService
         }
     }
 
-    private function createInvoiceFromBooking(Booking $booking): Invoice
-    {
-        $existingInvoice = Invoice::query()->where('booking_id', $booking->booking_id)->first();
-        if ($existingInvoice) {
-            return $existingInvoice;
-        }
-
-        $totalAmount = $booking->quotation?->total_amount ?? 0;
-
-        // ⭐ FIX #12: Exclude refunds from paid_amount
-        $paidAmount = $booking->payments()
-            ->where('status', 'completed')
-            ->where('payment_type', '!=', 'refund')
-            ->sum('amount');
-
-        $depositDays = $this->policyService->depositPaymentDays();
-        $dueDate = now()->addDays($depositDays > 0 ? $depositDays : 30);
-
-        return Invoice::create([
-            'invoice_number' => $this->generateInvoiceNumber(),
-            'booking_id' => $booking->booking_id,
-            'subtotal' => $totalAmount,
-            'discount' => 0,
-            'additional_charges' => 0,
-            'total_amount' => $totalAmount,
-            'paid_amount' => $paidAmount,
-            'status' => $paidAmount >= $totalAmount ? 'paid' : ($paidAmount > 0 ? 'partial' : 'unpaid'),
-            'due_date' => $dueDate,
-        ]);
-    }
-
+       // ⭐ Removed — invoices are created manually by the cashier via
+    //    POST /invoices (InvoiceController::store). This method is
+    //    intentionally not called during booking approval.
     // ============================================================
     // BACKGROUND JOB METHODS
     // ============================================================

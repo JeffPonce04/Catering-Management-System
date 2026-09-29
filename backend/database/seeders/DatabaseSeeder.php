@@ -39,9 +39,12 @@ class DatabaseSeeder extends Seeder
             PaymentSeeder::class,           // Creates payments for completed bookings
             PayrollSeeder::class,           // Creates payroll records for expenses
             
-            // Attendance
+                      // Attendance
             AttendanceSeeder::class,
             HistoricalOperationsSeeder::class, // Analytics-only schedules, attendance, equipment and stock movements
+
+            // ⭐ NEW: Fill dashboard gaps for previous 18 months
+            \Database\Seeders\HistoricalDashboardSeeder::class,
         ]);
     }
 }

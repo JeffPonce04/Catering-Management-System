@@ -17,6 +17,7 @@ class Person extends Model
 
     protected $casts = [
         'birth_date' => 'date',
+         'allergies' => 'array',
     ];
 
     public function user()

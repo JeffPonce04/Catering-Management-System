@@ -1,8 +1,24 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { message } from 'antd';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { authAPI, clearAuth, handleApiError } from '../services/api';
-
+import { useCurrentUser, userQueryKeys } from '../hooks/useCurrentUser';
+import api from '../services/api';
+import { ADMIN_ROLES, SETTINGS_ADMIN_ROLES, hasAllowedRole } from '../utils/roleRoutes';
 const AuthContext = createContext(null);
+
+// Shared business-settings cache key. Any page that needs company name,
+// address, phone, or logo reads from this slot instead of firing its own
+// /settings/business request. Populated once for admins only.
+export const businessSettingsQueryKey = ['settings', 'business'];
+
+export const DEFAULT_BUSINESS_SETTINGS = {
+  company_name: "Dear Bab's Fastfood and Catering Services",
+  company_address: 'Zone 3 Amoros, El Salvador City',
+  company_phone: '09708986628',
+  company_email: "dearbab's@gmail.com",
+  logo_url: null,
+};
 
 const getStoredToken = () => (
   localStorage.getItem('auth_token') ||
@@ -69,65 +85,97 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const queryClient = useQueryClient();
+
+  // ⭐ React Query owns the /auth/user call now. Navigation, Header, Profile,
+  //    and AuthContext all read from the same cache → ONE network request.
+  const {
+    data: freshUser,
+    isLoading: userLoading,
+    isError: userError,
+    error: userErr,
+  } = useCurrentUser();
+
+  // ── Business settings — shared across all pages ──
+  // Fetched ONCE for admins. Non-admins get the hardcoded fallback, and
+  // the network call never fires (the backend 403s them at role.access).
+  // Settings endpoints are gated by the backend's `role.access` middleware,
+  // which uses a stricter list than the general admin roles. Match it here
+  // so the frontend never fires a request that's guaranteed to 403.
+  // Uses the (now broadened) SETTINGS_ADMIN_ROLES constant, which includes
+  // operational admins. If you reverted roleRoutes.js to super-admin-only,
+  // this automatically narrows back too — no change needed here.
+  const isSettingsAdmin = hasAllowedRole(freshUser || user, SETTINGS_ADMIN_ROLES);
+
+  const businessSettingsQuery = useQuery({
+    queryKey: businessSettingsQueryKey,
+    queryFn: async () => {
+      const res = await api.get('/settings/business');
+      return res?.data?.data || res?.data || {};
+    },
+    staleTime: Infinity,
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
+     enabled: Boolean(freshUser) && hasAllowedRole(freshUser || user, ADMIN_ROLES),
+    retry: 0,
+  });
+
+  const businessSettings = useMemo(() => {
+    const resolved = businessSettingsQuery.data || {};
+    return {
+      ...DEFAULT_BUSINESS_SETTINGS,
+      ...(resolved.business || resolved.company || resolved.general || resolved),
+    };
+  }, [businessSettingsQuery.data]);
+
+  // ── Bootstrap: hydrate from localStorage, then let React Query validate ──
   useEffect(() => {
-    let cancelled = false;
+    const token = getStoredToken();
+    const storedUser = getStoredUser();
 
-    const bootstrapAuth = async () => {
-      const token = getStoredToken();
-      const storedUser = getStoredUser();
+    if (!token || !storedUser) {
+      clearAuth();
+      setUser(null);
+      setIsAuthenticated(false);
+      setLoading(false);
+      return;
+    }
 
-      if (!token || !storedUser) {
-        clearAuth();
-        if (!cancelled) {
-          setUser(null);
-          setIsAuthenticated(false);
-          setLoading(false);
-        }
-        return;
-      }
-
-      // Use cached user immediately so protected pages do not go blank while /auth/user validates.
-      if (!cancelled) {
-        setUser(storedUser);
-        setIsAuthenticated(true);
-      }
-
-      try {
-        const response = await authAPI.getUser();
-        const freshUser = normalizeUserPayload(response?.data?.data || response?.data);
-
-        if (!freshUser) {
-          throw new Error('The backend /auth/user response did not include a valid user object.');
-        }
-
-        localStorage.setItem('user', JSON.stringify(freshUser));
-
-        if (!cancelled) {
-          setUser(freshUser);
-          setIsAuthenticated(true);
-        }
-      } catch (error) {
-        if (error?.response?.status === 401) {
-          clearAuth();
-          if (!cancelled) {
-            setUser(null);
-            setIsAuthenticated(false);
-          }
-        } else {
-          // Keep the cached session on temporary network/API failures.
-          console.warn('Auth validation failed, using cached login state:', error?.message || error);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    bootstrapAuth();
-
-    return () => {
-      cancelled = true;
-    };
+    // Instant UI — no blank screen while /auth/user is in-flight
+    setUser(storedUser);
+    setIsAuthenticated(true);
+    setLoading(false);
   }, []);
+
+  // ── Sync React Query result into local state ──
+  useEffect(() => {
+    if (freshUser) {
+      localStorage.setItem('user', JSON.stringify(freshUser));
+      setUser(freshUser);
+      setIsAuthenticated(true);
+      setLoading(false);
+      return;
+    }
+
+    // Only react to errors AFTER React Query has settled
+    if (!userLoading && userError) {
+      if (userErr?.response?.status === 401) {
+        clearAuth();
+        queryClient.removeQueries({ queryKey: userQueryKeys.all });
+        setUser(null);
+        setIsAuthenticated(false);
+      } else {
+        // Network failure — keep cached session
+        console.warn(
+          'Auth validation failed, using cached login state:',
+          userErr?.message || userErr
+        );
+      }
+      setLoading(false);
+    }
+  }, [freshUser, userLoading, userError, userErr, queryClient]);
 
   const login = async (credentials) => {
     const userId = credentials?.userId?.trim?.() || credentials?.username?.trim?.() || credentials?.email?.trim?.() || '';
@@ -162,6 +210,11 @@ export const AuthProvider = ({ children }) => {
 
       localStorage.setItem('auth_token', loginData.token);
       localStorage.setItem('user', JSON.stringify(loginData.user));
+
+      // ⭐ Seed React Query cache so useCurrentUser returns instantly
+      //    (no duplicate /auth/user call right after login).
+      queryClient.setQueryData(userQueryKeys.current(), loginData.user);
+
       setUser(loginData.user);
       setIsAuthenticated(true);
       message.success('Login successful.');
@@ -187,18 +240,23 @@ export const AuthProvider = ({ children }) => {
       console.warn('Logout API request failed:', error?.response?.data || error?.message);
     } finally {
       clearAuth();
+      // Drop user-scoped caches only — do NOT queryClient.clear()
+      queryClient.removeQueries({ queryKey: userQueryKeys.all });
       setUser(null);
       setIsAuthenticated(false);
     }
   };
-
   const value = useMemo(() => ({
     user,
     isAuthenticated,
     loading,
     login,
     logout,
-  }), [user, isAuthenticated, loading]);
+    businessSettings,
+    isAdmin: hasAllowedRole(freshUser || user, ADMIN_ROLES),
+    isSettingsAdmin,
+    refreshBusinessSettings: businessSettingsQuery.refetch,
+  }), [user, isAuthenticated, loading, businessSettings, isSettingsAdmin, freshUser, businessSettingsQuery.refetch]);
 
   return (
     <AuthContext.Provider value={value}>

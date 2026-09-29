@@ -55,13 +55,18 @@ export const useNotifications = (params = {}) => {
                 per_page: data.per_page || 15,
             };
         },
-        staleTime: 30 * 1000,
+                 enabled: typeof window !== 'undefined'
+            ? Boolean(localStorage.getItem('auth_token'))
+            : false,
+        staleTime: 60 * 1000,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnMount: false,
         refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
         keepPreviousData: true,
         retry: 1,
     });
 };
-
 /**
  * Get unread count with fallback for 404
  */
@@ -69,52 +74,49 @@ export const useUnreadCount = () => {
     return useQuery({
         queryKey: notificationKeys.unread(),
         queryFn: async () => {
-            try {
-                // First try the dedicated endpoint
-                const response = await api.get('/notifications/unread-count');
-                const count = response?.data?.data?.count || response?.data?.count || 0;
-                return Math.max(0, parseInt(count) || 0);
-            } catch (error) {
-                // If 404, try fallback from main endpoint
-                if (error.response?.status === 404) {
-                    console.warn('Unread count endpoint not found, using fallback...');
-                    try {
-                        const fallbackResponse = await api.get('/notifications', {
-                            params: { unread: true, per_page: 1 }
-                        });
-                        const count = fallbackResponse?.data?.unread_count || 
-                                     fallbackResponse?.data?.data?.total || 0;
-                        return Math.max(0, parseInt(count) || 0);
-                    } catch (fallbackError) {
-                        console.warn('Fallback also failed:', fallbackError);
-                        return 0;
-                    }
-                }
-                console.error('Error fetching unread count:', error);
-                return 0;
-            }
+            // ⭐ Single endpoint only — NO fallback.
+            //    Backend route: GET /v1/notifications/unread-count
+            const response = await api.get('/notifications/unread-count');
+
+            const count =
+                response?.data?.data?.count ??
+                response?.data?.count ??
+                response?.data?.unread_count ??
+                0;
+
+            return Math.max(0, parseInt(count) || 0);
         },
-        staleTime: 30 * 1000,
+        enabled: typeof window !== 'undefined'
+            ? Boolean(localStorage.getItem('auth_token'))
+            : false,
+        staleTime: 5 * 60 * 1000,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnMount: false,
         refetchOnWindowFocus: false,
-        retry: 1,
-        // Don't throw errors to UI
+        refetchOnReconnect: false,
+        retry: 0,
         throwOnError: false,
-        // Return 0 as default
         initialData: 0,
     });
 };
-
 /**
  * Get starred notifications
  */
 export const useStarredNotifications = () => {
     return useQuery({
         queryKey: notificationKeys.starred(),
-        queryFn: async () => {
+               queryFn: async () => {
             const response = await api.get('/notifications/starred');
             return response?.data?.data || response?.data || [];
         },
-        staleTime: 30 * 1000,
+        enabled: typeof window !== 'undefined'
+            ? Boolean(localStorage.getItem('auth_token'))
+            : false,
+        staleTime: 60 * 1000,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 };
 
@@ -128,11 +130,18 @@ export const useNotificationsByType = (type) => {
             const response = await api.get(`/notifications/type/${type}`);
             return response?.data?.data || response?.data || [];
         },
-        enabled: !!type,
-        staleTime: 30 * 1000,
+            enabled: Boolean(type) && (
+            typeof window !== 'undefined'
+                ? Boolean(localStorage.getItem('auth_token'))
+                : false
+        ),
+        staleTime: 60 * 1000,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 };
-
 /**
  * Get notifications by priority
  */
@@ -143,11 +152,18 @@ export const useNotificationsByPriority = (priority) => {
             const response = await api.get(`/notifications/priority/${priority}`);
             return response?.data?.data || response?.data || [];
         },
-        enabled: !!priority,
-        staleTime: 30 * 1000,
+               enabled: Boolean(priority) && (
+            typeof window !== 'undefined'
+                ? Boolean(localStorage.getItem('auth_token'))
+                : false
+        ),
+        staleTime: 60 * 1000,
+        gcTime: 24 * 60 * 60 * 1000,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 };
-
 // ==================== MUTATION HOOKS ====================
 
 /**
@@ -189,13 +205,12 @@ export const useMarkNotificationRead = () => {
                 throw error;
             }
         },
-        onSuccess: (data, id) => {
+            onSuccess: (data, id) => {
             if (data) {
-                // Invalidate all notification queries
+                // A single invalidate on ['notifications'] covers list, unread, starred…
                 queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-                // Also invalidate unread count
-                queryClient.invalidateQueries({ queryKey: notificationKeys.unread() });
-                // Trigger custom event for other components
+                // Trigger custom event for other components (Navigation listeners
+                // will NOT invalidate again — they just update local UI state)
                 window.dispatchEvent(new CustomEvent('notification-read', { detail: { id } }));
                 message.success('Notification marked as read');
             }
@@ -215,9 +230,9 @@ export const useDeleteNotification = () => {
     
     return useMutation({
         mutationFn: (id) => api.delete(`/notifications/${id}`),
-        onSuccess: (_, id) => {
+                onSuccess: (_, id) => {
+            // ⭐ Single invalidate — 'all' prefix-matches every notification query
             queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.unread() });
             message.success('Notification deleted');
             window.dispatchEvent(new CustomEvent('notification-deleted', { detail: { id } }));
         },
@@ -236,10 +251,10 @@ export const useMarkAllRead = () => {
     
     return useMutation({
         mutationFn: () => api.post('/notifications/read-all'),
-        onSuccess: () => {
+               onSuccess: () => {
             message.success('All notifications marked as read');
+            // ⭐ Single invalidate — covers unread + list + starred
             queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.unread() });
             window.dispatchEvent(new CustomEvent('all-notifications-read'));
         },
         onError: (error) => {
@@ -257,9 +272,9 @@ export const useToggleStar = () => {
     
     return useMutation({
         mutationFn: (id) => api.post(`/notifications/${id}/star`),
-        onSuccess: (_, id) => {
+              onSuccess: (_, id) => {
+            // ⭐ Single invalidate — covers starred + list + unread
             queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.starred() });
             window.dispatchEvent(new CustomEvent('notification-star-toggled', { detail: { id } }));
         },
         onError: (error) => {
@@ -277,11 +292,10 @@ export const useClearAllNotifications = () => {
     
     return useMutation({
         mutationFn: () => api.delete('/notifications/clear-all'),
-        onSuccess: () => {
+              onSuccess: () => {
             message.success('All notifications cleared');
+            // ⭐ Single invalidate — 'all' covers unread + starred + list
             queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.unread() });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.starred() });
             window.dispatchEvent(new CustomEvent('all-notifications-cleared'));
         },
         onError: (error) => {
@@ -299,10 +313,10 @@ export const useDeleteMultipleNotifications = () => {
     
     return useMutation({
         mutationFn: (ids) => api.post('/notifications/delete-multiple', { notification_ids: ids }),
-        onSuccess: () => {
+              onSuccess: () => {
             message.success('Notifications deleted');
+            // ⭐ Single invalidate — covers unread + list + starred
             queryClient.invalidateQueries({ queryKey: notificationKeys.all });
-            queryClient.invalidateQueries({ queryKey: notificationKeys.unread() });
             window.dispatchEvent(new CustomEvent('multiple-notifications-deleted'));
         },
         onError: (error) => {

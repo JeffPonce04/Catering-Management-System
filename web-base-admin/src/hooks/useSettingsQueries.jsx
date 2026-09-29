@@ -12,8 +12,8 @@ import {
     roleRestrictionsAPI,
     userAccountSettingsAPI,
     maintenanceAPI,
+    allergenAPI,
 } from '../services/api';
-
 // ==================== SETTINGS KEYS ====================
 export const settingsKeys = {
     all: ['settings'],
@@ -32,10 +32,11 @@ export const settingsKeys = {
     deliveryZones: (params) => ['delivery-zones', params],
     announcements: () => ['system-announcements'],
     activeAnnouncements: () => ['system-announcements', 'active'],
-    backupConfig: () => ['system-backup-config'],
+     backupConfig: () => ['system-backup-config'],
     roleRestrictions: (roleSlug) => ['role-restrictions', roleSlug],
     userAccountSettings: () => ['user-account-settings'],
     maintenanceConfig: () => ['maintenance-config'],
+    allergens: () => ['food-allergens'],
 };
 
 // ==================== SETTINGS QUERIES ====================
@@ -688,6 +689,63 @@ export const useForceLogoutAll = () => {
     });
 };
 
+// ==================== FOOD ALLERGENS ====================
+export const useAllergens = (options = {}) => {
+    return useQuery({
+        queryKey: settingsKeys.allergens(),
+        queryFn: async () => {
+            const res = await allergenAPI.getAll();
+            const payload =
+                res?.data?.data?.data ||
+                res?.data?.data ||
+                res?.data ||
+                [];
+            return Array.isArray(payload) ? payload : [];
+        },
+        staleTime: 5 * 60 * 1000,
+        enabled: options.enabled ?? true,
+    });
+};
+
+export const useCreateAllergen = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (data) => allergenAPI.create(data),
+        onSuccess: (res) => {
+            message.success(res?.data?.message || 'Allergen created successfully');
+            qc.invalidateQueries({ queryKey: settingsKeys.allergens() });
+        },
+        onError: (e) =>
+            message.error(e?.response?.data?.message || 'Failed to create allergen'),
+    });
+};
+
+export const useUpdateAllergen = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: ({ allergenId, data }) => allergenAPI.update(allergenId, data),
+        onSuccess: (res) => {
+            message.success(res?.data?.message || 'Allergen updated successfully');
+            qc.invalidateQueries({ queryKey: settingsKeys.allergens() });
+        },
+        onError: (e) =>
+            message.error(e?.response?.data?.message || 'Failed to update allergen'),
+    });
+};
+
+export const useDeleteAllergen = () => {
+    const qc = useQueryClient();
+    return useMutation({
+        mutationFn: (allergenId) => allergenAPI.delete(allergenId),
+        onSuccess: (res) => {
+            message.success(res?.data?.message || 'Allergen deleted successfully');
+            qc.invalidateQueries({ queryKey: settingsKeys.allergens() });
+        },
+        onError: (e) =>
+            message.error(e?.response?.data?.message || 'Failed to delete allergen'),
+    });
+};
+
 // ==================== DEFAULT EXPORT ====================
 export default {
     // Settings
@@ -742,6 +800,10 @@ export default {
     useClearTempFiles,
     useRunDatabaseMaintenance,
     useForceLogoutAll,
+    useAllergens,
+    useCreateAllergen,
+    useUpdateAllergen,
+    useDeleteAllergen,
     // Keys
     settingsKeys,
 };

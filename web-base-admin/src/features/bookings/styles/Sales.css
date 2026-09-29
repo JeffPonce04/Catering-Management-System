@@ -35,17 +35,34 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     overflow-x: hidden;
 }
-
+/* ==================== DARK MODE — MATCHES REFERENCE ==================== */
 .bqm-dark-mode {
+    --bqm-primary: #60a5fa;
+    --bqm-primary-hover: #3b82f6;
+    --bqm-primary-strong: #2563eb;
+    --bqm-primary-soft: rgba(96, 165, 250, 0.12);
+    --bqm-primary-soft-strong: rgba(96, 165, 250, 0.2);
+    --bqm-accent: #93c5fd;
+    --bqm-accent-soft: rgba(147, 197, 253, 0.08);
+    --bqm-success: #34d399;
+    --bqm-success-soft: rgba(52, 211, 153, 0.12);
+    --bqm-warning: #fbbf24;
+    --bqm-warning-soft: rgba(251, 191, 36, 0.12);
+    --bqm-danger: #f87171;
+    --bqm-danger-soft: rgba(248, 113, 113, 0.12);
+    /* Text — soft whites, NOT #ffffff */
     --bqm-text: #e2e8f0;
+    --bqm-text-strong: #f1f5f9;
     --bqm-muted: #94a3b8;
-    --bqm-border: #334155;
-    --bqm-surface: #1e293b;
-    --bqm-page: #0f172a;
-    --bqm-primary-soft: rgba(59, 130, 246, 0.12);
-    --bqm-success-soft: rgba(16, 185, 129, 0.12);
-    --bqm-warning-soft: rgba(249, 115, 22, 0.12);
-    --bqm-danger-soft: rgba(239, 68, 68, 0.12);
+    --bqm-muted-soft: #64748b;
+    /* Surfaces */
+    --bqm-border: #1f2937;
+    --bqm-border-strong: #2a3441;
+    --bqm-surface: #111827;
+    --bqm-surface-elevated: #1a2233;
+    --bqm-page: #0b1220;
+    --bqm-row-hover: rgba(96, 165, 250, 0.06);
+    --bqm-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 10px 15px -5px rgba(0, 0, 0, 0.3);
 }
 
 /* ==================== HEADER ==================== */
@@ -200,6 +217,27 @@
 
 .bqm-main-card .ant-card-body {
     padding: 0;
+    background: #ffffff;
+}
+
+.bqm-dark-mode .bqm-main-card .ant-card-body {
+    background: #111827;
+}
+/* Tab panes — explicit backgrounds per theme */
+.bqm-container .ant-tabs-tabpane {
+    background: #ffffff;
+}
+
+.bqm-dark-mode .ant-tabs-tabpane {
+    background: #111827;
+}
+
+.bqm-dark-mode .ant-card-body {
+    background: #111827;
+}
+
+.bqm-dark-mode .ant-card {
+    background: #111827;
 }
 
 .bqm-tabs > .ant-tabs-nav,
@@ -224,8 +262,27 @@
     border-radius: 99px;
 }
 
+/* Kill the white flash on tab switch: disable AntD's default motion */
+.bqm-tabs .ant-tabs-tabpane,
+.bqm-inner-tabs .ant-tabs-tabpane {
+    background: transparent;
+    will-change: auto;
+    transition: none !important;
+    animation: none !important;
+}
+
+.bqm-dark-mode .bqm-tabs .ant-tabs-tabpane,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tabpane {
+    background: #111827 !important;
+}
 .bqm-tab-content {
     padding: 24px;
+    background: transparent;
+}
+
+.bqm-dark-mode .bqm-tab-content {
+    background: #111827 !important;
+    color: #e2e8f0;
 }
 
 .bqm-info-alert {
@@ -291,30 +348,66 @@
     font-size: 13px;
 }
 
+/* ============================================================
+   TABLE — LIGHT MODE (default) — clean white / gray header
+   ============================================================ */
 .bqm-table .ant-table-thead > tr > th {
     padding: 14px 16px;
-    color: #000000 !important;
+    color: #475569 !important;
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.5px;
     text-transform: uppercase;
-    background: var(--bqm-page);
-    border-bottom: 1px solid var(--bqm-border);
+    background: #f8fafc !important;
+    border-bottom: 1px solid #e2e8f0 !important;
     position: sticky;
     top: 0;
     z-index: 10;
 }
 
+.bqm-table .ant-table-thead > tr > th::before {
+    display: none !important; /* remove AntD's column divider */
+}
+
 .bqm-table .ant-table-tbody > tr > td {
     padding: 14px 16px;
-    color: #000000 !important;
-    border-bottom: 1px solid var(--bqm-border);
+    color: #1e293b !important;
+    background: #ffffff;
+    border-bottom: 1px solid #f1f5f9 !important;
     vertical-align: middle;
 }
 
+.bqm-table .ant-table-tbody > tr:nth-child(even) > td {
+    background: #fcfcfd;
+}
+
 .bqm-table .ant-table-tbody > tr:hover > td {
-    background: var(--bqm-primary-soft) !important;
-    color: #000000 !important;
+    background: #eff6ff !important;
+    color: #1e293b !important;
+}
+
+/* ============================================================
+   TABLE — DARK MODE OVERRIDE
+   ============================================================ */
+.bqm-dark-mode .bqm-table .ant-table-thead > tr > th {
+    background: #0b1220 !important;
+    color: #94a3b8 !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr > td {
+    background: #111827 !important;
+    color: #e2e8f0 !important;
+    border-bottom: 1px solid #1a2233 !important;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr:nth-child(even) > td {
+    background: #0f1623 !important;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr:hover > td {
+    background: rgba(96, 165, 250, 0.08) !important;
+    color: #f1f5f9 !important;
 }
 
 .bqm-customer-cell,
@@ -464,6 +557,11 @@
     height: calc(100vh - 420px);
     min-height: 300px;
     overflow: hidden;
+    background: #ffffff;
+}
+
+.bqm-dark-mode .bqm-scrollable-table-wrapper {
+    background: #111827;
 }
 
 .bqm-scrollable-table-wrapper .ant-table-wrapper,
@@ -784,9 +882,14 @@
     gap: 8px;
     padding: 8px 14px;
     font-size: 13px;
-    color: #000000;
+    color: var(--bqm-text);
 }
 
+.bqm-dark-mode .bqm-meal-menu-header,
+.bqm-dark-mode .bqm-meal-menu-row,
+.bqm-dark-mode .bqm-meal-menu-total {
+    color: #e2e8f0;
+}
 .bqm-meal-menu-header {
     font-size: 12px;
     font-weight: 700;
@@ -2914,4 +3017,2311 @@
 
 .bqm-action-icon.cancel-proposal:hover svg {
     color: #d97706;
+}
+
+/* ============================================================
+   THEME TOGGLE
+   ============================================================ */
+.bqm-theme-toggle {
+    display: flex;
+    align-items: center;
+}
+
+.bqm-theme-switch {
+    min-width: 52px;
+    height: 28px;
+    background: #e2e8f0;
+    border: none;
+}
+
+.bqm-theme-switch.ant-switch-checked {
+    background: #3b82f6;
+}
+
+.bqm-theme-switch .ant-switch-handle {
+    width: 22px;
+    height: 22px;
+    top: 3px;
+}
+
+.bqm-theme-switch .ant-switch-inner {
+    font-size: 14px;
+}
+
+.bqm-theme-switch .ant-switch-inner .anticon {
+    font-size: 12px;
+}
+
+.bqm-dark-mode .bqm-theme-switch {
+    background: #2a3441;
+}
+
+.bqm-dark-mode .bqm-theme-switch.ant-switch-checked {
+    background: #3b82f6;
+}
+
+/* ============================================================
+   DARK MODE — FULL UI (soft white / navy slate)
+   ============================================================ */
+.bqm-dark-mode.bqm-container {
+    background: #0b1220;
+    color: #e2e8f0;
+}
+
+/* Ensure the inner card region matches the container during transitions */
+.bqm-dark-mode .bqm-main-card,
+.bqm-dark-mode .bqm-main-card .ant-card-body,
+.bqm-dark-mode .bqm-main-card .ant-tabs-content-holder {
+    background: #111827 !important;
+}
+
+/* ---------- Header ---------- */
+.bqm-dark-mode .bqm-header,
+.bqm-header-dark {
+    background: #111827;
+    border-bottom: 1px solid #1f2937;
+}
+
+.bqm-dark-mode .bqm-header-info h1 { color: #e2e8f0; }
+.bqm-dark-mode .bqm-header-info span { color: #60a5fa; }
+
+.bqm-dark-mode .bqm-date-display {
+    background: #0b1220;
+    border-color: #1f2937;
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-logo-icon {
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+    box-shadow: 0 4px 8px rgba(59, 130, 246, 0.25);
+}
+
+/* ---------- KPI Cards ---------- */
+.bqm-dark-mode .bqm-kpi-card {
+    background: #111827;
+    border: 1px solid #1f2937;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.bqm-dark-mode .bqm-kpi-card:hover {
+    border-color: #2a3441;
+    background: #141b2a;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.bqm-dark-mode .bqm-kpi-value { color: #e2e8f0; }
+.bqm-dark-mode .bqm-kpi-label { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-kpi-icon.blue   { color: #60a5fa; background: rgba(96, 165, 250, 0.12); }
+.bqm-dark-mode .bqm-kpi-icon.orange { color: #fbbf24; background: rgba(251, 191, 36, 0.12); }
+.bqm-dark-mode .bqm-kpi-icon.green  { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.bqm-dark-mode .bqm-kpi-icon.red    { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+
+/* ---------- Main Card / Tabs ---------- */
+.bqm-dark-mode .bqm-main-card,
+.bqm-main-card-dark {
+    background: #111827;
+    border: 1px solid #1f2937;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Critical: the Card body + tab panes need an explicit dark background,
+   otherwise AntD's default white will paint for one frame during tab switch */
+.bqm-dark-mode .bqm-main-card .ant-card-body,
+.bqm-dark-mode .bqm-main-card .ant-card-body > *,
+.bqm-dark-mode .bqm-tabs .ant-tabs-content-holder,
+.bqm-dark-mode .bqm-tabs .ant-tabs-content,
+.bqm-dark-mode .bqm-tabs .ant-tabs-tabpane,
+.bqm-dark-mode .bqm-tabs .ant-tabs-tabpane-active,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-content-holder,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-content,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tabpane,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tabpane-active,
+.bqm-dark-mode .bqm-tab-content {
+    background: #111827 !important;
+    color: #e2e8f0;
+}
+.bqm-dark-mode .bqm-tabs > .ant-tabs-nav,
+.bqm-dark-mode .bqm-inner-tabs > .ant-tabs-nav {
+    background: #111827;
+    border-bottom-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-tabs .ant-tabs-tab,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tab { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-tabs .ant-tabs-tab:hover,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tab:hover { color: #e2e8f0; }
+
+.bqm-dark-mode .bqm-tabs .ant-tabs-tab-active .ant-tabs-tab-btn,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-tab-active .ant-tabs-tab-btn { color: #60a5fa !important; }
+
+/* Prevent AntD's default white under Tabs from flashing during tab transitions */
+.bqm-dark-mode .ant-tabs,
+.bqm-dark-mode .ant-tabs-content-holder,
+.bqm-dark-mode .ant-tabs-content,
+.bqm-dark-mode .ant-tabs-tabpane {
+    background: #111827 !important;
+    transition: none !important;
+}
+
+.bqm-dark-mode .ant-tabs-ink-bar {
+    background: #60a5fa;
+}
+
+/* Kill the default white transition AntD uses on tab panes */
+.bqm-dark-mode .ant-tabs-tabpane {
+    transition: opacity 0.1s ease !important;
+}
+
+.bqm-dark-mode .bqm-tabs .ant-tabs-ink-bar,
+.bqm-dark-mode .bqm-inner-tabs .ant-tabs-ink-bar { background: #60a5fa; }
+
+/* ---------- Filters ---------- */
+.bqm-dark-mode .bqm-filters,
+.bqm-dark-mode .bqm-history-filters,
+.bqm-dark-mode .bqm-filters-dark,
+.bqm-filters-dark {
+    background: #0b1220 !important;
+    border-bottom: 1px solid #1f2937 !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-filter-group,
+.bqm-dark-mode .bqm-filter-group-dark,
+.bqm-dark-mode .bqm-search,
+.bqm-dark-mode .bqm-search-input {
+    background: #111827 !important;
+    color: #e2e8f0 !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-filter-group .ant-input,
+.bqm-dark-mode .bqm-filter-group .ant-input-affix-wrapper,
+.bqm-dark-mode .bqm-filter-select .ant-select-selector,
+.bqm-dark-mode .bqm-date-picker {
+    background: transparent !important;
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-filter-group .ant-input::placeholder,
+.bqm-dark-mode .bqm-search-input::placeholder {
+    color: #64748b !important;
+}
+
+.bqm-dark-mode .bqm-filter-group,
+.bqm-filter-group-dark {
+    background: #111827;
+    border-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-filter-group:hover { border-color: #3b82f6; }
+.bqm-dark-mode .bqm-filter-group > .anticon { color: #64748b; }
+
+/* ---------- Tables ---------- */
+.bqm-dark-mode .bqm-table,
+.bqm-dark-mode .bqm-table .ant-table,
+.bqm-dark-mode .bqm-table .ant-table-container,
+.bqm-dark-mode .bqm-table .ant-table-content,
+.bqm-dark-mode .bqm-table .ant-table-body,
+.bqm-dark-mode .bqm-table .ant-table-wrapper,
+.bqm-table-dark .ant-table {
+    background: #111827 !important;
+    color: #e2e8f0 !important;
+}
+
+/* AntD table loading mask — dark friendly */
+.bqm-dark-mode .bqm-table .ant-spin-container::after,
+.bqm-dark-mode .bqm-table .ant-table-placeholder {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-thead > tr > th {
+    background: #0b1220 !important;
+    color: #94a3b8 !important;
+    border-bottom: 1px solid #1f2937;
+    font-weight: 600;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr > td {
+    background: #111827;
+    color: #e2e8f0 !important;
+    border-bottom: 1px solid #1a2233;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr:nth-child(even) > td {
+    background: #0f1623;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr:hover > td {
+    background: rgba(96, 165, 250, 0.06) !important;
+    color: #f1f5f9 !important;
+}
+
+.bqm-dark-mode .bqm-table .ant-table-placeholder { background: #111827; }
+.bqm-dark-mode .bqm-table .ant-table-placeholder .ant-empty-description { color: #64748b; }
+
+.bqm-dark-mode .bqm-customer-name,
+.bqm-dark-mode .bqm-event-date { color: #e2e8f0; }
+
+.bqm-dark-mode .bqm-customer-contact,
+.bqm-dark-mode .bqm-event-location,
+.bqm-dark-mode .bqm-event-days { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-service-text,
+.bqm-dark-mode .bqm-event-type-text { color: #cbd5e1; }
+
+.bqm-dark-mode .bqm-amount { color: #e2e8f0; }
+
+.bqm-dark-mode .bqm-pax-number { color: #94a3b8; background: #0b1220; }
+
+.bqm-dark-mode .bqm-id-text {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.12);
+}
+
+.bqm-dark-mode .bqm-table-footer-info {
+    background: #0b1220;
+    border-top: 1px solid #1f2937;
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-table-footer-info .bqm-footer-divider { color: #2a3441; }
+
+.bqm-dark-mode .bqm-scrollable-table-wrapper .ant-table-body::-webkit-scrollbar-track { background: #0b1220; }
+.bqm-dark-mode .bqm-scrollable-table-wrapper .ant-table-body::-webkit-scrollbar-thumb { background: #2a3441; border-radius: 4px; }
+.bqm-dark-mode .bqm-scrollable-table-wrapper .ant-table-body::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
+
+/* ---------- Action icons ---------- */
+.bqm-dark-mode .bqm-action-icon {
+    color: #94a3b8;
+    background: transparent;
+    border: 1px solid #1f2937;
+}
+
+.bqm-dark-mode .bqm-action-icon:hover { background: #1a2233; border-color: #2a3441; }
+.bqm-dark-mode .bqm-action-icon.view:hover { color: #60a5fa; background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.35); }
+.bqm-dark-mode .bqm-action-icon.confirm:hover { color: #34d399; background: rgba(52, 211, 153, 0.12); border-color: rgba(52, 211, 153, 0.35); }
+.bqm-dark-mode .bqm-action-icon.reject:hover,
+.bqm-dark-mode .bqm-action-icon.delete:hover { color: #f87171; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
+.bqm-dark-mode .bqm-action-icon.edit:hover { color: #a78bfa; background: rgba(167, 139, 250, 0.12); border-color: rgba(167, 139, 250, 0.35); }
+
+/* ---------- Calendar ---------- */
+.bqm-dark-mode .bqm-calendar-wrapper { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-calendar-wrapper-compact .ant-picker-calendar-date { background: #111827; }
+.bqm-dark-mode .bqm-calendar-wrapper-compact .ant-picker-calendar-date:hover { background: rgba(96, 165, 250, 0.08); }
+.bqm-dark-mode .bqm-calendar-wrapper-compact .ant-picker-calendar-date-value { color: #94a3b8; }
+.bqm-dark-mode .bqm-calendar-legend { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-legend-item { color: #94a3b8; }
+.bqm-dark-mode .bqm-calendar-date-cell:hover { background: rgba(96, 165, 250, 0.08); }
+.bqm-dark-mode .ant-picker-calendar-header { background: #111827; }
+.bqm-dark-mode .ant-picker-calendar-header .ant-radio-button-wrapper { color: #94a3b8; background: #0b1220; border-color: #1f2937; }
+.bqm-dark-mode .ant-picker-calendar-header .ant-radio-button-wrapper-checked { color: #60a5fa; background: rgba(96, 165, 250, 0.12); border-color: #60a5fa; }
+.bqm-dark-mode .ant-picker-calendar .ant-picker-cell { color: #475569; }
+.bqm-dark-mode .ant-picker-calendar .ant-picker-cell-in-view { color: #e2e8f0; }
+.bqm-dark-mode .ant-picker-calendar .ant-picker-cell-today .ant-picker-cell-inner::before { border-color: #60a5fa; }
+.bqm-dark-mode .ant-picker-calendar .ant-picker-cell-selected .ant-picker-cell-inner { background: #3b82f6; color: #f1f5f9; }
+
+/* ---------- Alerts ---------- */
+.bqm-dark-mode .bqm-info-alert { background: rgba(96, 165, 250, 0.08); border-color: rgba(96, 165, 250, 0.25); }
+.bqm-dark-mode .bqm-info-alert .ant-alert-message { color: #e2e8f0; }
+.bqm-dark-mode .bqm-info-alert .ant-alert-description { color: #94a3b8; }
+.bqm-dark-mode .ant-alert-info    { background: rgba(96, 165, 250, 0.08); border-color: rgba(96, 165, 250, 0.25); }
+.bqm-dark-mode .ant-alert-warning { background: rgba(251, 191, 36, 0.08); border-color: rgba(251, 191, 36, 0.25); }
+.bqm-dark-mode .ant-alert-success { background: rgba(52, 211, 153, 0.08); border-color: rgba(52, 211, 153, 0.25); }
+.bqm-dark-mode .ant-alert-error   { background: rgba(248, 113, 113, 0.08); border-color: rgba(248, 113, 113, 0.25); }
+.bqm-dark-mode .ant-alert-message { color: #e2e8f0; }
+.bqm-dark-mode .ant-alert-description { color: #94a3b8; }
+
+/* ---------- Modals ---------- */
+.bqm-dark-mode .bqm-modal-clean .ant-modal-content { background: #111827; border: 1px solid #1f2937; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6); }
+.bqm-dark-mode .bqm-modal-header-clean { background: #111827; border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-modal-title-text,
+.bqm-dark-mode .bqm-step-title { color: #e2e8f0; }
+.bqm-dark-mode .bqm-modal-badge { background: rgba(96, 165, 250, 0.12); color: #60a5fa; }
+.bqm-dark-mode .bqm-modal-step-header { background: #0b1220; border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-modal-step-body,
+.bqm-dark-mode .bqm-modal-clean-content { background: #111827; }
+.bqm-dark-mode .bqm-modal-footer-simple,
+.bqm-dark-mode .bqm-modal-buttons-clean { background: #111827; border-top: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-step-icon { background: linear-gradient(135deg, #3b82f6, #1d4ed8); }
+
+.bqm-dark-mode .bqm-info-card,
+.bqm-dark-mode .bqm-price-summary,
+.bqm-dark-mode .bqm-special-request-box { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-info-row,
+.bqm-dark-mode .bqm-price-row { border-bottom: 1px solid #1a2233; }
+.bqm-dark-mode .bqm-info-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-info-value { color: #e2e8f0; }
+
+/* ---------- Meal services view ---------- */
+.bqm-dark-mode .bqm-meal-day-group { border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-day-header { background: rgba(96, 165, 250, 0.08); border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-schedule-group { border-bottom: 1px solid #1a2233; }
+.bqm-dark-mode .bqm-meal-menu-table { border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-menu-header,
+.bqm-dark-mode .bqm-meal-menu-row,
+.bqm-dark-mode .bqm-meal-menu-total { color: #e2e8f0; }
+.bqm-dark-mode .bqm-meal-menu-header { background: #0b1220; border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-menu-row { border-bottom: 1px solid #1a2233; }
+.bqm-dark-mode .bqm-meal-menu-total { background: rgba(96, 165, 250, 0.08); border-top: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-time { color: #cbd5e1; }
+.bqm-dark-mode .bqm-meal-pax { color: #94a3b8; }
+.bqm-dark-mode .bqm-meal-notes-badge { color: #94a3b8; background: #0b1220; }
+
+/* ---------- Create booking wizard ---------- */
+.bqm-dark-mode .bqm-modal-fixed-center .ant-modal-content { background: #111827; }
+.bqm-dark-mode .bqm-step-progress-fixed { background: #111827; }
+.bqm-dark-mode .bqm-step-header-professional { border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-step-title-professional { color: #e2e8f0; }
+.bqm-dark-mode .bqm-step-desc-professional { color: #94a3b8; }
+.bqm-dark-mode .bqm-form-section-professional { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-section-label-professional { color: #cbd5e1; }
+
+.bqm-dark-mode .bqm-input-professional .ant-input,
+.bqm-dark-mode .bqm-input-professional .ant-input-number-input {
+    background: #111827;
+    color: #e2e8f0;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-input-professional .ant-input::placeholder { color: #475569; }
+
+.bqm-dark-mode .bqm-select-professional .ant-select-selector {
+    background: #111827 !important;
+    border-color: #1f2937 !important;
+}
+.bqm-dark-mode .bqm-select-professional .ant-select-selection-placeholder { color: #475569; }
+.bqm-dark-mode .bqm-select-professional .ant-select-selection-item { color: #e2e8f0; }
+
+.bqm-dark-mode .bqm-datepicker-professional .ant-picker { background: #111827; border-color: #1f2937; }
+.bqm-dark-mode .bqm-textarea-professional { background: #111827; color: #e2e8f0; border-color: #1f2937; }
+
+.bqm-dark-mode .bqm-service-radio-professional .ant-radio-button-wrapper,
+.bqm-dark-mode .bqm-scope-radio-professional .ant-radio-button-wrapper {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-service-radio-professional .ant-radio-button-wrapper:hover,
+.bqm-dark-mode .bqm-scope-radio-professional .ant-radio-button-wrapper:hover {
+    border-color: #3b82f6;
+    background: rgba(96, 165, 250, 0.08);
+}
+.bqm-dark-mode .bqm-service-radio-professional .ant-radio-button-wrapper-checked,
+.bqm-dark-mode .bqm-scope-radio-professional .ant-radio-button-wrapper-checked {
+    border-color: #3b82f6 !important;
+    background: rgba(96, 165, 250, 0.12) !important;
+}
+.bqm-dark-mode .bqm-service-option-label,
+.bqm-dark-mode .bqm-scope-option-label { color: #e2e8f0; }
+.bqm-dark-mode .bqm-service-option-desc,
+.bqm-dark-mode .bqm-scope-option-desc { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-multi-day-config-professional {
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.18);
+}
+.bqm-dark-mode .bqm-multi-day-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-multi-day-text { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-meal-card-professional { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-card-professional .ant-card-head { background: #0b1220; border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-meal-number { color: #e2e8f0; }
+.bqm-dark-mode .bqm-meal-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-meal-select .ant-select-selector {
+    background: #111827 !important;
+    border-color: #1f2937 !important;
+}
+.bqm-dark-mode .bqm-meal-selected-items { border-top: 1px dashed #2a3441; }
+.bqm-dark-mode .bqm-selected-items-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-additional-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-additional-field .ant-input-number { background: #111827; border-color: #1f2937; }
+
+.bqm-dark-mode .bqm-summary-card-professional { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-summary-card-professional .ant-statistic-title { color: #94a3b8; }
+.bqm-dark-mode .bqm-summary-card-total { background: rgba(52, 211, 153, 0.08); border-color: rgba(52, 211, 153, 0.35); }
+
+.bqm-dark-mode .bqm-review-card-professional { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-review-card-header { background: #111827; border-bottom: 1px solid #1f2937; color: #94a3b8; }
+.bqm-dark-mode .bqm-review-item { border-bottom: 1px solid #1a2233; }
+.bqm-dark-mode .bqm-review-item span:first-child { color: #94a3b8; }
+.bqm-dark-mode .bqm-review-value { color: #e2e8f0; }
+.bqm-dark-mode .bqm-review-divider { background: #1f2937; }
+.bqm-dark-mode .bqm-review-requests { background: rgba(96, 165, 250, 0.08); color: #cbd5e1; }
+.bqm-dark-mode .bqm-review-grand-total { border-top: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-step-buttons-fixed { background: #111827; border-top: 1px solid #1f2937; }
+
+/* ---------- Menu selection modal ---------- */
+.bqm-dark-mode .bqm-menu-modal .ant-modal-content { background: #111827; }
+.bqm-dark-mode .bqm-menu-modal-title { color: #e2e8f0; }
+.bqm-dark-mode .bqm-menu-modal-subtitle { color: #94a3b8; }
+.bqm-dark-mode .bqm-menu-search .ant-input { background: #0b1220; color: #e2e8f0; border-color: #1f2937; }
+.bqm-dark-mode .bqm-menu-category-filter .ant-select-selector { background: #0b1220 !important; border-color: #1f2937 !important; }
+.bqm-dark-mode .bqm-pricing-global-toggle { background: #0b1220 !important; border: 1px solid #1f2937 !important; }
+.bqm-dark-mode .bqm-menu-grid-item { background: #0b1220; border: 1px solid #1f2937; }
+.bqm-dark-mode .bqm-menu-grid-item:hover { border-color: #3b82f6; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4); }
+.bqm-dark-mode .bqm-menu-grid-item.selected { border-color: #34d399; background: rgba(52, 211, 153, 0.08); }
+.bqm-dark-mode .bqm-menu-item-name { color: #e2e8f0; }
+.bqm-dark-mode .bqm-menu-item-category { color: #94a3b8; }
+.bqm-dark-mode .bqm-menu-item-image { background: #111827; }
+.bqm-dark-mode .bqm-menu-items-container::-webkit-scrollbar-thumb { background: #2a3441; }
+
+/* ---------- Buttons ---------- */
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn:not(.ant-btn-primary) {
+    background: #111827;
+    border-color: #1f2937;
+    color: #cbd5e1;
+}
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn:not(.ant-btn-primary):hover {
+    border-color: #3b82f6;
+    color: #60a5fa;
+    background: #111827;
+}
+.bqm-dark-mode .ant-btn-default { background: #111827; border-color: #1f2937; color: #cbd5e1; }
+.bqm-dark-mode .ant-btn-default:hover { border-color: #3b82f6; color: #60a5fa; background: #111827; }
+.bqm-dark-mode .ant-btn-primary { background: #3b82f6; border-color: #3b82f6; }
+.bqm-dark-mode .ant-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
+
+/* ---------- Forms ---------- */
+.bqm-dark-mode .ant-form-item-label > label { color: #94a3b8; }
+
+/* ---------- Steps ---------- */
+.bqm-dark-mode .ant-steps-item-title { color: #64748b !important; }
+.bqm-dark-mode .ant-steps-item-process .ant-steps-item-title { color: #e2e8f0 !important; }
+.bqm-dark-mode .ant-steps-item-icon { background: #111827; border-color: #1f2937; }
+.bqm-dark-mode .ant-steps-item-process .ant-steps-item-icon { background: #3b82f6; border-color: #3b82f6; }
+.bqm-dark-mode .ant-steps-item-finish .ant-steps-item-icon { background: #10b981; border-color: #10b981; }
+
+/* ---------- Progress ---------- */
+.bqm-dark-mode .ant-progress-bg { background: #1f2937; }
+
+/* ---------- Tags / tooltips ---------- */
+.bqm-dark-mode .ant-tag { border-color: #1f2937; }
+.bqm-dark-mode .ant-tooltip-inner { background: #1a2233; color: #e2e8f0; border: 1px solid #1f2937; }
+
+/* ---------- Select dropdown ---------- */
+.bqm-dark-mode .ant-select-dropdown { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .ant-select-item { color: #cbd5e1; }
+.bqm-dark-mode .ant-select-item-option-active { background: rgba(96, 165, 250, 0.08); }
+.bqm-dark-mode .ant-select-item-option-selected { background: rgba(96, 165, 250, 0.12); color: #60a5fa; }
+
+/* ---------- Date picker dropdown ---------- */
+.bqm-dark-mode .ant-picker-dropdown .ant-picker-panel-container { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .ant-picker-header { color: #e2e8f0; border-bottom: 1px solid #1f2937; }
+.bqm-dark-mode .ant-picker-header button { color: #94a3b8; }
+.bqm-dark-mode .ant-picker-header button:hover { color: #60a5fa; }
+.bqm-dark-mode .ant-picker-cell { color: #475569; }
+.bqm-dark-mode .ant-picker-cell-in-view { color: #e2e8f0; }
+.bqm-dark-mode .ant-picker-cell-in-view:hover .ant-picker-cell-inner { background: rgba(96, 165, 250, 0.12); }
+.bqm-dark-mode .ant-picker-cell-selected .ant-picker-cell-inner { background: #3b82f6; color: #f1f5f9; }
+
+/* ---------- Radios / checkbox / input number ---------- */
+.bqm-dark-mode .ant-radio-button-wrapper { background: #111827; border-color: #1f2937; color: #94a3b8; }
+.bqm-dark-mode .ant-radio-button-wrapper:hover { color: #60a5fa; }
+.bqm-dark-mode .ant-radio-button-wrapper-checked {
+    background: rgba(96, 165, 250, 0.12);
+    border-color: #60a5fa;
+    color: #60a5fa;
+}
+.bqm-dark-mode .ant-checkbox-inner { background: #111827; border-color: #2a3441; }
+.bqm-dark-mode .ant-input-number { background: #111827; border-color: #1f2937; }
+.bqm-dark-mode .ant-input-number-input { color: #e2e8f0; }
+
+/* ---------- Misc ---------- */
+.bqm-dark-mode .ant-modal-close { color: #94a3b8; }
+.bqm-dark-mode .ant-modal-close:hover { color: #e2e8f0; background: rgba(255, 255, 255, 0.06); }
+.bqm-dark-mode .ant-switch { background: #2a3441; }
+.bqm-dark-mode .ant-switch-checked { background: #3b82f6; }
+.bqm-dark-mode .ant-statistic-title { color: #94a3b8; }
+.bqm-dark-mode .ant-statistic-content { color: #e2e8f0; }
+.bqm-dark-mode .ant-divider { border-color: #1f2937; }
+.bqm-dark-mode .ant-empty-description { color: #64748b; }
+.bqm-dark-mode .ant-badge-count { background: #3b82f6; }
+.bqm-dark-mode .ant-popover-inner { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .ant-dropdown-menu { background: #111827; border: 1px solid #1f2937; }
+.bqm-dark-mode .ant-dropdown-menu-item { color: #cbd5e1; }
+.bqm-dark-mode .ant-dropdown-menu-item:hover { background: rgba(96, 165, 250, 0.08); }
+
+/* ---------- Pagination ---------- */
+.bqm-dark-mode .ant-pagination-item {
+    background: #111827;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .ant-pagination-item a { color: #94a3b8; }
+.bqm-dark-mode .ant-pagination-item:hover { border-color: #3b82f6; }
+.bqm-dark-mode .ant-pagination-item:hover a { color: #60a5fa; }
+.bqm-dark-mode .ant-pagination-item-active { background: #3b82f6; border-color: #3b82f6; }
+.bqm-dark-mode .ant-pagination-item-active a { color: #f1f5f9; }
+.bqm-dark-mode .ant-pagination-prev button,
+.bqm-dark-mode .ant-pagination-next button { color: #94a3b8; }
+.bqm-dark-mode .ant-pagination-prev:hover button,
+.bqm-dark-mode .ant-pagination-next:hover button { color: #60a5fa; }
+.bqm-dark-mode .ant-pagination-total-text { color: #94a3b8; }
+
+/* ============================================================
+   SKELETON LOADING STYLES — LIGHT GRAY
+   Matches the Dashboard skeleton for a consistent loading feel.
+   ============================================================ */
+
+@keyframes bqm-skeleton-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+
+@keyframes bqm-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0);   }
+}
+
+/* Base shimmer (light gray) */
+.bqm-skeleton-pulse,
+.bqm-skeleton-text,
+.bqm-skeleton-circle,
+.bqm-skeleton-bar,
+.bqm-skeleton-block {
+  background: linear-gradient(
+    90deg,
+    #e5e9ef 0%,
+    #eef1f5 50%,
+    #e5e9ef 100%
+  );
+  background-size: 200% 100%;
+  animation: bqm-skeleton-shimmer 1.6s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+.bqm-skeleton-circle {
+  border-radius: 50% !important;
+  flex-shrink: 0;
+}
+
+/* Card container that fades in */
+.bqm-skeleton-card {
+  opacity: 0;
+  animation: bqm-skeleton-fade-in 0.4s ease forwards;
+}
+
+.bqm-skeleton-container {
+  pointer-events: none;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.bqm-skeleton-container .bqm-main-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bqm-skeleton-container .bqm-table-skeleton {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+/* ---------- KPI grid skeleton ---------- */
+.bqm-kpi-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 24px 32px;
+}
+
+.bqm-kpi-skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bqm-surface);
+  border: 1px solid var(--bqm-border);
+  border-radius: 16px;
+  box-shadow: var(--bqm-shadow);
+}
+
+.bqm-kpi-skeleton-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- Header button skeletons ---------- */
+.bqm-header-skeleton-btn {
+  width: 80px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+/* ---------- Table skeleton ---------- */
+.bqm-table-skeleton {
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  background: var(--bqm-surface);
+  border-top: 1px solid var(--bqm-border);
+  /* Mirror the real table's fixed height so no empty gap appears */
+  height: calc(100vh - 420px);
+  min-height: 300px;
+  overflow: hidden;
+}
+
+.bqm-table-skeleton-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--bqm-border);
+  flex-shrink: 0;
+}
+
+.bqm-table-skeleton-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.bqm-table-skeleton-row {
+  display: grid;
+  grid-template-columns: 140px 200px 220px 130px 90px 150px 200px 300px;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--bqm-border);
+  align-items: center;
+  /* Each row keeps a fixed height so the total fills the container */
+  min-height: 66px;
+  flex-shrink: 0;
+}
+
+.bqm-table-skeleton-row:last-child {
+  border-bottom: none;
+}
+
+/* Row cell layout — avatar + two bars */
+.bqm-table-skeleton-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bqm-table-skeleton-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Hidden on mobile — collapse to fewer columns */
+@media (max-width: 1180px) {
+  .bqm-kpi-skeleton-grid { grid-template-columns: repeat(2, 1fr); }
+  .bqm-table-skeleton-row {
+    grid-template-columns: 140px 180px 180px 100px 180px;
+  }
+  .bqm-table-skeleton-row > *:nth-child(n+6) {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  .bqm-kpi-skeleton-grid { grid-template-columns: 1fr; margin: 16px; }
+  .bqm-table-skeleton-row {
+    grid-template-columns: 120px 180px 140px;
+  }
+  .bqm-table-skeleton-row > *:nth-child(n+4) {
+    display: none;
+  }
+}
+
+/* Dark mode adjustment */
+.bqm-dark-mode .bqm-skeleton-pulse,
+.bqm-dark-mode .bqm-skeleton-text,
+.bqm-dark-mode .bqm-skeleton-circle,
+.bqm-dark-mode .bqm-skeleton-bar,
+.bqm-dark-mode .bqm-skeleton-block {
+  background: linear-gradient(
+    90deg,
+    #1a2233 0%,
+    #232e42 50%,
+    #1a2233 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* ============================================================
+   DARK MODE — ROOT/BODY CLASS (for portal-rendered modals)
+   ============================================================ */
+html.bqm-dark-mode,
+body.bqm-dark-mode {
+    background: #0b1220;
+}
+
+.bqm-modal-dark-root .ant-modal-content,
+.bqm-modal-dark-root .ant-modal-body,
+.bqm-modal-dark-root .ant-modal-header,
+.bqm-modal-dark-root .ant-modal-footer {
+    background: #0f172a !important;
+    color: #e2e8f0;
+}
+
+.bqm-modal-dark-root .ant-modal-close {
+    color: #94a3b8;
+}
+.bqm-modal-dark-root .ant-modal-close:hover {
+    color: #f1f5f9;
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.bqm-modal-dark-root .ant-modal-confirm-title,
+.bqm-modal-dark-root .ant-modal-confirm-content {
+    color: #e2e8f0;
+}
+
+/* ============================================================
+   DARK MODE — GENERIC CLEAN MODAL
+   ============================================================ */
+.bqm-dark-mode .bqm-modal-clean-content,
+.bqm-modal-dark-root .bqm-modal-clean-content {
+    background: #111827 !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-modal-step-body,
+.bqm-modal-dark-root .bqm-modal-step-body {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-modal-step-header,
+.bqm-modal-dark-root .bqm-modal-step-header {
+    background: #0b1220 !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-modal-footer-simple,
+.bqm-dark-mode .bqm-modal-buttons-clean,
+.bqm-modal-dark-root .bqm-modal-footer-simple,
+.bqm-modal-dark-root .bqm-modal-buttons-clean {
+    background: #111827 !important;
+    border-top: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default,
+.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default,
+.bqm-modal-dark-root .bqm-modal-buttons-clean .ant-btn-default,
+.bqm-modal-dark-root .bqm-modal-footer-simple .ant-btn-default {
+    background: #111827 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1 !important;
+}
+
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default:hover,
+.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default:hover,
+.bqm-modal-dark-root .bqm-modal-buttons-clean .ant-btn-default:hover,
+.bqm-modal-dark-root .bqm-modal-footer-simple .ant-btn-default:hover {
+    background: #111827 !important;
+    border-color: #3b82f6 !important;
+    color: #60a5fa !important;
+}
+
+.bqm-dark-mode .bqm-step-content {
+    background: transparent !important;
+    color: #e2e8f0;
+}
+
+/* Info cards in view-details modal */
+.bqm-dark-mode .bqm-info-card,
+.bqm-dark-mode .bqm-price-summary,
+.bqm-dark-mode .bqm-special-request-box,
+.bqm-modal-dark-root .bqm-info-card,
+.bqm-modal-dark-root .bqm-price-summary,
+.bqm-modal-dark-root .bqm-special-request-box {
+    background: #0b1220 !important;
+    border: 1px solid #1f2937 !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-info-row,
+.bqm-dark-mode .bqm-price-row,
+.bqm-modal-dark-root .bqm-info-row,
+.bqm-modal-dark-root .bqm-price-row {
+    border-bottom: 1px solid #1a2233 !important;
+}
+
+.bqm-dark-mode .bqm-info-label,
+.bqm-modal-dark-root .bqm-info-label { color: #94a3b8 !important; }
+
+.bqm-dark-mode .bqm-info-value,
+.bqm-modal-dark-root .bqm-info-value { color: #e2e8f0 !important; }
+
+.bqm-dark-mode .bqm-price-summary-header,
+.bqm-modal-dark-root .bqm-price-summary-header {
+    color: #e2e8f0 !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+/* ============================================================
+   DARK MODE — FORMAL MODALS
+   ============================================================ */
+.bqm-dark-mode .bqm-formal-modal .ant-modal-content,
+.bqm-modal-dark-root .bqm-formal-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-shell,
+.bqm-modal-dark-root .bqm-formal-shell {
+    background: #0f172a !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-formal-header,
+.bqm-modal-dark-root .bqm-formal-header {
+    background: #0f172a !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-header-icon,
+.bqm-modal-dark-root .bqm-formal-header-icon {
+    background: rgba(96, 165, 250, 0.12);
+    color: #60a5fa;
+}
+.bqm-dark-mode .bqm-formal-header--warning .bqm-formal-header-icon,
+.bqm-modal-dark-root .bqm-formal-header--warning .bqm-formal-header-icon {
+    background: rgba(248, 113, 113, 0.12);
+    color: #f87171;
+}
+.bqm-dark-mode .bqm-formal-header--amber .bqm-formal-header-icon,
+.bqm-modal-dark-root .bqm-formal-header--amber .bqm-formal-header-icon {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+}
+.bqm-dark-mode .bqm-formal-header--danger .bqm-formal-header-icon,
+.bqm-modal-dark-root .bqm-formal-header--danger .bqm-formal-header-icon {
+    background: rgba(248, 113, 113, 0.12);
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-eyebrow,
+.bqm-modal-dark-root .bqm-formal-eyebrow { color: #64748b; }
+
+.bqm-dark-mode .bqm-formal-title,
+.bqm-modal-dark-root .bqm-formal-title { color: #f1f5f9 !important; }
+
+.bqm-dark-mode .bqm-formal-subtitle,
+.bqm-modal-dark-root .bqm-formal-subtitle { color: #94a3b8 !important; }
+
+.bqm-dark-mode .bqm-formal-stamp,
+.bqm-modal-dark-root .bqm-formal-stamp {
+    background: rgba(96, 165, 250, 0.08);
+    border-color: rgba(96, 165, 250, 0.25);
+}
+.bqm-dark-mode .bqm-formal-stamp--amber,
+.bqm-modal-dark-root .bqm-formal-stamp--amber {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.25);
+}
+.bqm-dark-mode .bqm-formal-stamp--danger,
+.bqm-modal-dark-root .bqm-formal-stamp--danger {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.25);
+}
+.bqm-dark-mode .bqm-formal-stamp-label,
+.bqm-modal-dark-root .bqm-formal-stamp-label { color: #64748b; }
+.bqm-dark-mode .bqm-formal-stamp-value,
+.bqm-modal-dark-root .bqm-formal-stamp-value { color: #60a5fa; }
+.bqm-dark-mode .bqm-formal-stamp--amber .bqm-formal-stamp-value,
+.bqm-modal-dark-root .bqm-formal-stamp--amber .bqm-formal-stamp-value { color: #fbbf24; }
+.bqm-dark-mode .bqm-formal-stamp--danger .bqm-formal-stamp-value,
+.bqm-modal-dark-root .bqm-formal-stamp--danger .bqm-formal-stamp-value { color: #f87171; }
+
+.bqm-dark-mode .bqm-formal-body,
+.bqm-modal-dark-root .bqm-formal-body {
+    background: #0f172a !important;
+    color: #e2e8f0;
+}
+.bqm-dark-mode .bqm-formal-body::-webkit-scrollbar-thumb,
+.bqm-modal-dark-root .bqm-formal-body::-webkit-scrollbar-thumb { background: #2a3441; }
+
+.bqm-dark-mode .bqm-formal-strip,
+.bqm-modal-dark-root .bqm-formal-strip {
+    background: #1f2937;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-formal-strip-item,
+.bqm-modal-dark-root .bqm-formal-strip-item { background: #0b1220 !important; }
+.bqm-dark-mode .bqm-formal-strip-label,
+.bqm-modal-dark-root .bqm-formal-strip-label { color: #64748b; }
+.bqm-dark-mode .bqm-formal-strip-value,
+.bqm-modal-dark-root .bqm-formal-strip-value { color: #e2e8f0; }
+.bqm-dark-mode .bqm-formal-strip-value--money,
+.bqm-modal-dark-root .bqm-formal-strip-value--money { color: #60a5fa; }
+
+.bqm-dark-mode .bqm-formal-section,
+.bqm-modal-dark-root .bqm-formal-section { border-bottom: 1px solid #1f2937 !important; }
+.bqm-dark-mode .bqm-formal-section-index,
+.bqm-modal-dark-root .bqm-formal-section-index { background: #3b82f6; color: #f1f5f9; }
+.bqm-dark-mode .bqm-formal-section-title,
+.bqm-modal-dark-root .bqm-formal-section-title { color: #f1f5f9; }
+.bqm-dark-mode .bqm-formal-section-rule,
+.bqm-modal-dark-root .bqm-formal-section-rule { background: #1f2937; }
+.bqm-dark-mode .bqm-formal-chip--restricted,
+.bqm-modal-dark-root .bqm-formal-chip--restricted {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+}
+.bqm-dark-mode .bqm-formal-chip--readonly,
+.bqm-modal-dark-root .bqm-formal-chip--readonly {
+    background: #1e293b;
+    color: #94a3b8;
+}
+
+/* Formal choice grid */
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper,
+.bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1;
+}
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper:hover,
+.bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper:hover {
+    border-color: #3b82f6 !important;
+    background: rgba(96, 165, 250, 0.08) !important;
+}
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--danger,
+.bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--danger {
+    background: rgba(248, 113, 113, 0.1) !important;
+    border-color: #f87171 !important;
+}
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--info,
+.bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--info {
+    background: rgba(96, 165, 250, 0.1) !important;
+    border-color: #60a5fa !important;
+}
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--success,
+.bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--success {
+    background: rgba(52, 211, 153, 0.1) !important;
+    border-color: #34d399 !important;
+}
+.bqm-dark-mode .bqm-formal-choice-label,
+.bqm-modal-dark-root .bqm-formal-choice-label { color: #f1f5f9 !important; }
+.bqm-dark-mode .bqm-formal-choice-hint,
+.bqm-modal-dark-root .bqm-formal-choice-hint { color: #94a3b8 !important; }
+
+/* Formal panels */
+.bqm-dark-mode .bqm-formal-panel,
+.bqm-modal-dark-root .bqm-formal-panel {
+    background: rgba(96, 165, 250, 0.06) !important;
+    border-color: rgba(96, 165, 250, 0.2) !important;
+}
+.bqm-dark-mode .bqm-formal-panel--success,
+.bqm-modal-dark-root .bqm-formal-panel--success {
+    background: rgba(52, 211, 153, 0.08) !important;
+    border-color: rgba(52, 211, 153, 0.25) !important;
+}
+.bqm-dark-mode .bqm-formal-panel--danger,
+.bqm-modal-dark-root .bqm-formal-panel--danger {
+    background: rgba(248, 113, 113, 0.08) !important;
+    border-color: rgba(248, 113, 113, 0.25) !important;
+}
+.bqm-dark-mode .bqm-formal-panel-head,
+.bqm-modal-dark-root .bqm-formal-panel-head { color: #60a5fa; }
+.bqm-dark-mode .bqm-formal-panel--success .bqm-formal-panel-head,
+.bqm-modal-dark-root .bqm-formal-panel--success .bqm-formal-panel-head { color: #34d399; }
+.bqm-dark-mode .bqm-formal-panel--danger .bqm-formal-panel-head,
+.bqm-modal-dark-root .bqm-formal-panel--danger .bqm-formal-panel-head { color: #f87171; }
+.bqm-dark-mode .bqm-formal-panel-text,
+.bqm-modal-dark-root .bqm-formal-panel-text { color: #94a3b8 !important; }
+
+/* Formal dossier */
+.bqm-dark-mode .bqm-formal-dossier,
+.bqm-modal-dark-root .bqm-formal-dossier {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+}
+.bqm-dark-mode .bqm-formal-dossier-row,
+.bqm-modal-dark-root .bqm-formal-dossier-row { border-bottom: 1px solid #1a2233 !important; }
+.bqm-dark-mode .bqm-formal-dossier-label,
+.bqm-modal-dark-root .bqm-formal-dossier-label { color: #64748b; }
+.bqm-dark-mode .bqm-formal-dossier-value,
+.bqm-modal-dark-root .bqm-formal-dossier-value { color: #e2e8f0; }
+.bqm-dark-mode .bqm-formal-dossier-value--block,
+.bqm-modal-dark-root .bqm-formal-dossier-value--block { color: #cbd5e1; }
+
+/* Formal pills */
+.bqm-dark-mode .bqm-formal-pill--warn,
+.bqm-modal-dark-root .bqm-formal-pill--warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
+.bqm-dark-mode .bqm-formal-pill--info,
+.bqm-modal-dark-root .bqm-formal-pill--info { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
+
+/* Formal notes */
+.bqm-dark-mode .bqm-formal-note,
+.bqm-modal-dark-root .bqm-formal-note {
+    background: #0b1220;
+    border-color: #1f2937;
+    color: #cbd5e1;
+}
+.bqm-dark-mode .bqm-formal-note > .anticon,
+.bqm-modal-dark-root .bqm-formal-note > .anticon { color: #60a5fa; }
+.bqm-dark-mode .bqm-formal-note--success,
+.bqm-modal-dark-root .bqm-formal-note--success {
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.25);
+    color: #34d399;
+}
+.bqm-dark-mode .bqm-formal-note--success > .anticon,
+.bqm-modal-dark-root .bqm-formal-note--success > .anticon { color: #34d399; }
+.bqm-dark-mode .bqm-formal-note--danger,
+.bqm-modal-dark-root .bqm-formal-note--danger {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.25);
+    color: #f87171;
+}
+.bqm-dark-mode .bqm-formal-note--danger > .anticon,
+.bqm-modal-dark-root .bqm-formal-note--danger > .anticon { color: #f87171; }
+.bqm-dark-mode .bqm-formal-note--warning,
+.bqm-modal-dark-root .bqm-formal-note--warning {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.25);
+    color: #fbbf24;
+}
+
+/* Cashier option cards */
+.bqm-dark-mode .bqm-formal-option,
+.bqm-modal-dark-root .bqm-formal-option {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-formal-option:hover:not(:disabled),
+.bqm-modal-dark-root .bqm-formal-option:hover:not(:disabled) {
+    border-color: #3b82f6;
+    box-shadow: 0 4px 12px -6px rgba(0, 0, 0, 0.5);
+}
+.bqm-dark-mode .bqm-formal-option:disabled,
+.bqm-dark-mode .bqm-formal-option.is-disabled,
+.bqm-modal-dark-root .bqm-formal-option:disabled,
+.bqm-modal-dark-root .bqm-formal-option.is-disabled {
+    background: #0f1623;
+    opacity: 0.5;
+}
+.bqm-dark-mode .bqm-formal-option-title,
+.bqm-modal-dark-root .bqm-formal-option-title { color: #f1f5f9; }
+.bqm-dark-mode .bqm-formal-option-text,
+.bqm-modal-dark-root .bqm-formal-option-text { color: #94a3b8; }
+
+/* Formal forms */
+.bqm-dark-mode .bqm-formal-form .ant-form-item-label > label,
+.bqm-modal-dark-root .bqm-formal-form .ant-form-item-label > label { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-formal-form .ant-input,
+.bqm-dark-mode .bqm-formal-form .ant-input-affix-wrapper,
+.bqm-dark-mode .bqm-formal-form .ant-input-number,
+.bqm-dark-mode .bqm-formal-form .ant-select-selector,
+.bqm-dark-mode .bqm-formal-form textarea.ant-input,
+.bqm-modal-dark-root .bqm-formal-form .ant-input,
+.bqm-modal-dark-root .bqm-formal-form .ant-input-affix-wrapper,
+.bqm-modal-dark-root .bqm-formal-form .ant-input-number,
+.bqm-modal-dark-root .bqm-formal-form .ant-select-selector,
+.bqm-modal-dark-root .bqm-formal-form textarea.ant-input {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #e2e8f0 !important;
+}
+.bqm-dark-mode .bqm-formal-form .ant-input::placeholder,
+.bqm-dark-mode .bqm-formal-form textarea.ant-input::placeholder,
+.bqm-modal-dark-root .bqm-formal-form .ant-input::placeholder,
+.bqm-modal-dark-root .bqm-formal-form textarea.ant-input::placeholder {
+    color: #475569 !important;
+}
+
+/* Formal footer */
+.bqm-dark-mode .bqm-formal-footer,
+.bqm-modal-dark-root .bqm-formal-footer {
+    background: #0b1220 !important;
+    border-top: 1px solid #1f2937 !important;
+}
+.bqm-dark-mode .bqm-formal-footer-note,
+.bqm-modal-dark-root .bqm-formal-footer-note { color: #64748b; }
+
+/* Formal buttons */
+.bqm-dark-mode .bqm-formal-btn--ghost,
+.bqm-modal-dark-root .bqm-formal-btn--ghost {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1 !important;
+}
+.bqm-dark-mode .bqm-formal-btn--ghost:hover,
+.bqm-modal-dark-root .bqm-formal-btn--ghost:hover {
+    border-color: #3b82f6 !important;
+    color: #60a5fa !important;
+}
+.bqm-dark-mode .bqm-formal-btn--ghost-danger,
+.bqm-modal-dark-root .bqm-formal-btn--ghost-danger {
+    background: #0b1220 !important;
+    border-color: rgba(248, 113, 113, 0.35) !important;
+    color: #f87171 !important;
+}
+.bqm-dark-mode .bqm-formal-btn--ghost-danger:hover,
+.bqm-modal-dark-root .bqm-formal-btn--ghost-danger:hover {
+    border-color: #f87171 !important;
+    background: rgba(248, 113, 113, 0.08) !important;
+}
+
+/* Refund choice grid */
+.bqm-dark-mode .bqm-refund-choice,
+.bqm-modal-dark-root .bqm-refund-choice {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-refund-choice:hover,
+.bqm-modal-dark-root .bqm-refund-choice:hover { border-color: #3b82f6; }
+.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--success,
+.bqm-modal-dark-root .bqm-refund-choice.is-selected.bqm-refund-choice--success {
+    border-color: #34d399;
+    background: rgba(52, 211, 153, 0.08);
+}
+.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--danger,
+.bqm-modal-dark-root .bqm-refund-choice.is-selected.bqm-refund-choice--danger {
+    border-color: #f87171;
+    background: rgba(248, 113, 113, 0.08);
+}
+.bqm-dark-mode .bqm-refund-choice-title,
+.bqm-modal-dark-root .bqm-refund-choice-title { color: #f1f5f9; }
+.bqm-dark-mode .bqm-refund-choice-text,
+.bqm-modal-dark-root .bqm-refund-choice-text { color: #94a3b8; }
+
+/* ============================================================
+   DARK MODE — PRO MODALS
+   ============================================================ */
+.bqm-dark-mode .bqm-pro-modal-shell,
+.bqm-modal-dark-root .bqm-pro-modal-shell { background: #0f172a !important; }
+
+.bqm-dark-mode .bqm-pro-modal-body,
+.bqm-modal-dark-root .bqm-pro-modal-body { background: #0f172a !important; }
+
+.bqm-dark-mode .bqm-pro-info-row,
+.bqm-modal-dark-root .bqm-pro-info-row { border-bottom-color: #1e293b !important; }
+.bqm-dark-mode .bqm-pro-info-label,
+.bqm-modal-dark-root .bqm-pro-info-label { color: #94a3b8 !important; }
+.bqm-dark-mode .bqm-pro-info-value,
+.bqm-modal-dark-root .bqm-pro-info-value { color: #e2e8f0 !important; }
+.bqm-dark-mode .bqm-pro-info-value.bqm-mono,
+.bqm-modal-dark-root .bqm-pro-info-value.bqm-mono { color: #93c5fd !important; }
+
+.bqm-dark-mode .bqm-pro-form .ant-form-item-label > label,
+.bqm-modal-dark-root .bqm-pro-form .ant-form-item-label > label { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-pro-form .ant-input,
+.bqm-dark-mode .bqm-pro-form .ant-input-affix-wrapper,
+.bqm-dark-mode .bqm-pro-form .ant-input-number,
+.bqm-dark-mode .bqm-pro-form .ant-select-selector,
+.bqm-dark-mode .bqm-pro-form textarea.ant-input,
+.bqm-modal-dark-root .bqm-pro-form .ant-input,
+.bqm-modal-dark-root .bqm-pro-form .ant-input-affix-wrapper,
+.bqm-modal-dark-root .bqm-pro-form .ant-input-number,
+.bqm-modal-dark-root .bqm-pro-form .ant-select-selector,
+.bqm-modal-dark-root .bqm-pro-form textarea.ant-input {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #e2e8f0 !important;
+}
+.bqm-dark-mode .bqm-pro-form .ant-input::placeholder,
+.bqm-dark-mode .bqm-pro-form textarea.ant-input::placeholder,
+.bqm-modal-dark-root .bqm-pro-form .ant-input::placeholder,
+.bqm-modal-dark-root .bqm-pro-form textarea.ant-input::placeholder { color: #475569 !important; }
+
+.bqm-dark-mode .bqm-pro-section,
+.bqm-modal-dark-root .bqm-pro-section { background: transparent; }
+.bqm-dark-mode .bqm-pro-section-title,
+.bqm-modal-dark-root .bqm-pro-section-title { color: #e2e8f0; }
+.bqm-dark-mode .bqm-pro-section-number,
+.bqm-modal-dark-root .bqm-pro-section-number { background: #3b82f6; color: #f1f5f9; }
+
+.bqm-dark-mode .bqm-pro-modal-footer,
+.bqm-modal-dark-root .bqm-pro-modal-footer {
+    background: #0b1220 !important;
+    border-top: 1px solid #1e293b !important;
+}
+.bqm-dark-mode .bqm-pro-btn-secondary,
+.bqm-modal-dark-root .bqm-pro-btn-secondary {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #e2e8f0 !important;
+}
+.bqm-dark-mode .bqm-pro-btn-secondary:hover,
+.bqm-modal-dark-root .bqm-pro-btn-secondary:hover {
+    background: #334155 !important;
+    border-color: #475569 !important;
+    color: #f1f5f9 !important;
+}
+
+/* ============================================================
+   DARK MODE — MENU SELECTION + CREATE BOOKING EXTRAS
+   ============================================================ */
+.bqm-dark-mode .bqm-menu-modal .ant-modal-content,
+.bqm-modal-dark-root .bqm-menu-modal .ant-modal-content { background: #111827 !important; }
+.bqm-dark-mode .bqm-menu-modal-footer,
+.bqm-modal-dark-root .bqm-menu-modal-footer {
+    background: #111827 !important;
+    border-top: 1px solid #1f2937;
+}
+.bqm-dark-mode .bqm-menu-modal-selected-count,
+.bqm-modal-dark-root .bqm-menu-modal-selected-count { color: #94a3b8; }
+
+.bqm-dark-mode .bqm-menu-list-item,
+.bqm-modal-dark-root .bqm-menu-list-item {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-menu-list-item.selected,
+.bqm-modal-dark-root .bqm-menu-list-item.selected {
+    background: rgba(52, 211, 153, 0.08);
+    border-color: #34d399;
+}
+.bqm-dark-mode .bqm-menu-list-item-name,
+.bqm-modal-dark-root .bqm-menu-list-item-name { color: #e2e8f0; }
+.bqm-dark-mode .bqm-menu-list-item-price,
+.bqm-modal-dark-root .bqm-menu-list-item-price { color: #34d399; }
+
+.bqm-dark-mode .bqm-modal-fixed-center .ant-modal-body,
+.bqm-modal-dark-root .bqm-modal-fixed-center .ant-modal-body { background: #111827 !important; }
+.bqm-dark-mode .bqm-modal-content-fixed,
+.bqm-modal-dark-root .bqm-modal-content-fixed { background: #111827 !important; }
+.bqm-dark-mode .bqm-step-content-fixed,
+.bqm-modal-dark-root .bqm-step-content-fixed { background: transparent !important; }
+
+
+/* ============================================================
+   DARK MODE — MODAL & FORMAL MODAL COVERAGE
+   Ensures every modal surface goes dark when .bqm-dark-mode is active
+   ============================================================ */
+
+/* ---------- Generic modal content wrapper ---------- */
+.bqm-dark-mode .bqm-modal-clean-content {
+    background: #111827 !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-modal-step-body {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-modal-step-header {
+    background: #0b1220 !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-modal-footer-simple,
+.bqm-dark-mode .bqm-modal-buttons-clean {
+    background: #111827 !important;
+    border-top: 1px solid #1f2937 !important;
+}
+
+/* Buttons inside clean modal footers */
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default,
+.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default {
+    background: #111827 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1 !important;
+}
+
+.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default:hover,
+.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default:hover {
+    background: #111827 !important;
+    border-color: #3b82f6 !important;
+    color: #60a5fa !important;
+}
+
+/* Step content inside booking-details modal */
+.bqm-dark-mode .bqm-step-content {
+    background: transparent !important;
+    color: #e2e8f0;
+}
+
+/* ---------- Info cards (view details) ---------- */
+.bqm-dark-mode .bqm-info-card,
+.bqm-dark-mode .bqm-price-summary,
+.bqm-dark-mode .bqm-special-request-box {
+    background: #0b1220 !important;
+    border: 1px solid #1f2937 !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-info-row,
+.bqm-dark-mode .bqm-price-row {
+    border-bottom: 1px solid #1a2233 !important;
+}
+
+.bqm-dark-mode .bqm-info-label {
+    color: #94a3b8 !important;
+}
+
+.bqm-dark-mode .bqm-info-value {
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-price-summary-header {
+    color: #e2e8f0 !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+/* ============================================================
+   FORMAL MODALS — FULL DARK OVERRIDE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-formal-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-shell {
+    background: #0f172a !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-formal-header {
+    background: #0f172a !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-header-icon {
+    background: rgba(96, 165, 250, 0.12);
+    color: #60a5fa;
+}
+
+.bqm-dark-mode .bqm-formal-header--warning .bqm-formal-header-icon {
+    background: rgba(248, 113, 113, 0.12);
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-header--amber .bqm-formal-header-icon {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fbbf24;
+}
+
+.bqm-dark-mode .bqm-formal-header--danger .bqm-formal-header-icon {
+    background: rgba(248, 113, 113, 0.12);
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-eyebrow {
+    color: #64748b;
+}
+
+.bqm-dark-mode .bqm-formal-title {
+    color: #f1f5f9 !important;
+}
+
+.bqm-dark-mode .bqm-formal-subtitle {
+    color: #94a3b8 !important;
+}
+
+/* Formal stamp */
+.bqm-dark-mode .bqm-formal-stamp {
+    background: rgba(96, 165, 250, 0.08);
+    border-color: rgba(96, 165, 250, 0.25);
+}
+
+.bqm-dark-mode .bqm-formal-stamp--amber {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.25);
+}
+
+.bqm-dark-mode .bqm-formal-stamp--danger {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.25);
+}
+
+.bqm-dark-mode .bqm-formal-stamp-label {
+    color: #64748b;
+}
+
+.bqm-dark-mode .bqm-formal-stamp-value {
+    color: #60a5fa;
+}
+
+.bqm-dark-mode .bqm-formal-stamp--amber .bqm-formal-stamp-value {
+    color: #fbbf24;
+}
+
+.bqm-dark-mode .bqm-formal-stamp--danger .bqm-formal-stamp-value {
+    color: #f87171;
+}
+
+/* Formal body */
+.bqm-dark-mode .bqm-formal-body {
+    background: #0f172a !important;
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-formal-body::-webkit-scrollbar-thumb {
+    background: #2a3441;
+}
+
+/* Info strip */
+.bqm-dark-mode .bqm-formal-strip {
+    background: #1f2937;
+    border-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-formal-strip-item {
+    background: #0b1220 !important;
+}
+
+.bqm-dark-mode .bqm-formal-strip-label {
+    color: #64748b;
+}
+
+.bqm-dark-mode .bqm-formal-strip-value {
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-formal-strip-value--money {
+    color: #60a5fa;
+}
+
+/* Sections */
+.bqm-dark-mode .bqm-formal-section {
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-section-index {
+    background: #3b82f6;
+    color: #f1f5f9;
+}
+
+.bqm-dark-mode .bqm-formal-section-title {
+    color: #f1f5f9;
+}
+
+.bqm-dark-mode .bqm-formal-section-rule {
+    background: #1f2937;
+}
+
+.bqm-dark-mode .bqm-formal-chip--restricted {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+}
+
+.bqm-dark-mode .bqm-formal-chip--readonly {
+    background: #1e293b;
+    color: #94a3b8;
+}
+
+/* Choice grid */
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1;
+}
+
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper:hover {
+    border-color: #3b82f6 !important;
+    background: rgba(96, 165, 250, 0.08) !important;
+}
+
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--danger {
+    background: rgba(248, 113, 113, 0.1) !important;
+    border-color: #f87171 !important;
+}
+
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--info {
+    background: rgba(96, 165, 250, 0.1) !important;
+    border-color: #60a5fa !important;
+}
+
+.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--success {
+    background: rgba(52, 211, 153, 0.1) !important;
+    border-color: #34d399 !important;
+}
+
+.bqm-dark-mode .bqm-formal-choice-label {
+    color: #f1f5f9 !important;
+}
+
+.bqm-dark-mode .bqm-formal-choice-hint {
+    color: #94a3b8 !important;
+}
+
+/* Panels */
+.bqm-dark-mode .bqm-formal-panel {
+    background: rgba(96, 165, 250, 0.06) !important;
+    border-color: rgba(96, 165, 250, 0.2) !important;
+}
+
+.bqm-dark-mode .bqm-formal-panel--success {
+    background: rgba(52, 211, 153, 0.08) !important;
+    border-color: rgba(52, 211, 153, 0.25) !important;
+}
+
+.bqm-dark-mode .bqm-formal-panel--danger {
+    background: rgba(248, 113, 113, 0.08) !important;
+    border-color: rgba(248, 113, 113, 0.25) !important;
+}
+
+.bqm-dark-mode .bqm-formal-panel-head {
+    color: #60a5fa;
+}
+
+.bqm-dark-mode .bqm-formal-panel--success .bqm-formal-panel-head {
+    color: #34d399;
+}
+
+.bqm-dark-mode .bqm-formal-panel--danger .bqm-formal-panel-head {
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-panel-text {
+    color: #94a3b8 !important;
+}
+
+/* Dossier (read-only rows) */
+.bqm-dark-mode .bqm-formal-dossier {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-dossier-row {
+    border-bottom: 1px solid #1a2233 !important;
+}
+
+.bqm-dark-mode .bqm-formal-dossier-label {
+    color: #64748b;
+}
+
+.bqm-dark-mode .bqm-formal-dossier-value {
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-formal-dossier-value--block {
+    color: #cbd5e1;
+}
+
+/* Pills */
+.bqm-dark-mode .bqm-formal-pill--warn {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+}
+
+.bqm-dark-mode .bqm-formal-pill--info {
+    background: rgba(96, 165, 250, 0.15);
+    color: #60a5fa;
+}
+
+/* Notes */
+.bqm-dark-mode .bqm-formal-note {
+    background: #0b1220;
+    border-color: #1f2937;
+    color: #cbd5e1;
+}
+
+.bqm-dark-mode .bqm-formal-note > .anticon {
+    color: #60a5fa;
+}
+
+.bqm-dark-mode .bqm-formal-note--success {
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.25);
+    color: #34d399;
+}
+
+.bqm-dark-mode .bqm-formal-note--success > .anticon {
+    color: #34d399;
+}
+
+.bqm-dark-mode .bqm-formal-note--danger {
+    background: rgba(248, 113, 113, 0.08);
+    border-color: rgba(248, 113, 113, 0.25);
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-note--danger > .anticon {
+    color: #f87171;
+}
+
+.bqm-dark-mode .bqm-formal-note--warning {
+    background: rgba(251, 191, 36, 0.08);
+    border-color: rgba(251, 191, 36, 0.25);
+    color: #fbbf24;
+}
+
+/* Formal option cards (cashier view) */
+.bqm-dark-mode .bqm-formal-option {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-formal-option:hover:not(:disabled) {
+    border-color: #3b82f6;
+    box-shadow: 0 4px 12px -6px rgba(0, 0, 0, 0.5);
+}
+
+.bqm-dark-mode .bqm-formal-option:disabled,
+.bqm-dark-mode .bqm-formal-option.is-disabled {
+    background: #0f1623;
+    opacity: 0.5;
+}
+
+.bqm-dark-mode .bqm-formal-option-title {
+    color: #f1f5f9;
+}
+
+.bqm-dark-mode .bqm-formal-option-text {
+    color: #94a3b8;
+}
+
+/* Formal forms */
+.bqm-dark-mode .bqm-formal-form .ant-form-item-label > label {
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-formal-form .ant-input,
+.bqm-dark-mode .bqm-formal-form .ant-input-affix-wrapper,
+.bqm-dark-mode .bqm-formal-form .ant-input-number,
+.bqm-dark-mode .bqm-formal-form .ant-select-selector,
+.bqm-dark-mode .bqm-formal-form textarea.ant-input {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-formal-form .ant-input::placeholder,
+.bqm-dark-mode .bqm-formal-form textarea.ant-input::placeholder {
+    color: #475569 !important;
+}
+
+/* Formal footer */
+.bqm-dark-mode .bqm-formal-footer {
+    background: #0b1220 !important;
+    border-top: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-formal-footer-note {
+    color: #64748b;
+}
+
+/* Formal buttons */
+.bqm-dark-mode .bqm-formal-btn--ghost {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #cbd5e1 !important;
+}
+
+.bqm-dark-mode .bqm-formal-btn--ghost:hover {
+    border-color: #3b82f6 !important;
+    color: #60a5fa !important;
+}
+
+.bqm-dark-mode .bqm-formal-btn--ghost-danger {
+    background: #0b1220 !important;
+    border-color: rgba(248, 113, 113, 0.35) !important;
+    color: #f87171 !important;
+}
+
+.bqm-dark-mode .bqm-formal-btn--ghost-danger:hover {
+    border-color: #f87171 !important;
+    background: rgba(248, 113, 113, 0.08) !important;
+}
+
+/* Refund choice grid */
+.bqm-dark-mode .bqm-refund-choice {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-refund-choice:hover {
+    border-color: #3b82f6;
+}
+
+.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--success {
+    border-color: #34d399;
+    background: rgba(52, 211, 153, 0.08);
+}
+
+.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--danger {
+    border-color: #f87171;
+    background: rgba(248, 113, 113, 0.08);
+}
+
+.bqm-dark-mode .bqm-refund-choice-title {
+    color: #f1f5f9;
+}
+
+.bqm-dark-mode .bqm-refund-choice-text {
+    color: #94a3b8;
+}
+
+/* ============================================================
+   PRO MODAL — FULL DARK OVERRIDE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-pro-modal-shell {
+    background: #0f172a !important;
+}
+
+.bqm-dark-mode .bqm-pro-modal-body {
+    background: #0f172a !important;
+}
+
+/* Info grid rows in pro modal */
+.bqm-dark-mode .bqm-pro-info-row {
+    border-bottom-color: #1e293b !important;
+}
+
+.bqm-dark-mode .bqm-pro-info-label {
+    color: #94a3b8 !important;
+}
+
+.bqm-dark-mode .bqm-pro-info-value {
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-pro-info-value.bqm-mono {
+    color: #93c5fd !important;
+}
+
+/* Pro form */
+.bqm-dark-mode .bqm-pro-form .ant-form-item-label > label {
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-pro-form .ant-input,
+.bqm-dark-mode .bqm-pro-form .ant-input-affix-wrapper,
+.bqm-dark-mode .bqm-pro-form .ant-input-number,
+.bqm-dark-mode .bqm-pro-form .ant-select-selector,
+.bqm-dark-mode .bqm-pro-form textarea.ant-input {
+    background: #0b1220 !important;
+    border-color: #1f2937 !important;
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-pro-form .ant-input::placeholder,
+.bqm-dark-mode .bqm-pro-form textarea.ant-input::placeholder {
+    color: #475569 !important;
+}
+
+/* Pro section */
+.bqm-dark-mode .bqm-pro-section {
+    background: transparent;
+}
+
+.bqm-dark-mode .bqm-pro-section-title {
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-pro-section-number {
+    background: #3b82f6;
+    color: #f1f5f9;
+}
+
+/* Pro footer buttons */
+.bqm-dark-mode .bqm-pro-modal-footer {
+    background: #0b1220 !important;
+    border-top: 1px solid #1e293b !important;
+}
+
+.bqm-dark-mode .bqm-pro-btn-secondary {
+    background: #1e293b !important;
+    border-color: #334155 !important;
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-pro-btn-secondary:hover {
+    background: #334155 !important;
+    border-color: #475569 !important;
+    color: #f1f5f9 !important;
+}
+
+/* ============================================================
+   MENU SELECTION MODAL — ADDITIONAL DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-menu-modal .ant-modal-content {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-menu-modal-body {
+    background: transparent;
+}
+
+.bqm-dark-mode .bqm-menu-modal-footer {
+    background: #111827 !important;
+    border-top: 1px solid #1f2937;
+}
+
+.bqm-dark-mode .bqm-menu-modal-selected-count {
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-menu-list-item {
+    background: #0b1220;
+    border-color: #1f2937;
+}
+
+.bqm-dark-mode .bqm-menu-list-item.selected {
+    background: rgba(52, 211, 153, 0.08);
+    border-color: #34d399;
+}
+
+.bqm-dark-mode .bqm-menu-list-item-name {
+    color: #e2e8f0;
+}
+
+.bqm-dark-mode .bqm-menu-list-item-price {
+    color: #34d399;
+}
+
+.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-nav {
+    border-bottom: 1px solid #1f2937;
+}
+
+.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-tab {
+    color: #94a3b8;
+}
+
+.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
+    color: #60a5fa !important;
+}
+
+/* ============================================================
+   CREATE BOOKING MODAL — ADDITIONAL DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-modal-fixed-center .ant-modal-body {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-modal-content-fixed {
+    background: #111827 !important;
+}
+
+.bqm-dark-mode .bqm-step-content-fixed {
+    background: transparent !important;
+}
+
+.bqm-dark-mode .bqm-steps-fixed .ant-steps-item-title {
+    color: #64748b !important;
+}
+
+.bqm-dark-mode .bqm-steps-fixed .ant-steps-item-process .ant-steps-item-title {
+    color: #e2e8f0 !important;
+}
+
+.bqm-dark-mode .bqm-form-fixed {
+    background: transparent;
+}
+
+/* ============================================================
+   THREE-DAY WARNING MODAL (PRO) — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-three-day-warning-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-shell {
+    background: #0f172a !important;
+}
+
+.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-header {
+    background: #0f172a !important;
+    border-bottom: 1px solid #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-footer {
+    background: #0b1220 !important;
+    border-top: 1px solid #1f2937 !important;
+}
+
+/* ============================================================
+   CONFIRM REFUND MODAL — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-confirm-refund-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-confirm-refund-modal .bqm-pro-modal-shell {
+    background: #0f172a !important;
+}
+
+/* ============================================================
+   LATE APPROVAL MODAL — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-late-approval-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-late-approval-modal .bqm-formal-shell {
+    background: #0f172a !important;
+}
+
+/* ============================================================
+   DEPOSIT OVERDUE MODAL — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-deposit-overdue-modal .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-deposit-overdue-modal .bqm-formal-shell {
+    background: #0f172a !important;
+}
+
+/* ============================================================
+   LC SHEET (Late Cancellation) — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-lc-sheet .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-lc-sheet .bqm-formal-shell {
+    background: #0f172a !important;
+}
+
+/* ============================================================
+   REFUND REVIEW SHEET — DARK COVERAGE
+   ============================================================ */
+
+.bqm-dark-mode .bqm-refund-review-sheet .ant-modal-content {
+    background: #0f172a !important;
+    border-color: #1f2937 !important;
+}
+
+.bqm-dark-mode .bqm-refund-review-sheet .bqm-formal-shell {
+    background: #0f172a !important;
+}
+
+/* ============================================================
+   ⭐ Loading pill (grows from 0% to 100% like page open)
+   ============================================================ */
+.bqm-loading-line {
+    position: fixed;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+
+    padding: 10px 16px;
+    min-height: 44px;
+    max-width: 480px;
+    width: auto;
+    white-space: nowrap;
+
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+
+    animation: bqm-loading-line-pop 0.2s ease-out;
+    overflow: hidden;
+    pointer-events: auto;
+}
+
+.bqm-dark-mode .bqm-loading-line {
+    background: #1e293b;
+    border-color: #334155;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.bqm-loading-line-text {
+    font-size: 13px;
+    font-weight: 500;
+    color: #111827;
+    letter-spacing: 0.1px;
+}
+
+.bqm-dark-mode .bqm-loading-line-text {
+    color: #e2e8f0;
+}
+
+.bqm-loading-line-cancel {
+    font-size: 12px;
+    font-weight: 600;
+    color: #ef4444;
+    background: transparent;
+    border: 1px solid #ef4444;
+    border-radius: 6px;
+    padding: 3px 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    line-height: 1.2;
+    flex-shrink: 0;
+}
+
+.bqm-loading-line-cancel:hover {
+    background: #ef4444;
+    color: #ffffff;
+}
+
+/* Thin bar pinned to the bottom edge of the pill — grows from 0% to 100% */
+.bqm-loading-line-track {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    height: 3px;
+    background: transparent;
+    overflow: hidden;
+    border-bottom-left-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+
+.bqm-loading-line-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%);
+    border-radius: 2px;
+    animation: bqm-loading-line-grow 5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes bqm-loading-line-grow {
+    0%   { width: 0%; }
+    60%  { width: 75%; }
+    100% { width: 100%; }
+}
+
+@keyframes bqm-loading-line-pop {
+    from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ============================================================
+   ⭐ Skeleton logo icon — remove blue, keep gray in both modes
+   ============================================================ */
+.bqm-logo-icon-skeleton,
+.bqm-logo-icon-skeleton svg,
+.bqm-logo-icon-skeleton * {
+    background-color: #e5e7eb !important;
+    background-image: none !important;
+    color: transparent !important;
+    fill: transparent !important;
+    stroke: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+/* Match the dark background used by the rest of the skeleton */
+.bqm-dark-mode .bqm-logo-icon-skeleton,
+.bqm-dark-mode .bqm-logo-icon-skeleton svg,
+.bqm-dark-mode .bqm-logo-icon-skeleton * {
+    background-color: #334155 !important;
+}
+
+/* Keep the pulse animation on the icon so it feels alive */
+.bqm-logo-icon-skeleton {
+    animation: bqm-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+/* ============================================================
+   ⭐ Hide/Unhide on Insight cards
+   ============================================================ */
+
+/* Positioning context for the hover button. */
+.bqm-kpi-card-hideable {
+    position: relative;
+    overflow: hidden;
+}
+
+/* Hover button — hidden by default, revealed on card hover or focus. */
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    background: #ffffff;
+    color: #6b7280;
+    font-size: 13px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+
+    /* Hidden until hover */
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-2px);
+
+    transition:
+        opacity 0.18s ease,
+        transform 0.18s ease,
+        color 0.18s ease,
+        border-color 0.18s ease,
+        background 0.18s ease;
+
+    z-index: 3;
+}
+
+/* Reveal on card hover, or when the button itself receives focus. */
+.bqm-kpi-card-hideable:hover .bqm-kpi-hide-btn,
+.bqm-kpi-card-hideable:focus-within .bqm-kpi-hide-btn,
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn:hover {
+    color: #2563eb;
+    border-color: #2563eb;
+    background: #eff6ff;
+}
+
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn:active {
+    transform: scale(0.94);
+}
+
+/* Dark mode */
+.bqm-dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn,
+.dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn {
+    background: #1f2937;
+    border-color: #374151;
+    color: #9ca3af;
+}
+.bqm-dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn:hover,
+.dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn:hover {
+    color: #60a5fa;
+    border-color: #60a5fa;
+    background: #1e3a8a33;
+}
+
+/* ⭐ Digit-aware mask — monospace keeps the asterisks aligned with digits. */
+.bqm-kpi-masked-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
+    letter-spacing: 0.5px;
+    color: #9ca3af;
+    white-space: nowrap;
+    display: inline-block;
+}
+
+.bqm-dark-mode .bqm-kpi-masked-value,
+.dark-mode .bqm-kpi-masked-value {
+    color: #6b7280;
+}
+
+/* ============================================================
+   ⭐ Red-alert rows
+   Applied to a booking row when either:
+     • booking is not approved AND event is ≤3 days away
+     • booking is approved AND deposit deadline has passed (unpaid)
+   The row still shows its normal status pills; this styling only adds
+   the border + background so the row is visually flagged.
+   ============================================================ */
+
+/* Light-mode alert row */
+.bqm-table .ant-table-tbody > tr.bqm-row-alert > td {
+    background-color: #fff5f5;
+    border-top: 1px solid #fecaca;
+    border-bottom: 1px solid #fecaca;
+}
+
+/* Left accent stripe — reads at a glance even with many rows */
+.bqm-table .ant-table-tbody > tr.bqm-row-alert > td:first-child {
+    box-shadow: inset 4px 0 0 0 #dc2626;
+}
+
+/* Hover keeps the red theme so the cursor target is obvious */
+.bqm-table .ant-table-tbody > tr.bqm-row-alert:hover > td {
+    background-color: #fee2e2 !important;
+}
+
+/* Dark-mode variant — same accent, softer background so text stays legible */
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-alert > td,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-alert > td {
+    background-color: #3f1414;
+    border-top: 1px solid #7f1d1d;
+    border-bottom: 1px solid #7f1d1d;
+}
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-alert > td:first-child,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-alert > td:first-child {
+    box-shadow: inset 4px 0 0 0 #ef4444;
+}
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-alert:hover > td,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-alert:hover > td {
+    background-color: #4c1919 !important;
+}
+
+/* Native tooltip styling — \n in `title` becomes a real line break */
+.bqm-table .ant-table-tbody > tr.bqm-row-alert {
+    cursor: help;
+}
+
+/* ============================================================
+   ⭐ Yellow pre-warning row
+   Applied when:
+     • booking is approved / confirmed / ongoing
+     • deposit is NOT paid
+     • deposit deadline has NOT yet passed (still in the future)
+   The red `.bqm-row-alert` rule takes precedence — rows never
+   carry both classes.
+   ============================================================ */
+
+/* Light-mode yellow row */
+.bqm-table .ant-table-tbody > tr.bqm-row-warning > td {
+    background-color: #fffbeb;
+    border-top: 1px solid #fde68a;
+    border-bottom: 1px solid #fde68a;
+}
+
+/* Left accent stripe — amber */
+.bqm-table .ant-table-tbody > tr.bqm-row-warning > td:first-child {
+    box-shadow: inset 4px 0 0 0 #f59e0b;
+}
+
+/* Hover keeps the amber theme */
+.bqm-table .ant-table-tbody > tr.bqm-row-warning:hover > td {
+    background-color: #fef3c7 !important;
+}
+
+/* Dark-mode variant */
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-warning > td,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-warning > td {
+    background-color: #3f2d0a;
+    border-top: 1px solid #92400e;
+    border-bottom: 1px solid #92400e;
+}
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-warning > td:first-child,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-warning > td:first-child {
+    box-shadow: inset 4px 0 0 0 #f59e0b;
+}
+.bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-warning:hover > td,
+.dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-warning:hover > td {
+    background-color: #4b370c !important;
+}
+
+/* Cursor hint */
+.bqm-table .ant-table-tbody > tr.bqm-row-warning {
+    cursor: help;
+}
+
+/* Defensive: if a row somehow carries both classes (shouldn't happen
+   given the priority order in getBookingRowDecorations), red wins. */
+.bqm-table .ant-table-tbody > tr.bqm-row-alert.bqm-row-warning > td {
+    background-color: #fff5f5 !important;
+    border-top: 1px solid #fecaca !important;
+    border-bottom: 1px solid #fecaca !important;
+}
+.bqm-table .ant-table-tbody > tr.bqm-row-alert.bqm-row-warning > td:first-child {
+    box-shadow: inset 4px 0 0 0 #dc2626 !important;
 }

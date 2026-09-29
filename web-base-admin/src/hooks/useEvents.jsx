@@ -3,7 +3,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { message } from 'antd';
 import api from '../services/api';
-
 const payload = (response) => response?.data?.data ?? response?.data ?? response;
 const apiError = (error, fallback) => error?.response?.data?.message || fallback;
 
@@ -32,39 +31,35 @@ const invalidateEvent = (queryClient, eventId) => {
     }
 };
 
-// ==================== NEW: GET UNIQUE EVENT TYPES ====================
-export const useEventTypes = () => {
-    return useQuery({
-        queryKey: eventKeys.eventTypes(),
-        queryFn: async () => {
-            // Fetch events and extract unique event types
-            const response = await api.get('/events', { params: { per_page: 1000 } });
-            const events = response?.data?.data?.data || response?.data?.data || [];
-            
-            // Extract unique event types from events
-            const eventTypes = [...new Set(
-                events
-                    .map(event => event.event_type || event.eventType?.name || 'General')
-                    .filter(Boolean)
-            )];
-            
-            // Return as array of objects with label and value
-            return eventTypes.map(type => ({
-                value: type,
-                label: type,
-            }));
-        },
-        staleTime: 10 * 60 * 1000, // 10 minutes
-        gcTime: 30 * 60 * 1000, // 30 minutes
-    });
-};
-
+// REMOVED: useEventTypes — duplicate of the one in useBookingQuotation.js.
+// The /events?per_page=1000 fetch here was firing on the Orders page and
+// cost ~32 KB per load. Import useEventTypes from useBookingQuotation instead.
 export const useUpcomingEvents = () => {
     return useQuery({
         queryKey: ['upcoming-events'],
         queryFn: () => api.get('/events', { params: { status: 'confirmed', upcoming: true } }),
         select: (response) => response?.data?.data?.data || [],
         staleTime: 2 * 60 * 1000,
+    });
+};
+
+// ── Staff list (single source of truth) ──────────────────────
+// Previously loaded with a raw useEffect inside the Orders page,
+// so it fired one network request per component mount (4× on the
+// Orders page due to parent remounts). React Query dedupes across
+// all mounts, so it now fires exactly once per staleTime window.
+export const useActiveEmployees = () => {
+    return useQuery({
+        queryKey: ['employees', 'active'],
+        queryFn: async () => {
+            const response = await api.get('/employees/active');
+            return response?.data?.data ?? response?.data ?? [];
+        },
+        select: (rows) => (Array.isArray(rows) ? rows : []),
+        staleTime: 10 * 60 * 1000,
+        refetchOnMount: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 };
 
@@ -316,11 +311,10 @@ export const useApproveSelectedEquipment = () => {
         mutationFn: ({ eventId, data }) => api.post(`/events/${eventId}/equipment/approve-selected`, data),
         onSuccess: (response, { eventId }) => {
             message.success(response?.data?.message || 'Selected equipment approved.');
-            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.lists(), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'], refetchType: 'active' });
+            // Only touch equipment-related caches + the current event detail.
+            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId) });
+            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId) });
+            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'] });
         },
         onError: (error) => message.error(apiError(error, 'Failed to approve selected equipment.')),
     });
@@ -332,26 +326,22 @@ export const useApproveAllEquipment = () => {
         mutationFn: ({ eventId, data }) => api.post(`/events/${eventId}/equipment/approve-all`, data),
         onSuccess: (response, { eventId }) => {
             message.success(response?.data?.message || 'All equipment approved.');
-            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.lists(), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId) });
+            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId) });
+            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'] });
         },
         onError: (error) => message.error(apiError(error, 'Failed to approve all equipment.')),
     });
 };
-
 export const useReturnEquipment = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: ({ eventId, transactionId, data }) => api.post(`/events/${eventId}/equipment/${transactionId}/return`, data),
         onSuccess: (response, { eventId }) => {
             message.success(response?.data?.message || 'Equipment returned.');
-            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: eventKeys.equipment(eventId) });
+            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId) });
+            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'] });
         },
         onError: (error) => message.error(apiError(error, 'Failed to return equipment.')),
     });
@@ -469,12 +459,12 @@ export const useCompleteEvent = () => {
     const queryClient = useQueryClient();
     return useMutation({
         mutationFn: (eventId) => api.post(`/events/${eventId}/complete`),
-        onSuccess: (response, eventId) => {
+              onSuccess: (response, eventId) => {
             message.success(response?.data?.message || 'Event completed.');
-            queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: eventKeys.lists(), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
+            // Batch into a single invalidation pass — React Query coalesces
+            // these into at most one refetch per matching query.
+            queryClient.invalidateQueries({ queryKey: eventKeys.all });
+            queryClient.invalidateQueries({ queryKey: ['bookings'] });
         },
         onError: (error) => message.error(apiError(error, 'Failed to complete event.')),
     });

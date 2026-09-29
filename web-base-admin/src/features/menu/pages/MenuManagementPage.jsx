@@ -25,7 +25,7 @@ import {
     InputNumber,
     Upload,
     Image,
-    ConfigProvider,
+       ConfigProvider,
     Switch,
     Progress,
     Steps,
@@ -40,7 +40,8 @@ import {
     Grid,
     Flex,
     Popconfirm,
-    Radio
+    Radio,
+    theme as antdTheme,
 } from 'antd';
 import {
     FaPizzaSlice,
@@ -115,6 +116,7 @@ import {
     StarOutlined,
     SearchOutlined,
     DashboardOutlined,
+    MoreOutlined,
     ShoppingCartOutlined,
     WalletOutlined,
     TrophyOutlined,
@@ -178,6 +180,7 @@ import {
     useToggleMenuItemAvailability,
     useToggleMenuItemFeatured,
 } from '../../../hooks/useMenuQueries';
+import { useAllergens } from '../../../hooks/useSettingsQueries';
 import dayjs from 'dayjs';
 import { useAuth } from '../../../contexts/AuthContext';
 import { ADMIN_ROLES, HEAD_CHEF_ROLES, hasAllowedRole } from '../../../utils/roleRoutes';
@@ -192,6 +195,227 @@ const { TabPane } = Tabs;
 const { TextArea } = Input;
 const { Search } = Input;
 const { useBreakpoint } = Grid;
+
+// ─────────────────────────────────────────────────────────────
+// Show the skeleton whenever data is being fetched for the first
+// time in this session — regardless of how the user arrived
+// (hard refresh, direct URL, or React Router navigation).
+// ─────────────────────────────────────────────────────────────
+// ============================================================
+// SKELETON PRIMITIVES (light gray, matches Dashboard + OrderEvents)
+// Declared BEFORE any component that uses them, to avoid TDZ errors.
+// ============================================================
+const SkeletonText = ({ width = '100%', height = 14, radius = 6, className = '', style = {} }) => (
+    <div
+        className={`mm-skeleton-text ${className}`}
+        style={{ width, height, borderRadius: radius, ...style }}
+    />
+);
+
+const SkeletonCircle = ({ size = 44, radius = '50%', className = '', style = {} }) => (
+    <div
+        className={`mm-skeleton-circle ${className}`}
+        style={{ width: size, height: size, minWidth: size, borderRadius: radius, ...style }}
+    />
+);
+
+const SkeletonPill = ({ width = 60, height = 22, className = '', style = {} }) => (
+    <SkeletonText width={width} height={height} radius={20} className={className} style={style} />
+);
+
+// ---------- Header skeleton ----------
+const SkeletonHeader = () => (
+    <div className="mm-header mm-skeleton-header mm-skeleton-card">
+        <div className="mm-header-left">
+            <SkeletonCircle size={44} radius={12} />
+            <div className="mm-skeleton-header-info">
+                <SkeletonText width={170} height={20} />
+                <SkeletonText width={200} height={11} style={{ marginTop: 6 }} />
+            </div>
+        </div>
+        <div className="mm-header-right">
+            <SkeletonText width={150} height={34} radius={30} />
+            <div className="mm-header-actions">
+                <SkeletonText width={40} height={38} radius={10} />
+                <SkeletonText width={40} height={38} radius={10} />
+                <SkeletonText width={92} height={38} radius={10} />
+            </div>
+        </div>
+    </div>
+);
+
+// ---------- Stat cards skeleton ----------
+const SkeletonStatCard = ({ delay = 0 }) => (
+    <div className="mm-stat-card mm-skeleton-card mm-skeleton-stat-card" style={{ animationDelay: `${delay}s` }}>
+        <SkeletonCircle size={44} radius={12} />
+        <div className="mm-stat-content">
+            <SkeletonText width={76} height={22} />
+            <SkeletonText width={110} height={11} style={{ marginTop: 8 }} />
+        </div>
+        <div className="mm-skeleton-stat-trend">
+            <SkeletonPill width={46} height={18} />
+        </div>
+    </div>
+);
+
+const SkeletonStatsGrid = () => (
+    <div className="mm-dashboard-grid">
+        {Array.from({ length: 5 }).map((_, i) => (
+            <SkeletonStatCard key={i} delay={i * 0.06} />
+        ))}
+    </div>
+);
+
+// ---------- Tabs skeleton ----------
+const SkeletonTabs = () => (
+    <div className="mm-tabs-skeleton">
+        <div className="mm-tabs-skeleton-tab mm-tabs-skeleton-tab--active">
+            <SkeletonCircle size={14} radius={4} />
+            <SkeletonText width={80} height={13} />
+        </div>
+        <div className="mm-tabs-skeleton-tab">
+            <SkeletonCircle size={14} radius={4} />
+            <SkeletonText width={70} height={13} />
+        </div>
+        <div className="mm-tabs-skeleton-tab">
+            <SkeletonCircle size={14} radius={4} />
+            <SkeletonText width={80} height={13} />
+        </div>
+        <div className="mm-tabs-skeleton-tab">
+            <SkeletonCircle size={14} radius={4} />
+            <SkeletonText width={85} height={13} />
+        </div>
+        <div className="mm-tabs-skeleton-spacer" />
+        <SkeletonText width={120} height={38} radius={10} />
+    </div>
+);
+
+// ---------- Filter bar skeleton ----------
+const SkeletonFilterBar = () => (
+    <div className="mm-skeleton-filter-bar">
+        <div className="mm-skeleton-filter-left">
+            <SkeletonText width={170} height={36} radius={10} />
+            <SkeletonText width={140} height={36} radius={10} />
+        </div>
+        <div className="mm-skeleton-filter-right">
+            <SkeletonText width={260} height={36} radius={10} />
+        </div>
+    </div>
+);
+
+// ---------- Table skeleton ----------
+const SKELETON_ROW_WIDTHS = [
+    [140, 130, 110],
+    [120, 120, 100],
+    [150, 125, 115],
+    [130, 135, 105],
+    [145, 118, 112],
+    [125, 128, 98],
+    [135, 122, 108],
+    [128, 130, 104],
+];
+
+const SkeletonTableRow = ({ delay = 0, rowIndex = 0 }) => {
+    const w = SKELETON_ROW_WIDTHS[rowIndex % SKELETON_ROW_WIDTHS.length];
+
+    return (
+        <div
+            className="mm-skeleton-row mm-skeleton-card"
+            style={{ animationDelay: `${delay}s` }}
+        >
+            {/* 1 · # */}
+            <div className="mm-skeleton-cell mm-skeleton-cell--index">
+                <SkeletonText width={18} height={12} />
+            </div>
+
+            {/* 2 · ITEM — avatar + name + sub */}
+            <div className="mm-skeleton-cell mm-skeleton-item-cell">
+                <SkeletonCircle size={40} radius={10} />
+                <div className="mm-skeleton-item-stack">
+                    <SkeletonText width={w[0]} height={13} />
+                    <SkeletonText width={Math.max(60, w[0] - 60)} height={10} />
+                </div>
+            </div>
+
+            {/* 3 · PRICING — two stacked lines */}
+            <div className="mm-skeleton-cell mm-skeleton-item-stack">
+                <SkeletonText width={w[1]} height={11} />
+                <SkeletonText width={Math.max(60, w[1] - 40)} height={11} />
+            </div>
+
+            {/* 4 · DIETARY — two pill chips */}
+            <div className="mm-skeleton-cell mm-skeleton-tag-row">
+                <SkeletonPill width={52} height={20} />
+                <SkeletonPill width={44} height={20} />
+            </div>
+
+            {/* 5 · STATUS — one pill */}
+            <div className="mm-skeleton-cell">
+                <SkeletonPill width={86} height={24} />
+            </div>
+
+            {/* 6 · STAR — circle */}
+            <div className="mm-skeleton-cell mm-skeleton-cell--center">
+                <SkeletonCircle size={26} radius={13} />
+            </div>
+
+            {/* 7 · ACTIONS — three square icon buttons */}
+            <div className="mm-skeleton-cell mm-skeleton-actions">
+                <SkeletonCircle size={30} radius={8} />
+                <SkeletonCircle size={30} radius={8} />
+                <SkeletonCircle size={30} radius={8} />
+            </div>
+        </div>
+    );
+};
+const SKELETON_COLUMNS = [
+    { key: 'index', label: '#', className: 'mm-skeleton-cell--index' },
+    { key: 'item', label: 'ITEM' },
+    { key: 'pricing', label: 'PRICING' },
+    { key: 'dietary', label: 'DIETARY' },
+    { key: 'status', label: 'STATUS' },
+    { key: 'star', label: '', className: 'mm-skeleton-cell--center' },
+    { key: 'actions', label: 'ACTIONS', className: 'mm-skeleton-actions' },
+];
+
+const SkeletonTable = ({ rows = 8 }) => (
+    <div className="mm-skeleton-table">
+        <div className="mm-skeleton-table-header">
+            {SKELETON_COLUMNS.map((col) => (
+                <div
+                    key={col.key}
+                    className={`mm-skeleton-cell ${col.className || ''}`}
+                >
+                    {col.label
+                        ? <SkeletonText width={col.key === 'index' ? 20 : 70} height={11} />
+                        : <SkeletonText width={20} height={11} />}
+                </div>
+            ))}
+        </div>
+
+        <div className="mm-skeleton-table-body">
+            {Array.from({ length: rows }).map((_, i) => (
+                <SkeletonTableRow key={i} rowIndex={i} delay={i * 0.05} />
+            ))}
+        </div>
+    </div>
+);
+
+// ---------- Full page skeleton ----------
+const MenuManagementSkeleton = () => (
+    <div className="mm-skeleton-container">
+        <SkeletonHeader />
+        <SkeletonStatsGrid />
+
+        <div className="mm-main-card mm-skeleton-main-card">
+            <SkeletonTabs />
+            <div className="mm-skeleton-table-container">
+                <SkeletonFilterBar />
+                <SkeletonTable rows={8} />
+            </div>
+        </div>
+    </div>
+);
 
 // ============================================================
 // ICON HELPERS
@@ -272,7 +496,6 @@ const currency = (value) => `₱${Number(value || 0).toLocaleString('en-PH', {
 
 const csvCell = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
-// Pricing Type Constants
 const PRICING_TYPES = {
     PER_PAX: 'per_pax',
     PER_TRAY: 'per_tray',
@@ -285,7 +508,6 @@ const PRICING_TYPE_LABELS = {
     both: 'Both'
 };
 
-// Promotion Type Map
 const PROMO_TYPE_MAP = {
     menu_discount: { label: 'Menu Discount', color: '#1a7ab5', icon: <TagsOutlined /> },
     package_discount: { label: 'Package Discount', color: '#1a7ab5', icon: <AppstoreOutlined /> },
@@ -309,10 +531,9 @@ const PROMO_STATUS_MAP = {
 // ============================================================
 // Professional Icon Picker
 // ============================================================
-const ProfessionalIconPicker = ({ value, onChange }) => {
+const ProfessionalIconPicker = ({ value, onChange, isDarkMode = false }) => {
     const [visible, setVisible] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
-
     const filteredIcons = PROFESSIONAL_ICONS.filter((icon) => (
         icon.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         icon.category.toLowerCase().includes(searchTerm.toLowerCase())
@@ -343,8 +564,9 @@ const ProfessionalIconPicker = ({ value, onChange }) => {
                 open={visible}
                 onCancel={() => setVisible(false)}
                 footer={null}
-                width={750}
+                               width={750}
                 className="mm-icon-modal"
+                rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                 maskClosable={false}
             >
                 <Input.Search
@@ -430,7 +652,6 @@ const PricingConfiguration = ({ form, initialValues }) => {
                 </Radio.Group>
             </Form.Item>
 
-            {/* Per Pax Pricing */}
             {(pricingType === PRICING_TYPES.PER_PAX || pricingType === PRICING_TYPES.BOTH) && (
                 <div className="mm-pricing-section">
                     <Divider orientation="left" className="mm-form-divider">
@@ -458,7 +679,6 @@ const PricingConfiguration = ({ form, initialValues }) => {
                 </div>
             )}
 
-            {/* Per Tray Pricing */}
             {(pricingType === PRICING_TYPES.PER_TRAY || pricingType === PRICING_TYPES.BOTH) && (
                 <div className="mm-pricing-section">
                     <Divider orientation="left" className="mm-form-divider">
@@ -581,7 +801,6 @@ const MenuManagement = () => {
     const [promotionFilters, setPromotionFilters] = useState({ search: '', status: null, promo_type: null });
     const [activeMainTab, setActiveMainTab] = useState('menus');
 
-    // Menu sort state
     const [menuSortField, setMenuSortField] = useState('name');
     const [menuSortOrder, setMenuSortOrder] = useState('asc');
 
@@ -609,12 +828,47 @@ const MenuManagement = () => {
     const [packageViewModalVisible, setPackageViewModalVisible] = useState(false);
     const [viewingPackage, setViewingPackage] = useState(null);
 
-    // Edit modal states
-    const [editMenuModalVisible, setEditMenuModalVisible] = useState(false);
+         const [editMenuModalVisible, setEditMenuModalVisible] = useState(false);
     const [editPackageModalVisible, setEditPackageModalVisible] = useState(false);
     const [editCategoryModalVisible, setEditCategoryModalVisible] = useState(false);
     const [editPromoModalVisible, setEditPromoModalVisible] = useState(false);
 
+    // ⭐ Dark mode — synchronous initial read (no flash on mount)
+    const [isDarkMode, setIsDarkMode] = useState(() => {
+        const saved = (localStorage.getItem('theme') || '').toLowerCase();
+        if (saved === 'dark') return true;
+        if (saved === 'light') return false;
+        return document.body.classList.contains('dark-mode');
+    });
+
+    // ⭐ Listen for theme changes
+    useEffect(() => {
+        const handleThemeChange = (e) => setIsDarkMode(Boolean(e?.detail?.isDark));
+        const handleStorage = (e) => {
+            if (e.key === 'theme') {
+                setIsDarkMode((e.newValue || '').toLowerCase() === 'dark');
+            }
+        };
+        window.addEventListener('themeChange', handleThemeChange);
+        window.addEventListener('storage', handleStorage);
+        return () => {
+            window.removeEventListener('themeChange', handleThemeChange);
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, []);
+
+    // ⭐ Apply dark class to <html>/<body> so portaled modals inherit it
+    useEffect(() => {
+        const root = document.documentElement;
+        const body = document.body;
+        if (isDarkMode) {
+            root.classList.add('mm-dark-mode');
+            body.classList.add('mm-dark-mode');
+        } else {
+            root.classList.remove('mm-dark-mode');
+            body.classList.remove('mm-dark-mode');
+        }
+    }, [isDarkMode]);
     useEffect(() => {
         if (isHeadChefOnly && !['menus', 'categories'].includes(activeMainTab)) {
             setActiveMainTab('menus');
@@ -625,17 +879,46 @@ const MenuManagement = () => {
     const [packageForm] = Form.useForm();
     const [categoryForm] = Form.useForm();
     const [promoForm] = Form.useForm();
-
+      // ============================================================
+    // SKELETON STATE
+    // The skeleton should ONLY show on a true cold start — i.e.
+    // when the four primary queries have no cached data yet.
+    // `contentReady` triggers the CSS fade-in once the real UI mounts.
+    // ============================================================
+    const [contentReady, setContentReady] = useState(false);
     // ============================================================
     // QUERIES
     // ============================================================
-    const menuQuery = useMenuItems({ page: 1, per_page: 500 });
-    const categoryQuery = useCategories({ page: 1, per_page: 500 });
-    const packageQuery = usePackages({ page: 1, per_page: 500 });
-    const promotionQuery = usePromotions({ page: 1, per_page: 500 });
-    const ingredientQuery = useIngredients({ page: 1, per_page: 500 });
-    const statisticsQuery = useMenuStatistics();
+      // Memoize the filter objects so React Query doesn't see a new
+    // query key on every render (each new literal would refetch).
+    const menuParams = useMemo(() => ({ page: 1, per_page: 100 }), []);
+    const categoryParams = useMemo(() => ({ page: 1, per_page: 100 }), []);
+    const packageParams = useMemo(() => ({ page: 1, per_page: 100 }), []);
+    const promotionParams = useMemo(() => ({ page: 1, per_page: 100 }), []);
+    const ingredientParams = useMemo(() => ({ page: 1, per_page: 100 }), []);
 
+    const menuQuery = useMenuItems(menuParams);
+    const categoryQuery = useCategories(categoryParams);
+    const packageQuery = usePackages(packageParams);
+    const promotionQuery = usePromotions(promotionParams);
+     // Defer the two heaviest/least-visible queries until after the
+    // browser has painted the first frame. This unblocks the critical
+    // path (menus + categories + packages + promotions) so the skeleton
+    // disappears ~2× faster on cold visits.
+    const [deferredQueriesEnabled, setDeferredQueriesEnabled] = useState(false);
+    useEffect(() => {
+        const t = setTimeout(() => setDeferredQueriesEnabled(true), 250);
+        return () => clearTimeout(t);
+    }, []);
+
+       const ingredientQuery = useIngredients(ingredientParams, {
+        enabled: deferredQueriesEnabled,
+    });
+    const statisticsQuery = useMenuStatistics({
+        enabled: deferredQueriesEnabled,
+    });
+    // ⭐ Allergens master list — sourced from Booking Settings
+    const allergenQuery = useAllergens();
     // ============================================================
     // MUTATIONS
     // ============================================================
@@ -664,6 +947,14 @@ const MenuManagement = () => {
     const packages = packageQuery.data?.data || [];
     const promotions = promotionQuery.data?.data || [];
     const ingredients = ingredientQuery.data?.data || [];
+    // ⭐ Allergens from Booking Settings
+    const allergens = allergenQuery.data || [];
+    const allergenOptions = useMemo(() => {
+        return (Array.isArray(allergens) ? allergens : []).map((a) => ({
+            value: a.name,
+            label: a.name,
+        }));
+    }, [allergens]);
 
     const ingredientById = useMemo(() => new Map(
         ingredients.map((ingredient) => [Number(ingredient.id), ingredient]),
@@ -812,12 +1103,11 @@ const MenuManagement = () => {
             // Error handled by mutation
         }
     };
-
     const handleToggleMenuAvailability = async (record) => {
         try {
             await toggleAvailability.mutateAsync(record.id);
             message.success(`${record.name} is now ${record.is_available ? 'unavailable' : 'available'} 🔄`);
-            menuQuery.refetch();
+            // No manual refetch — the mutation invalidates menuKeys.root.
         } catch {
             // Error handled by mutation
         }
@@ -826,17 +1116,14 @@ const MenuManagement = () => {
     const handleTogglePackageActive = async (record) => {
         try {
             await updatePackage.mutateAsync({ id: record.id, data: { is_active: !record.is_active } });
-            packageQuery.refetch();
             message.success(`Package ${record.is_active ? 'deactivated' : 'activated'} ✅`);
         } catch {
             message.error('Failed to update package status');
         }
     };
-
     const handleToggleCategoryActive = async (record) => {
         try {
             await updateCategory.mutateAsync({ id: record.id, data: { is_active: !record.is_active } });
-            categoryQuery.refetch();
             message.success(`Category ${record.is_active ? 'deactivated' : 'activated'} ✅`);
         } catch {
             message.error('Failed to update category status');
@@ -846,7 +1133,6 @@ const MenuManagement = () => {
     const handleTogglePromotionActive = async (record) => {
         try {
             await togglePromotionActive.mutateAsync(record.id);
-            promotionQuery.refetch();
             message.success(`Promotion ${record.is_active ? 'deactivated' : 'activated'} ✅`);
         } catch {
             message.error('Failed to update promotion status');
@@ -1087,13 +1373,11 @@ const MenuManagement = () => {
                 await createCategory.mutateAsync(payload);
                 message.success(`Created ${values.name} category 🎉`);
             }
-            closeCategoryModal();
-            categoryQuery.refetch();
+               closeCategoryModal();
         } catch {
             // Error handled by mutation
         }
     };
-
     // ============================================================
     // HANDLERS - PROMOTIONS
     // ============================================================
@@ -1162,9 +1446,8 @@ const MenuManagement = () => {
             cancelText: 'Cancel',
             icon: <CopyOutlined style={{ color: '#1a7ab5' }} />,
             onOk: async () => {
-                try {
+                    try {
                     await duplicatePromotion.mutateAsync(record.id);
-                    promotionQuery.refetch();
                     message.success(`Duplicated ${record.name} promotion 📋`);
                 } catch {
                     // Error handled by mutation
@@ -1219,8 +1502,7 @@ const MenuManagement = () => {
                 await createPromotion.mutateAsync(payload);
                 message.success(`Created ${values.name} promotion 🎉`);
             }
-            closePromoModal();
-            promotionQuery.refetch();
+               closePromoModal();
         } catch {
             // Error handled by mutation
         }
@@ -1248,18 +1530,16 @@ const MenuManagement = () => {
             formData.append('name', values.name.trim());
             formData.append('category_id', String(values.category_id));
             formData.append('description', values.description || '');
-            
-            // ALWAYS save both prices - regardless of pricing_type
+
             formData.append('price', String(values.price || 0));
             formData.append('tray_price', String(values.tray_price || 0));
             formData.append('tray_servings', String(values.tray_servings || 25));
             formData.append('tray_min_pax', String(values.tray_min_pax || 20));
             formData.append('tray_max_pax', String(values.tray_max_pax || 25));
             formData.append('tray_description', values.tray_description || '');
-            
-            // Set pricing_type to 'both' so both prices are shown
+
             formData.append('pricing_type', 'both');
-            
+
             formData.append('cost_to_make', String(calculateTotalRecipeCost()));
             formData.append('prep_time_minutes', String(values.prep_time_minutes ?? 0));
             formData.append('serving_size', String(values.serving_size ?? 1));
@@ -1286,8 +1566,7 @@ const MenuManagement = () => {
                 message.success(`Created ${values.name} successfully 🎉`);
             }
 
-            closeMenuModal();
-            menuQuery.refetch();
+                   closeMenuModal();
         } catch (error) {
             console.error('Save menu error:', error);
             if (error?.errorFields) {
@@ -1339,8 +1618,7 @@ const MenuManagement = () => {
                 await createPackage.mutateAsync(formData);
                 message.success(`Created ${values.name} package 🎉`);
             }
-            closePackageModal();
-            packageQuery.refetch();
+                closePackageModal();
         } catch (error) {
             console.error('Save package error:', error);
         }
@@ -1420,14 +1698,15 @@ const MenuManagement = () => {
     });
 
     // ============================================================
-    // TABLE COLUMNS - BOTH PRICING ALWAYS VISIBLE
+    // TABLE COLUMNS
     // ============================================================
-    const menuColumns = [
+     const menuColumns = [
         {
             title: '#',
             key: 'index',
-            width: 45,
+            width: 44,
             fixed: 'left',
+            align: 'center',
             render: (_, __, index) => (
                 <span className="mm-row-index">{index + 1}</span>
             )
@@ -1435,13 +1714,13 @@ const MenuManagement = () => {
         {
             title: 'ITEM',
             key: 'item',
-            width: 180,
+            width: 260,
             fixed: 'left',
             render: (_, record) => (
                 <div className="mm-menu-item-cell">
                     <Avatar
                         src={record.image_url || '/images/placeholder.svg'}
-                        size={36}
+                        size={40}
                         shape="square"
                         className="mm-menu-item-avatar"
                         icon={<FileImageOutlined />}
@@ -1450,7 +1729,14 @@ const MenuManagement = () => {
                         <div className="mm-menu-item-name">{record.name}</div>
                         <div className="mm-menu-item-meta">
                             <span className="mm-category-label">{record.category || 'Uncategorized'}</span>
-                            {record.is_popular && <span className="mm-featured-label">★</span>}
+                            {record.description && (
+                                <>
+                                    <span className="mm-meta-sep">·</span>
+                                    <span className="mm-menu-item-desc" title={record.description}>
+                                        {record.description}
+                                    </span>
+                                </>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1459,115 +1745,128 @@ const MenuManagement = () => {
         {
             title: 'PRICING',
             key: 'pricing',
-            width: 130,
-            render: (_, record) => {
-                return (
-                    <div className="mm-pricing-display-clean">
-                        <div className="mm-pricing-item per-pax">
-                            <span className="mm-pricing-label">Pax</span>
-                            <span className="mm-pricing-value">{currency(record.price || 0)}</span>
-                        </div>
-                        <div className="mm-pricing-item per-tray">
-                            <span className="mm-pricing-label">Tray</span>
-                            <span className="mm-pricing-value">{currency(record.tray_price || 0)}</span>
-                            {(record.tray_min_pax || record.tray_max_pax) && (
-                                <span className="mm-tray-range">| {record.tray_min_pax || 0}–{record.tray_max_pax || 0}pax</span>
-                            )}
-                        </div>
+            width: 180,
+            render: (_, record) => (
+                <div className="mm-pricing-cell">
+                    <div className="mm-pricing-row">
+                        <span className="mm-pricing-row-label">Per pax</span>
+                        <span className="mm-pricing-row-value">{currency(record.price || 0)}</span>
                     </div>
-                );
-            }
-        },
-        {
-            title: 'DESCRIPTION',
-            dataIndex: 'description',
-            key: 'description',
-            width: 150,
-            ellipsis: true,
-            render: (text) => (
-                <Tooltip title={text}>
-                    <span className="mm-description-text">{text?.substring(0, 35) || '—'}{text?.length > 35 ? '...' : ''}</span>
-                </Tooltip>
+                    <div className="mm-pricing-row">
+                        <span className="mm-pricing-row-label">Per tray</span>
+                        <span className="mm-pricing-row-value">
+                            {currency(record.tray_price || 0)}
+                            {(record.tray_min_pax || record.tray_max_pax) && (
+                                <span className="mm-pricing-row-note">
+                                    {record.tray_min_pax || 0}–{record.tray_max_pax || 0} pax
+                                </span>
+                            )}
+                        </span>
+                    </div>
+                </div>
             )
         },
         {
             title: 'DIETARY',
             key: 'dietary',
-            width: 120,
+            width: 130,
             render: (_, record) => {
-                const dietaryTags = [];
-                if (record.is_vegetarian) dietaryTags.push('Veg');
-                if (record.is_vegan) dietaryTags.push('Vegan');
-                if (record.is_gluten_free) dietaryTags.push('GF');
-                if (record.is_halal) dietaryTags.push('Halal');
-                if (dietaryTags.length === 0) return <span className="mm-dietary-none">—</span>;
+                const tags = [];
+                if (record.is_vegetarian) tags.push({ key: 'veg', label: 'Vegetarian' });
+                if (record.is_vegan) tags.push({ key: 'vegan', label: 'Vegan' });
+                if (record.is_gluten_free) tags.push({ key: 'gf', label: 'Gluten-free' });
+                if (record.is_halal) tags.push({ key: 'halal', label: 'Halal' });
+
+                if (tags.length === 0) {
+                    return <span className="mm-cell-empty">—</span>;
+                }
+
                 return (
-                    <Space size={4} wrap>
-                        {dietaryTags.map((tag, idx) => (
-                            <span key={idx} className={`mm-dietary-tag ${tag.toLowerCase().replace(' ', '-')}`}>
-                                {tag}
+                    <div className="mm-dietary-chips">
+                        {tags.map((tag) => (
+                            <span key={tag.key} className="mm-dietary-chip">
+                                <span className="mm-dietary-chip-dot" />
+                                {tag.label}
                             </span>
                         ))}
-                    </Space>
+                    </div>
                 );
             }
         },
         {
             title: 'STATUS',
             key: 'status',
-            width: 80,
-            align: 'center',
-            render: (_, record) => (
-                <Switch
-                    checked={record.is_available !== false}
-                    loading={toggleAvailability.isPending}
-                    onChange={() => handleToggleMenuAvailability(record)}
-                    checkedChildren={<CheckCircleOutlined />}
-                    unCheckedChildren={<CloseOutlined />}
-                    className="mm-status-switch"
-                />
-            )
+            width: 110,
+            align: 'left',
+            render: (_, record) => {
+                const isActive = record.is_available !== false;
+                return (
+                    <button
+                        type="button"
+                        className={`mm-status-pill ${isActive ? 'active' : 'inactive'}`}
+                        onClick={() => handleToggleMenuAvailability(record)}
+                        disabled={toggleAvailability.isPending}
+                    >
+                        <span className="mm-status-pill-dot" />
+                        {isActive ? 'Available' : 'Unavailable'}
+                    </button>
+                );
+            }
         },
         {
             title: '',
             key: 'featured',
-            width: 40,
+            width: 48,
             align: 'center',
             render: (_, record) => (
-                <Button
-                    type={record.is_popular ? 'primary' : 'text'}
-                    shape="circle"
-                    icon={<StarOutlined />}
-                    onClick={() => handleToggleFeatured(record)}
-                    loading={toggleFeatured.isPending}
-                    className={`mm-featured-btn ${record.is_popular ? 'active' : ''}`}
-                />
+                <Tooltip title={record.is_popular ? 'Remove from featured' : 'Mark as featured'}>
+                    <button
+                        type="button"
+                        className={`mm-star-btn ${record.is_popular ? 'active' : ''}`}
+                        onClick={() => handleToggleFeatured(record)}
+                        disabled={toggleFeatured.isPending}
+                    >
+                        <StarFilled />
+                    </button>
+                </Tooltip>
             )
         },
         {
-            title: 'ACTIONS',
+            title: '',
             key: 'actions',
-            width: 80,
+            width: 130,
             fixed: 'right',
+            align: 'right',
             render: (_, record) => (
-                <Space size={4}>
-                    <Tooltip title="View">
-                        <Button
-                            className="mm-action-btn view"
-                            icon={<EyeOutlined />}
+                <div className="mm-row-actions">
+                    <Tooltip title="Quick view">
+                        <button
+                            type="button"
+                            className="mm-row-action"
                             onClick={() => handleQuickView(record)}
-                            size="small"
-                        />
+                        >
+                            <EyeOutlined />
+                        </button>
                     </Tooltip>
                     <Tooltip title="Edit">
-                        <Button
-                            className="mm-action-btn edit"
-                            icon={<EditOutlined />}
+                        <button
+                            type="button"
+                            className="mm-row-action"
                             onClick={() => handleEditMenu(record)}
-                            size="small"
-                        />
+                        >
+                            <EditOutlined />
+                        </button>
                     </Tooltip>
-                </Space>
+                    <Tooltip title="More">
+                        <button
+                            type="button"
+                            className="mm-row-action"
+                            onClick={() => handleViewRecipe(record)}
+                        >
+                            <MoreOutlined />
+                        </button>
+                    </Tooltip>
+                </div>
             )
         },
     ];
@@ -1854,47 +2153,88 @@ const MenuManagement = () => {
         },
     ];
 
+        // ============================================================
+    // SKELETON GATE — only on true cold start
     // ============================================================
-    // LOADING STATE
-    // ============================================================
-    const hasData = menuQuery.data || categoryQuery.data || packageQuery.data || promotionQuery.data;
-    const isInitialLoading = !hasData &&
-        (menuQuery.isLoading || categoryQuery.isLoading || packageQuery.isLoading || promotionQuery.isLoading);
+    // `isPending` is true only when there is NO cached data.
+    // If the query is refetching in the background with stale data,
+    // `isPending` is false and we render the real UI immediately.
+    const primaryQueriesSettled =
+        !menuQuery.isPending &&
+        !categoryQuery.isPending &&
+        !packageQuery.isPending &&
+        !promotionQuery.isPending;
 
-    if (isInitialLoading) {
-        return (
-            <div className="mm-loading-container">
-                <Spin size="large" tip="Loading menu data..." />
-            </div>
-        );
-    }
+    // Only show the skeleton if we have NO data yet.
+    // If any query already has cached data, render the page.
+    const hasAnyCachedData =
+        Array.isArray(menuQuery.data?.data) ||
+        Array.isArray(categoryQuery.data?.data) ||
+        Array.isArray(packageQuery.data?.data) ||
+        Array.isArray(promotionQuery.data?.data);
+
+    const shouldShowSkeleton = !primaryQueriesSettled && !hasAnyCachedData;
+    // Flip `contentReady` once we decide to render the real UI, so the
+    // fade-in animation plays exactly once per mount.
+    useEffect(() => {
+        if (!shouldShowSkeleton && !contentReady) {
+            const id = requestAnimationFrame(() => setContentReady(true));
+            return () => cancelAnimationFrame(id);
+        }
+    }, [shouldShowSkeleton, contentReady]);
+
+    // Failsafe: never block the UI longer than 8 seconds even if the
+    // network hangs on a cold start.
+    const [skeletonTimedOut, setSkeletonTimedOut] = useState(false);
+    useEffect(() => {
+        if (!shouldShowSkeleton || skeletonTimedOut) return;
+        const t = setTimeout(() => setSkeletonTimedOut(true), 8000);
+        return () => clearTimeout(t);
+    }, [shouldShowSkeleton, skeletonTimedOut]);
+
+    // NOTE: The early `return <MenuManagementSkeleton />` has been
+    // moved to the bottom of this component, right before the final
+    // `return (...)` JSX. Returning early here would violate the
+    // Rules of Hooks because several `useMemo` / `useState` calls
+    // still come after this point.
 
     // ============================================================
     // THEME
     // ============================================================
     const theme = {
+        algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
         token: {
             colorPrimary: '#1a7ab5',
-            colorBgContainer: '#ffffff',
-            colorBgElevated: '#ffffff',
-            colorBorderSecondary: '#e4e9f0',
             borderRadius: 12,
             fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
-            colorText: '#111827',
-            colorTextSecondary: '#6b7280',
             controlHeight: 40,
             controlHeightLG: 44,
             controlHeightSM: 32,
+            ...(isDarkMode
+                ? {
+                      colorBgContainer: '#111827',
+                      colorBgElevated: '#1a2233',
+                      colorBorderSecondary: '#1f2937',
+                      colorText: '#e2e8f0',
+                      colorTextSecondary: '#94a3b8',
+                  }
+                : {
+                      colorBgContainer: '#ffffff',
+                      colorBgElevated: '#ffffff',
+                      colorBorderSecondary: '#e4e9f0',
+                      colorText: '#111827',
+                      colorTextSecondary: '#6b7280',
+                  }),
         },
         components: {
             Table: {
-                headerBg: '#f8fafc',
-                headerColor: '#111827',
-                rowHoverBg: '#f8fafc',
+                headerBg: isDarkMode ? '#0b1220' : '#f8fafc',
+                headerColor: isDarkMode ? '#94a3b8' : '#111827',
+                rowHoverBg: isDarkMode ? 'rgba(96,165,250,0.08)' : '#f8fafc',
                 headerBorderRadius: 12,
             },
             Card: {
-                colorBgContainer: '#ffffff',
+                colorBgContainer: isDarkMode ? '#111827' : '#ffffff',
                 borderRadiusLG: 16,
             },
             Button: {
@@ -1909,6 +2249,8 @@ const MenuManagement = () => {
             },
             Modal: {
                 borderRadiusLG: 20,
+                contentBg: isDarkMode ? '#0f172a' : '#ffffff',
+                headerBg: isDarkMode ? '#0f172a' : '#ffffff',
             },
             Tag: {
                 borderRadius: 8,
@@ -1953,7 +2295,7 @@ const MenuManagement = () => {
     };
 
     // ============================================================
-    // QUICK VIEW DRAWER - Shows Both Pricing
+    // QUICK VIEW DRAWER
     // ============================================================
     const QuickViewDrawer = () => (
         <Drawer
@@ -1969,8 +2311,9 @@ const MenuManagement = () => {
             placement="right"
             onClose={closeQuickView}
             open={quickViewVisible}
-            width={screens.xs ? '100%' : 480}
+                      width={screens.xs ? '100%' : 480}
             className="mm-quickview-drawer"
+            rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
             extra={
                 <Space>
                     <Button
@@ -2056,9 +2399,7 @@ const MenuManagement = () => {
                         </Col>
                     </Row>
 
-                    <Divider className="mm-quickview-divider" />
-
-                    <div className="mm-quickview-dietary">
+                                   <div className="mm-quickview-dietary">
                         <Text strong>Dietary Information</Text>
                         <Space size={8} wrap style={{ marginTop: 8 }}>
                             {quickViewItem.is_vegetarian && <Tag color="green">Vegetarian</Tag>}
@@ -2070,6 +2411,37 @@ const MenuManagement = () => {
                                 <Text type="secondary">No dietary restrictions</Text>
                             )}
                         </Space>
+
+                        {/* ⭐ Allergens (from Booking Settings) */}
+                        <div style={{ marginTop: 12 }}>
+                            <Text strong>Allergens</Text>
+                            <div style={{ marginTop: 8 }}>
+                                {(() => {
+                                    const raw = quickViewItem.allergens;
+                                    const list = Array.isArray(raw)
+                                        ? raw
+                                        : (typeof raw === 'string'
+                                            ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                                            : []);
+                                    if (list.length === 0) {
+                                        return <Text type="secondary">None declared</Text>;
+                                    }
+                                    return (
+                                        <Space size={6} wrap>
+                                            {list.map((allergen, idx) => (
+                                                <Tag
+                                                    key={idx}
+                                                    color="red"
+                                                    icon={<span style={{ marginRight: 4 }}>⚠</span>}
+                                                >
+                                                    {allergen}
+                                                </Tag>
+                                            ))}
+                                        </Space>
+                                    );
+                                })()}
+                            </div>
+                        </div>
                     </div>
 
                     {quickViewItem.recipe_ingredients?.length > 0 && (
@@ -2110,10 +2482,11 @@ const MenuManagement = () => {
                     <div className="mm-modal-badge">{viewingPackage?.name}</div>
                 </div>
             }
-            open={packageViewModalVisible}
+                  open={packageViewModalVisible}
             onCancel={closePackageView}
             width={700}
             className="mm-modal-clean"
+            rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
             footer={
                 <div className="mm-modal-footer-simple">
                     <Button type="primary" onClick={closePackageView}>Close</Button>
@@ -2198,12 +2571,16 @@ const MenuManagement = () => {
         </Modal>
     );
 
-    // ============================================================
+     // ============================================================
     // RENDER
     // ============================================================
+    if (shouldShowSkeleton && !skeletonTimedOut) {
+        return <MenuManagementSkeleton />;
+    }
+
     return (
         <ConfigProvider theme={theme}>
-            <div className="mm-menu-container">
+                       <div className={`mm-menu-container ${contentReady ? 'mm-content-ready' : ''} ${isDarkMode ? 'mm-dark-mode' : ''}`}>
                 {/* HEADER */}
                 <div className="mm-header">
                     <div className="mm-header-left">
@@ -2221,10 +2598,28 @@ const MenuManagement = () => {
                             </div>
                         </div>
                     </div>
-                    <div className="mm-header-right">
-                        <div className="mm-date-display">
-                            <CalendarOutlined />
-                            <span>{dayjs().format('MMMM DD, YYYY')}</span>
+                                <div className="mm-header-right">
+                        <div className="mm-global-search">
+                            <SearchOutlined className="mm-global-search-icon" />
+                            <input
+                                type="text"
+                                placeholder="Search menu items, packages..."
+                                value={menuFilters.search}
+                                onChange={(event) => {
+                                    setMenuFilters((filters) => ({ ...filters, search: event.target.value }));
+                                }}
+                                className="mm-global-search-input"
+                            />
+                            {menuFilters.search && (
+                                <button
+                                    type="button"
+                                    className="mm-global-search-clear"
+                                    onClick={() => setMenuFilters((filters) => ({ ...filters, search: '' }))}
+                                    aria-label="Clear search"
+                                >
+                                    <CloseOutlined />
+                                </button>
+                            )}
                         </div>
                         <div className="mm-header-actions">
                             <Tooltip title="Refresh Data">
@@ -2241,8 +2636,7 @@ const MenuManagement = () => {
                         </div>
                     </div>
                 </div>
-
-                {/* STATS CARDS */}
+                {/* STATS STRIP */}
                 <div className="mm-dashboard-grid">
                     <div className="mm-stat-card">
                         <div className="mm-stat-icon blue"><MenuOutlined /></div>
@@ -2250,18 +2644,21 @@ const MenuManagement = () => {
                             <div className="mm-stat-value">{menus.length}</div>
                             <div className="mm-stat-label">Total Items</div>
                         </div>
-                        <div className="mm-stat-trend">
-                            <span className="mm-trend-up">↑ 12%</span>
-                        </div>
                     </div>
                     <div className="mm-stat-card">
                         <div className="mm-stat-icon green"><CheckCircleOutlined /></div>
                         <div className="mm-stat-content">
-                            <div className="mm-stat-value">{menus.filter((item) => item.is_available !== false).length}</div>
-                            <div className="mm-stat-label">Active Items</div>
-                        </div>
-                        <div className="mm-stat-trend">
-                            <span className="mm-trend-up">↑ {menus.length > 0 ? Math.round((menus.filter(item => item.is_available !== false).length / menus.length) * 100) : 0}%</span>
+                            <div className="mm-stat-value">
+                                {menus.filter((item) => item.is_available !== false).length}
+                            </div>
+                            <div className="mm-stat-label">
+                                Active
+                                <span className="mm-stat-label-sub">
+                                    {menus.length > 0
+                                        ? `${Math.round((menus.filter(item => item.is_available !== false).length / menus.length) * 100)}%`
+                                        : '0%'}
+                                </span>
+                            </div>
                         </div>
                     </div>
                     <div className="mm-stat-card">
@@ -2270,9 +2667,6 @@ const MenuManagement = () => {
                             <div className="mm-stat-value">{menus.filter((item) => item.is_popular).length}</div>
                             <div className="mm-stat-label">Featured</div>
                         </div>
-                        <div className="mm-stat-trend">
-                            <span className="mm-trend-label">Best Sellers</span>
-                        </div>
                     </div>
                     {!isHeadChefOnly && (
                         <>
@@ -2280,25 +2674,30 @@ const MenuManagement = () => {
                                 <div className="mm-stat-icon purple"><AppstoreOutlined /></div>
                                 <div className="mm-stat-content">
                                     <div className="mm-stat-value">{packages.length}</div>
-                                    <div className="mm-stat-label">Packages</div>
-                                </div>
-                                <div className="mm-stat-trend">
-                                    <span className="mm-trend-label"><TeamOutlined /> {packages.reduce((sum, p) => sum + (p.menu_items?.length || 0), 0)} items</span>
+                                    <div className="mm-stat-label">
+                                        Packages
+                                        <span className="mm-stat-label-sub">
+                                            {packages.reduce((sum, p) => sum + (p.menu_items?.length || 0), 0)} items
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                             <div className="mm-stat-card">
                                 <div className="mm-stat-icon pink"><GiftOutlined /></div>
                                 <div className="mm-stat-content">
                                     <div className="mm-stat-value">{promotions.length}</div>
-                                    <div className="mm-stat-label">Promotions</div>
-                                </div>
-                                <div className="mm-stat-trend">
-                                    <span className="mm-trend-label">{promotions.filter(p => p.status === 'active').length} active</span>
+                                    <div className="mm-stat-label">
+                                        Promotions
+                                        <span className="mm-stat-label-sub">
+                                            {promotions.filter(p => p.status === 'active').length} active
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </>
                     )}
                 </div>
+
 
                 {/* MAIN CARD */}
                 <Card className="mm-main-card" variant="borderless">
@@ -2306,7 +2705,7 @@ const MenuManagement = () => {
                         activeKey={activeMainTab}
                         onChange={handleTabChange}
                         className="mm-tabs"
-                        destroyInactiveTabPane
+                        destroyOnHidden
                         tabBarExtraContent={
                             <div className="mm-tab-extra">
                                 <Button
@@ -2331,14 +2730,14 @@ const MenuManagement = () => {
                         {/* MENU ITEMS TAB */}
                         <TabPane tab={<span><MenuOutlined /> Menu Items</span>} key="menus">
                             <div className="mm-table-container">
-                                <div className="mm-filter-bar">
-                                    <div className="mm-filter-left">
+                                                               <div className="mm-filter-bar">
+                                    <div className="mm-filter-field">
+                                        <label className="mm-filter-field-label">Category</label>
                                         <Select
                                             value={menuFilters.category_id || 'all'}
                                             onChange={(value) => setMenuFilters((filters) => ({ ...filters, category_id: value === 'all' ? null : value }))}
                                             className="mm-filter-select"
                                             style={{ width: 180 }}
-                                            suffixIcon={<FilterOutlined />}
                                         >
                                             <Option value="all">All Categories</Option>
                                             {categories.map((category) => (
@@ -2347,33 +2746,27 @@ const MenuManagement = () => {
                                                 </Option>
                                             ))}
                                         </Select>
-                                        <div className="mm-sort-controls">
-                                            <span className="mm-sort-label">Sort:</span>
-                                            <Select
-                                                value={getSortValue()}
-                                                onChange={handleSortChange}
-                                                className="mm-sort-select"
-                                                style={{ width: 160 }}
-                                            >
-                                                <Option value="name_asc">A → Z (Name)</Option>
-                                                <Option value="name_desc">Z → A (Name)</Option>
-                                                <Option value="price_asc">Price ↑ (Low to High)</Option>
-                                                <Option value="price_desc">Price ↓ (High to Low)</Option>
-                                                <Option value="id_asc">ID ↑ (Oldest)</Option>
-                                                <Option value="id_desc">ID ↓ (Newest)</Option>
-                                            </Select>
-                                        </div>
                                     </div>
-                                    <div className="mm-filter-right">
-                                        <Search
-                                            placeholder="Search menu items..."
-                                            allowClear
-                                            onChange={(event) => setMenuFilters((filters) => ({ ...filters, search: event.target.value }))}
-                                            style={{ width: 280 }}
-                                            className="mm-search-input"
-                                            size="middle"
-                                            enterButton={<SearchOutlined />}
-                                        />
+                                    <div className="mm-filter-field">
+                                        <label className="mm-filter-field-label">Sort by</label>
+                                        <Select
+                                            value={getSortValue()}
+                                            onChange={handleSortChange}
+                                            className="mm-filter-select"
+                                            style={{ width: 180 }}
+                                        >
+                                            <Option value="name_asc">Name (A → Z)</Option>
+                                            <Option value="name_desc">Name (Z → A)</Option>
+                                            <Option value="price_asc">Price (Low → High)</Option>
+                                            <Option value="price_desc">Price (High → Low)</Option>
+                                            <Option value="id_asc">Oldest first</Option>
+                                            <Option value="id_desc">Newest first</Option>
+                                        </Select>
+                                    </div>
+                                    <div className="mm-filter-spacer" />
+                                    <div className="mm-filter-count">
+                                        <span className="mm-filter-count-value">{sortedMenus.length}</span>
+                                        <span className="mm-filter-count-label">items</span>
                                     </div>
                                 </div>
                                 <div className="mm-table-wrapper" id="menu-print-table">
@@ -2384,7 +2777,12 @@ const MenuManagement = () => {
                                         className="mm-professional-table"
                                         pagination={false}
                                         scroll={{ x: 1100, y: 'calc(100vh - 420px)' }}
-                                        rowClassName={(record) => !record.is_available ? 'mm-row-inactive' : ''}
+                                        rowClassName={(record) =>
+                                            [
+                                                !record.is_available ? 'mm-row-inactive' : '',
+                                                contentReady ? 'mm-row-animate' : '',
+                                            ].filter(Boolean).join(' ')
+                                        }
                                     />
                                 </div>
                             </div>
@@ -2423,6 +2821,7 @@ const MenuManagement = () => {
                                                 className="mm-professional-table"
                                                 pagination={false}
                                                 scroll={{ x: 900, y: 'calc(100vh - 420px)' }}
+                                                rowClassName={() => contentReady ? 'mm-row-animate' : ''}
                                             />
                                         </div>
                                     </div>
@@ -2461,6 +2860,7 @@ const MenuManagement = () => {
                                         className="mm-professional-table"
                                         pagination={false}
                                         scroll={{ x: 700, y: 'calc(100vh - 420px)' }}
+                                        rowClassName={() => contentReady ? 'mm-row-animate' : ''}
                                     />
                                 </div>
                             </div>
@@ -2518,7 +2918,12 @@ const MenuManagement = () => {
                                                 className="mm-professional-table"
                                                 pagination={false}
                                                 scroll={{ x: 1300, y: 'calc(100vh - 420px)' }}
-                                                rowClassName={(record) => record.status === 'expired' ? 'mm-row-expired' : ''}
+                                                rowClassName={(record) =>
+                                                    [
+                                                        record.status === 'expired' ? 'mm-row-expired' : '',
+                                                        contentReady ? 'mm-row-animate' : '',
+                                                    ].filter(Boolean).join(' ')
+                                                }
                                             />
                                         </div>
                                     </div>
@@ -2537,10 +2942,12 @@ const MenuManagement = () => {
                             <div className="mm-modal-badge">{selectedItem ? `#${selectedItem.id}` : 'New'}</div>
                         </div>
                     }
-                    open={menuModalVisible || editMenuModalVisible}
+                open={menuModalVisible || editMenuModalVisible}
                     onCancel={closeMenuModal}
-                    width={900}
+                    forceRender
+                                    width={900}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={null}
                     maskClosable={false}
                     keyboard={false}
@@ -2672,12 +3079,21 @@ const MenuManagement = () => {
                                             </Col>
                                         </Row>
                                     </div>
-                                    <Form.Item name="allergens" label="Allergens">
+                                                                      <Form.Item name="allergens" label="Allergens">
                                         <Select
-                                            mode="tags"
-                                            placeholder="e.g., Nuts, Dairy, Shellfish"
+                                            mode="multiple"
+                                            placeholder="Select allergens (from Booking Settings)"
                                             size="large"
                                             className="mm-select-modern"
+                                            options={allergenOptions}
+                                            optionFilterProp="label"
+                                            showSearch
+                                            allowClear
+                                            notFoundContent={
+                                                <div style={{ padding: '12px 0', textAlign: 'center', color: '#94a3b8' }}>
+                                                    No allergens configured. Add them in Settings → Booking → Food Allergens.
+                                                </div>
+                                            }
                                         />
                                     </Form.Item>
                                     <Form.Item name="nutritional_info" label="Nutritional Info">
@@ -2894,10 +3310,12 @@ const MenuManagement = () => {
                             <div className="mm-modal-badge">{selectedPackageItem ? `#${selectedPackageItem.id}` : 'New'}</div>
                         </div>
                     }
-                    open={packageModalVisible || editPackageModalVisible}
+                   open={packageModalVisible || editPackageModalVisible}
                     onCancel={closePackageModal}
-                    width={1000}
+                    forceRender
+                                    width={1000}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={null}
                     maskClosable={false}
                     keyboard={false}
@@ -3189,10 +3607,12 @@ const MenuManagement = () => {
                             <div className="mm-modal-badge">{editingCategory ? `#${editingCategory.id}` : 'New'}</div>
                         </div>
                     }
-                    open={categoryModalVisible || editCategoryModalVisible}
+                   open={categoryModalVisible || editCategoryModalVisible}
                     onCancel={closeCategoryModal}
-                    width={550}
+                    forceRender
+                                     width={550}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={null}
                     maskClosable={false}
                     keyboard={false}
@@ -3207,8 +3627,8 @@ const MenuManagement = () => {
                                 <Form.Item name="description" label="Description">
                                     <TextArea rows={2} placeholder="Brief description" className="mm-textarea-modern" />
                                 </Form.Item>
-                                <Form.Item name="icon" label="Icon">
-                                    <ProfessionalIconPicker />
+                                                              <Form.Item name="icon" label="Icon">
+                                    <ProfessionalIconPicker isDarkMode={isDarkMode} />
                                 </Form.Item>
                                 <Form.Item name="display_order" label="Display Order">
                                     <InputNumber min={0} style={{ width: '100%' }} size="large" className="mm-input-modern" />
@@ -3238,10 +3658,12 @@ const MenuManagement = () => {
                             <div className="mm-modal-badge">{editingPromotion ? `#${editingPromotion.id}` : 'New'}</div>
                         </div>
                     }
-                    open={promoModalVisible || editPromoModalVisible}
+                   open={promoModalVisible || editPromoModalVisible}
                     onCancel={closePromoModal}
-                    width={860}
+                    forceRender
+                                       width={860}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={null}
                     maskClosable={false}
                     keyboard={false}
@@ -3250,7 +3672,6 @@ const MenuManagement = () => {
                     <div className="mm-modal-clean-content">
                         <div className="mm-modal-form">
                             <Form form={promoForm} layout="vertical" onFinish={handleSavePromotion}>
-                                {/* Form fields remain the same */}
                                 <Row gutter={16}>
                                     <Col span={12}>
                                         <Form.Item name="promo_type" label="Promotion Type" rules={[{ required: true }]}>
@@ -3447,8 +3868,9 @@ const MenuManagement = () => {
                     }
                     open={recipeModalVisible}
                     onCancel={() => setRecipeModalVisible(false)}
-                    width={700}
+                                      width={700}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={
                         <div className="mm-modal-footer-simple">
                             <Button type="primary" onClick={() => setRecipeModalVisible(false)}>Close</Button>
@@ -3487,7 +3909,6 @@ const MenuManagement = () => {
                             ) : (
                                 <Empty description="No recipe ingredients saved" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                             )}
-
                             <Divider className="mm-form-divider">Dietary</Divider>
                             <Space wrap>
                                 {selectedItem.is_vegetarian && <Tag color="green">Vegetarian</Tag>}
@@ -3495,10 +3916,32 @@ const MenuManagement = () => {
                                 {selectedItem.is_gluten_free && <Tag color="gold">Gluten Free</Tag>}
                                 {selectedItem.is_halal && <Tag color="cyan">Halal</Tag>}
                             </Space>
+
+                            {/* ⭐ Allergens (from Booking Settings) */}
+                            <Divider className="mm-form-divider">Allergens</Divider>
+                            {(() => {
+                                const raw = selectedItem.allergens;
+                                const list = Array.isArray(raw)
+                                    ? raw
+                                    : (typeof raw === 'string'
+                                        ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                                        : []);
+                                if (list.length === 0) {
+                                    return <Text type="secondary">None declared</Text>;
+                                }
+                                return (
+                                    <Space wrap>
+                                        {list.map((allergen, idx) => (
+                                            <Tag key={idx} color="red" icon={<span style={{ marginRight: 4 }}>⚠</span>}>
+                                                {allergen}
+                                            </Tag>
+                                        ))}
+                                    </Space>
+                                );
+                            })()}
                         </div>
                     )}
                 </Modal>
-
                 {/* ANALYTICS MODAL */}
                 <Modal
                     title={
@@ -3510,8 +3953,9 @@ const MenuManagement = () => {
                     }
                     open={analyticsModalVisible}
                     onCancel={closeAnalyticsModal}
-                    width={920}
+                                       width={920}
                     className="mm-modal-clean"
+                    rootClassName={isDarkMode ? 'mm-modal-dark-root' : ''}
                     footer={
                         <div className="mm-modal-footer-simple">
                             <Button type="primary" onClick={closeAnalyticsModal}>Close</Button>

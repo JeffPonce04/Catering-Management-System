@@ -33,8 +33,66 @@ class BookingController extends Controller
 {
     use Auditable;
 
-    private const SETTINGS_GROUP_DEPOSIT_POLICY  = 'booking_deposit_policy';
+      private const SETTINGS_GROUP_DEPOSIT_POLICY  = 'booking_deposit_policy';
     private const SETTINGS_GROUP_REFUND_REQUESTS = 'booking_refund_requests';
+
+    // ============================================================
+    // PERIOD HELPERS — used by statistics() for Weekly/Monthly/Yearly
+    // ============================================================
+
+    /**
+     * Resolve a period string + anchor date into [start, end, label].
+     *
+     * Filtering is done on service_events.event_date (the real event
+     * date stored in the database), NOT bookings.created_at.
+     */
+    private function resolvePeriod(?string $period, ?string $anchor): array
+    {
+        $period     = strtolower((string) ($period ?: 'monthly'));
+        $anchorDate = $anchor ? Carbon::parse($anchor) : now();
+
+        switch ($period) {
+            case 'weekly':
+                $start = $anchorDate->copy()->startOfWeek(Carbon::MONDAY);
+                $end   = $anchorDate->copy()->endOfWeek(Carbon::SUNDAY);
+                $label = $start->format('M d') . ' – ' . $end->format('M d, Y');
+                break;
+
+            case 'yearly':
+                $start = $anchorDate->copy()->startOfYear();
+                $end   = $anchorDate->copy()->endOfYear();
+                $label = $start->format('Y');
+                break;
+
+            case 'all':
+                return [null, null, 'All time'];
+
+            case 'monthly':
+            default:
+                $start = $anchorDate->copy()->startOfMonth();
+                $end   = $anchorDate->copy()->endOfMonth();
+                $label = $start->format('F Y');
+                break;
+        }
+
+        return [$start, $end, $label];
+    }
+
+    /**
+     * Apply an event-date range filter to a Booking query.
+     * Returns the query unchanged when $start or $end is null.
+     */
+    private function applyPeriodFilter($query, ?Carbon $start, ?Carbon $end)
+    {
+        if (! $start || ! $end) {
+            return $query;
+        }
+
+        return $query->whereHas('serviceEvent', function ($eventQuery) use ($start, $end) {
+            $eventQuery->whereDate('event_date', '>=', $start->toDateString())
+                       ->whereDate('event_date', '<=', $end->toDateString());
+        });
+    }
 
     // ============================================================
     // RELATION HELPERS
@@ -212,8 +270,18 @@ class BookingController extends Controller
             });
         }
 
-        $perPage = $request->integer('per_page', 6);
+              $perPage = $request->integer('per_page', 6);
         $perPage = max(1, min(100, $perPage));
+
+        // ⭐ REQUEST #9: Approved bookings always float to the top of the table.
+        // Applied BEFORE the schedule sort so it becomes the primary sort key.
+        // Within the approved group, the existing date/time sorting is preserved.
+        $query->orderByRaw(
+            "CASE
+                WHEN bookings.booking_status IN ('confirmed', 'approved') THEN 0
+                ELSE 1
+            END"
+        );
 
         if ($request->string('sort')->toString() === 'event_schedule') {
             $query->leftJoin('service_events as schedule_events', 'bookings.service_event_id', '=', 'schedule_events.service_event_id')
@@ -2244,22 +2312,84 @@ class BookingController extends Controller
             return $this->fail('Failed to check conflicts: ' . $e->getMessage(), 500);
         }
     }
-
-    public function statistics(): JsonResponse
+    public function statistics(Request $request): JsonResponse
     {
         try {
-            $bookings = $this->query()->where('booking_no', 'not like', 'HIST-%')->get()->map(fn(Booking $booking) => $this->formatBooking($booking));
+            $period = $request->input('period', 'monthly');
+            $anchor = $request->input('anchor', now()->toDateString());
+
+            [$start, $end, $label] = $this->resolvePeriod($period, $anchor);
+
+            // ── Operational rows (confirmed / approved / rescheduled / ongoing)
+            //    scoped to the selected period by service_events.event_date.
+            $query = $this->query()
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->whereIn('booking_status', ['confirmed', 'approved', 'rescheduled', 'ongoing']);
+            $query = $this->applyPeriodFilter($query, $start, $end);
+
+            $operational = $query->get()->map(fn(Booking $booking) => $this->formatBooking($booking));
+
+            // ⭐ Confirmed Bookings KPI — same set the frontend shows.
+            $confirmedRows = $operational->filter(function ($row) {
+                $status = strtolower((string) ($row['booking_status'] ?? ''));
+                return in_array($status, ['confirmed', 'approved', 'rescheduled', 'ongoing'], true)
+                    && empty($row['event_completed']);
+            });
+
+            $confirmedCount = $confirmedRows->count();
+
+            // ⭐ Total Revenue KPI — sum of total_amount on the confirmed set.
+            $totalRevenue = $confirmedRows->sum('total_amount');
+
+            // ⭐ Outstanding Balance KPI — sum of balance on the confirmed set,
+            //    derived from total - paid when the API didn't send balance.
+            $outstandingBalance = $confirmedRows->sum(function ($row) {
+                $total = (float) ($row['total_amount'] ?? 0);
+                $paid  = (float) ($row['paid_amount']  ?? 0);
+                $bal   = $row['balance'] ?? null;
+                return $bal !== null ? (float) $bal : max(0, $total - $paid);
+            });
+
+            // ── Payment totals (all bookings in the period, incl. history),
+            //    refunds excluded so the value reflects money retained.
+            $allQuery = $this->query()
+                ->where('booking_no', 'not like', 'HIST-%');
+            $allQuery = $this->applyPeriodFilter($allQuery, $start, $end);
+
+            $allRows = $allQuery->with(['serviceEvent', 'payments', 'quotation', 'invoice'])->get();
+
+            $totalPaymentsCollected = $allRows->sum(function (Booking $booking) {
+                $payments = $booking->relationLoaded('payments') ? $booking->payments : collect();
+
+                $fromList = $payments
+                    ->filter(fn($p) => strtolower((string) $p->status) === 'completed')
+                    ->filter(fn($p) => strtolower((string) $p->payment_type) !== 'refund')
+                    ->sum('amount');
+
+                if ($fromList > 0) {
+                    return (float) $fromList;
+                }
+                return 0.0;
+            });
 
             return $this->ok([
-                'total_bookings'       => $bookings->count(),
-                'pending_approvals'    => $bookings->where('booking_status', 'pending_approval')->count(),
-                'confirmed_bookings'   => $bookings->where('booking_status', 'confirmed')->count(),
-                'completed_bookings'   => $bookings->where('booking_status', 'completed')->count(),
-                'regular_bookings'     => $bookings->where('days', '<=', 1)->count(),
-                'multi_day_events'     => $bookings->where('days', '>', 1)->count(),
-                'total_revenue'        => $bookings->sum('total_amount'),
-                'total_paid'           => $bookings->sum('paid_amount'),
-                'total_outstanding'    => $bookings->sum('balance'),
+                'period'                   => $period,
+                'period_label'             => $label,
+                'period_start'             => $start?->toDateString(),
+                'period_end'               => $end?->toDateString(),
+
+                'total_bookings'           => $operational->count(),
+                'pending_approvals'        => $operational->where('booking_status', 'pending_approval')->count(),
+                'confirmed_bookings'       => $confirmedCount,
+                'completed_bookings'       => $operational->where('booking_status', 'completed')->count(),
+                'regular_bookings'         => $operational->where('days', '<=', 1)->count(),
+                'multi_day_events'         => $operational->where('days', '>', 1)->count(),
+
+                'total_revenue'            => $totalRevenue,
+                'total_paid'               => $totalPaymentsCollected,
+                'total_payments_collected' => $totalPaymentsCollected,
+                'total_outstanding'        => $outstandingBalance,
+                'outstanding_balance'      => $outstandingBalance,
             ]);
         } catch (\Exception $e) {
             Log::error('Statistics error: ' . $e->getMessage());
@@ -2633,6 +2763,63 @@ class BookingController extends Controller
         } catch (\Exception $e) {
             Log::error('Create order error: ' . $e->getMessage());
             return $this->fail('Failed to create order: ' . $e->getMessage(), 500);
+        }
+    }
+    /**
+     * ⭐ Un-start an event started by mistake.
+     *
+     * Reverts booking_status to 'confirmed' and clears the 'ongoing'
+     * EventTracking row so the booking reappears in Confirmed Bookings.
+     */
+    public function unstartEvent(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $oldData = $booking->toArray();
+            $booking->loadMissing('serviceEvent');
+
+            $status = strtolower((string) $booking->booking_status);
+            if ($status !== 'ongoing') {
+                return $this->fail(
+                    'Only ongoing events can be un-started.',
+                    422
+                );
+            }
+
+            DB::transaction(function () use ($booking) {
+                $booking->update(['booking_status' => 'confirmed']);
+
+                if (Schema::hasTable('event_tracking')) {
+                    EventTracking::where('booking_id', $booking->booking_id)
+                        ->where('stage', 'ongoing')
+                        ->delete();
+                }
+            });
+
+            $this->logCustom(
+                'unstart_event',
+                'bookings',
+                $booking->booking_id,
+                "Booking {$booking->booking_no} un-started (reverted to confirmed)",
+                [
+                    'booking_no'   => $booking->booking_no,
+                    'old_status'   => $oldData['booking_status'] ?? 'unknown',
+                    'new_status'   => 'confirmed',
+                    'unstarted_at' => now()->toDateTimeString(),
+                ]
+            );
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh()),
+                'Event un-started and moved back to Confirmed Bookings.'
+            );
+        } catch (\Throwable $e) {
+            Log::error('Un-start event error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->fail(
+                'Failed to un-start event: ' . $e->getMessage(),
+                500
+            );
         }
     }
 
@@ -4286,8 +4473,83 @@ class BookingController extends Controller
             'day_total_amount' => (float) $day->day_total_amount,
         ])->values();
 
-        $depositPolicyState  = $booking->deposit_policy_state;
+               $depositPolicyState  = $booking->deposit_policy_state;
         $refundRequestState  = $booking->refund_request_state;
+
+        // ⭐ REQUEST #11 & #12 & #13: 3-day warning for NON-approved bookings.
+        // Only fires when:
+        //   - Status is NOT approved/confirmed
+        //   - Event date has NOT passed
+        //   - Event is within 3 days (inclusive of the event date)
+        $bookingStatusLower = strtolower((string) $booking->booking_status);
+        $isApprovedStatus   = in_array($bookingStatusLower, ['confirmed', 'approved'], true);
+
+        $requiresThreeDayWarning = false;
+        $threeDayWarningMessage  = null;
+
+        if (
+            ! $isApprovedStatus &&
+            $daysUntilEvent !== null &&
+            $daysUntilEvent >= 0 &&
+            $daysUntilEvent <= 3 &&
+            ! in_array($bookingStatusLower, ['cancelled', 'rejected', 'completed'], true)
+        ) {
+            $requiresThreeDayWarning = true;
+            $threeDayWarningMessage = match (true) {
+                $daysUntilEvent === 0 => 'Event is TODAY and booking is still pending approval.',
+                $daysUntilEvent === 1 => 'Event is TOMORROW and booking is still pending approval.',
+                $daysUntilEvent === 2 => 'Event is in 2 days and booking is still pending approval.',
+                $daysUntilEvent === 3 => 'Event is in 3 days and booking is still pending approval.',
+                default               => "Event is in {$daysUntilEvent} days and booking is still pending approval.",
+            };
+        }
+
+        // ⭐ REQUEST #10: Red highlight when Approved + deposit deadline passed + unpaid.
+        $depositDeadlinePassed = false;
+        if ($isApprovedStatus) {
+            $depositPaidCheck = (float) $payments
+                ->where('status', 'completed')
+                ->where('payment_type', 'deposit')
+                ->sum('amount');
+
+            $anyPaidCheck = (float) $payments
+                ->where('status', 'completed')
+                ->where('payment_type', '!=', 'refund')
+                ->sum('amount');
+
+            $decisionStatus = strtolower((string) ($depositPolicyState['decision_status'] ?? ''));
+            $isDepositWaivedOrCancelled = in_array($decisionStatus, ['waived', 'cancelled'], true);
+
+            $depositDueDateValue = $booking->deposit_due_date
+                ?? ($startDate
+                    ? Carbon::parse($startDate)
+                        ->subDays($depositPaymentDays)
+                        ->toDateString()
+                    : null);
+
+            $hasAnyPayment = $depositPaidCheck > 0 || $anyPaidCheck > 0;
+
+            if (
+                ! $isDepositWaivedOrCancelled &&
+                ! $hasAnyPayment &&
+                ! $isLateBooking &&
+                $depositDueDateValue !== null
+            ) {
+                try {
+                    $dueCarbon = $depositDueDateValue instanceof Carbon
+                        ? $depositDueDateValue
+                        : Carbon::parse($depositDueDateValue);
+
+                    // ⭐ REQUEST #10: overdue means current date/time has reached
+                    // or passed the deposit deadline (start of that day).
+                    $depositDeadlinePassed = now()->startOfDay()->greaterThanOrEqualTo(
+                        $dueCarbon->copy()->startOfDay()
+                    );
+                } catch (\Throwable $e) {
+                    $depositDeadlinePassed = false;
+                }
+            }
+        }
 
         $depositPaid = (float) $payments->where('status', 'completed')->where('payment_type', 'deposit')->sum('amount');
         if ($depositPaid <= 0) {
@@ -4401,9 +4663,16 @@ class BookingController extends Controller
             })(),
             'is_late_booking'    => $isLateBooking,
             'days_until_event'   => $daysUntilEvent,
-
             'is_within_cancellation_cutoff' => $isWithinCancellationCutoff,
             'cancellation_cutoff_days'      => $cancellationCutoffDays,
+
+            // ⭐ REQUEST #10: red-highlight flags
+            'deposit_deadline_passed' => $depositDeadlinePassed,
+            'requires_deposit_alert'  => $depositDeadlinePassed,
+
+            // ⭐ REQUEST #11, #12, #13: 3-day warning for non-approved bookings
+            'requires_three_day_warning' => $requiresThreeDayWarning,
+            'three_day_warning_message'  => $threeDayWarningMessage,
 
             'deposit_percentage' => app(\App\Services\BookingPolicyService::class)->depositPercentage(),
             'required_deposit_amount' => (function () use ($totalAmount) {

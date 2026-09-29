@@ -13,12 +13,13 @@ export const API_ORIGIN = normalizedApiUrl.replace(/(?:\/api\/v1)+$/i, '');
 
 export const API_BASE_URL = `${API_ORIGIN}/api/v1`;
 
-console.log('🔧 API Configuration:', {
-  mode: import.meta.env.MODE,
-  apiOrigin: API_ORIGIN,
-  apiBaseUrl: API_BASE_URL,
-});
-
+if (import.meta.env.DEV && import.meta.env.VITE_API_DEBUG === 'true') {
+  console.log('🔧 API Configuration:', {
+    mode: import.meta.env.MODE,
+    apiOrigin: API_ORIGIN,
+    apiBaseUrl: API_BASE_URL,
+  });
+}
 /* =========================================================
   AXIOS INSTANCE
   ========================================================= */
@@ -29,7 +30,7 @@ const api = axios.create({
     Accept: 'application/json',
     'X-Requested-With': 'XMLHttpRequest',
   },
-  timeout: 30000,
+  timeout: 15000,
   withCredentials: true,
 });
 
@@ -143,14 +144,15 @@ api.interceptors.request.use(
       config.headers['Content-Type'] = 'application/json';
     }
 
-    console.log(
-      `📤 ${config.method?.toUpperCase()} ${API_BASE_URL}${config.url}`,
-      {
-        hasToken: Boolean(token),
-        data: config.data instanceof FormData ? 'FormData' : config.data,
-      }
-    );
-
+    if (import.meta.env.DEV && import.meta.env.VITE_API_DEBUG === 'true') {
+      console.log(
+        `📤 ${config.method?.toUpperCase()} ${API_BASE_URL}${config.url}`,
+        {
+          hasToken: Boolean(token),
+          data: config.data instanceof FormData ? 'FormData' : config.data,
+        }
+      );
+    }
     return config;
   },
   (error) => {
@@ -231,6 +233,7 @@ export const authAPI = {
     });
   },
 
+  
   employeeLogin: (data) => {
     return api.post('/auth/employee-login', {
       employee_code: data.employee_code || data.employeeCode,
@@ -272,10 +275,37 @@ export const authAPI = {
     return api.post('/auth/resend-otp', cleanData(data));
   },
 
-  resetPassword: (data) => {
+    resetPassword: (data) => {
     return api.post('/auth/reset-password', cleanData(data));
   },
+
+  /**
+   * Upload (or replace) the caller's profile photo.
+   * Uses POST /auth/profile-photo with multipart/form-data.
+   */
+  updateProfilePhoto: (formData) => {
+    return api.post('/auth/profile-photo', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
+  /**
+   * Remove the caller's profile photo.
+   */
+  removeProfilePhoto: () => {
+    return api.delete('/auth/profile-photo');
+  },
+
+  /**
+   * Self-service profile update (mobile / employee self-service).
+   * Only touches the caller's own Person record.
+   */
+  updateSelfProfile: (data) => {
+    return api.put('/auth/self-profile', cleanData(data));
+  },
 };
+
+
 
 /* =========================================================
   EMPLOYEES API
@@ -323,6 +353,8 @@ export const employeeAPI = {
 
   delete: (id) => api.delete(`/employees/${id}`),
 };
+
+
 
 /* =========================================================
   SCHEDULES API
@@ -455,6 +487,8 @@ export const attendanceAPI = {
   undecline: (recordId) => api.post(`/daily-attendance/${recordId}/undecline`),
   unapprove: (recordId) => api.post(`/daily-attendance/${recordId}/unapprove`),
 };
+
+
 
 /* =========================================================
   DAILY ATTENDANCE API
@@ -857,8 +891,10 @@ export const historyAPI = {
   ========================================================= */
 
 export const dashboardAPI = {
-  getStats: () => api.get('/dashboard/stats'),
-  getMonthlySummary: () => api.get('/dashboard/monthly-summary'),
+  getStats: (params = {}) => api.get('/dashboard/stats', { params }),
+  getMonthlySummary: (params = {}) => api.get('/dashboard/monthly-summary', { params }),
+  getCharts: (params = {}) => api.get('/dashboard/charts', { params }),
+  getDetail: (card, params = {}) => api.get(`/dashboard/detail/${card}`, { params }),
 };
 
 /* =========================================================
@@ -885,7 +921,7 @@ export const bookingAPI = {
   recordPayment: (id, data) => api.post(`/bookings/${id}/record-payment`, data),
   getPaymentSummary: (bookingId) => api.get(`/bookings/${bookingId}/payment-summary`),
   checkConflicts: (params = {}) => api.get('/bookings/check-conflicts', { params }),
-  getStatistics: () => api.get('/bookings-statistics'),
+  getStatistics: (params = {}) => api.get('/bookings-statistics', { params }),
   getCalendarEvents: (params = {}) => api.get('/calendar-events', { params }),
   getCalendarAvailability: (params = {}) =>
     api.get('/booking-calendar/availability', { params }),
@@ -1072,6 +1108,12 @@ export const inventoryAPI = {
   updateSupplier: (id, data) => api.put(`/suppliers/${id}`, data),
   getPurchaseSuggestions: (params = {}) =>
     api.get('/inventory/purchase-suggestions', { params }),
+  getApprovedRequests: (params = {}) =>
+    api.get('/inventory/approved-requests', { params }),
+  getApprovedRequestFiles: () =>
+    api.get('/inventory/approved-request-files'),
+  renameApprovedRequestFile: (date, name) =>
+    api.put(`/inventory/approved-request-files/${date}/rename`, { name }),
   updatePurchaseRequest: (id, data) =>
     api.put(`/inventory/purchase-requests/${id}`, data),
   getEquipmentReservations: (params = {}) =>
@@ -1126,7 +1168,6 @@ export const roleAPI = {
 /* =========================================================
   SETTINGS API (EXPANDED)
   ========================================================= */
-
 export const settingsAPI = {
   // Core section operations
   getSettings: () => api.get('/settings'),
@@ -1134,6 +1175,13 @@ export const settingsAPI = {
   updateSection: (section, data) => api.put(`/settings/${section}`, { data }),
   resetSettings: () => api.post('/settings/reset'),
 
+  // ⭐ Food Allergens master list
+  getAllergens: () => api.get('/settings/allergens'),
+  createAllergen: (data) => api.post('/settings/allergens', data),
+  updateAllergen: (allergenId, data) =>
+    api.put(`/settings/allergens/${encodeURIComponent(allergenId)}`, data),
+  deleteAllergen: (allergenId) =>
+    api.delete(`/settings/allergens/${encodeURIComponent(allergenId)}`),
   // Staff settings
   getStaffSnapshot: () => api.get('/settings/staff/snapshot'),
   updateStaffGroup: (group, data) => api.put(`/settings/staff/${group}`, { data }),
@@ -1234,6 +1282,47 @@ export const announcementAPI = {
   getActive: () => api.get('/announcements/active'),
 };
 
+/* =========================================================
+  FOOD ALLERGENS API — Master list of food allergens
+  Reuses the existing Setting model via /settings/allergens.
+  ========================================================= */
+export const allergenAPI = {
+  getAll: () => api.get('/settings/allergens'),
+  create: (data) => api.post('/settings/allergens', data),
+  update: (allergenId, data) =>
+    api.put(`/settings/allergens/${encodeURIComponent(allergenId)}`, data),
+  delete: (allergenId) =>
+    api.delete(`/settings/allergens/${encodeURIComponent(allergenId)}`),
+};
+
+/* =========================================================
+  INSIGHT VISIBILITY API — Hide/Unhide KPI values
+  Sends BOTH shapes so the controller accepts either style.
+  ========================================================= */
+
+/* =========================================================
+  INSIGHT VISIBILITY API (REQUEST #6, #7, #8)
+  Persisted per-card visibility. Admin-only write.
+  Reuses the existing /settings/{section} endpoint so no
+  new backend controller/migration is required.
+  ========================================================= */
+export const insightVisibilityAPI = {
+  get: () => api.get('/settings/insight-visibility'),
+  update: (data) => api.put('/settings/insight-visibility', {
+    ...data,
+    data,
+  }),
+};
+
+/* =========================================================
+  BILLING KPI VISIBILITY — Hide/Unhide Billing KPI cards.
+  Mirrors the financial-visibility pattern so cashiers
+  see the mask instantly without a refresh.
+  ========================================================= */
+export const billingVisibilityAPI = {
+  get: () => api.get('/settings/billing-visibility'),
+  update: (data) => api.put('/settings/billing-visibility', data),
+};
 /* =========================================================
   BACKUP CONFIG API
   ========================================================= */

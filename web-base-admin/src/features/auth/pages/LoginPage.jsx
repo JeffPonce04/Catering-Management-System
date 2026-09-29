@@ -245,6 +245,20 @@ const LoginPage = () => {
     return () => clearInterval(t);
   }, [lockSecondsLeft, lockIdentifier]);
 
+  // ==================== REMEMBERED ACCOUNTS LOCKOUT TICK ====================
+  // ⭐ Keeps the lockout badges inside RememberedAccounts ticking down
+  //    every second without forcing a full list refresh.
+  const [, setRememberedTick] = useState(0);
+  useEffect(() => {
+    const hasAnyLock = rememberedAccounts.some((a) => {
+      const saved = getLockout(a.username);
+      return saved && saved.seconds_left > 0;
+    });
+    if (!hasAnyLock) return;
+    const t = setInterval(() => setRememberedTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [rememberedAccounts]);
+
   // ==================== OTP COOLDOWN ====================
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -338,30 +352,44 @@ const LoginPage = () => {
     });
   };
 
-  // ==================== REMEMBERED ACCOUNT ACTIONS ====================
-  const handlePickRemembered = (acc) => {
-    setFormData({ username: acc.username, password: '' });
-    setShowAccountPicker(false);
-    setErrorField(null);
-    setLoginError('');
-    setErrors({});
-
-    // Restore lockout state for this account if any
-    const saved = getLockout(acc.username);
-    if (saved) {
+   // ==================== REMEMBERED ACCOUNT ACTIONS ====================
+  // ⭐ NEW: handles login directly from the password modal.
+  //    The modal calls this and expects a Promise — it will catch errors
+  //    and display them inline without closing the modal.
+  const handleRememberedLogin = async ({ username, password, account }) => {
+    // Sync lockout state into page-level state (for the visible timer)
+    const saved = getLockout(username);
+    if (saved && saved.seconds_left > 0) {
       setLockSecondsLeft(saved.seconds_left);
       setLockLevel(saved.lock_level);
-      setLockIdentifier(acc.username);
-      setLoginError('Account temporarily locked. Please wait.');
+      setLockIdentifier(username);
     } else {
       setLockSecondsLeft(0);
       setLockLevel(0);
       setLockIdentifier(null);
     }
 
-    setTimeout(() => {
-      document.querySelector('input[name="password"]')?.focus();
-    }, 100);
+    // Keep the form in sync so any page-level effects still work
+    setFormData({ username, password });
+    setErrorField(null);
+    setLoginError('');
+    setErrors({});
+
+    // Trigger the login. If it throws, the modal's catch block will show it.
+    await loginMutation.mutateAsync({
+      userId: username,
+      password,
+      remember_me: true,
+    });
+
+    // Refresh the saved-account snapshot with the latest profile data
+    if (account) {
+      try {
+        rememberAccount(account);
+      } catch {
+        // non-fatal
+      }
+    }
   };
 
   const handleForgetAccount = (username) => {
@@ -708,13 +736,20 @@ const LoginPage = () => {
           </div>
 
           <div className="login-form-container">
-            {showAccountPicker && rememberedAccounts.length > 0 ? (
+                    {showAccountPicker && rememberedAccounts.length > 0 ? (
               <RememberedAccounts
                 accounts={rememberedAccounts}
-                onSelect={handlePickRemembered}
+                onLogin={handleRememberedLogin}
                 onForget={handleForgetAccount}
                 onUseAnother={handleUseAnotherAccount}
                 loading={isLoading}
+                lockoutData={rememberedAccounts.reduce((acc, a) => {
+                  const saved = getLockout(a.username);
+                  if (saved && saved.seconds_left > 0) {
+                    acc[a.username] = saved;
+                  }
+                  return acc;
+                }, {})}
               />
             ) : (
               <>

@@ -2567,3 +2567,72 @@ body.dark-mode .navigation-confirm-cancel {
 .light-mode .nav-notification-badge {
   box-shadow: 0 0 0 2px #ffffff;
 }
+
+.navigation-readonly-input {
+  background-color: #f5f5f5;
+  color: #888;
+  cursor: not-allowed;
+  border-color: #e0e0e0;
+}
+
+/* Ensure the confirmation modal always renders above the Edit Profile modal */
+.navigation-confirm-overlay {
+  z-index: 100000 !important;
+}
+
+.navigation-confirm-wrapper {
+  z-index: 100001 !important;
+}
+
+.navigation-confirm-modal {
+  position: relative;
+  z-index: 100002 !important;
+}
+
+/* ============================================================
+   SIDEBAR BLUR — matches the blurred background when modal is open
+   ============================================================ */
+
+/* ============================================================
+   SIDEBAR BLUR — Only blur the inner content, keep the background solid
+   ============================================================ */
+
+/* The blur wrapper holds all sidebar content (header, menu, profile).
+   When modal is open, we blur ONLY this wrapper — not the outer container. */
+.nav-blur-wrapper {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  transition: filter 0.25s ease;
+}
+
+.nav-blur-wrapper.sidebar-blurred {
+  filter: blur(6px);   /* ⭐ Matched to page blur */
+  pointer-events: none;
+  transition: filter 0.25s ease;
+}
+/* Hide tooltips while blurred */
+.nav-blur-wrapper.sidebar-blurred .tooltip {
+  display: none !important;
+}
+
+/* ============================================================
+   Ensure the OUTER navigation container always has a solid background
+   so the modal-overlay's dark backdrop does NOT bleed through.
+   ============================================================ */
+.navigation-container {
+  background: var(--bg-primary) !important;
+}
+
+.dark-mode .navigation-container,
+.navigation-container.dark-mode {
+  background: #0a0e1a !important;
+}
+
+/* Ensure the sidebar itself stays sharp — only the inner wrapper blurs */
+.navigation-container.sidebar-blurred,
+.navigation-container {
+  filter: none !important;
+}

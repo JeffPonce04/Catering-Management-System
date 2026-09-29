@@ -77,10 +77,11 @@ import {
     SyncOutlined,
     InfoCircleOutlined,
     FireOutlined,
-    ShoppingOutlined,
+        ShoppingOutlined,
     SwapOutlined,
+    MoonOutlined,
+    SunOutlined,
 } from '@ant-design/icons';
-
 import { FaRegCalendarAlt } from "react-icons/fa";
 
 import dayjs from 'dayjs';
@@ -106,6 +107,11 @@ import {
     useRejectQuotation,
     useSaveCalendarAvailability,
     useSendQuotation,
+    useInsightVisibility,
+    useInsightVisibilitySync,
+    useUpdateInsightVisibility,
+    useBookingChangeSync,
+    broadcastBookingChanged,
     normalizeListResponse
 } from '../../../hooks/useBookingQuotation';
 
@@ -116,8 +122,8 @@ const { Option } = Select;
 const { TextArea } = Input;
 const { RangePicker } = DatePicker;
 
-// Remove pagination - fetch all records
-const FETCH_ALL_LIMIT = 9999;
+// Temporary cap. Real pagination is the long-term fix.
+const FETCH_ALL_LIMIT = 200;
 const TABLE_SCROLL_HEIGHT = 'calc(100vh - 420px)';
 const MIN_TABLE_HEIGHT = 300;
 
@@ -152,6 +158,27 @@ const safeObject = (value, defaultValue = {}) => {
 const formatCurrency = (value) => {
     const amount = safeNumber(value);
     return `₱${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+/**
+ * ⭐ Hide/Unhide: mask that matches the number of digits in the visible
+ * value, so the card never changes width when toggled.
+ *
+ *   "120"        → "***"           (3 chars)
+ *   "1,234"      → "*****"         (5 chars: digits + comma)
+ *   "₱12,345.00" → "₱**********"   (10 chars after the sign)
+ *   ""           → "************"  (safe fallback)
+ */
+const maskMatchingValue = (visibleValue) => {
+    const str = String(visibleValue ?? '');
+    if (!str) return '************';
+
+    const hasCurrency = str.startsWith('₱');
+    // Count digits, commas and dots — that's what the user actually sees.
+    const visibleLength = str.replace(/[^\d.,]/g, '').length;
+    const length = Math.max(3, visibleLength);
+
+    return (hasCurrency ? '₱' : '') + '*'.repeat(length);
 };
 
 const formatDateSafe = (dateValue, format = 'MMM DD, YYYY') => {
@@ -299,7 +326,26 @@ const getBookingScheduleValue = (booking) => {
     return dateValue.startOf('day').valueOf() + (parseTimeToMinutes(booking?.event_time) * 60 * 1000);
 };
 
+/**
+ * ⭐ REQUEST #9: Approved bookings float to the top.
+ *
+ * Primary sort   → approved status first (confirmed / approved)
+ * Secondary sort → existing date+time ordering
+ * Tie-break      → booking number
+ */
+const isApprovedStatusValue = (booking) => {
+    const s = safeString(booking?.booking_status).toLowerCase();
+    return s === 'confirmed' || s === 'approved';
+};
+
 const sortBookingsChronologically = (bookings = []) => [...safeArray(bookings)].sort((a, b) => {
+    const aApproved = isApprovedStatusValue(a);
+    const bApproved = isApprovedStatusValue(b);
+
+    // Approved always above non-approved.
+    if (aApproved !== bApproved) return aApproved ? -1 : 1;
+
+    // Within the same group, keep the existing date+time ordering.
     const scheduleDifference = getBookingScheduleValue(a) - getBookingScheduleValue(b);
     if (scheduleDifference !== 0) return scheduleDifference;
     return safeString(a.booking_no).localeCompare(safeString(b.booking_no));
@@ -367,6 +413,288 @@ const getBookingLocation = (booking) => {
 const getBookingId = (booking) => {
     if (!booking) return null;
     return booking.id || booking.booking_id;
+};
+
+/**
+ * ⭐ REQUEST #1: Booking ID colour based on booking source.
+ *   mobile  → pink
+ *   walk_in / direct web → blue
+ * The source is read from whichever field the backend exposes.
+ * Falls back to 'web' (blue) when nothing is set.
+ */
+const getBookingSource = (booking) => {
+    if (!booking) return 'web';
+    const raw = (
+        booking.booking_source ||
+        booking.source ||
+        booking.created_via ||
+        booking.channel ||
+        booking.origin ||
+        ''
+    ).toString().toLowerCase();
+
+    if (raw.includes('mobile') || raw.includes('app')) return 'mobile';
+    if (raw.includes('walk')) return 'walk_in';
+    return 'web';
+};
+
+const getBookingIdColor = (booking) => {
+    const source = getBookingSource(booking);
+    if (source === 'mobile') {
+        return {
+            color: '#DB2777',
+            background: '#FCE7F3',
+            borderColor: '#F9A8D4',
+        };
+    }
+    return {
+        color: '#1D4ED8',
+        background: '#DBEAFE',
+        borderColor: '#93C5FD',
+    };
+};
+
+/**
+ * ⭐ Determines whether a booking has an unpaid deposit whose deadline has
+ *    NOT yet passed — the "yellow" pre-warning state.
+ *
+ * Returns `{ isPending, dueDate, daysUntilDue }` where:
+ *   isPending    → true if the row should be highlighted yellow
+ *   dueDate      → the deposit due date (dayjs), or null
+ *   daysUntilDue → integer days from today (0 = due today), or null
+ *
+ * Excludes cases where:
+ *   • the deposit is already paid
+ *   • the booking is not in a confirmed/approved state
+ *   • the deposit has been waived, cancelled, or a decision has been made
+ *   • the deadline has already passed (that's the red case)
+ */
+const getDepositPendingState = (booking) => {
+    if (!booking) return { isPending: false, dueDate: null, daysUntilDue: null };
+
+    const status = safeString(booking?.booking_status).toLowerCase();
+    if (!['confirmed', 'approved', 'ongoing'].includes(status)) {
+        return { isPending: false, dueDate: null, daysUntilDue: null };
+    }
+
+    // Skip if a decision has already been taken.
+    const decision = safeString(booking?.deposit_decision_status).toLowerCase();
+    if (['waived', 'cancelled', 'extended'].includes(decision)) {
+        // ⭐ An extended deadline is still pending — but only if the
+        //    extended_until date is in the future. Handled below.
+        if (decision !== 'extended') {
+            return { isPending: false, dueDate: null, daysUntilDue: null };
+        }
+    }
+
+    // ⭐⭐⭐ BUG FIX #1:
+    // Yellow appears ONLY when the deposit is UNPAID.
+    //
+    // We look at the actual payment list — that is the authoritative
+    // source of truth. The previous version relied on getDepositAmount,
+    // which reads `deposit_amount` (the *required* deposit) and could
+    // make a paid booking look unpaid.
+
+    const payments = Array.isArray(booking.payments) ? booking.payments : [];
+
+    const hasCompletedDeposit = payments.some((p) => {
+        const s = String(p?.status || '').toLowerCase();
+        const t = String(p?.payment_type || '').toLowerCase();
+        return s === 'completed' && (t === 'deposit' || t === 'down_payment');
+    });
+
+    const hasAnyCompletedPayment = payments.some((p) => {
+        const s = String(p?.status || '').toLowerCase();
+        const t = String(p?.payment_type || '').toLowerCase();
+        return s === 'completed' && t !== 'refund';
+    });
+
+    const explicitDepositPaid = safeNumber(booking?.deposit_paid, 0);
+    const explicitPaidAmount  = safeNumber(booking?.paid_amount, 0);
+    const billingPaid         = safeNumber(booking?.billing_summary?.total_paid, 0);
+
+    const totalPaidFromAnySource =
+        explicitDepositPaid +
+        explicitPaidAmount +
+        billingPaid;
+
+    if (
+        hasCompletedDeposit ||
+        hasAnyCompletedPayment ||
+        totalPaidFromAnySource > 0
+    ) {
+        return { isPending: false, dueDate: null, daysUntilDue: null };
+    }
+
+    // Resolve the effective deadline: extended_until wins over deposit_due_date.
+    let dueDate = null;
+    const extendedUntil = safeString(booking?.deposit_extended_until);
+    if (extendedUntil) {
+        const parsed = dayjs(extendedUntil);
+        if (parsed.isValid()) dueDate = parsed.startOf('day');
+    }
+    if (!dueDate) {
+        const explicitDue = safeString(booking?.deposit_due_date);
+        if (explicitDue) {
+            const parsed = dayjs(explicitDue);
+            if (parsed.isValid()) dueDate = parsed.startOf('day');
+        }
+    }
+    if (!dueDate) {
+        // Fallback: derive from event date minus policy days.
+        const eventDate = safeString(booking?.event_date);
+        if (eventDate) {
+            const event = dayjs(eventDate).startOf('day');
+            if (event.isValid()) {
+                dueDate = event.subtract(getDepositPaymentDays(booking), 'day');
+            }
+        }
+    }
+    if (!dueDate) return { isPending: false, dueDate: null, daysUntilDue: null };
+
+    const today = dayjs().startOf('day');
+    const daysUntilDue = dueDate.diff(today, 'day');
+
+    // ⭐ Yellow only when the deadline has NOT been reached yet.
+    //    (Deadline reached/passed → red, handled by getBookingRowAlerts.)
+    if (daysUntilDue < 0) {
+        return { isPending: false, dueDate, daysUntilDue };
+    }
+
+    return { isPending: true, dueDate, daysUntilDue };
+};
+
+/**
+ * ⭐ Returns a list of red-alert reasons for a booking.
+ *    - "3-day" warning when the booking is not approved and the event
+ *      is 3 days away or closer (and the event has not passed).
+ *    - "deposit deadline passed" warning when the booking is approved,
+ *      the deposit is unpaid, and the deadline has passed.
+ *
+ * Empty array = normal row.
+ */
+const getBookingRowAlerts = (booking) => {
+    if (!booking) return [];
+
+    const alerts = [];
+
+    // ⭐⭐⭐ BUG FIX #2:
+    // The 3-day red warning is computed ALWAYS on the frontend, from the
+    // raw event_date. We no longer trust the backend flags alone, because
+    // a stale value silently suppressed the row for admin.
+    //
+    // Rules (per ticket #11, #12, #13):
+    //   • Only when the booking is NOT approved / confirmed
+    //   • Only when the event date has NOT already passed
+    //   • Only when the event is 3 days away or closer (0, 1, 2, 3)
+    //   • Never for cancelled / rejected / completed
+
+    const status = String(booking.booking_status || '').toLowerCase();
+    const isApproved = status === 'confirmed' || status === 'approved';
+    const isTerminal = ['cancelled', 'rejected', 'completed'].includes(status);
+
+    const eventDate = safeString(booking.event_date);
+    let daysUntil = null;
+    if (eventDate) {
+        const parsed = dayjs(eventDate).startOf('day');
+        if (parsed.isValid()) {
+            daysUntil = parsed.diff(dayjs().startOf('day'), 'day');
+        }
+    }
+
+    const isThreeDayWarning =
+        !isApproved &&
+        !isTerminal &&
+        daysUntil !== null &&
+        daysUntil >= 0 &&      // ⭐ excludes events that already passed
+        daysUntil <= 3;
+
+    if (isThreeDayWarning) {
+        const suffix =
+            daysUntil === 0
+                ? 'TODAY'
+                : daysUntil === 1
+                    ? 'TOMORROW'
+                    : `in ${daysUntil} days`;
+        alerts.push(`Event is ${suffix} and booking is still pending approval.`);
+    }
+
+    // ⭐ Red on deposit deadline passed + unpaid.
+    //    Same fix as Bug #1 — check the payment list, not just the flags.
+    const payments = Array.isArray(booking.payments) ? booking.payments : [];
+    const hasAnyCompletedPayment = payments.some((p) => {
+        const s = String(p?.status || '').toLowerCase();
+        const t = String(p?.payment_type || '').toLowerCase();
+        return s === 'completed' && t !== 'refund';
+    });
+
+    const paidAmount =
+        safeNumber(booking.paid_amount, 0) +
+        safeNumber(booking.deposit_paid, 0) +
+        safeNumber(booking.billing_summary?.total_paid, 0);
+
+    const depositDeadlinePassed =
+        Boolean(booking.deposit_deadline_passed) ||
+        isDepositOverdue(booking);
+
+    if (
+        isApproved &&
+        depositDeadlinePassed &&
+        !hasAnyCompletedPayment &&
+        paidAmount <= 0
+    ) {
+        alerts.push('Deposit deadline passed — payment is still outstanding.');
+    }
+
+    return alerts;
+};
+
+/**
+ * ⭐ Row class + tooltip title.
+ *
+ *    Priority:
+ *      1. RED  — any of the red conditions above
+ *      2. YELLOW — deposit pending (not overdue yet)
+ *      3. ''   — normal row
+ *
+ *    Tooltip combines every active message, one per line.
+ *
+ *    Returns `{ className, title }` — title is null when no alert.
+ */
+const getBookingRowDecorations = (booking) => {
+    const redAlerts = getBookingRowAlerts(booking);
+
+    if (redAlerts.length > 0) {
+        return {
+            className: 'bqm-row-alert',
+            title: redAlerts.join('\n'),
+        };
+    }
+
+    const { isPending, dueDate, daysUntilDue } = getDepositPendingState(booking);
+
+    if (isPending) {
+        // Build a human-friendly deadline phrase.
+        let whenLabel;
+        if (daysUntilDue === 0) {
+            whenLabel = 'today';
+        } else if (daysUntilDue === 1) {
+            whenLabel = 'tomorrow';
+        } else if (daysUntilDue > 1) {
+            whenLabel = `in ${daysUntilDue} days`;
+        } else {
+            whenLabel = 'soon';
+        }
+
+        const formattedDate = dueDate ? dueDate.format('MMM DD, YYYY') : 'the deadline';
+
+        return {
+            className: 'bqm-row-warning',
+            title: `Deposit payment due on ${formattedDate} (${whenLabel}). Not yet paid.`,
+        };
+    }
+
+    return { className: '', title: null };
 };
 
 const getServiceType = (booking) => {
@@ -448,12 +776,25 @@ const getCancellationCutoffDays = (booking) => {
 };
 
 const getDepositPaymentDays = (booking) => {
+    // ⭐ 1. Prefer the policy value the backend already sends.
+    //      This works even when deposit_due_date is missing from the row.
+    if (
+        booking?.deposit_payment_days !== undefined &&
+        booking?.deposit_payment_days !== null
+    ) {
+        const n = safeNumber(booking.deposit_payment_days, NaN);
+        if (Number.isFinite(n) && n >= 0) return n;
+    }
+
+    // ⭐ 2. Derive from the explicit due date if present.
     const dueDate = safeString(booking?.deposit_due_date);
     const eventDate = safeString(booking?.event_date);
     if (dueDate && eventDate) {
         const diff = dayjs(eventDate).startOf('day').diff(dayjs(dueDate).startOf('day'), 'day');
         if (Number.isFinite(diff) && diff >= 0) return diff;
     }
+
+    // ⭐ 3. Safe fallback.
     return 7;
 };
 
@@ -502,6 +843,18 @@ const getDepositAmount = (booking) => {
 
 const getPaidAmount = (booking) => {
     if (!booking) return 0;
+
+    // ⭐ Prefer the payment list — it is authoritative because each row
+    //    has its own status and payment_type.
+    const payments = Array.isArray(booking.payments) ? booking.payments : [];
+    const completedFromPayments = payments
+        .filter((p) => String(p?.status || '').toLowerCase() === 'completed')
+        .filter((p) => String(p?.payment_type || '').toLowerCase() !== 'refund')
+        .reduce((sum, p) => sum + safeNumber(p?.amount), 0);
+
+    if (completedFromPayments > 0) return completedFromPayments;
+
+    // Fallback to the flat scalar fields.
     return safeNumber(
         booking.paid_amount ||
         booking.billing_summary?.total_paid ||
@@ -619,6 +972,163 @@ const isCancellationInProgress = (booking) => {
 };
 
 // ============================================================
+// SKELETON LOADING COMPONENTS (Light Gray)
+// ============================================================
+
+const SkeletonText = ({ width = '100%', height = 14, style = {} }) => (
+  <div className="bqm-skeleton-text" style={{ width, height, ...style }} />
+);
+
+const SkeletonCircle = ({ size = 48, style = {} }) => (
+  <div
+    className="bqm-skeleton-circle"
+    style={{ width: size, height: size, minWidth: size, ...style }}
+  />
+);
+
+const SkeletonHeaderRight = () => (
+  <>
+    <div className="bqm-skeleton-block bqm-header-skeleton-btn" />
+    <div className="bqm-skeleton-block bqm-header-skeleton-btn" />
+    <div className="bqm-skeleton-block bqm-header-skeleton-btn" />
+  </>
+);
+
+const SkeletonKpiCard = ({ delay = 0 }) => (
+  <div
+    className="bqm-kpi-skeleton-card bqm-skeleton-card"
+    style={{ animationDelay: `${delay}s` }}
+  >
+    <SkeletonCircle size={52} style={{ borderRadius: 14 }} />
+    <div className="bqm-kpi-skeleton-info">
+      <SkeletonText width={120} height={22} />
+      <SkeletonText width={90} height={12} />
+    </div>
+  </div>
+);
+
+const SkeletonKpiGrid = () => (
+  <div className="bqm-kpi-skeleton-grid">
+    {Array.from({ length: 4 }).map((_, i) => (
+      <SkeletonKpiCard key={i} delay={i * 0.05} />
+    ))}
+  </div>
+);
+
+const SkeletonTableRow = ({ delay = 0 }) => {
+  const rowWidths = [
+    [90, 60, 130, 80],
+    [80, 70, 120, 90],
+    [100, 55, 140, 75],
+    [85, 65, 135, 85],
+    [95, 60, 125, 80],
+  ];
+  const widths = rowWidths[Math.floor(Math.random() * rowWidths.length)];
+
+  return (
+    <div
+      className="bqm-table-skeleton-row bqm-skeleton-card"
+      style={{ animationDelay: `${delay}s` }}
+    >
+      {/* Booking # pill */}
+      <SkeletonText width={80} height={24} style={{ borderRadius: 20 }} />
+
+      {/* Customer avatar + two bars */}
+      <div className="bqm-table-skeleton-cell">
+        <SkeletonCircle size={26} />
+        <div className="bqm-table-skeleton-cell-stack">
+          <SkeletonText width={widths[0]} height={12} />
+          <SkeletonText width={widths[1]} height={10} />
+        </div>
+      </div>
+
+      {/* Event date/location stack */}
+      <div className="bqm-table-skeleton-cell-stack">
+        <SkeletonText width={widths[2]} height={12} />
+        <SkeletonText width={widths[3]} height={10} />
+      </div>
+
+      {/* Service type */}
+      <SkeletonText width={90} height={12} />
+
+      {/* Pax pill */}
+      <SkeletonText width={55} height={20} style={{ borderRadius: 20 }} />
+
+      {/* Amount */}
+      <SkeletonText width={90} height={14} />
+
+      {/* Status pill */}
+      <SkeletonText width={110} height={22} style={{ borderRadius: 20 }} />
+
+      {/* Action icons */}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <SkeletonCircle size={30} style={{ borderRadius: 8 }} />
+        <SkeletonCircle size={30} style={{ borderRadius: 8 }} />
+        <SkeletonCircle size={30} style={{ borderRadius: 8 }} />
+      </div>
+    </div>
+  );
+};
+
+const SkeletonTable = ({ rows = 10 }) => (
+  <div className="bqm-table-skeleton bqm-skeleton-card">
+    <div className="bqm-table-skeleton-header">
+      <SkeletonCircle size={22} style={{ borderRadius: 6 }} />
+      <SkeletonText width={180} height={16} />
+      <SkeletonText width={120} height={12} style={{ marginLeft: 'auto' }} />
+    </div>
+    <div className="bqm-table-skeleton-body">
+      {Array.from({ length: rows }).map((_, i) => (
+        <SkeletonTableRow key={i} delay={i * 0.05} />
+      ))}
+    </div>
+  </div>
+);
+
+const BookingSkeleton = () => (
+  <div className="bqm-container bqm-skeleton-container">
+    {/* Header skeleton */}
+    <div className="bqm-header">
+      <div className="bqm-header-left">
+        <div
+          className="bqm-logo-icon bqm-logo-icon-skeleton"
+          style={{
+            background: '#e5e7eb',
+            color: 'transparent',
+            opacity: 1,
+          }}
+        >
+          <FaRegCalendarAlt style={{ color: 'transparent' }} />
+        </div>
+        <div className="bqm-header-info">
+          <SkeletonText width={240} height={20} style={{ marginBottom: 6 }} />
+          <SkeletonText width={120} height={10} />
+        </div>
+      </div>
+      <div className="bqm-header-right">
+        <SkeletonText width={180} height={32} style={{ borderRadius: 10 }} />
+        <SkeletonHeaderRight />
+      </div>
+    </div>
+
+    {/* KPI cards */}
+    <SkeletonKpiGrid />
+
+    {/* Main card + table */}
+    <div className="bqm-main-card" style={{ padding: 0 }}>
+      <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--bqm-border)' }}>
+        <div style={{ display: 'flex', gap: 24 }}>
+          <SkeletonText width={100} height={20} />
+          <SkeletonText width={100} height={20} />
+          <SkeletonText width={100} height={20} />
+        </div>
+      </div>
+          <SkeletonTable rows={12} />
+    </div>
+  </div>
+);
+
+// ============================================================
 // MAIN COMPONENT
 // ============================================================
 
@@ -627,10 +1137,9 @@ const BookingQuotationManagement = () => {
     const { user } = useAuth();
     const canApproveOperations = hasAllowedRole(user, ADMIN_ROLES);
     const isCashierOnly = hasAllowedRole(user, CASHIER_ROLES) && !canApproveOperations;
-    const isMounted = useRef(true);
     const { message, modal } = App.useApp();
 
-    const [activeMainTab, setActiveMainTab] = useState('bookings');
+        const [activeMainTab, setActiveMainTab] = useState('bookings');
     const [activeBookingTab, setActiveBookingTab] = useState('regular');
 
     useEffect(() => {
@@ -657,7 +1166,12 @@ const BookingQuotationManagement = () => {
     const [calendarCursor, setCalendarCursor] = useState(dayjs());
     const [selectedCalendarDate, setSelectedCalendarDate] = useState(dayjs());
 
-    const [isDarkMode, setIsDarkMode] = useState(false);
+      const [isDarkMode, setIsDarkMode] = useState(() => {
+        const saved = (localStorage.getItem('theme') || '').toLowerCase();
+        if (saved === 'dark') return true;
+        if (saved === 'light') return false;
+        return document.body.classList.contains('dark-mode');
+    });
 
     const [selectedBooking, setSelectedBooking] = useState(null);
     const [editingBooking, setEditingBooking] = useState(null);
@@ -789,6 +1303,10 @@ const BookingQuotationManagement = () => {
     const [isSaving, setIsSaving] = useState(false);
     const saveLockRef = useRef(false);
 
+       // ⭐ Cancelable loading line (shows above the action)
+    const [loadingLine, setLoadingLine] = useState(null);
+    const loadingLineRef = useRef(null);
+    const loadingLineTimerRef = useRef(null);
     const [quotationForm] = Form.useForm();
     const [availabilityForm] = Form.useForm();
     const [rejectForm] = Form.useForm();
@@ -805,7 +1323,7 @@ const BookingQuotationManagement = () => {
     const ACTIVE_BOOKING_STATUS_EXCLUSIONS = 'completed,cancelled,rejected';
     const HISTORY_BOOKING_STATUSES = 'completed,cancelled,rejected';
 
-    const buildBookingParams = (scope, status = filterStatus, search = debouncedSearchText) => {
+        const buildBookingParams = useCallback((scope, status = filterStatus, search = debouncedSearchText) => {
         const params = {
             booking_scope: scope,
             sort: 'event_schedule',
@@ -826,15 +1344,15 @@ const BookingQuotationManagement = () => {
             params.search = search.trim();
         }
 
-        if (filterDateRange?.length === 2) {
+              if (filterDateRange?.length === 2) {
             params.date_from = dayjs(filterDateRange[0]).format('YYYY-MM-DD');
             params.date_to = dayjs(filterDateRange[1]).format('YYYY-MM-DD');
         }
 
         return params;
-    };
+    }, [filterStatus, debouncedSearchText, filterEventType, filterDateRange]);
 
-    const buildHistoryParams = () => {
+      const buildHistoryParams = useCallback(() => {
         const combinedSearch = [historySearchText, historyBookingId, historyCustomerName]
             .map((value) => safeString(value).trim())
             .filter(Boolean)
@@ -866,14 +1384,13 @@ const BookingQuotationManagement = () => {
             params.customer_name = historyCustomerName.trim();
         }
 
-        if (historyDateRange?.length === 2) {
+             if (historyDateRange?.length === 2) {
             params.date_from = dayjs(historyDateRange[0]).format('YYYY-MM-DD');
             params.date_to = dayjs(historyDateRange[1]).format('YYYY-MM-DD');
         }
 
         return params;
-    };
-
+    }, [historySearchText, historyBookingId, historyCustomerName, historyStatus, historyEventType, historyDateRange]);
     useEffect(() => {
         const timer = setTimeout(() => {
             setDebouncedSearchText(searchText);
@@ -881,40 +1398,108 @@ const BookingQuotationManagement = () => {
 
         return () => clearTimeout(timer);
     }, [searchText]);
+    const regularParams = useMemo(() => buildBookingParams('regular'), [buildBookingParams]);
+    const multiDayParams = useMemo(() => buildBookingParams('multi_day'), [buildBookingParams]);
+    const historyParams = useMemo(() => buildHistoryParams(), [buildHistoryParams]);
 
     const {
         data: regularBookingsData,
         isLoading: regularBookingsLoading,
         refetch: refetchRegularBookings
-    } = useBookings(buildBookingParams('regular'));
+    } = useBookings(regularParams);
 
     const {
         data: multiDayBookingsData,
         isLoading: multiDayBookingsLoading,
         refetch: refetchMultiDayBookings
-    } = useBookings(buildBookingParams('multi_day'));
+    } = useBookings(multiDayParams);
 
     const {
         data: completedBookingsData,
         isLoading: completedBookingsLoading,
         refetch: refetchCompletedBookings
-    } = useBookings(buildHistoryParams());
+    } = useBookings(historyParams);
 
     const { data: statistics, refetch: refetchStatistics } = useBookingStatistics();
+
+      const quotationParams = useMemo(() => ({
+        per_page: FETCH_ALL_LIMIT,
+        status_in: 'pending,approved',
+        search: debouncedSearchText.trim() || undefined,
+    }), [debouncedSearchText]);
 
     const {
         data: quotationsData,
         isLoading: quotationsLoading,
         refetch: refetchQuotations
-    } = useQuotations({
-        per_page: FETCH_ALL_LIMIT,
-        status_in: 'pending,approved',
-        search: searchText.trim() || undefined
-    });
+       } = useQuotations(quotationParams);
     const { data: eventTypesData } = useEventTypes();
-    const { data: calendarEvents, refetch: refetchCalendarEvents } = useCalendarEvents(calendarRange);
-    const { data: calendarAvailabilityData, refetch: refetchCalendarAvailability } = useCalendarAvailability(calendarRange);
+    const calendarEnabled = activeMainTab === 'calendar';
+    const { data: calendarEvents, refetch: refetchCalendarEvents } = useCalendarEvents(
+        calendarEnabled ? calendarRange : { ...calendarRange, __skip: true },
+        { enabled: calendarEnabled }
+    );
+    const { data: calendarAvailabilityData, refetch: refetchCalendarAvailability } = useCalendarAvailability(
+        calendarEnabled ? calendarRange : { ...calendarRange, __skip: true },
+        { enabled: calendarEnabled }
+    );
+    // ⭐ Hide/Unhide: read + write the persisted visibility map.
+    const { data: insightVisibility } = useInsightVisibility();
+    const updateInsightVisibilityMutation = useUpdateInsightVisibility();
 
+    // ⭐ Keeps cashier tabs in sync when admin toggles in another tab,
+    //    in the same browser (BroadcastChannel) or across devices (15s poll).
+    useInsightVisibilitySync();
+
+    // ⭐ Keeps every open tab (admin, cashier, super-admin) in sync when
+    //    anyone mutates a booking — deposit date changes, extensions,
+    //    cancellations, approvals, etc.
+    useBookingChangeSync();
+
+    // Local mirror so the toggle is instant — the server response later
+    // confirms (or rolls back) the optimistic change.
+    const [localInsightVisibility, setLocalInsightVisibility] = useState(null);
+
+    useEffect(() => {
+        if (insightVisibility && localInsightVisibility === null) {
+            setLocalInsightVisibility(insightVisibility);
+        }
+    }, [insightVisibility, localInsightVisibility]);
+
+    // Effective state, resolved from local first, server second.
+    const effectiveVisibility = localInsightVisibility || insightVisibility || {
+        total_approved: false,
+        total_revenue: false,
+        rejected: false,
+    };
+
+    // ⭐ Admin-only. Cashiers never get the toggle button.
+    const canToggleInsightVisibility = canApproveOperations;
+
+    const handleToggleInsight = useCallback((key) => {
+        if (!canToggleInsightVisibility) {
+            message.warning('Only administrators can hide or unhide insight values.');
+            return;
+        }
+
+        const current = effectiveVisibility;
+        const next = { ...current, [key]: !current[key] };
+
+        // Optimistic flip.
+        setLocalInsightVisibility(next);
+
+        updateInsightVisibilityMutation.mutate(next, {
+            onError: () => {
+                // Roll back if the server rejects the change.
+                setLocalInsightVisibility(current);
+            },
+        });
+    }, [
+        canToggleInsightVisibility,
+        effectiveVisibility,
+        updateInsightVisibilityMutation,
+        message,
+    ]);
     const confirmBookingMutation = useConfirmBooking();
     const rejectBookingMutation = useRejectBooking();
     const createQuotationMutation = useCreateQuotation();
@@ -952,10 +1537,57 @@ const BookingQuotationManagement = () => {
     const events = safeArray(calendarEvents);
     const calendarAvailability = safeArray(calendarAvailabilityData?.data);
 
-    const stats = safeObject(statistics?.data || statistics, {
+      const stats = safeObject(statistics?.data || statistics, {
         total_bookings: 0, pending_approvals: 0, total_revenue: 0,
         total_paid: 0, total_outstanding: 0, regular_bookings: 0, multi_day_events: 0
     });
+
+    // ⭐ REQUEST #3, #4, #5: Derive the four KPI cards from the actual
+    // booking lists so the counts are always status-accurate.
+    const allLoadedBookings = useMemo(() => {
+        const combined = [
+            ...safeArray(regularBookings),
+            ...safeArray(multiDayBookings),
+            ...safeArray(completedBookings),
+        ];
+        const seen = new Set();
+        return combined.filter((b) => {
+            const id = getBookingId(b);
+            if (!id || seen.has(id)) return false;
+            seen.add(id);
+            return true;
+        });
+    }, [regularBookings, multiDayBookings, completedBookings]);
+
+    const approvedBookingsCount = useMemo(
+        () => allLoadedBookings.filter((b) =>
+            ['confirmed', 'approved'].includes(safeString(b.booking_status).toLowerCase())
+        ).length,
+        [allLoadedBookings],
+    );
+
+    const rejectedBookingsCount = useMemo(
+        () => allLoadedBookings.filter((b) =>
+            safeString(b.booking_status).toLowerCase() === 'rejected'
+        ).length,
+        [allLoadedBookings],
+    );
+
+    // ⭐ REQUEST #4: Only approved bookings contribute to total revenue.
+    const approvedRevenue = useMemo(() => {
+        return allLoadedBookings
+            .filter((b) =>
+                ['confirmed', 'approved'].includes(safeString(b.booking_status).toLowerCase())
+            )
+            .reduce((sum, b) => {
+                // Prefer the invoice total, then quotation, then booking total.
+                const amount =
+                    safeNumber(b?.invoice?.total_amount) ||
+                    safeNumber(b?.quotation?.total_amount) ||
+                    safeNumber(b?.total_amount);
+                return sum + amount;
+            }, 0);
+    }, [allLoadedBookings]);
 
     const refundRequests = useMemo(() => {
         const all = [...regularBookings, ...multiDayBookings];
@@ -977,37 +1609,136 @@ const BookingQuotationManagement = () => {
         () => refundRequests.filter((b) => isRefundApproved(b)).length,
         [refundRequests]
     );
-
+// ⭐ Theme sync — resilient to Navigation remounts and route changes
     useEffect(() => {
-        const detectTheme = () => {
-            if (!isMounted.current) return;
-            setIsDarkMode(document.body.classList.contains('dark-mode'));
+        const resolveDark = () => {
+            const saved = (localStorage.getItem('theme') || '').toLowerCase();
+            if (saved === 'dark') return true;
+            if (saved === 'light') return false;
+            return document.body.classList.contains('dark-mode');
         };
-        detectTheme();
-        const observer = new MutationObserver(detectTheme);
-        observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
+        setIsDarkMode(resolveDark());
+
+        // Re-check shortly after mount in case Navigation runs its own effect after us
+        const t1 = setTimeout(() => setIsDarkMode(resolveDark()), 0);
+        const t2 = setTimeout(() => setIsDarkMode(resolveDark()), 100);
+
+        const handleThemeChange = (e) => {
+            const nextDark = Boolean(e?.detail?.isDark);
+            setIsDarkMode(nextDark);
+        };
+
+        const handleStorage = (e) => {
+            if (e.key === 'theme') {
+                setIsDarkMode((e.newValue || '').toLowerCase() === 'dark');
+            }
+        };
+
+        window.addEventListener('themeChange', handleThemeChange);
+        window.addEventListener('storage', handleStorage);
+
         return () => {
-            isMounted.current = false;
-            observer.disconnect();
+            clearTimeout(t1);
+            clearTimeout(t2);
+            window.removeEventListener('themeChange', handleThemeChange);
+            window.removeEventListener('storage', handleStorage);
         };
     }, []);
+      // ⭐ Apply dark-mode class to <html> and <body> so portal-rendered modals inherit it.
+    // Do NOT remove on cleanup — Navigation owns the class lifetime; leaving it
+    // in place prevents the light-mode flash when this page unmounts.
+    useEffect(() => {
+        const root = document.documentElement;
+        const body = document.body;
+        if (isDarkMode) {
+            root.classList.add('bqm-dark-mode');
+            body.classList.add('bqm-dark-mode');
+        } else {
+            root.classList.remove('bqm-dark-mode');
+            body.classList.remove('bqm-dark-mode');
+        }
+    }, [isDarkMode]);
 
+    // ⭐ Toggle — single source of truth, only updates the persisted key + dispatches event.    // Navigation listens to 'themeChange' and will follow along.
+    const toggleDarkMode = useCallback(() => {
+        const next = !isDarkMode;
+
+        // 1. Persist — same key Navigation uses
+        localStorage.setItem('theme', next ? 'dark' : 'light');
+
+        // 2. Update body class (kept in sync for any CSS that relies on it)
+        document.body.classList.toggle('dark-mode', next);
+        document.body.classList.toggle('light-mode', !next);
+
+        // 3. Notify Navigation so its toggle flips too
+        window.dispatchEvent(new CustomEvent('themeChange', {
+            detail: { isDark: next },
+        }));
+
+        // 4. Update local state last
+        setIsDarkMode(next);
+    }, [isDarkMode]);
+      // ⭐ REQUEST #2: Auto-start event modal.
+    // Watches the loaded booking lists. When a booking's scheduled date+time
+    // has started, shows the Start/Later modal exactly ONCE per booking.
+    // "Later" dismisses it permanently for that booking (stored in
+    // localStorage) so it never nags the user again.
+    useEffect(() => {
+        const AUTO_START_LATER_KEY = 'auto_start_later_bookings';
+        const dismissed = (() => {
+            try {
+                return JSON.parse(localStorage.getItem(AUTO_START_LATER_KEY) || '[]');
+            } catch {
+                return [];
+            }
+        })();
+
+        const candidates = [...safeArray(regularBookings), ...safeArray(multiDayBookings)];
+        const now = dayjs();
+        const dueNow = candidates.find((booking) => {
+            const status = safeString(booking?.booking_status).toLowerCase();
+            if (!['confirmed', 'approved', 'ongoing'].includes(status)) return false;
+            if (status === 'ongoing') return false; // already started
+
+            const id = getBookingId(booking);
+            if (!id || dismissed.includes(id)) return false;
+
+            const dateStr = safeString(booking?.event_date);
+            const timeStr = safeString(booking?.event_time);
+            if (!dateStr) return false;
+
+            const scheduled = dayjs(`${dateStr} ${timeStr || '00:00'}`);
+            if (!scheduled.isValid()) return false;
+
+            return scheduled.isBefore(now);
+        });
+
+        if (dueNow && !startEventModalVisible) {
+            setStartEventBookingData(dueNow);
+            setStartEventModalVisible(true);
+        }
+    }, [regularBookings, multiDayBookings, startEventModalVisible]);
+
+    // NOTE: Removed the blanket refreshAllData() listener. useConfirmBooking
+    // already syncs cache via syncBookingInCache, so refetching all 7 queries
+    // here was double network traffic per approval. Only refetch calendar /
+    // availability, which the confirm mutation does NOT touch.
     useEffect(() => {
         const handleBookingEvent = (event) => {
             console.log('📢 Booking event received:', event.detail);
-            refreshAllData(false);
+            refetchCalendarEvents();
+            refetchCalendarAvailability();
         };
 
-        window.addEventListener('booking-approved', handleBookingEvent);
         window.addEventListener('booking-cancelled', handleBookingEvent);
         window.addEventListener('booking-reschedule-requested', handleBookingEvent);
 
         return () => {
-            window.removeEventListener('booking-approved', handleBookingEvent);
             window.removeEventListener('booking-cancelled', handleBookingEvent);
             window.removeEventListener('booking-reschedule-requested', handleBookingEvent);
         };
-    }, []);
+    }, [refetchCalendarEvents, refetchCalendarAvailability]);
 
     useEffect(() => {
         if (quotationModalVisible) {
@@ -1433,7 +2164,7 @@ const BookingQuotationManagement = () => {
             return;
         }
 
-        Modal.confirm({
+               modal.confirm({
             title: 'Mark Booking as Completed',
             content: `Move ${safeString(booking.booking_no)} to booking history?`,
             okText: 'Mark as Completed',
@@ -1455,24 +2186,48 @@ const BookingQuotationManagement = () => {
             }
         });
     };
-
     const handleCancelBooking = async (values) => {
         const bookingId = getBookingId(selectedBooking);
         if (!bookingId) {
             message.error('Invalid booking ID');
             return;
         }
+
+        const bookingNo = safeString(selectedBooking?.booking_no);
+
         try {
-            await api.post(`/bookings/${bookingId}/cancel-with-reason`, { reason: values.reason });
+            const signal = showLoadingLine('cancel', bookingNo);
+
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(resolve, 5000);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(new DOMException('Aborted', 'AbortError'));
+                });
+            });
+
+            await api.post(
+                `/bookings/${bookingId}/cancel-with-reason`,
+                { reason: values.reason },
+                { signal }
+            );
+
             message.success('Booking cancelled and moved to history');
             setCancelReasonModalVisible(false);
             cancelForm.resetFields();
             await refreshAllData();
         } catch (error) {
-            message.error(error?.response?.data?.message || 'Failed to cancel booking');
+            if (
+                error?.name !== 'CanceledError' &&
+                error?.name !== 'AbortError' &&
+                error?.code !== 'ERR_CANCELED'
+            ) {
+                message.error(error?.response?.data?.message || 'Failed to cancel booking');
+            }
+        } finally {
+            hideLoadingLine();
         }
     };
-
     const closeCancelWithRefundModal = useCallback(() => {
         setCancelWithRefundModalVisible(false);
         cancelWithRefundForm.resetFields();
@@ -1682,7 +2437,6 @@ const BookingQuotationManagement = () => {
             message.error('Invalid booking ID');
             return;
         }
-
         if (values.action === 'extend') {
             try {
                 await api.post(`/bookings/${bookingId}/deposit-decision`, {
@@ -1695,13 +2449,16 @@ const BookingQuotationManagement = () => {
                 );
                 closeDepositOverdueModal();
                 await refreshAllData();
+                // ⭐ Tell every other open tab / window that this booking
+                //    changed so their React Query cache refetches too.
+                broadcastBookingChanged(bookingId, 'deposit_extended');
             } catch (error) {
                 message.error(error?.response?.data?.message || 'Failed to extend deposit deadline');
             }
             return;
         }
 
-        if (values.action === 'waive') {
+          if (values.action === 'waive') {
             try {
                 await api.post(`/bookings/${bookingId}/deposit-decision`, {
                     action: 'waive',
@@ -1710,6 +2467,7 @@ const BookingQuotationManagement = () => {
                 message.success('Deposit requirement waived. Booking remains confirmed.');
                 closeDepositOverdueModal();
                 await refreshAllData();
+                broadcastBookingChanged(bookingId, 'deposit_waived');
             } catch (error) {
                 message.error(error?.response?.data?.message || 'Failed to waive deposit');
             }
@@ -1725,13 +2483,14 @@ const BookingQuotationManagement = () => {
                     reference_number: values.refund_reference || null,
                     reason: values.notes || 'Cancelled by admin — deposit overdue.',
                 });
-                message.success(
+                            message.success(
                     refundAmount > 0
                         ? `Booking cancelled. Refund of ${formatCurrency(refundAmount)} released.`
                         : 'Booking cancelled with no refund.',
                 );
                 closeDepositOverdueModal();
                 await refreshAllData();
+                broadcastBookingChanged(bookingId, 'deposit_cancelled');
             } catch (error) {
                 message.error(error?.response?.data?.message || 'Failed to cancel booking');
             }
@@ -1831,20 +2590,41 @@ const BookingQuotationManagement = () => {
         if (!bookingId) {
             message.error('Invalid booking ID');
             return;
-        }
+        }            if (values.action === 'reject') {
+            const wasCancelled = { value: false };
 
-        if (values.action === 'reject') {
             try {
-                await api.post(`/bookings/${bookingId}/reject`, {
-                    reason: values.reason
+                const signal = showLoadingLine('reject', safeString(selectedBooking?.booking_no));
+
+                await new Promise((resolve, reject) => {
+                    const timer = setTimeout(resolve, 5000);
+                    signal.addEventListener('abort', () => {
+                        clearTimeout(timer);
+                        wasCancelled.value = true;
+                        reject(new DOMException('Aborted', 'AbortError'));
+                    });
                 });
+
+                await api.post(
+                    `/bookings/${bookingId}/reject`,
+                    { reason: values.reason },
+                    { signal }
+                );
 
                 message.success('Booking rejected and removed from active bookings');
                 setRejectReasonModalVisible(false);
                 rejectForm.resetFields();
                 await refreshAllData();
             } catch (error) {
-                message.error(error?.response?.data?.message || 'Failed to reject booking');
+                if (
+                    error?.name !== 'CanceledError' &&
+                    error?.name !== 'AbortError' &&
+                    error?.code !== 'ERR_CANCELED'
+                ) {
+                    message.error(error?.response?.data?.message || 'Failed to reject booking');
+                }
+            } finally {
+                hideLoadingLine();
             }
         } else if (values.action === 'reschedule') {
             rescheduleForm.setFieldsValue({
@@ -1882,14 +2662,28 @@ const BookingQuotationManagement = () => {
         const currentDate = safeString(selectedBooking?.event_date);
         const currentTime = safeString(selectedBooking?.event_time);
         const isSameDateTime = currentDate === newDate && currentTime === newTime;
+        const bookingNo = safeString(selectedBooking?.booking_no);
 
         try {
-            const validation = await api.post('/bookings/validate-slot', {
-                event_date: newDate,
-                event_time: newTime,
-                exclude_booking_id: bookingId,
+            const signal = showLoadingLine('reschedule', bookingNo);
+
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(resolve, 5000);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(new DOMException('Aborted', 'AbortError'));
+                });
             });
 
+            const validation = await api.post(
+                '/bookings/validate-slot',
+                {
+                    event_date: newDate,
+                    event_time: newTime,
+                    exclude_booking_id: bookingId,
+                },
+                { signal }
+            );
             const validationData =
                 validation?.data?.data || validation?.data || {};
             const isAvailable = validationData?.available === true;
@@ -1904,15 +2698,15 @@ const BookingQuotationManagement = () => {
                 return;
             }
 
-            const hideLoading = message.loading('Sending reschedule proposal...', 0);
-
-            await api.post(`/bookings/${bookingId}/admin-reschedule`, {
-                new_date: newDate,
-                new_time: newTime,
-                reason: values.reason,
-            });
-
-            hideLoading();
+            await api.post(
+                `/bookings/${bookingId}/admin-reschedule`,
+                {
+                    new_date: newDate,
+                    new_time: newTime,
+                    reason: values.reason,
+                },
+                { signal }
+            );
 
             message.success(
                 isSameDateTime
@@ -1923,11 +2717,19 @@ const BookingQuotationManagement = () => {
             rescheduleForm.resetFields();
             await refreshAllData();
             notifyRescheduleRequest(bookingId, newDate, newTime);
-        } catch (error) {
-            console.error('Reschedule error:', error);
-            message.error(
-                error?.response?.data?.message || 'Failed to submit reschedule request'
-            );
+               } catch (error) {
+            if (
+                error?.name !== 'CanceledError' &&
+                error?.name !== 'AbortError' &&
+                error?.code !== 'ERR_CANCELED'
+            ) {
+                console.error('Reschedule error:', error);
+                message.error(
+                    error?.response?.data?.message || 'Failed to submit reschedule request'
+                );
+            }
+        } finally {
+            hideLoadingLine();
         }
     };
 
@@ -2318,24 +3120,51 @@ const BookingQuotationManagement = () => {
             return;
         }
 
-        modal.confirm({
+             modal.confirm({
             title: 'Confirm Booking',
             content: `Confirm ${bookingNo}? The approved booking will be inserted into Orders & Events immediately and its quotation will be sent automatically.`,
             okText: 'Confirm Booking',
             cancelText: 'Cancel',
             maskClosable: false,
             keyboard: false,
-            onOk: async () => {
-                const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+                              onOk: async () => {
+                const bookingNoLocal = bookingNo;
+                let cancelled = false;
+
                 try {
+                    const signal = showLoadingLine('approve', bookingNoLocal);
+
+                    await new Promise((resolve) => {
+                        const timer = setTimeout(resolve, 5000);
+                        signal.addEventListener('abort', () => {
+                            clearTimeout(timer);
+                            cancelled = true;
+                            resolve();
+                        });
+                    });
+
+                    if (cancelled) return;
+
                     await confirmBookingMutation.mutateAsync(bookingId);
+
+                    message.success({
+                        content: `Booking ${bookingNoLocal} confirmed successfully!`,
+                        duration: 4,
+                    });
                 } catch (error) {
+                    if (
+                        error?.name === 'CanceledError' ||
+                        error?.name === 'AbortError' ||
+                        error?.code === 'ERR_CANCELED'
+                    ) {
+                        return;
+                    }
                     console.error('Approval error:', error);
                     const errorMsg = error?.response?.data?.message || error?.message || 'Failed to approve booking';
                     message.error(errorMsg);
                     throw error;
                 } finally {
-                    hideLoading();
+                    hideLoadingLine();
                 }
             }
         });
@@ -2367,23 +3196,47 @@ const BookingQuotationManagement = () => {
             return;
         }
 
-        const bookingNo = safeString(threeDayWarningBooking.booking_no);
+         const bookingNo = safeString(threeDayWarningBooking.booking_no);
         setThreeDayWarningModalVisible(false);
 
-        const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+        let cancelled = false;
+
         try {
+            const signal = showLoadingLine('approve', bookingNo);
+
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 5000);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    cancelled = true;
+                    resolve();
+                });
+            });
+
+            if (cancelled) return;
+
             await confirmBookingMutation.mutateAsync(bookingId);
-            message.success(`Booking ${bookingNo} approved successfully`);
+
+            message.success({
+                content: ` Booking ${bookingNo} confirmed successfully!`,
+                duration: 4,
+            });
         } catch (error) {
+            if (
+                error?.name === 'CanceledError' ||
+                error?.name === 'AbortError' ||
+                error?.code === 'ERR_CANCELED'
+            ) {
+                return;
+            }
             console.error('Approval error:', error);
             const errorMsg = error?.response?.data?.message || error?.message || 'Failed to approve booking';
             message.error(errorMsg);
         } finally {
-            hideLoading();
+            hideLoadingLine();
             setThreeDayWarningBooking(null);
         }
     };
-
     const handleLateBookingApproval = async () => {
         if (!lateApprovalBooking) return;
         const bookingId = getBookingId(lateApprovalBooking);
@@ -2398,12 +3251,25 @@ const BookingQuotationManagement = () => {
                 return;
             }
         }
-
         setLateApprovalSubmitting(true);
         const bookingNo = safeString(lateApprovalBooking.booking_no);
-        const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+
+        let cancelled = false;
 
         try {
+            const signal = showLoadingLine('approve', bookingNo);
+
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 5000);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    cancelled = true;
+                    resolve();
+                });
+            });
+
+            if (cancelled) return;
+
             await confirmBookingMutation.mutateAsync(bookingId);
 
             await api.post(`/bookings/${bookingId}/deposit-decision`, {
@@ -2417,30 +3283,33 @@ const BookingQuotationManagement = () => {
                     'Applied at approval (late booking).',
             });
 
-            if (lateApprovalAction === 'waive') {
-                message.success(`Booking ${bookingNo} approved. Deposit waived.`);
-            } else {
-                message.success(
-                    `Booking ${bookingNo} approved. Deposit deadline extended by ${safeNumber(lateApprovalExtensionDays, 7)} day(s).`,
-                );
-            }
+            message.success({
+                content: ` Booking ${bookingNo} confirmed successfully!`,
+                duration: 4,
+            });
 
             setLateApprovalModalVisible(false);
             setLateApprovalBooking(null);
             setThreeDayWarningBooking(null);
             await refreshAllData();
         } catch (error) {
+            if (
+                error?.name === 'CanceledError' ||
+                error?.name === 'AbortError' ||
+                error?.code === 'ERR_CANCELED'
+            ) {
+                return;
+            }
             console.error('Late booking approval error:', error);
             message.error(
                 error?.response?.data?.message ||
                     'Failed to approve booking with deposit decision.',
             );
         } finally {
-            hideLoading();
+            hideLoadingLine();
             setLateApprovalSubmitting(false);
         }
     };
-
     const closeLateBookingApprovalModal = () => {
         if (lateApprovalSubmitting) return;
         setLateApprovalModalVisible(false);
@@ -3217,11 +4086,26 @@ const BookingQuotationManagement = () => {
                 discount: 0,
                 down_payment: 0
             });
-            setFormValues({});
+                     setFormValues({});
             setQuotationModalVisible(false);
             setCreateBookingStep(0);
 
             void refreshAllData(false);
+
+            // ⭐⭐⭐ BUG FIX #3:
+            // Tell every other open tab / window that this booking changed
+            // so their React Query cache refetches.
+            const changedBookingId =
+                responsePayload?.booking_id ||
+                responsePayload?.id ||
+                editingBooking?.booking_id;
+
+            if (changedBookingId) {
+                broadcastBookingChanged(
+                    changedBookingId,
+                    isUpdate ? 'booking_updated' : 'booking_created'
+                );
+            }
 
         } catch (error) {
             console.error('❌ Booking creation error:', error);
@@ -3264,11 +4148,9 @@ const BookingQuotationManagement = () => {
                 style: { whiteSpace: 'pre-wrap' }
             });
 
-        } finally {
+               } finally {
             saveLockRef.current = false;
-            if (isMounted.current) {
-                setIsSaving(false);
-            }
+            setIsSaving(false);
         }
     };
 
@@ -4204,7 +5086,7 @@ const BookingQuotationManagement = () => {
     };
 
     const renderAddMealModal = () => (
-        <Modal
+               <Modal
             title="Add Meal"
             open={addMealModalVisible}
             onCancel={() => {
@@ -4214,6 +5096,7 @@ const BookingQuotationManagement = () => {
             }}
             maskClosable={false}
             keyboard={false}
+            rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
             destroyOnHidden={true}
             okText="Add Meal"
             onOk={addMealService}
@@ -4320,8 +5203,9 @@ const BookingQuotationManagement = () => {
                 onCancel={handleCancelMenuSelection}
                 maskClosable={false}
                 keyboard={false}
-                width={950}
+                               width={950}
                 className="bqm-menu-modal"
+                rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                 destroyOnHidden={true}
                 footer={
                     <div className="bqm-menu-modal-footer">
@@ -4730,7 +5614,7 @@ const BookingQuotationManagement = () => {
 
     const resetCalendarAvailability = () => {
         const date = selectedCalendarDate.format('YYYY-MM-DD');
-        Modal.confirm({
+        modal.confirm({
             title: 'Reset Date Availability',
             content: `Reset ${date} to the default available state? This will remove any custom settings.`,
             okText: 'Reset',
@@ -4867,7 +5751,7 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    const openEditBooking = async (booking) => {
+     const openEditBooking = async (booking) => {
         if (!booking) {
             message.error('No booking selected for editing');
             return;
@@ -4960,7 +5844,7 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    const handleTodayBookingApprove = async () => {
+      const handleTodayBookingApprove = async () => {
         if (!todayBookingData) return;
         const bookingId = getBookingId(todayBookingData);
         if (!bookingId) {
@@ -4969,21 +5853,48 @@ const BookingQuotationManagement = () => {
         }
         const bookingNo = safeString(todayBookingData.booking_no);
 
+              let cancelled = false;
+
         try {
-            const hideLoading = message.loading(`Processing booking ${bookingNo}...`, 0);
+            const signal = showLoadingLine('approve', bookingNo);
+
+            await new Promise((resolve) => {
+                const timer = setTimeout(resolve, 5000);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    cancelled = true;
+                    resolve();
+                });
+            });
+
+            if (cancelled) return;
+
             await confirmBookingMutation.mutateAsync(bookingId);
-            hideLoading();
+
+            message.success({
+                content: `Booking ${bookingNo} confirmed successfully!`,
+                duration: 4,
+            });
+
             setTodayBookingModalVisible(false);
             setTodayBookingData(null);
             setTodayBookingAction(null);
             await refreshAllData();
         } catch (error) {
+            if (
+                error?.name === 'CanceledError' ||
+                error?.name === 'AbortError' ||
+                error?.code === 'ERR_CANCELED'
+            ) {
+                return;
+            }
             console.error('Approval error:', error);
             const errorMsg = error?.response?.data?.message || error?.message || 'Failed to approve booking';
             message.error(errorMsg);
+        } finally {
+            hideLoadingLine();
         }
     };
-
     const handleTodayBookingReject = () => {
         if (!todayBookingData) return;
         setTodayBookingModalVisible(false);
@@ -4993,6 +5904,115 @@ const BookingQuotationManagement = () => {
     // ============================================================
     // ⭐ BOOKING ACTIONS — WITH CUSTOMER RESCHEDULE RESPONSE
     // ============================================================
+        // ============================================================
+    // ⭐ CANCELABLE LOADING LINE (3s auto-dismiss)
+    // ============================================================
+      const showLoadingLine = useCallback((type, bookingNo) => {
+        if (loadingLineTimerRef.current) {
+            clearTimeout(loadingLineTimerRef.current);
+            loadingLineTimerRef.current = null;
+        }
+
+        if (loadingLineRef.current?.controller) {
+            try { loadingLineRef.current.controller.abort(); } catch (e) {}
+        }
+
+        const controller = new AbortController();
+
+        const labels = {
+            approve: 'Approving',
+            reject: 'Rejecting',
+            cancel: 'Cancelling',
+            reschedule: 'Rescheduling',
+        };
+
+        const verb = labels[type] || 'Processing';
+
+        const line = {
+            type,
+            bookingNo,
+            message: `${verb} booking ${bookingNo}…`,
+            controller,
+        };
+
+        loadingLineRef.current = line;
+        setLoadingLine(line);
+        loadingLineTimerRef.current = setTimeout(() => {
+            setLoadingLine(null);
+            loadingLineRef.current = null;
+            loadingLineTimerRef.current = null;
+        }, 5000);
+
+        return controller.signal;
+    }, []);
+
+    const hideLoadingLine = useCallback(() => {
+        if (loadingLineTimerRef.current) {
+            clearTimeout(loadingLineTimerRef.current);
+            loadingLineTimerRef.current = null;
+        }
+        loadingLineRef.current = null;
+        setLoadingLine(null);
+    }, []);
+
+    const handleCancelLoading = useCallback(() => {
+        const current = loadingLineRef.current;
+        if (!current) return;
+
+        try {
+            current.controller.abort();
+        } catch (e) {
+            console.warn('Abort failed:', e);
+        }
+
+        message.info(`Cancelled ${current.type} action for ${current.bookingNo}`);
+        hideLoadingLine();
+    }, [hideLoadingLine, message]);
+
+    useEffect(() => {
+        return () => {
+            if (loadingLineTimerRef.current) {
+                clearTimeout(loadingLineTimerRef.current);
+            }
+        };
+    }, []);
+
+    /**
+     * ⭐ Wraps any async action with the loading line + abort handling.
+     * The loading line shows FIRST, waits 5 seconds (giving the user
+     * time to Cancel), and ONLY THEN fires the backend request.
+     */
+    const runWithLoadingLine = useCallback(async (type, record, fn) => {
+        const bookingNo = safeString(record?.booking_no || record?.order_number || record?.id || '');
+        const signal = showLoadingLine(type, bookingNo);
+        const HOLD_MS = 5000;
+
+        try {
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(resolve, HOLD_MS);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(new DOMException('Aborted', 'AbortError'));
+                });
+            });
+
+            const result = await fn(signal);
+            return result;
+        } catch (error) {
+            if (
+                error?.name === 'CanceledError' ||
+                error?.name === 'AbortError' ||
+                error?.code === 'ERR_CANCELED'
+            ) {
+                hideLoadingLine();
+                return null;
+            }
+            throw error;
+        } finally {
+            hideLoadingLine();
+        }
+    }, [showLoadingLine, hideLoadingLine]);
+
     const renderBookingActions = (booking) => {
         if (!booking) return null;
         const status = safeString(booking.booking_status).toLowerCase();
@@ -5114,7 +6134,7 @@ const BookingQuotationManagement = () => {
                         {/* ⭐ Admin responds to CUSTOMER-initiated reschedule */}
                         {hasPendingCustomerReschedule && canApproveOperations && (
                             <>
-                                <Tooltip title="✅ Approve the customer's proposed new schedule">
+                                <Tooltip title=" Approve the customer's proposed new schedule">
                                     <button
                                         className="bqm-action-icon confirm"
                                         onClick={() => handleApproveCustomerReschedule(booking)}
@@ -5144,23 +6164,9 @@ const BookingQuotationManagement = () => {
                                 </Tooltip>
                             </>
                         )}
-
-                        {/* ⭐ Cancel ADMIN's own pending reschedule proposal */}
+                                              {/* ⭐ Cancel ADMIN's own pending reschedule proposal */}
                         {hasPendingAdminReschedule && canApproveOperations && (
                             <Tooltip title="Withdraw the pending reschedule proposal">
-                                <button
-                                    className="bqm-action-icon cancel-proposal"
-                                    onClick={() => openCancelRescheduleModal(booking)}
-                                    style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
-                                >
-                                    <CloseCircleOutlined style={{ color: '#f59e0b' }} />
-                                </button>
-                            </Tooltip>
-                        )}
-
-                        {/* ⭐ Cancel ADMIN's own pending reschedule proposal */}
-                        {hasPendingAdminReschedule && canApproveOperations && (
-                            <Tooltip title="Cancel the pending reschedule proposal">
                                 <button
                                     className="bqm-action-icon cancel-proposal"
                                     onClick={() => openCancelRescheduleModal(booking)}
@@ -5209,13 +6215,34 @@ const BookingQuotationManagement = () => {
     };
 
     const regularBookingColumns = [
-        {
+         {
             title: 'BOOKING #',
             dataIndex: 'booking_no',
             key: 'booking_no',
             width: 140,
             fixed: 'left',
-            render: (value) => <span className="bqm-id-text">{safeString(value)}</span>
+                    // ⭐ REQUEST #1: colour the booking ID by source.
+            //   mobile  → pink
+            //   walk_in / web → blue
+            render: (value, record) => {
+                const idColor = getBookingIdColor(record);
+                return (
+                    <span
+                        className="bqm-id-text"
+                        style={{
+                            color: idColor.color,
+                            background: idColor.background,
+                            border: `1px solid ${idColor.borderColor}`,
+                            borderRadius: 8,
+                            padding: '2px 8px',
+                            fontWeight: 600,
+                            display: 'inline-block',
+                        }}
+                    >
+                        {safeString(value)}
+                    </span>
+                );
+            }
         },
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200, render: (value, record) => (
             <div className="bqm-customer-cell">
@@ -5246,7 +6273,7 @@ const BookingQuotationManagement = () => {
         { title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record?.event_type_id)}</span> },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
         { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 150, align: 'center', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
-        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 200, render: (value, record) => {
+                    { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 260, render: (value, record) => {
             const config = getStatusConfig(value);
             const refundConfig = getRefundStatusConfig(record?.refund_status);
             const depositConfig = getDepositStateLabel(record?.deposit_decision_status);
@@ -5257,8 +6284,10 @@ const BookingQuotationManagement = () => {
             const hasPendingAdminProposal = rescheduleStatus === 'pending' && rescheduleProposedBy === 'admin';
             const hasPendingCustomerRequest = rescheduleStatus === 'pending' && rescheduleProposedBy === 'customer';
 
+                     const depositDeadlinePassed = Boolean(record?.deposit_deadline_passed);
+
             return (
-                <div className="bqm-status-stack">
+                <div className="bqm-status-stack" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>
 
                     {hasPendingAdminProposal && (
@@ -5270,6 +6299,16 @@ const BookingQuotationManagement = () => {
                     {hasPendingCustomerRequest && (
                         <span className="bqm-status" style={{ color: '#FF9800', background: '#FFF3E0' }}>
                             <ClockCircleOutlined /> Customer Reschedule Pending
+                        </span>
+                    )}
+
+                    {/* ⭐ REQUEST #10: red highlight when approved + deposit deadline passed + unpaid */}
+                    {depositDeadlinePassed && (
+                        <span
+                            className="bqm-status bqm-deposit-deadline-passed"
+                            style={{ color: '#ffffff', background: '#dc2626', fontWeight: 700 }}
+                        >
+                            <WarningOutlined /> Deposit Deadline Passed
                         </span>
                     )}
 
@@ -5288,14 +6327,42 @@ const BookingQuotationManagement = () => {
                             {refundConfig.icon}{refundConfig.text}
                         </span>
                     )}
-                </div>
+                                 </div>
             );
         } },
         { title: 'ACTION', key: 'action', width: 300, fixed: 'right', render: (_, record) => renderBookingActions(record) }
     ];
 
-    const multiDayColumns = [
-        { title: 'BOOKING #', dataIndex: 'booking_no', key: 'booking_no', width: 140, fixed: 'left', render: (value) => <span className="bqm-id-text">{safeString(value)}</span> },
+      const multiDayColumns = [
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
+            width: 140,
+            fixed: 'left',
+                         // ⭐ REQUEST #1: colour the booking ID by source.
+            //   mobile  → pink
+            //   walk_in / web → blue
+            render: (value, record) => {
+                const idColor = getBookingIdColor(record);
+                return (
+                    <span
+                        className="bqm-id-text"
+                        style={{
+                            color: idColor.color,
+                            background: idColor.background,
+                            border: `1px solid ${idColor.borderColor}`,
+                            borderRadius: 8,
+                            padding: '2px 8px',
+                            fontWeight: 600,
+                            display: 'inline-block',
+                        }}
+                    >
+                        {safeString(value)}
+                    </span>
+                );
+            }
+        },
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200, render: (value, record) => (
             <div className="bqm-customer-cell">
                 <div className="bqm-customer-name">{safeString(value)}</div>
@@ -5335,7 +6402,7 @@ const BookingQuotationManagement = () => {
         },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
         { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 140, align: 'right', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
-        { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 200, render: (value, record) => {
+                      { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 260, render: (value, record) => {
             const config = getStatusConfig(value);
             const refundConfig = getRefundStatusConfig(record?.refund_status);
             const depositConfig = getDepositStateLabel(record?.deposit_decision_status);
@@ -5346,8 +6413,10 @@ const BookingQuotationManagement = () => {
             const hasPendingAdminProposal = rescheduleStatus === 'pending' && rescheduleProposedBy === 'admin';
             const hasPendingCustomerRequest = rescheduleStatus === 'pending' && rescheduleProposedBy === 'customer';
 
+                   const depositDeadlinePassed = Boolean(record?.deposit_deadline_passed);
+
             return (
-                <div className="bqm-status-stack">
+                <div className="bqm-status-stack" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>
                     {hasPendingAdminProposal && (
                         <span className="bqm-status" style={{ color: '#9C27B0', background: '#F3E5F5' }}>
@@ -5359,6 +6428,17 @@ const BookingQuotationManagement = () => {
                             <ClockCircleOutlined /> Customer Reschedule Pending
                         </span>
                     )}
+
+                    {/* ⭐ REQUEST #10 */}
+                    {depositDeadlinePassed && (
+                        <span
+                            className="bqm-status bqm-deposit-deadline-passed"
+                            style={{ color: '#ffffff', background: '#dc2626', fontWeight: 700 }}
+                        >
+                            <WarningOutlined /> Deposit Deadline Passed
+                        </span>
+                    )}
+
                     {depositOverdue && (
                         <span className="bqm-status bqm-deposit-warning" style={{ color: '#ef4444', background: '#fef2f2' }}>
                             <WarningOutlined /> Deposit Overdue
@@ -5374,14 +6454,40 @@ const BookingQuotationManagement = () => {
                             {refundConfig.icon}{refundConfig.text}
                         </span>
                     )}
-                </div>
+
+                                </div>
             );
         } },
         { title: 'ACTION', key: 'action', width: 300, fixed: 'right', render: (_, record) => renderBookingActions(record) }
     ];
 
-    const historyColumns = [
-        { title: 'BOOKING #', dataIndex: 'booking_no', key: 'booking_no', width: 140, render: (value) => <span className="bqm-id-text">{safeString(value)}</span> },
+            const historyColumns = [
+        {
+            title: 'BOOKING #',
+            dataIndex: 'booking_no',
+            key: 'booking_no',
+            width: 140,
+            // ⭐ REQUEST #1: colour the booking ID by source.
+            render: (value, record) => {
+                const idColor = getBookingIdColor(record);
+                return (
+                    <span
+                        className="bqm-id-text"
+                        style={{
+                            color: idColor.color,
+                            background: idColor.background,
+                            border: `1px solid ${idColor.borderColor}`,
+                            borderRadius: 8,
+                            padding: '2px 8px',
+                            fontWeight: 600,
+                            display: 'inline-block',
+                        }}
+                    >
+                        {safeString(value)}
+                    </span>
+                );
+            }
+        },
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200 },
         { title: 'EVENT DATE', dataIndex: 'event_date', key: 'event_date', width: 120, render: (value) => formatDateSafe(value) },
         { title: 'LOCATION', dataIndex: 'venue', key: 'venue', width: 180, ellipsis: true },
@@ -5534,8 +6640,8 @@ const BookingQuotationManagement = () => {
         return safeObject(record.latest_send || history[0] || {});
     };
 
-    const handleSendQuotation = (record) => {
-        Modal.confirm({
+     const handleSendQuotation = (record) => {
+        modal.confirm({
             title: 'Resend Quotation',
             content: `Resend the existing quotation ${safeString(record.quote_no)} through email and the connected mobile Messenger account?`,
             okText: 'Resend Quotation',
@@ -5555,9 +6661,8 @@ const BookingQuotationManagement = () => {
             }
         });
     };
-
     const handleRejectQuotation = (record) => {
-        Modal.confirm({
+        modal.confirm({
             title: 'Reject Quotation',
             content: `Reject quotation ${safeString(record.quote_no)}?`,
             okText: 'Reject',
@@ -5570,7 +6675,7 @@ const BookingQuotationManagement = () => {
     };
 
     const handleDeleteQuotation = (record) => {
-        Modal.confirm({
+        modal.confirm({
             title: 'Delete Quotation',
             content: `Delete quotation ${safeString(record.quote_no)}? This cannot be undone.`,
             okText: 'Delete',
@@ -6044,12 +7149,50 @@ const BookingQuotationManagement = () => {
     const filtersClass = `bqm-filters ${isDarkMode ? 'bqm-filters-dark' : ''}`;
     const filterGroupClass = `bqm-filter-group ${isDarkMode ? 'bqm-filter-group-dark' : ''}`;
     const tableClass = `bqm-table ${isDarkMode ? 'bqm-table-dark' : ''}`;
-    const isLoading = regularBookingsLoading || multiDayBookingsLoading || completedBookingsLoading || quotationsLoading;
+    // Show skeleton ONLY on a true cold start — i.e. no tab has data yet.
+    // As soon as ANY list resolves, render the real page and let the other
+    // tabs finish loading in the background under their own tab spinners.
+    const hasAnyData =
+        Boolean(regularBookingsData) ||
+        Boolean(multiDayBookingsData) ||
+        Boolean(completedBookingsData) ||
+        Boolean(quotationsData) ||
+        Boolean(eventTypesData);
 
+    // Hard timeout: never show the skeleton longer than 1.5s, even if the
+    // network hangs. Render the page so React Query can stream data in.
+    const [skeletonTimedOut, setSkeletonTimedOut] = useState(false);
+    useEffect(() => {
+        const t = setTimeout(() => setSkeletonTimedOut(true), 1500);
+        return () => clearTimeout(t);
+    }, []);
+
+    const showSkeleton = !hasAnyData && !skeletonTimedOut;
+
+    if (showSkeleton) {
+        return <BookingSkeleton />;
+    }
     return (
         <App>
             <ConfigProvider theme={{ algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}>
-                <div className={containerClass}>
+                                      <div className={containerClass}>
+                                    {loadingLine && (
+                        <div className="bqm-loading-line" role="status" aria-live="polite">
+                            <div className="bqm-loading-line-text">
+                                {loadingLine.message}
+                            </div>
+                            <button
+                                type="button"
+                                className="bqm-loading-line-cancel"
+                                onClick={handleCancelLoading}
+                            >
+                                Cancel
+                            </button>
+                                                       <div className="bqm-loading-line-track">
+                                <div className="bqm-loading-line-fill" />
+                            </div>
+                        </div>
+                    )}
                     <div className={headerClass}>
                         <div className="bqm-header-left">
                             <div className="bqm-logo-icon"><FaRegCalendarAlt /></div>
@@ -6059,7 +7202,7 @@ const BookingQuotationManagement = () => {
                             </div>
                         </div>
                         <div className="bqm-header-right">
-                            <div className="bqm-date-display"><CalendarOutlined /><span>{dayjs().format('dddd, MMMM DD, YYYY')}</span></div>
+                                                 <div className="bqm-date-display"><CalendarOutlined /><span>{dayjs().format('dddd, MMMM DD, YYYY')}</span></div>
                             <Divider type="vertical" />
                             <Button icon={<ReloadOutlined />} onClick={() => refreshAllData(true)}>Refresh</Button>
                             <Button icon={<ExportOutlined />} onClick={() => {
@@ -6074,14 +7217,103 @@ const BookingQuotationManagement = () => {
                             }}>Print</Button>
                         </div>
                     </div>
+                                     {/*
+                      ⭐ REQUEST #3, #4, #5, #6, #7, #8: KPI cards.
+                        - Approved Booking   (was: Total Booking)
+                        - Pending Approvals
+                        - Total Revenue      (approved only)
+                        - Rejected           (was: Outstanding Balance)
 
+                      Hide/Unhide rules:
+                        • Admin sees a lock button on card hover only.
+                        • Cashier sees no button, but sees the mask if admin hid it.
+                        • Mask length matches the number of digits in the real value.
+                        • Reads from effectiveVisibility so the persisted state is
+                          honored even before localInsightVisibility initializes.
+                    */}
                     <div className="bqm-kpi-grid">
-                        <div className="bqm-kpi-card"><div className="bqm-kpi-icon blue"><CalendarOutlined /></div><div className="bqm-kpi-stats"><div className="bqm-kpi-value">{safeNumber(stats.total_bookings)}</div><div className="bqm-kpi-label">Total Bookings</div></div></div>
-                        <div className="bqm-kpi-card"><div className="bqm-kpi-icon orange"><ClockCircleOutlined /></div><div className="bqm-kpi-stats"><div className="bqm-kpi-value">{safeNumber(stats.pending_approvals)}</div><div className="bqm-kpi-label">Pending Approvals</div></div></div>
-                        <div className="bqm-kpi-card"><div className="bqm-kpi-icon green"><WalletOutlined /></div><div className="bqm-kpi-stats"><div className="bqm-kpi-value">{formatCurrency(stats.total_revenue)}</div><div className="bqm-kpi-label">Total Revenue</div></div></div>
-                        <div className="bqm-kpi-card"><div className="bqm-kpi-icon red"><WarningOutlined /></div><div className="bqm-kpi-stats"><div className="bqm-kpi-value">{formatCurrency(stats.total_outstanding)}</div><div className="bqm-kpi-label">Outstanding Balance</div></div></div>
-                    </div>
 
+                        {/* ============ Approved Booking ============ */}
+                        <div className="bqm-kpi-card bqm-kpi-card-hideable">
+                            {canToggleInsightVisibility && (
+                                <button
+                                    type="button"
+                                    className="bqm-kpi-hide-btn"
+                                    title={effectiveVisibility.total_approved ? 'Unhide value' : 'Hide value'}
+                                    aria-label={effectiveVisibility.total_approved ? 'Unhide approved booking count' : 'Hide approved booking count'}
+                                    onClick={() => handleToggleInsight('total_approved')}
+                                >
+                                    {effectiveVisibility.total_approved ? <EyeOutlined /> : <LockOutlined />}
+                                </button>
+                            )}
+                            <div className="bqm-kpi-icon blue"><CheckCircleOutlined /></div>
+                            <div className="bqm-kpi-stats">
+                                <div className="bqm-kpi-value">
+                                    {effectiveVisibility.total_approved
+                                        ? <span className="bqm-kpi-masked-value">{maskMatchingValue(safeNumber(approvedBookingsCount))}</span>
+                                        : safeNumber(approvedBookingsCount)}
+                                </div>
+                                <div className="bqm-kpi-label">Approved Booking</div>
+                            </div>
+                        </div>
+
+                        {/* ============ Pending Approvals ============ */}
+                        <div className="bqm-kpi-card">
+                            <div className="bqm-kpi-icon orange"><ClockCircleOutlined /></div>
+                            <div className="bqm-kpi-stats">
+                                <div className="bqm-kpi-value">{safeNumber(stats.pending_approvals)}</div>
+                                <div className="bqm-kpi-label">Pending Approvals</div>
+                            </div>
+                        </div>
+
+                        {/* ============ Total Revenue ============ */}
+                        <div className="bqm-kpi-card bqm-kpi-card-hideable">
+                            {canToggleInsightVisibility && (
+                                <button
+                                    type="button"
+                                    className="bqm-kpi-hide-btn"
+                                    title={effectiveVisibility.total_revenue ? 'Unhide value' : 'Hide value'}
+                                    aria-label={effectiveVisibility.total_revenue ? 'Unhide total revenue' : 'Hide total revenue'}
+                                    onClick={() => handleToggleInsight('total_revenue')}
+                                >
+                                    {effectiveVisibility.total_revenue ? <EyeOutlined /> : <LockOutlined />}
+                                </button>
+                            )}
+                            <div className="bqm-kpi-icon green"><WalletOutlined /></div>
+                            <div className="bqm-kpi-stats">
+                                <div className="bqm-kpi-value">
+                                    {effectiveVisibility.total_revenue
+                                        ? <span className="bqm-kpi-masked-value">{maskMatchingValue(formatCurrency(approvedRevenue))}</span>
+                                        : formatCurrency(approvedRevenue)}
+                                </div>
+                                <div className="bqm-kpi-label">Total Revenue</div>
+                            </div>
+                        </div>
+
+                        {/* ============ Rejected ============ */}
+                        <div className="bqm-kpi-card bqm-kpi-card-hideable">
+                            {canToggleInsightVisibility && (
+                                <button
+                                    type="button"
+                                    className="bqm-kpi-hide-btn"
+                                    title={effectiveVisibility.rejected ? 'Unhide value' : 'Hide value'}
+                                    aria-label={effectiveVisibility.rejected ? 'Unhide rejected count' : 'Hide rejected count'}
+                                    onClick={() => handleToggleInsight('rejected')}
+                                >
+                                    {effectiveVisibility.rejected ? <EyeOutlined /> : <LockOutlined />}
+                                </button>
+                            )}
+                            <div className="bqm-kpi-icon red"><CloseCircleOutlined /></div>
+                            <div className="bqm-kpi-stats">
+                                <div className="bqm-kpi-value">
+                                    {effectiveVisibility.rejected
+                                        ? <span className="bqm-kpi-masked-value">{maskMatchingValue(safeNumber(rejectedBookingsCount))}</span>
+                                        : safeNumber(rejectedBookingsCount)}
+                                </div>
+                                <div className="bqm-kpi-label">Rejected</div>
+                            </div>
+                        </div>
+                    </div>
                     <Card className={mainCardClass} variant="borderless">
                         <Tabs
                             activeKey={activeMainTab}
@@ -6115,27 +7347,38 @@ const BookingQuotationManagement = () => {
                                                 <div className={`${filterGroupClass} bqm-search`}><SearchOutlined /><Input value={searchText} onChange={(event) => { setSearchText(event.target.value); }} placeholder="Search booking or customer..." allowClear className="bqm-search-input" /></div>
                                                 <Button type="primary" icon={<PlusOutlined />} onClick={openCreateBookingModal}>Create Booking</Button>
                                             </div>
-
-                                            <Spin spinning={isLoading} indicator={<LoadingOutlined spin />}>
-                                                <Tabs
-                                                    activeKey={activeBookingTab}
-                                                    onChange={setActiveBookingTab}
-                                                    className="bqm-inner-tabs"
+                                            <Tabs
+                                                activeKey={activeBookingTab}
+                                                onChange={setActiveBookingTab}
+                                                className="bqm-inner-tabs"
                                                     items={[
                                                         {
                                                             key: 'regular',
                                                             label: <span><ForkOutlined /> Regular Bookings <Badge count={regularBookingsTotal} overflowCount={999} /></span>,
                                                             children: (
-                                                                <div className="bqm-scrollable-table-wrapper">
-                                                                    <Table
+                                                                                                                               <div className="bqm-scrollable-table-wrapper">
+                                                                                                                                  <Table
                                                                         columns={regularBookingColumns}
                                                                         dataSource={regularBookings}
+                                                                        loading={regularBookingsLoading}
                                                                         rowKey={(record) => getBookingId(record)}
                                                                         className={tableClass}
                                                                         scroll={{ x: 1400, y: TABLE_SCROLL_HEIGHT }}
                                                                         pagination={false}
                                                                         bordered={false}
                                                                         size="middle"
+                                                                        // ⭐ Red row border for the 3-day warning
+                                                                        //    and deposit-deadline-passed conditions.
+                                                                        rowClassName={(record) => getBookingRowDecorations(record).className}
+                                                                        // ⭐ Hover anywhere on the row → tooltip
+                                                                        onRow={(record) => {
+                                                                            const { title } = getBookingRowDecorations(record);
+                                                                            if (!title) return {};
+                                                                            return {
+                                                                                title, // native browser tooltip fallback
+                                                                                style: { cursor: 'help' },
+                                                                            };
+                                                                        }}
                                                                         footer={() => (
                                                                             <div className="bqm-table-footer-info">
                                                                                 <span>Showing {regularBookings.length} regular bookings</span>
@@ -6151,16 +7394,28 @@ const BookingQuotationManagement = () => {
                                                             key: 'multi_day',
                                                             label: <span><ScheduleOutlined /> Multi-Day Events <Badge count={multiDayBookingsTotal} overflowCount={999} /></span>,
                                                             children: (
-                                                                <div className="bqm-scrollable-table-wrapper">
-                                                                    <Table
+                                                                                                                               <div className="bqm-scrollable-table-wrapper">
+                                                                                                                                   <Table
                                                                         columns={multiDayColumns}
                                                                         dataSource={multiDayBookings}
+                                                                        loading={multiDayBookingsLoading}
                                                                         rowKey={(record) => getBookingId(record)}
                                                                         className={tableClass}
                                                                         scroll={{ x: 1400, y: TABLE_SCROLL_HEIGHT }}
                                                                         pagination={false}
                                                                         bordered={false}
                                                                         size="middle"
+                                                                        // ⭐ Same red row decorations as regular table.
+                                                                        rowClassName={(record) => getBookingRowDecorations(record).className}
+                                                                        // ⭐ Hover anywhere on the row → tooltip
+                                                                        onRow={(record) => {
+                                                                            const { title } = getBookingRowDecorations(record);
+                                                                            if (!title) return {};
+                                                                            return {
+                                                                                title, // native browser tooltip fallback
+                                                                                style: { cursor: 'help' },
+                                                                            };
+                                                                        }}
                                                                         footer={() => (
                                                                             <div className="bqm-table-footer-info">
                                                                                 <span>Showing {multiDayBookings.length} multi-day events</span>
@@ -6172,9 +7427,8 @@ const BookingQuotationManagement = () => {
                                                                 </div>
                                                             )
                                                         }
-                                                    ]}
-                                                />
-                                            </Spin>
+                                                                                                   ]}
+                                            />
                                         </>
                                     )
                                 },
@@ -6185,9 +7439,10 @@ const BookingQuotationManagement = () => {
                                         <div className="bqm-tab-content">
                                             <Alert message="Quotation Management" description="Create and manage customer quotations. Approved bookings are inserted into Order Management and Event Management only after admin confirmation." type="info" showIcon className="bqm-info-alert" />
                                             <div className="bqm-scrollable-table-wrapper">
-                                                <Table
+                                                                                       <Table
                                                     columns={quotationColumns}
                                                     dataSource={quotations}
+                                                    loading={quotationsLoading}
                                                     rowKey={(record) => record.id}
                                                     className={tableClass}
                                                     scroll={{ x: 1100, y: TABLE_SCROLL_HEIGHT }}
@@ -6300,9 +7555,10 @@ const BookingQuotationManagement = () => {
                                                 <div className={filterGroupClass}><CalendarOutlined /><RangePicker value={historyDateRange} onChange={(value) => { setHistoryDateRange(value || []); }} format="YYYY-MM-DD" allowClear className="bqm-date-picker" placeholder={['Start Date', 'End Date']} /></div>
                                             </div>
                                             <div className="bqm-scrollable-table-wrapper">
-                                                <Table
+                                                                                        <Table
                                                     columns={historyColumns}
                                                     dataSource={completedBookings}
+                                                    loading={completedBookingsLoading}
                                                     rowKey={(record) => getBookingId(record)}
                                                     className={tableClass}
                                                     scroll={{ x: 1100, y: TABLE_SCROLL_HEIGHT }}
@@ -6394,7 +7650,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={620}
-                        className="bqm-modal-clean bqm-pro-modal bqm-three-day-warning-modal"
+                                             className="bqm-modal-clean bqm-pro-modal bqm-three-day-warning-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                     >
@@ -6481,7 +7738,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={720}
-                        className="bqm-modal-clean bqm-formal-modal bqm-late-approval-modal"
+                                      className="bqm-modal-clean bqm-formal-modal bqm-late-approval-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                         centered
@@ -6661,7 +7919,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={canApproveOperations ? 840 : 560}
-                        className="bqm-modal-clean bqm-formal-modal bqm-lc-sheet"
+                                         className="bqm-modal-clean bqm-formal-modal bqm-lc-sheet"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                         centered
@@ -6726,7 +7985,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={720}
-                        className="bqm-modal-clean bqm-formal-modal bqm-deposit-overdue-modal"
+                                           className="bqm-modal-clean bqm-formal-modal bqm-deposit-overdue-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                         centered
@@ -6994,7 +8254,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={720}
-                        className="bqm-modal-clean bqm-formal-modal bqm-refund-review-sheet"
+                                            className="bqm-modal-clean bqm-formal-modal bqm-refund-review-sheet"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                         centered
@@ -7225,8 +8486,9 @@ const BookingQuotationManagement = () => {
                         maskClosable={false}
                         keyboard={false}
                         footer={null}
-                        width={640}
+                                               width={640}
                         className="bqm-modal-clean bqm-pro-modal bqm-confirm-refund-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         closable={true}
                     >
@@ -7399,7 +8661,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={550}
-                        className="bqm-modal-clean"
+                                          className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -7451,7 +8714,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={550}
-                        className="bqm-modal-clean"
+                                             className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -7471,7 +8735,19 @@ const BookingQuotationManagement = () => {
                                 className="bqm-success-alert"
                             />
                             <div className="bqm-modal-buttons-clean" style={{ marginTop: 20 }}>
-                                <Button onClick={() => {
+                                                             <Button onClick={() => {
+                                    // ⭐ REQUEST #2: Remember "Later" so this
+                                    // booking never re-triggers the auto-modal.
+                                    try {
+                                        const key = 'auto_start_later_bookings';
+                                        const prev = JSON.parse(localStorage.getItem(key) || '[]');
+                                        const id = getBookingId(startEventBookingData);
+                                        if (id && !prev.includes(id)) {
+                                            localStorage.setItem(key, JSON.stringify([...prev, id]));
+                                        }
+                                    } catch (e) {
+                                        console.warn('Failed to persist Later dismissal:', e);
+                                    }
                                     setStartEventModalVisible(false);
                                     setStartEventBookingData(null);
                                 }}>Later</Button>
@@ -7500,7 +8776,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         closable={true}
                         width={850}
-                        className="bqm-modal-clean bqm-modal-no-scroll"
+                                           className="bqm-modal-clean bqm-modal-no-scroll"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         footer={
                             <div className="bqm-modal-footer-simple">
@@ -7557,9 +8834,9 @@ const BookingQuotationManagement = () => {
                             </div>
                         }
                         open={quotationModalVisible}
-                        onCancel={() => {
+                                            onCancel={() => {
                             if (!isSaving) {
-                                Modal.confirm({
+                                modal.confirm({
                                     title: 'Exit Booking Creation?',
                                     content: 'Your progress will be lost. Are you sure?',
                                     okText: 'Yes, exit',
@@ -7584,7 +8861,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={980}
-                        className="bqm-modal-clean bqm-modal-fixed-center"
+                                      className="bqm-modal-clean bqm-modal-fixed-center"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                         styles={{
                             body: {
@@ -7641,9 +8919,9 @@ const BookingQuotationManagement = () => {
                                     </div>
                                     <div className="bqm-step-buttons-right">
                                         <Button
-                                            onClick={() => {
+                                                                                       onClick={() => {
                                                 if (!isSaving) {
-                                                    Modal.confirm({
+                                                    modal.confirm({
                                                         title: 'Exit Booking Creation?',
                                                         content: 'Your progress will be lost. Are you sure?',
                                                         okText: 'Yes, exit',
@@ -7761,7 +9039,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={500}
-                        className="bqm-modal-clean"
+                                               className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -7801,7 +9080,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={540}
-                        className="bqm-modal-clean"
+                                          className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -7915,7 +9195,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={560}
-                        className="bqm-modal-clean"
+                                             className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -8037,7 +9318,8 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={500}
-                        className="bqm-modal-clean"
+                                              className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
@@ -8054,7 +9336,7 @@ const BookingQuotationManagement = () => {
                     </Modal>
 
                     {/* CALENDAR AVAILABILITY MODAL */}
-                    <Modal
+                                     <Modal
                         title={
                             <div className="bqm-modal-header-clean">
                                 <div className="bqm-modal-title-icon"><EditOutlined /></div>
@@ -8068,8 +9350,14 @@ const BookingQuotationManagement = () => {
                         keyboard={false}
                         footer={null}
                         width={560}
-                        className="bqm-modal-clean"
+                                              className="bqm-modal-clean"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
+                        // ⭐ Keep the form instance attached to the DOM so
+                        // Ant Design does not log
+                        // "Instance created by useForm is not connected
+                        //  to any Form element."
+                        forceRender
                     >
                         <div className="bqm-modal-clean-content">
                             <Alert

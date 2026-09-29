@@ -235,7 +235,17 @@ class MenuItemController extends Controller
             'rating' => $ratingStats['average'],
             'average_rating' => $ratingStats['average'],
             'rating_count' => $ratingStats['count'],
-            'allergens' => $item->allergens,
+                            // ⭐ Normalized allergens array + raw string + mobile-friendly aliases.
+            'allergens'         => $item->allergens,
+            'allergens_array'   => $this->normalizeAllergensForResponse($item->allergens),
+            // Mobile detail modal reads these exact keys.
+            'allergy_info'         => $this->normalizeAllergensForResponse($item->allergens),
+            'allergy_information'  => $this->normalizeAllergensForResponse($item->allergens),
+
+            // ⭐ Dietary flags bundled into an array for the mobile modal.
+            //    The boolean flags are also kept for other consumers.
+            'dietary_info'         => $this->buildDietaryList($item),
+            'dietary_information'  => $this->buildDietaryList($item),
             'nutritional_info' => $item->nutritional_info,
             'ingredients_list' => $item->ingredients_list,
             'image_url' => $imageUrl,
@@ -248,6 +258,48 @@ class MenuItemController extends Controller
             'created_at' => $item->created_at,
             'updated_at' => $item->updated_at,
         ];
+    }
+
+    /**
+     * ⭐ Build a human-readable dietary list from the boolean flags.
+     *    Used by the mobile app's menu detail modal.
+     */
+    private function buildDietaryList($item): array
+    {
+        $list = [];
+        if (!empty($item->is_vegetarian))  $list[] = 'Vegetarian';
+        if (!empty($item->is_vegan))       $list[] = 'Vegan';
+        if (!empty($item->is_gluten_free)) $list[] = 'Gluten-Free';
+        if (!empty($item->is_halal))       $list[] = 'Halal';
+        return $list;
+    }
+
+    /**
+     * ⭐ Convert the stored allergens string ("Peanuts, Soy") into an
+     *    array of lowercased slugs ("peanuts","soy") so the mobile app
+     *    can match against the master `food_allergens` list.
+     */
+    private function normalizeAllergensForResponse($raw): array
+    {
+        if (empty($raw)) return [];
+
+        // Already an array (JSON cast on the model).
+        if (is_array($raw)) {
+            return array_values(array_filter(array_map(
+                fn ($v) => is_string($v) ? strtolower(trim($v)) : null,
+                $raw
+            )));
+        }
+
+        // String — split by comma.
+        if (is_string($raw)) {
+            return array_values(array_filter(array_map(
+                fn ($v) => strtolower(trim($v)),
+                explode(',', $raw)
+            )));
+        }
+
+        return [];
     }
 
     private function getFullImageUrl(?string $imagePath): string

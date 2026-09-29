@@ -6217,19 +6217,1163 @@ body {
 }
 
 /* ==================== TOUCH DEVICE OPTIMIZATIONS ==================== */
-@media (hover: none) {
-  .sdf-stat-compact:hover,
-  .sdf-employee-card:hover,
-  .sdf-request-compact-card:hover,
-  .sdf-saved-schedule-item:hover,
-  .sdf-cost-card:hover,
-  .sdf-breakdown-card:hover,
-  .sdf-batch-employee-item:hover:not(.disabled) {
-    transform: none;
+/* ============================================================
+   SKELETON LOADING — Light gray minimal theme
+   ============================================================ */
+
+/* Very subtle shimmer: soft light band sweeps across */
+@keyframes sdf-skeleton-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes sdf-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------- BASE BARS — solid light gray ---------------- */
+.sdf-skeleton-text,
+.sdf-skeleton-circle,
+.sdf-skeleton-icon-box,
+.sdf-skeleton-logo-icon {
+  background: #e8eaed;                  /* exact light gray from image */
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sdf-skeleton-circle  { border-radius: 50%; }
+.sdf-skeleton-icon-box { width: 40px; height: 40px; border-radius: 8px; }
+.sdf-skeleton-icon-box.lg { width: 44px; height: 44px; border-radius: 8px; }
+.sdf-skeleton-logo-icon { width: 40px; height: 40px; border-radius: 8px; }
+
+/* ---------------- VERY SUBTLE SHIMMER SWEEP ---------------- */
+.sdf-skeleton-text::after,
+.sdf-skeleton-circle::after,
+.sdf-skeleton-icon-box::after,
+.sdf-skeleton-logo-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 30%;                           /* narrow band */
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.55) 50%,      /* soft white */
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: sdf-skeleton-sweep 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ============================================================
+   PAGE WRAPPER
+   ============================================================ */
+.sdf-skeleton-page {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  background: #f7f8fa;                  /* subtle gray page bg */
+  min-height: 100vh;
+  padding: 20px;
+  gap: 16px;
+}
+
+/* ============================================================
+   CARDS — white, thin border, rounded, no shadow
+   ============================================================ */
+.sdf-skeleton-card {
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 12px;
+  box-shadow: none;
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.4s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+}
+
+/* ---------------- HEADER ---------------- */
+.sdf-skeleton-header {
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 12px;
+  padding: 18px 28px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sdf-skeleton-header .sdf-header-left {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  height: 100%;
+}
+
+.sdf-skeleton-header .sdf-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+}
+
+.sdf-skeleton-header .sdf-nav {
+  display: flex;
+  gap: 6px;
+}
+
+.sdf-skeleton-header .sdf-header-right {
+  display: flex;
+  gap: 10px;
+}
+
+/* ---------------- TABS ROW (below header) ---------------- */
+.sdf-skeleton-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 12px;
+}
+
+/* ---------------- STAT CARDS (6 across) ---------------- */
+.sdf-skeleton-page .sdf-stats-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+}
+
+.sdf-stat-compact.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  min-height: 68px;
+}
+
+/* ---------------- LONG BAR (search/filter row) ---------------- */
+.sdf-skeleton-longbar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  min-height: 56px;
+  gap: 20px;
+}
+
+/* ---------------- ACTION BAR ---------------- */
+.sdf-action-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  min-height: 56px;
+  gap: 12px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-left {
+  display: flex;
+  gap: 14px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-right {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* ---------------- CONTROL BAR ---------------- */
+.sdf-control-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.sdf-skeleton-control-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------------- TABLE CARD ---------------- */
+.sdf-skeleton-page .sdf-schedule-table-container {
+  flex: 1;
+  min-height: 400px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 12px;
+}
+
+.sdf-skeleton-page .sdf-table-wrapper {
+  overflow: hidden;
+  height: 100%;
+}
+
+.sdf-skeleton-page .sdf-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sdf-skeleton-page .sdf-schedule-table th {
+  background: #f7f8fa;
+  border-bottom: 1px solid #eef1f5;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.sdf-skeleton-row {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.4s ease forwards;
+}
+
+.sdf-skeleton-row td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f4f6f9;
+  vertical-align: middle;
+}
+
+.sdf-skeleton-row:last-child td {
+  border-bottom: none;
+}
+
+/* Offset shimmer per row for organic feel */
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-circle::after {
+  animation-delay: 0.2s;
+}
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-circle::after {
+  animation-delay: 0.4s;
+}
+
+/* ============================================================
+   DARK MODE
+   ============================================================ */
+.dark-mode .sdf-skeleton-page {
+  background: #0a0e1a;
+}
+
+.dark-mode .sdf-skeleton-card,
+.dark-mode .sdf-skeleton-header,
+.dark-mode .sdf-skeleton-tabs,
+.dark-mode .sdf-skeleton-page .sdf-schedule-table-container {
+  background: #13172b;
+  border-color: #1e2340;
+}
+
+.dark-mode .sdf-skeleton-page .sdf-schedule-table th {
+  background: #0b1220;
+  border-bottom-color: #1e2340;
+}
+
+.dark-mode .sdf-skeleton-row td {
+  border-bottom-color: #1a2233;
+}
+
+.dark-mode .sdf-skeleton-text,
+.dark-mode .sdf-skeleton-circle,
+.dark-mode .sdf-skeleton-icon-box,
+.dark-mode .sdf-skeleton-logo-icon {
+  background: #1e293b;
+}
+
+.dark-mode .sdf-skeleton-text::after,
+.dark-mode .sdf-skeleton-circle::after,
+.dark-mode .sdf-skeleton-icon-box::after,
+.dark-mode .sdf-skeleton-logo-icon::after {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0) 0%,
+    rgba(148, 163, 184, 0.2) 50%,
+    rgba(148, 163, 184, 0) 100%
+  );
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .sdf-skeleton-text::after,
+  .sdf-skeleton-circle::after,
+  .sdf-skeleton-icon-box::after,
+  .sdf-skeleton-logo-icon::after,
+  .sdf-skeleton-card,
+  .sdf-skeleton-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
-  .sdf-btn:active,
-  .sdf-batch-btn-primary:active,
-  .sdf-batch-btn-secondary:active {
-    transform: scale(0.97);
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1280px) {
+  .sdf-skeleton-page .sdf-stats-row {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .sdf-skeleton-header {
+    flex-direction: column;
+    height: auto;
+    padding: 14px;
+    gap: 14px;
+  }
+
+  .sdf-skeleton-header .sdf-header-left {
+    flex-direction: column;
+    width: 100%;
+    gap: 14px;
+  }
+
+  .sdf-skeleton-header .sdf-nav {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .sdf-skeleton-page .sdf-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .sdf-skeleton-page {
+    padding: 12px;
+    gap: 12px;
+  }
+}
+/* Shimmer: light band sweeps across */
+@keyframes sdf-skeleton-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes sdf-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* ---------------- BASE: SOLID LIGHT GRAY BARS ---------------- */
+.sdf-skeleton-text,
+.sdf-skeleton-circle,
+.sdf-skeleton-icon-box,
+.sdf-skeleton-logo-icon {
+  background: #d1d5db;                 /* darker gray — actually visible */
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.sdf-skeleton-circle  { border-radius: 50%; }
+.sdf-skeleton-icon-box { width: 40px; height: 40px; border-radius: 12px; }
+.sdf-skeleton-icon-box.lg { width: 44px; height: 44px; border-radius: 12px; }
+.sdf-skeleton-logo-icon { width: 40px; height: 40px; border-radius: 10px; }
+
+/* ---------------- MOVING WHITE SHIMMER BAND ---------------- */
+.sdf-skeleton-text::after,
+.sdf-skeleton-circle::after,
+.sdf-skeleton-icon-box::after,
+.sdf-skeleton-logo-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;                          /* narrower band */
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.6) 50%,     /* softer peak */
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: sdf-skeleton-sweep 1.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ============================================================
+   FULL PAGE SKELETON WRAPPER
+   ============================================================ */
+.sdf-skeleton-page {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  background: #eef2f7;                 /* slightly darker page bg */
+  min-height: 100vh;
+}
+.sdf-skeleton-page .sdf-main {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow: hidden;
+  flex: 1;
+}
+
+/* ============================================================
+   CARDS — white bg, soft border, rounded corners, no shadow
+   ============================================================ */
+
+/* All skeleton cards share this look */
+.sdf-skeleton-card {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;           /* slightly more visible */
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+/* ---------------- HEADER SKELETON ---------------- */
+.sdf-skeleton-header {
+  background: #ffffff;
+  border: 1px solid #e8edf4;
+  border-radius: 14px;
+  padding: 18px 28px;
+  height: 74px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin: 20px 24px 0;
+}
+
+.sdf-skeleton-header .sdf-header-left {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+  height: 100%;
+}
+
+.sdf-skeleton-header .sdf-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+}
+
+.sdf-skeleton-header .sdf-nav {
+  display: flex;
+  gap: 6px;
+}
+
+.sdf-skeleton-header .sdf-header-right {
+  display: flex;
+  gap: 10px;
+}
+
+/* ---------------- STAT CARDS GRID (4 across) ---------------- */
+.sdf-skeleton-page .sdf-dashboard-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sdf-skeleton-page .sdf-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.sdf-stat-compact.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  min-height: 76px;
+}
+
+/* ---------------- LABOR COST BAR ---------------- */
+.sdf-labor-compact.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  min-height: 76px;
+  gap: 20px;
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-divider {
+  width: 1px;
+  height: 40px;
+  background: #e8edf4;
+  flex-shrink: 0;
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-breakdown-compact {
+  display: flex;
+  gap: 30px;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+/* ---------------- ACTION BAR ---------------- */
+.sdf-action-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  min-height: 60px;
+  gap: 12px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-left {
+  display: flex;
+  gap: 14px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-right {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+/* ---------------- CONTROL BAR ---------------- */
+.sdf-control-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.sdf-skeleton-control-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------------- TABLE SKELETON ---------------- */
+.sdf-skeleton-page .sdf-schedule-table-container {
+  flex: 1;
+  min-height: 400px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #e8edf4;
+  border-radius: 14px;
+}
+
+.sdf-skeleton-page .sdf-table-wrapper {
+  overflow: hidden;
+  height: 100%;
+}
+
+.sdf-skeleton-page .sdf-schedule-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.sdf-skeleton-page .sdf-schedule-table th {
+  background: #f8fafc;
+  border-bottom: 1px solid #e8edf4;
+  padding: 16px 16px;
+  text-align: left;
+  position: sticky;
+  top: 0;
+}
+
+.sdf-skeleton-row {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s ease forwards;
+}
+
+.sdf-skeleton-row td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f1f4f8;
+  vertical-align: middle;
+}
+
+.sdf-skeleton-row:last-child td {
+  border-bottom: none;
+}
+
+/* Offset shimmer per row for organic feel */
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-circle::after {
+  animation-delay: 0.15s;
+}
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-circle::after {
+  animation-delay: 0.3s;
+}
+
+/* ============================================================
+   DARK MODE
+   ============================================================ */
+.dark-mode .sdf-skeleton-page {
+  background: #0a0e1a;
+}
+
+.dark-mode .sdf-skeleton-card,
+.dark-mode .sdf-skeleton-header,
+.dark-mode .sdf-skeleton-page .sdf-schedule-table-container {
+  background: #13172b;
+  border-color: #1e2340;
+}
+
+.dark-mode .sdf-skeleton-page .sdf-schedule-table th {
+  background: #0b1220;
+  border-bottom-color: #1e2340;
+}
+
+.dark-mode .sdf-skeleton-row td {
+  border-bottom-color: #1a2233;
+}
+
+.dark-mode .sdf-skeleton-text,
+.dark-mode .sdf-skeleton-circle,
+.dark-mode .sdf-skeleton-icon-box,
+.dark-mode .sdf-skeleton-logo-icon {
+  background: #1e293b;
+}
+
+.dark-mode .sdf-skeleton-text::after,
+.dark-mode .sdf-skeleton-circle::after,
+.dark-mode .sdf-skeleton-icon-box::after,
+.dark-mode .sdf-skeleton-logo-icon::after {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0) 0%,
+    rgba(148, 163, 184, 0.25) 50%,
+    rgba(148, 163, 184, 0) 100%
+  );
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .sdf-skeleton-text::after,
+  .sdf-skeleton-circle::after,
+  .sdf-skeleton-icon-box::after,
+  .sdf-skeleton-logo-icon::after,
+  .sdf-skeleton-card,
+  .sdf-skeleton-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1024px) {
+  .sdf-skeleton-page .sdf-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .sdf-skeleton-header {
+    flex-direction: column;
+    height: auto;
+    padding: 14px;
+    gap: 14px;
+  }
+
+  .sdf-skeleton-header .sdf-header-left {
+    flex-direction: column;
+    width: 100%;
+    gap: 14px;
+  }
+
+  .sdf-skeleton-header .sdf-nav {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .sdf-action-bar.sdf-skeleton-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+
+  .sdf-action-bar.sdf-skeleton-card .sdf-action-left,
+  .sdf-action-bar.sdf-skeleton-card .sdf-action-right {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .sdf-skeleton-page .sdf-stats-row {
+    grid-template-columns: 1fr;
+  }
+
+  .sdf-skeleton-page .sdf-main {
+    padding: 14px;
+  }
+}
+@keyframes sdf-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------- BASE: SOLID LIGHT GRAY BARS ---------------- */
+.sdf-skeleton-text,
+.sdf-skeleton-circle,
+.sdf-skeleton-icon-box,
+.sdf-skeleton-logo-icon {
+  background: #e5e7eb;                 /* plain light gray */
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sdf-skeleton-circle  { border-radius: 50%; }
+.sdf-skeleton-icon-box { width: 40px; height: 40px; border-radius: 8px; }
+.sdf-skeleton-icon-box.lg { width: 44px; height: 44px; }
+.sdf-skeleton-logo-icon { width: 40px; height: 40px; border-radius: 8px; }
+
+/* ---------------- MOVING WHITE SHIMMER BAND ---------------- */
+.sdf-skeleton-text::after,
+.sdf-skeleton-circle::after,
+.sdf-skeleton-icon-box::after,
+.sdf-skeleton-logo-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.9) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: sdf-skeleton-sweep 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ---------------- FULL PAGE SKELETON ---------------- */
+.sdf-skeleton-page {
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.sdf-skeleton-page .sdf-main {
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+/* ---------------- HEADER SKELETON ---------------- */
+.sdf-skeleton-header {
+  background: var(--sdf-bg-card);
+  border-bottom: 1px solid var(--sdf-border);
+  padding: 0 32px;
+  height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  box-shadow: var(--sdf-shadow-sm);
+}
+
+.sdf-skeleton-header .sdf-header-left {
+  display: flex;
+  align-items: center;
+  gap: 48px;
+  height: 100%;
+}
+
+.sdf-skeleton-header .sdf-logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+.sdf-skeleton-header .sdf-nav {
+  display: flex;
+  gap: 4px;
+}
+
+/* ---------------- STAT CARDS ---------------- */
+.sdf-skeleton-card {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+}
+
+.sdf-stat-compact.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--sdf-bg-card);
+  border: 1px solid var(--sdf-border);
+  border-radius: var(--sdf-radius-md);
+}
+
+/* ---------------- LABOR COST BAR ---------------- */
+.sdf-labor-compact.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--sdf-bg-card);
+  border: 1px solid var(--sdf-border);
+  border-radius: var(--sdf-radius-md);
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-divider {
+  width: 1px;
+  height: 36px;
+  background: var(--sdf-border);
+}
+
+.sdf-labor-compact.sdf-skeleton-card .sdf-labor-breakdown-compact {
+  display: flex;
+  gap: 24px;
+}
+
+/* ---------------- ACTION BAR ---------------- */
+.sdf-action-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--sdf-bg-card);
+  border: 1px solid var(--sdf-border);
+  border-radius: var(--sdf-radius-md);
+  gap: 12px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-left {
+  display: flex;
+  gap: 12px;
+}
+
+.sdf-action-bar.sdf-skeleton-card .sdf-action-right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* ---------------- CONTROL BAR ---------------- */
+.sdf-control-bar.sdf-skeleton-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+.sdf-skeleton-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------------- TABLE SKELETON ---------------- */
+.sdf-schedule-table-container:has(.sdf-skeleton-row) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--sdf-bg-card);
+  border: 1px solid var(--sdf-border);
+  border-radius: var(--sdf-radius-md);
+}
+
+.sdf-skeleton-row {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s ease forwards;
+}
+
+.sdf-skeleton-row td {
+  padding: 12px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: middle;
+}
+
+.sdf-skeleton-row:last-child td {
+  border-bottom: none;
+}
+
+/* Offset shimmer per row for organic feel */
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-circle::after {
+  animation-delay: 0.15s;
+}
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-text::after,
+.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-circle::after {
+  animation-delay: 0.3s;
+}
+
+/* ---------------- DARK MODE ---------------- */
+.dark-mode .sdf-skeleton-text,
+.dark-mode .sdf-skeleton-circle,
+.dark-mode .sdf-skeleton-icon-box,
+.dark-mode .sdf-skeleton-logo-icon {
+  background: #334155;
+}
+
+.dark-mode .sdf-skeleton-text::after,
+.dark-mode .sdf-skeleton-circle::after,
+.dark-mode .sdf-skeleton-icon-box::after,
+.dark-mode .sdf-skeleton-logo-icon::after {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0) 0%,
+    rgba(148, 163, 184, 0.35) 50%,
+    rgba(148, 163, 184, 0) 100%
+  );
+}
+
+/* ---------------- REDUCED MOTION ---------------- */
+@media (prefers-reduced-motion: reduce) {
+  .sdf-skeleton-text::after,
+  .sdf-skeleton-circle::after,
+  .sdf-skeleton-icon-box::after,
+  .sdf-skeleton-logo-icon::after,
+  .sdf-skeleton-card,
+  .sdf-skeleton-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ---------------- RESPONSIVE ---------------- */
+@media (max-width: 768px) {
+  .sdf-skeleton-header {
+    flex-direction: column;
+    height: auto;
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .sdf-skeleton-header .sdf-header-left {
+    flex-direction: column;
+    width: 100%;
+    gap: 16px;
+  }
+
+  .sdf-skeleton-header .sdf-nav {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .sdf-action-bar.sdf-skeleton-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sdf-action-bar.sdf-skeleton-card .sdf-action-left,
+  .sdf-action-bar.sdf-skeleton-card .sdf-action-right {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+/* Shimmer keyframe: light band slides across from left → right */
+@keyframes sdf-skeleton-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes sdf-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Base: solid light gray bars ---------- */
+.sdf-skeleton-text,
+.sdf-skeleton-circle,
+.sdf-skeleton-icon-box {
+  background: #e5e7eb;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sdf-skeleton-circle {
+  border-radius: 50%;
+}
+
+.sdf-skeleton-icon-box {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+}
+
+.sdf-skeleton-icon-box.lg {
+  width: 44px;
+  height: 44px;
+}
+
+/* ---------- Moving white shimmer band ---------- */
+.sdf-skeleton-text::after,
+.sdf-skeleton-circle::after,
+.sdf-skeleton-icon-box::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.85) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: sdf-skeleton-sweep 1.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ---------- Card entrance ---------- */
+.sdf-skeleton-card {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+}
+
+/* ---------- Header skeleton ---------- */
+.sdf-skeleton-header .sdf-nav .sdf-skeleton-text {
+  /* Tabs use pill-ish shape */
+}
+
+.sdf-skeleton-logo-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  background: #e5e7eb;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.sdf-skeleton-logo-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.85) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: sdf-skeleton-sweep 1.4s ease-in-out infinite;
+}
+
+/* ---------- Control bar group ---------- */
+.sdf-skeleton-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---------- Table skeleton ---------- */
+.sdf-skeleton-table-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+.sdf-skeleton-table {
+  width: 100%;
+}
+
+.sdf-skeleton-table thead th {
+  background: var(--sdf-bg-secondary);
+}
+
+.sdf-skeleton-table tbody tr.sdf-skeleton-row {
+  opacity: 0;
+  animation: sdf-skeleton-fade-in 0.45s ease forwards;
+}
+
+/* Stagger rows */
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(1) { animation-delay: 0.05s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(2) { animation-delay: 0.10s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(3) { animation-delay: 0.15s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(4) { animation-delay: 0.20s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(5) { animation-delay: 0.25s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(6) { animation-delay: 0.30s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(7) { animation-delay: 0.35s; }
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(8) { animation-delay: 0.40s; }
+
+/* Offset shimmer per row so they don't sync */
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-text::after,
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-circle::after,
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(2n) .sdf-skeleton-icon-box::after {
+  animation-delay: 0.15s;
+}
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-text::after,
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-circle::after,
+.sdf-skeleton-table tbody tr.sdf-skeleton-row:nth-child(3n) .sdf-skeleton-icon-box::after {
+  animation-delay: 0.3s;
+}
+
+/* ---------- Dark mode ---------- */
+.dark-mode .sdf-skeleton-text,
+.dark-mode .sdf-skeleton-circle,
+.dark-mode .sdf-skeleton-icon-box,
+.dark-mode .sdf-skeleton-logo-icon {
+  background: #334155;
+}
+
+.dark-mode .sdf-skeleton-text::after,
+.dark-mode .sdf-skeleton-circle::after,
+.dark-mode .sdf-skeleton-icon-box::after,
+.dark-mode .sdf-skeleton-logo-icon::after {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0) 0%,
+    rgba(148, 163, 184, 0.35) 50%,
+    rgba(148, 163, 184, 0) 100%
+  );
+}
+
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .sdf-skeleton-text::after,
+  .sdf-skeleton-circle::after,
+  .sdf-skeleton-icon-box::after,
+  .sdf-skeleton-logo-icon::after,
+  .sdf-skeleton-card,
+  .sdf-skeleton-table tbody tr.sdf-skeleton-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }

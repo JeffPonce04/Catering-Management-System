@@ -1,78 +1,94 @@
-import { lazy, Suspense } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
-import { FaSpinner } from 'react-icons/fa';
-import AppLayout from '../../components/layout/AppLayout';
-import ProtectedRoute from '../../components/common/ProtectedRoute';
-import {
-  ADMIN_ROLES,
-  BILLING_ROLES,
-  BOOKING_ROLES,
-  CUSTOMER_ROLES,
-  DASHBOARD_ROLES,
-  HEAD_CHEF_ROLES,
-  INVENTORY_ROLES,
-  PAYROLL_PREPARATION_ROLES,
-  REPORT_ROLES,
-  SETTINGS_ROLES,
-  STAFF_ROLES,
-  getDefaultRouteForUser,
-} from '../../utils/roleRoutes';
-import { useAuth } from '../../contexts/AuthContext';
-import styles from './AppRouter.module.css';
+  import { lazy, Suspense } from 'react';
+  import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+  import { FaSpinner } from 'react-icons/fa';
+  import AppLayout from '../../components/layout/AppLayout';
+  import ProtectedRoute from '../../components/common/ProtectedRoute';
+  import {
+    ADMIN_ROLES,
+    BILLING_ROLES,
+    BOOKING_ROLES,
+    CASHIER_ROLES,
+    CUSTOMER_ROLES,
+    DASHBOARD_ROLES,
+    HEAD_CHEF_ROLES,
+    INVENTORY_ROLES,
+    PAYROLL_PREPARATION_ROLES,
+    REPORT_ROLES,
+    SETTINGS_ROLES,
+    STAFF_ROLES,
+    getDefaultRouteForUser,
+  } from '../../utils/roleRoutes';
+  import { useAuth } from '../../contexts/AuthContext';
+  import styles from './AppRouter.module.css';
 
-const LoginPage = lazy(() => import('../../features/auth/pages/LoginPage'));
-const DashboardPage = lazy(() => import('../../features/dashboard/pages/DashboardPage'));
-const CashierPage = lazy(() => import('../../features/cashier/pages/CashierPage'));
-const ReportsAnalyticsPage = lazy(() => import('../../features/reports/pages/ReportsAnalyticsPage'));
-const InventoryPage = lazy(() => import('../../features/inventory/pages/InventoryPage'));
-const MenuManagementPage = lazy(() => import('../../features/menu/pages/MenuManagementPage'));
-const OrdersManagementPage = lazy(() => import('../../features/orders/pages/OrdersManagementPage'));
-const EventsManagementPage = lazy(() => import('../../features/events/pages/EventsManagementPage'));
-const PaymentPage = lazy(() => import('../../features/billing/pages/PaymentPage'));
-const BookingQuotationManagementPage = lazy(() => import('../../features/bookings/pages/BookingQuotationManagementPage'));
-const CustomerManagementPage = lazy(() => import('../../features/customers/pages/CustomerManagementPage'));
-const SettingsPage = lazy(() => import('../../features/settings/pages/SettingsPage'));
-const NotificationsPage = lazy(() => import('../../features/notifications/pages/NotificationsPage'));
-const StaffDirectoryPage = lazy(() => import('../../features/staff/pages/StaffDirectoryPage'));
-const StaffSchedulingPage = lazy(() => import('../../features/staff/pages/StaffSchedulingPage'));
-const StaffAttendancePage = lazy(() => import('../../features/staff/pages/StaffAttendancePage'));
-const StaffPayrollPage = lazy(() => import('../../features/staff/pages/StaffPayrollPage'));
-const StockLevels = lazy(() => import('../../features/inventory/pages/StockLevels'));
-const Movements = lazy(() => import('../../features/inventory/pages/Movements'));
-const PurchaseRequests = lazy(() => import('../../features/inventory/pages/PurchaseRequests'));
-const SupplierManagement = lazy(() => import('../../features/inventory/pages/SupplierManagement'));
-const WasteManagement = lazy(() => import('../../features/inventory/pages/Waste'));
-const ReservationManagement = lazy(() => import('../../features/inventory/pages/ReservationManagement'));
-const MaintenanceManagement = lazy(() => import('../../features/inventory/pages/MaintenanceManagement'));
-const IngredientsManagement = lazy(() => import('../../features/inventory/pages/IngredientsManagement'));
-const EquipmentManagement = lazy(() => import('../../features/inventory/pages/EquipmentManagement'));
-const OrderEvents = lazy(() => import('../../features/orders/pages/OrdersEventspage'));
+  const LoginPage = lazy(() => import('../../features/auth/pages/LoginPage'));
+  const DashboardPage = lazy(() => import('../../features/dashboard/pages/DashboardPage'));
+  const CashierPage = lazy(() => import('../../features/cashier/pages/CashierPage'));
+  const ReportsAnalyticsPage = lazy(() => import('../../features/reports/pages/ReportsAnalyticsPage'));
+  const InventoryPage = lazy(() => import('../../features/inventory/pages/InventoryPage'));
+  const MenuManagementPage = lazy(() => import('../../features/menu/pages/MenuManagementPage'));
+  const OrdersManagementPage = lazy(() => import('../../features/orders/pages/OrdersManagementPage'));
+  const EventsManagementPage = lazy(() => import('../../features/events/pages/EventsManagementPage'));
+  const PaymentPage = lazy(() => import('../../features/billing/pages/PaymentPage'));
+  const BookingQuotationManagementPage = lazy(() => import('../../features/bookings/pages/BookingQuotationManagementPage'));
+  const CustomerManagementPage = lazy(() => import('../../features/customers/pages/CustomerManagementPage'));
+  const SettingsPage = lazy(() => import('../../features/settings/pages/SettingsPage'));
+  const NotificationsPage = lazy(() => import('../../features/notifications/pages/NotificationsPage'));
+  const StaffDirectoryPage = lazy(() => import('../../features/staff/pages/StaffDirectoryPage'));
+  const StaffSchedulingPage = lazy(() => import('../../features/staff/pages/StaffSchedulingPage'));
+  const StaffAttendancePage = lazy(() => import('../../features/staff/pages/StaffAttendancePage'));
+  const StaffPayrollPage = lazy(() => import('../../features/staff/pages/StaffPayrollPage'));
+  const StockLevels = lazy(() => import('../../features/inventory/pages/StockLevels'));
+  const Movements = lazy(() => import('../../features/inventory/pages/Movements'));
+  const PurchaseRequests = lazy(() => import('../../features/inventory/pages/PurchaseRequests'));
+  const SupplierManagement = lazy(() => import('../../features/inventory/pages/SupplierManagement'));
+  const WasteManagement = lazy(() => import('../../features/inventory/pages/Waste'));
+  const ReservationManagement = lazy(() => import('../../features/inventory/pages/ReservationManagement'));
+  const MaintenanceManagement = lazy(() => import('../../features/inventory/pages/MaintenanceManagement'));
+  const IngredientsManagement = lazy(() => import('../../features/inventory/pages/IngredientsManagement'));
+  const EquipmentManagement = lazy(() => import('../../features/inventory/pages/EquipmentManagement'));
+  const ApprovedRequests = lazy(() => import('../../features/inventory/pages/ApprovedRequests'));
+  const OrderEvents = lazy(() => import('../../features/orders/pages/OrdersEventspage'));
+  // FIXED: Loading screen only for the page content, NOT the navigation
+  const PageLoadingScreen = () => (
+    <div className={styles.pageLoadingScreen}>
+      <FaSpinner className="cms-spinner" />
+      <span className={styles.loadingText}>Loading page...</span>
+    </div>
+  );
 
-const LoadingScreen = () => (
-  <div className={styles.loadingScreen}>
-    <FaSpinner className="cms-spinner" />
-    <span className={styles.loadingText}>Loading...</span>
-  </div>
-);
+  const FullPageLoadingScreen = () => (
+    <div className={styles.loadingScreen}>
+      <FaSpinner className="cms-spinner" />
+      <span className={styles.loadingText}>Loading...</span>
+    </div>
+  );
 
-const ProtectedPage = ({ children, allowedRoles }) => (
-  <ProtectedRoute allowedRoles={allowedRoles} redirectUnauthorized>
-    <AppLayout>{children}</AppLayout>
-  </ProtectedRoute>
-);
+  const ProtectedPage = ({ children, allowedRoles }) => (
+    <ProtectedRoute allowedRoles={allowedRoles} redirectUnauthorized>
+      <AppLayout>
+        <Suspense fallback={<PageLoadingScreen />}>
+          {children}
+        </Suspense>
+      </AppLayout>
+    </ProtectedRoute>
+  );
 
-const RoleHomeRedirect = () => {
-  const { user, isAuthenticated, loading } = useAuth();
+  const RoleHomeRedirect = () => {
+    const { user, isAuthenticated, loading } = useAuth();
 
-  if (loading) return <LoadingScreen />;
-  return <Navigate to={isAuthenticated ? getDefaultRouteForUser(user) : '/login'} replace />;
-};
+    if (loading) return <FullPageLoadingScreen />;
+    return <Navigate to={isAuthenticated ? getDefaultRouteForUser(user) : '/login'} replace />;
+  };
 
-const AppRouter = () => (
-  <BrowserRouter>
-    <Suspense fallback={<LoadingScreen />}>
+  const AppRouter = () => (
+    <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
+        <Route path="/login" element={
+          <Suspense fallback={<FullPageLoadingScreen />}>
+            <LoginPage />
+          </Suspense>
+        } />
         <Route path="/" element={<RoleHomeRedirect />} />
 
         <Route path="/dashboard" element={<ProtectedPage allowedRoles={DASHBOARD_ROLES}><DashboardPage /></ProtectedPage>} />
@@ -89,11 +105,35 @@ const AppRouter = () => (
         <Route path="/maintenanceManagement" element={<ProtectedPage allowedRoles={INVENTORY_ROLES}><MaintenanceManagement /></ProtectedPage>} />
         <Route path="/ingredientsManagement" element={<ProtectedPage allowedRoles={INVENTORY_ROLES}><IngredientsManagement /></ProtectedPage>} />
         <Route path="/equipmentManagement" element={<ProtectedPage allowedRoles={INVENTORY_ROLES}><EquipmentManagement /></ProtectedPage>} />
-
+        <Route path="/approvedRequests" element={<ProtectedPage allowedRoles={INVENTORY_ROLES}><ApprovedRequests /></ProtectedPage>} />
         <Route path="/menu" element={<ProtectedPage allowedRoles={[...ADMIN_ROLES, ...HEAD_CHEF_ROLES]}><MenuManagementPage /></ProtectedPage>} />
-        <Route path="/orders&events" element={<ProtectedPage allowedRoles={ADMIN_ROLES}><OrderEvents /></ProtectedPage>} />
-        <Route path="/orders&events/orders" element={<ProtectedPage allowedRoles={ADMIN_ROLES}><OrdersManagementPage /></ProtectedPage>} />
-        <Route path="/orders&events/events" element={<ProtectedPage allowedRoles={ADMIN_ROLES}><EventsManagementPage /></ProtectedPage>} />
+            {/* ⭐ Cashiers get read-only access to Orders & Events.
+            Write actions (approve, complete, profitability) are still
+            blocked at the API layer by RoleAccessMiddleware. */}
+        <Route
+          path="/orders&events"
+          element={
+            <ProtectedPage allowedRoles={[...ADMIN_ROLES, ...CASHIER_ROLES]}>
+              <OrderEvents />
+            </ProtectedPage>
+          }
+        />
+        <Route
+          path="/orders&events/orders"
+          element={
+            <ProtectedPage allowedRoles={[...ADMIN_ROLES, ...CASHIER_ROLES]}>
+              <OrdersManagementPage />
+            </ProtectedPage>
+          }
+        />
+        <Route
+          path="/orders&events/events"
+          element={
+            <ProtectedPage allowedRoles={[...ADMIN_ROLES, ...CASHIER_ROLES]}>
+              <EventsManagementPage />
+            </ProtectedPage>
+          }
+        />
 
         <Route path="/billing" element={<ProtectedPage allowedRoles={BILLING_ROLES}><PaymentPage /></ProtectedPage>} />
         <Route path="/booking" element={<ProtectedPage allowedRoles={BOOKING_ROLES}><BookingQuotationManagementPage /></ProtectedPage>} />
@@ -109,8 +149,7 @@ const AppRouter = () => (
         <Route path="/notifications" element={<ProtectedPage allowedRoles={DASHBOARD_ROLES}><NotificationsPage /></ProtectedPage>} />
         <Route path="*" element={<RoleHomeRedirect />} />
       </Routes>
-    </Suspense>
-  </BrowserRouter>
-);
+    </BrowserRouter>
+  );
 
-export default AppRouter;
+  export default AppRouter;

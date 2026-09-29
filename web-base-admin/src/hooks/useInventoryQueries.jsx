@@ -201,6 +201,8 @@ export const useInventoryMovements = (filters = {}) => useQuery({
   queryFn: () => inventoryAPI.getMovements(filters),
   select: listOf,
   staleTime: 30 * 1000,
+  // ⭐ Make sure the query actually refires when filters change
+  keepPreviousData: true,
 });
 
 export const useRecordMovement = () => {
@@ -288,6 +290,32 @@ export const usePurchaseSuggestions = (filters = {}) => useQuery({
   select: (response) => singleOf(response, []),
   staleTime: 30 * 1000,
 });
+
+export const useApprovedRequests = (filters = {}) => useQuery({
+  queryKey: ['inventory', 'approved-requests', filters],
+  queryFn: () => inventoryAPI.getApprovedRequests(filters),
+  select: listOf,
+  staleTime: 30 * 1000,
+});
+
+export const useApprovedRequestFiles = () => useQuery({
+  queryKey: ['inventory', 'approved-request-files'],
+  queryFn: () => inventoryAPI.getApprovedRequestFiles(),
+  select: (response) => singleOf(response, []),
+  staleTime: 30 * 1000,
+});
+
+export const useRenameApprovedRequestFile = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ date, name }) => inventoryAPI.renameApprovedRequestFile(date, name),
+    onSuccess: () => {
+      message.success('Request file renamed successfully');
+      queryClient.invalidateQueries({ queryKey: ['inventory', 'approved-request-files'] });
+    },
+    onError: (error) => message.error(apiError(error, 'Failed to rename file')),
+  });
+};
 
 export const useCreatePurchaseRequest = () => {
   const queryClient = useQueryClient();

@@ -171,6 +171,138 @@ const printPayslipInNewWindow = (htmlContent) => {
 };
 
 /* ============================================================
+   SKELETON COMPONENTS
+   ============================================================ */
+
+const PrfSkeletonText = ({ width = '100%', height = 12, radius = 6, style = {} }) => (
+  <div className="prf-skeleton-text" style={{ width, height, borderRadius: radius, ...style }} />
+);
+
+const PrfSkeletonCircle = ({ size = 40, radius = '50%', style = {} }) => (
+  <div className="prf-skeleton-circle" style={{ width: size, height: size, minWidth: size, borderRadius: radius, ...style }} />
+);
+
+/* Header skeleton */
+const PrfSkeletonHeader = () => (
+  <div className="prf-header prf-skeleton-header">
+    <div className="prf-header-left">
+      <PrfSkeletonCircle size={44} radius={12} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <PrfSkeletonText width={200} height={18} />
+        <PrfSkeletonText width={170} height={10} />
+      </div>
+    </div>
+    <div className="prf-header-right">
+      <PrfSkeletonText width={180} height={34} radius={10} />
+      <PrfSkeletonText width={90} height={34} radius={8} />
+      <PrfSkeletonText width={80} height={34} radius={8} />
+      <PrfSkeletonText width={150} height={34} radius={8} />
+    </div>
+  </div>
+);
+
+/* KPI card skeleton */
+const PrfSkeletonKpiCard = ({ delay = 0 }) => (
+  <div className="prf-kpi-card prf-skeleton-card" style={{ animationDelay: `${delay}s` }}>
+    <div className="prf-skeleton-icon" />
+    <div className="prf-kpi-stats" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <PrfSkeletonText width={110} height={22} />
+      <PrfSkeletonText width={80} height={10} />
+    </div>
+  </div>
+);
+
+/* Period nav skeleton */
+const PrfSkeletonPeriodNav = () => (
+  <div className="prf-period-nav prf-skeleton-period-nav">
+    <div className="prf-period-info" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+      <PrfSkeletonCircle size={46} radius={12} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <PrfSkeletonText width={130} height={10} />
+        <PrfSkeletonText width={200} height={16} />
+      </div>
+    </div>
+    <div className="prf-period-controls">
+      <PrfSkeletonText width={220} height={38} radius={10} />
+      <PrfSkeletonText width={190} height={38} radius={10} />
+    </div>
+  </div>
+);
+
+/* Filters skeleton */
+const PrfSkeletonFilters = () => (
+  <div className="prf-filters prf-skeleton-filters">
+    <PrfSkeletonText width={180} height={38} radius={10} />
+    <PrfSkeletonText width={180} height={38} radius={10} />
+    <PrfSkeletonText width={280} height={38} radius={10} />
+  </div>
+);
+
+/* Table skeleton */
+const PrfSkeletonTable = () => {
+  const rowWidths = [
+    [90, 160, 120, 60, 55, 90, 90, 90, 100, 130],
+    [80, 150, 110, 55, 60, 85, 95, 95, 95, 130],
+    [95, 170, 125, 65, 55, 90, 90, 90, 105, 130],
+    [85, 155, 115, 60, 60, 88, 92, 92, 100, 130],
+    [90, 165, 118, 58, 55, 90, 95, 95, 100, 130],
+  ];
+
+  return (
+    <div className="prf-table-wrapper prf-skeleton-table-wrap">
+      <div className="prf-table-scroll">
+        <table className="prf-skeleton-table">
+          <thead>
+            <tr>
+              {[...Array(10)].map((_, i) => (
+                <th key={i}>
+                  <PrfSkeletonText width={i < 3 ? 80 : i === 9 ? 60 : 55} height={10} />
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rowWidths.map((widths, i) => (
+              <tr key={i} className="prf-skeleton-row" style={{ animationDelay: `${i * 0.05}s` }}>
+                <td><PrfSkeletonText width={widths[0]} height={12} /></td>
+                <td>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <PrfSkeletonCircle size={32} radius={8} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <PrfSkeletonText width={widths[1]} height={12} />
+                      <PrfSkeletonText width={60} height={9} />
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <PrfSkeletonText width={widths[2]} height={12} />
+                    <PrfSkeletonText width={70} height={9} />
+                  </div>
+                </td>
+                <td><PrfSkeletonText width={widths[3]} height={12} /></td>
+                <td><PrfSkeletonText width={widths[4]} height={12} /></td>
+                <td><PrfSkeletonText width={widths[5]} height={12} /></td>
+                <td><PrfSkeletonText width={widths[6]} height={12} /></td>
+                <td><PrfSkeletonText width={widths[7]} height={12} /></td>
+                <td><PrfSkeletonText width={widths[8]} height={22} radius={20} /></td>
+                <td>
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                    <PrfSkeletonCircle size={28} radius={6} />
+                    <PrfSkeletonCircle size={28} radius={6} />
+                    <PrfSkeletonCircle size={28} radius={6} />
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+/* ============================================================
    UI CONFIG — STATUS FILTER OPTIONS
    ============================================================ */
 const payrollStatusOptions = [
@@ -2196,12 +2328,43 @@ const Staff_Payroll_Formal = () => {
   const filtersClass = `prf-filters ${isDarkMode ? 'prf-filters-dark' : ''}`;
   const tableClass = `prf-table-wrapper ${isDarkMode ? 'prf-table-wrapper-dark' : ''}`;
   const isLoading = payrollLoading || historyLoading;
+  const showFullSkeleton = isLoading && payrollData.length === 0 && payrollHistory.length === 0;
   const endOfMonth = isEndOfMonthCutoff(cutoffType);
   const totalProcessDeductions = safeNumber(processDeductions.sss)
     + safeNumber(processDeductions.pagibig)
     + safeNumber(processDeductions.philhealth)
     + safeNumber(processDeductions.tax)
     + safeNumber(processDeductions.other);
+
+  // ⭐ Full-page skeleton while the initial load runs
+  if (showFullSkeleton) {
+    return (
+      <App>
+        <ConfigProvider theme={{ algorithm: isDarkMode ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm }}>
+          <div className={`prf-container prf-skeleton-container ${isDarkMode ? 'prf-dark-mode' : ''}`}>
+            <PrfSkeletonHeader />
+
+            <div className="prf-kpi-grid">
+              {[...Array(4)].map((_, i) => (
+                <PrfSkeletonKpiCard key={i} delay={i * 0.05} />
+              ))}
+            </div>
+
+            <Card className={`prf-main-card prf-skeleton-card ${isDarkMode ? 'prf-main-card-dark' : ''}`} variant="borderless">
+              <div className="prf-skeleton-tabs-row">
+                <PrfSkeletonText width={180} height={42} radius={8} />
+                <PrfSkeletonText width={200} height={42} radius={8} />
+              </div>
+
+              <PrfSkeletonPeriodNav />
+              <PrfSkeletonFilters />
+              <PrfSkeletonTable />
+            </Card>
+          </div>
+        </ConfigProvider>
+      </App>
+    );
+  }
 
   return (
     <App>

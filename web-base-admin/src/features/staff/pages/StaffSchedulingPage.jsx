@@ -235,72 +235,189 @@ const getRequestStatusLabel = (status) => {
 };
 
 // ==================== SKELETON COMPONENTS ====================
-const SkeletonStat = () => (
-  <div className="sdf-stat-compact skeleton">
-    <div className="skeleton-icon"></div>
-    <div className="sdf-stat-info">
-      <div className="skeleton-text short"></div>
-      <div className="skeleton-text medium"></div>
-    </div>
-  </div>
+
+
+// ==================== SKELETON COMPONENTS ====================
+
+// Base building blocks
+const SdfSkeletonText = ({ width = '100%', height = 12, radius = 6, style = {} }) => (
+  <div className="sdf-skeleton-text" style={{ width, height, borderRadius: radius, ...style }} />
 );
 
-const SkeletonLaborCompact = () => (
-  <div className="sdf-labor-compact skeleton">
-    <div className="sdf-labor-main">
-      <div className="skeleton-icon"></div>
-      <div className="sdf-labor-details">
-        <div className="skeleton-text short"></div>
-        <div className="skeleton-text medium"></div>
-        <div className="skeleton-text small"></div>
-      </div>
-    </div>
-  </div>
+const SdfSkeletonCircle = ({ size = 40, radius = '50%', style = {} }) => (
+  <div className="sdf-skeleton-circle" style={{ width: size, height: size, minWidth: size, borderRadius: radius, ...style }} />
 );
 
-const SkeletonScheduleRow = () => (
-  <tr className="skeleton-row">
-    <td><div className="skeleton-checkbox"></div></td>
-    <td>
-      <div className="skeleton-employee-cell">
-        <div className="skeleton-avatar"></div>
-        <div>
-          <div className="skeleton-text"></div>
-          <div className="skeleton-text short"></div>
+// Header skeleton (matches .sdf-header)
+const SkeletonHeader = () => (
+  <header className="sdf-header sdf-skeleton-header">
+    <div className="sdf-header-left">
+      <div className="sdf-logo">
+        <div className="sdf-skeleton-logo-icon" />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <SdfSkeletonText width={180} height={16} />
+          <SdfSkeletonText width={140} height={10} />
         </div>
       </div>
-    </td>
-    <td><div className="skeleton-text"></div></td>
-    <td><div className="skeleton-text"></div></td>
-    <td><div className="skeleton-badge"></div></td>
-    <td><div className="skeleton-shift-block">
-      <div className="skeleton-text"></div>
-      <div className="skeleton-text short"></div>
-    </div></td>
-    <td><div className="skeleton-text small"></div></td>
-    <td><div className="skeleton-text small"></div></td>
-    <td><div className="skeleton-icon-btn"></div></td>
-  </tr>
+      <nav className="sdf-nav">
+        {[...Array(6)].map((_, i) => (
+          <SdfSkeletonText key={i} width={i === 2 ? 110 : 95} height={34} radius={6} />
+        ))}
+      </nav>
+    </div>
+    <div className="sdf-header-right">
+      <SdfSkeletonText width={150} height={34} radius={6} />
+    </div>
+  </header>
 );
 
-const SkeletonScheduleTable = () => (
-  <div className="skeleton-table-container">
-    <table className="skeleton-table">
-      <thead>
-        <tr>
-          {[...Array(9)].map((_, i) => (
-            <th key={i} className="skeleton-table-header-cell"></th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {[...Array(5)].map((_, i) => (
-          <SkeletonScheduleRow key={i} />
-        ))}
-      </tbody>
-    </table>
+// Stat card skeleton (matches .sdf-stat-compact)
+const SkeletonStatCard = ({ delay = 0 }) => (
+  <div className="sdf-stat-compact sdf-skeleton-card" style={{ animationDelay: `${delay}s` }}>
+    <div className="sdf-skeleton-icon-box" />
+    <div className="sdf-stat-info" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <SdfSkeletonText width={80} height={10} />
+      <SdfSkeletonText width={90} height={22} />
+    </div>
   </div>
 );
+
+// Labor cost bar skeleton (matches .sdf-labor-compact)
+const SkeletonLaborCompact = () => (
+  <div className="sdf-labor-compact sdf-skeleton-card">
+    <div className="sdf-labor-main">
+      <div className="sdf-skeleton-icon-box lg" />
+      <div className="sdf-labor-details" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <SdfSkeletonText width={90} height={10} />
+        <SdfSkeletonText width={140} height={24} />
+        <SdfSkeletonText width={70} height={10} />
+      </div>
+    </div>
+    <div className="sdf-labor-divider" />
+    <div className="sdf-labor-breakdown-compact">
+      <div><SdfSkeletonText width={60} height={10} /></div>
+      <div><SdfSkeletonText width={60} height={10} /></div>
+    </div>
+  </div>
+);
+
+// Action bar skeleton (matches .sdf-action-bar)
+const SkeletonActionBar = () => (
+  <div className="sdf-action-bar sdf-skeleton-card">
+    <div className="sdf-action-left">
+      {[...Array(4)].map((_, i) => (
+        <SdfSkeletonText key={i} width={110} height={26} radius={20} />
+      ))}
+    </div>
+    <div className="sdf-action-right">
+      <SdfSkeletonText width={110} height={34} radius={6} />
+      <SdfSkeletonText width={130} height={34} radius={6} />
+      <SdfSkeletonText width={140} height={34} radius={6} />
+    </div>
+  </div>
+);
+
+// Control bar skeleton (matches .sdf-control-bar)
+const SkeletonControlBar = () => (
+  <div className="sdf-control-bar sdf-skeleton-card">
+    <div className="sdf-skeleton-control-group">
+      <SdfSkeletonText width={180} height={40} radius={8} />
+      <SdfSkeletonText width={70} height={32} radius={6} />
+      <SdfSkeletonText width={80} height={32} radius={6} />
+    </div>
+    <div className="sdf-skeleton-control-group">
+      <SdfSkeletonText width={220} height={34} radius={6} />
+      <SdfSkeletonText width={140} height={34} radius={6} />
+    </div>
+  </div>
+);
+
+// Schedule table skeleton (matches .sdf-schedule-table)
+const SkeletonScheduleTable = () => {
+  // Varied widths per row to feel organic — like real data
+  const rowVariants = [
+    { name: 180, code: 60,  position: 110, hours: 55 },
+    { name: 160, code: 70,  position: 95,  hours: 60 },
+    { name: 200, code: 55,  position: 120, hours: 50 },
+    { name: 170, code: 65,  position: 100, hours: 55 },
+    { name: 190, code: 60,  position: 105, hours: 60 },
+    { name: 155, code: 75,  position: 95,  hours: 50 },
+    { name: 185, code: 55,  position: 115, hours: 55 },
+    { name: 175, code: 65,  position: 100, hours: 60 },
+  ];
+
+  return (
+    <div className="sdf-schedule-table-container">
+      <div className="sdf-table-wrapper">
+        <table className="sdf-schedule-table">
+          <thead>
+            <tr>
+              <th style={{ width: '40px' }}><SdfSkeletonText width={16} height={16} radius={4} /></th>
+              <th><SdfSkeletonText width={70} height={11} /></th>
+              <th><SdfSkeletonText width={85} height={11} /></th>
+              <th><SdfSkeletonText width={55} height={11} /></th>
+              <th><SdfSkeletonText width={75} height={11} /></th>
+              <th><SdfSkeletonText width={45} height={11} /></th>
+              <th><SdfSkeletonText width={95} height={11} /></th>
+              <th><SdfSkeletonText width={45} height={11} /></th>
+              <th><SdfSkeletonText width={65} height={11} /></th>
+              <th><SdfSkeletonText width={55} height={11} /></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rowVariants.map((w, i) => (
+              <tr key={i} className="sdf-skeleton-row" style={{ animationDelay: `${0.05 + i * 0.05}s` }}>
+                <td>
+                  <SdfSkeletonText width={16} height={16} radius={4} />
+                </td>
+                <td>
+                  <div className="sdf-employee-cell">
+                    <SdfSkeletonCircle size={32} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1, minWidth: 0 }}>
+                      <SdfSkeletonText width={w.name} height={12} />
+                      <SdfSkeletonText width={Math.round(w.name * 0.6)} height={9} />
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <SdfSkeletonText width={w.code} height={18} radius={6} />
+                </td>
+                <td>
+                  <SdfSkeletonText width={w.position} height={12} />
+                </td>
+                <td>
+                  <SdfSkeletonText width={52} height={18} radius={12} />
+                </td>
+                <td>
+                  <SdfSkeletonText width={58} height={18} radius={12} />
+                </td>
+                <td>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                    <SdfSkeletonText width={125} height={11} />
+                    <SdfSkeletonText width={85} height={9} />
+                  </div>
+                </td>
+                <td>
+                  <SdfSkeletonText width={w.hours} height={18} radius={12} />
+                </td>
+                <td>
+                  <SdfSkeletonText width={68} height={13} />
+                </td>
+                <td>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <SdfSkeletonCircle size={28} radius={6} />
+                    <SdfSkeletonCircle size={28} radius={6} />
+                    <SdfSkeletonCircle size={28} radius={6} />
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
 
 // ==================== AVATAR COMPONENT ====================
 const EmployeeAvatar = ({ employee, size = 'small' }) => {
@@ -1885,6 +2002,30 @@ const Staff_Scheduling = () => {
   const archivedSchedulesList = getArchivedSchedules();
 
   // ==================== RENDER ====================
+  // Show full-page skeleton when schedule tab is loading (initial load only)
+  const showFullSkeleton = isLoading && activeTab === 'schedule' && !employees.length && !shifts.length;
+
+  if (showFullSkeleton) {
+    return (
+      <div className="sdf-scheduling-container sdf-skeleton-page">
+        <SkeletonHeader />
+        <main className="sdf-main">
+          <div className="sdf-dashboard-compact">
+            <div className="sdf-stats-row">
+              {[...Array(4)].map((_, i) => (
+                <SkeletonStatCard key={i} delay={i * 0.05} />
+              ))}
+            </div>
+            <SkeletonLaborCompact />
+          </div>
+          <SkeletonActionBar />
+          <SkeletonControlBar />
+          <SkeletonScheduleTable />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="sdf-scheduling-container">
       {notification.show && (
@@ -1933,12 +2074,12 @@ const Staff_Scheduling = () => {
       </header>
 
       <main className="sdf-main">
-        {activeTab === 'schedule' && (
+           {activeTab === 'schedule' && (
           <>
             <div className="sdf-dashboard-compact">
               <div className="sdf-stats-row">
                 {isLoading ? (
-                  [...Array(4)].map((_, i) => <SkeletonStat key={i} />)
+                  [...Array(4)].map((_, i) => <SkeletonStatCard key={i} delay={i * 0.05} />)
                 ) : (
                   statistics.map((stat, index) => (
                     <div key={index} className="sdf-stat-compact">
@@ -1977,9 +2118,16 @@ const Staff_Scheduling = () => {
               </div>
             </div>
 
-            <div className="sdf-action-bar">
-              <div className="sdf-action-left">
-                <div className="sdf-action-badge"><ScheduleOutlined /> <strong>{shifts.length}</strong> Shifts</div>
+            {isLoading ? (
+              <>
+                <SkeletonActionBar />
+                <SkeletonControlBar />
+              </>
+            ) : (
+              <>
+                <div className="sdf-action-bar">
+                  <div className="sdf-action-left">
+                    <div className="sdf-action-badge"><ScheduleOutlined /> <strong>{shifts.length}</strong> Shifts</div>
                 <div className="sdf-action-badge"><TeamOutlined /> <strong>{new Set(shifts.map(s => s.employee_id)).size}</strong> Staff</div>
                 <div className="sdf-action-badge"><ClockCircleOutlined /> <strong>{laborCosts.totalHours.toFixed(1)}</strong> Hours</div>
                 <div className="sdf-action-badge"><SaveOutlined /> <strong>{savedSchedulesStats.totalSchedules}</strong> Schedule Created</div>
@@ -2035,7 +2183,12 @@ const Staff_Scheduling = () => {
                 </select>
               </div>
             </div>
+              </>
+            )}
           </>
+        )}
+        {isLoading && activeTab === 'schedule' && (
+          <SkeletonScheduleTable />
         )}
 
         {!isLoading && activeTab === 'schedule' && (

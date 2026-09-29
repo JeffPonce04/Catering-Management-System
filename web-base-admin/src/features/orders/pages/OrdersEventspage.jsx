@@ -98,7 +98,17 @@ import {
     BankOutlined,
     CreditCardOutlined,
     ReconciliationOutlined,
+    CalendarOutlined as CalendarIcon,
 } from '@ant-design/icons';
+
+import dayjsLib from 'dayjs';
+import isoWeek from 'dayjs/plugin/isoWeek';
+import isSameOrAfter from 'dayjs/plugin/isSameOrAfter';
+import isSameOrBefore from 'dayjs/plugin/isSameOrBefore';
+
+dayjsLib.extend(isoWeek);
+dayjsLib.extend(isSameOrAfter);
+dayjsLib.extend(isSameOrBefore);
 
 import { MdEventNote } from "react-icons/md";
 
@@ -153,15 +163,25 @@ import {
     useApproveAllEquipment,
     useReturnEquipment,
     useCompleteEvent,
+    useActiveEmployees,
 } from '../../../hooks/useEvents';
 
 import { useShoppingList } from '../../../hooks/useShoppingList';
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 import api from '../../../services/api';
+import { useAuth } from '../../../contexts/AuthContext';
 
 const { Title, Text } = Typography;
 const { Option } = Select;
 const { TextArea } = Input;
 const { RangePicker } = DatePicker;
+
+// ─────────────────────────────────────────────────────────────
+// Module-level flag: true only for the FIRST mount after a hard
+// page load (F5 / direct URL). Survives in-app React Router nav
+// because the JS module stays in memory. Resets on hard refresh.
+// ─────────────────────────────────────────────────────────────
+let __ueFirstMountAfterPageLoad = true;
 
 // ============================================================
 // CONSTANTS
@@ -1052,14 +1072,178 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
         </Modal>
     );
 };
+// ============================================================
+// SKELETON LOADING (light gray, matches Dashboard + Bookings)
+// ============================================================
+
+const SkeletonText = ({ width = '100%', height = 14, style = {} }) => (
+    <div className="ue-skeleton-text" style={{ width, height, ...style }} />
+);
+
+const SkeletonCircle = ({ size = 44, style = {} }) => (
+    <div
+        className="ue-skeleton-circle"
+        style={{ width: size, height: size, minWidth: size, ...style }}
+    />
+);
+
+const SkeletonStatCard = ({ delay = 0 }) => (
+    <div
+        className="ue-stat-skeleton-card ue-skeleton-card"
+        style={{ animationDelay: `${delay}s` }}
+    >
+        <SkeletonCircle size={44} style={{ borderRadius: 12 }} />
+        <div className="ue-stat-skeleton-info">
+            <SkeletonText width={110} height={11} />
+            <SkeletonText width={80} height={20} />
+        </div>
+    </div>
+);
+
+const SkeletonStatsGrid = () => (
+    <div className="ue-stats-skeleton-grid">
+        {Array.from({ length: 5 }).map((_, i) => (
+            <SkeletonStatCard key={i} delay={i * 0.05} />
+        ))}
+    </div>
+);
+
+const SkeletonFilters = () => (
+    <div className="ue-filters-skeleton ue-skeleton-card">
+        <div className="ue-filter-skeleton-group">
+            <SkeletonCircle size={14} />
+            <SkeletonText width={130} height={12} />
+        </div>
+        <div className="ue-filter-skeleton-group">
+            <SkeletonCircle size={14} />
+            <SkeletonText width={130} height={12} />
+        </div>
+        <div className="ue-filter-skeleton-group">
+            <SkeletonCircle size={14} />
+            <SkeletonText width={120} height={12} />
+        </div>
+        <div className="ue-filter-skeleton-search">
+            <SkeletonCircle size={14} />
+            <SkeletonText width={180} height={12} />
+        </div>
+    </div>
+);
+
+const SkeletonTableRow = ({ delay = 0 }) => {
+    const widths = [
+        [80, 60, 140, 90],
+        [90, 65, 130, 85],
+        [75, 55, 150, 80],
+        [85, 70, 135, 95],
+        [95, 60, 145, 75],
+    ];
+    const w = widths[Math.floor(Math.random() * widths.length)];
+
+    return (
+        <div
+            className="ue-table-skeleton-row ue-skeleton-card"
+            style={{ animationDelay: `${delay}s` }}
+        >
+            <SkeletonText width={80} height={22} style={{ borderRadius: 20 }} />
+
+            <div className="ue-table-skeleton-cell">
+                <SkeletonCircle size={26} />
+                <div className="ue-table-skeleton-cell-stack">
+                    <SkeletonText width={w[0]} height={12} />
+                    <SkeletonText width={w[1]} height={10} />
+                </div>
+            </div>
+
+            <SkeletonText width={120} height={22} style={{ borderRadius: 20 }} />
+
+            <div className="ue-table-skeleton-cell-stack">
+                <SkeletonText width={w[2]} height={11} />
+                <SkeletonText width={w[3]} height={11} />
+                <SkeletonText width={110} height={11} />
+            </div>
+
+            <SkeletonText width={45} height={20} style={{ borderRadius: 20 }} />
+            <SkeletonText width={95} height={14} />
+            <SkeletonCircle size={24} />
+            <SkeletonCircle size={24} />
+            <SkeletonText width={115} height={22} style={{ borderRadius: 20 }} />
+
+            <div style={{ display: 'flex', gap: 6 }}>
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+            </div>
+        </div>
+    );
+};
+
+const SkeletonTable = ({ rows = 10 }) => (
+    <div className="ue-table-skeleton ue-skeleton-card">
+        <div className="ue-table-skeleton-header">
+            {['BOOKING ID','CUSTOMER','EVENT TYPE','EVENT DETAILS','PAX','AMOUNT','MEALS','STAFF','STATUS','ACTIONS'].map((label, i) => (
+                <SkeletonText key={i} width="80%" height={11} />
+            ))}
+        </div>
+        <div className="ue-table-skeleton-body">
+            {Array.from({ length: rows }).map((_, i) => (
+                <SkeletonTableRow key={i} delay={i * 0.04} />
+            ))}
+        </div>
+    </div>
+);
+
+const OrderEventsSkeleton = ({ isDarkMode }) => (
+    <div className={`ue-container ue-skeleton-container ${isDarkMode ? 'ue-dark-mode' : ''}`}>
+        <div className="ue-header">
+            <div className="ue-header-left">
+                <div className="ue-logo-icon" style={{ opacity: 0.5 }}>
+                    <MdEventNote />
+                </div>
+                <div className="ue-header-info">
+                    <SkeletonText width={220} height={18} style={{ marginBottom: 6 }} />
+                    <SkeletonText width={140} height={10} />
+                </div>
+            </div>
+            <div className="ue-header-right">
+                <SkeletonText width={180} height={36} style={{ borderRadius: 10 }} />
+                <SkeletonText width={1} height={28} />
+                <div className="ue-skeleton-block ue-header-skeleton-btn" />
+                <div className="ue-skeleton-block ue-header-skeleton-btn" />
+                <div className="ue-skeleton-block ue-header-skeleton-btn" />
+            </div>
+        </div>
+
+        <SkeletonStatsGrid />
+
+        <div className="ue-main-card" style={{ overflow: 'hidden' }}>
+            <div
+                style={{
+                    display: 'flex',
+                    gap: 24,
+                    padding: '14px 24px',
+                    borderBottom: '1px solid var(--ue-border)',
+                    background: 'var(--ue-surface)',
+                }}
+            >
+                <SkeletonText width={140} height={16} />
+                <SkeletonText width={110} height={16} />
+                <SkeletonText width={120} height={16} />
+            </div>
+
+            <SkeletonFilters />
+            <SkeletonTable rows={10} />
+        </div>
+    </div>
+);
 
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
 const UnifiedOrderEventsManagement = () => {
-    const isMounted = useRef(true);
+         const isMounted = useRef(true);
     const { message } = App.useApp();
     const queryClient = useQueryClient();
+    const { user } = useAuth();
 
     // STATE
     const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -1069,25 +1253,344 @@ const UnifiedOrderEventsManagement = () => {
         return document.body.classList.contains('dark-mode');
     });
 
-    const [searchText, setSearchText] = useState('');
-    const [filterStatus, setFilterStatus] = useState('all');
-    const [filterEventType, setFilterEventType] = useState('all');
-    const [selectedDate, setSelectedDate] = useState(null);
+    // Ensure body has the class on mount (so portal-level CSS matches)
+    useEffect(() => {
+        if (isDarkMode) {
+            document.body.classList.add('dark-mode');
+        } else {
+            document.body.classList.remove('dark-mode');
+        }
+    }, [isDarkMode]);
+    // Skeleton: show ONLY on the first mount after a hard page load.
+    // In-app navigation back to this page uses the module flag which
+    // has already been flipped to false, so no skeleton is shown.
+    const [showSkeleton, setShowSkeleton] = useState(__ueFirstMountAfterPageLoad);
+
+       // ⭐ Hide/Unhide for the three financial KPI cards.
+    //
+    //    Rules:
+    //      • Admin + super-admin can toggle
+    //      • Cashier never sees the toggle button, but sees the mask
+    //      • Cross-tab: BroadcastChannel — cashier sees change instantly
+    //      • Cross-device: 10-second poll against the server — cashier
+    //        sees change within 10 seconds without a manual refresh
+    //      • Persisted server-side (per-org) so a reload keeps the mask
+    const FINANCIAL_VISIBILITY_KEY = 'ue_financial_visibility';
+    const FINANCIAL_VISIBILITY_CHANNEL = 'ue_financial_visibility_channel';
+    const FINANCIAL_VISIBILITY_ENDPOINT = '/settings/financial-visibility';
+
+    const canToggleFinancialVisibility = useMemo(() => {
+        const roles = (user?.roles || user?.role_slugs || []).map((r) =>
+            String(r?.slug || r).toLowerCase()
+        );
+        const normalized = roles.map((r) => r.replace(/_/g, '-'));
+        return normalized.some((r) =>
+            ['admin', 'administrator', 'owner', 'super-admin', 'superadmin'].includes(r)
+        );
+    }, [user]);
+
+    const readCachedVisibility = () => {
+        try {
+            const raw = localStorage.getItem(FINANCIAL_VISIBILITY_KEY);
+            if (!raw) {
+                return {
+                    total_revenue: false,
+                    outstanding_balance: false,
+                    payments_collected: false,
+                };
+            }
+            const parsed = JSON.parse(raw) || {};
+            return {
+                total_revenue: Boolean(parsed.total_revenue),
+                outstanding_balance: Boolean(parsed.outstanding_balance),
+                payments_collected: Boolean(parsed.payments_collected),
+            };
+        } catch {
+            return {
+                total_revenue: false,
+                outstanding_balance: false,
+                payments_collected: false,
+            };
+        }
+    };
+
+    const [financialVisibility, setFinancialVisibility] = useState(readCachedVisibility);
+
+    // Local mirror so the toggle is instant; the server confirms later.
+    const effectiveVisibility = financialVisibility;
+
+    // ── 1. Load the persisted state from the server on mount ─────────
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await api.get(FINANCIAL_VISIBILITY_ENDPOINT);
+                const payload =
+                    res?.data?.data?.data ||
+                    res?.data?.data ||
+                    res?.data ||
+                    {};
+                if (cancelled) return;
+                const resolved = {
+                    total_revenue: Boolean(payload?.total_revenue),
+                    outstanding_balance: Boolean(payload?.outstanding_balance),
+                    payments_collected: Boolean(payload?.payments_collected),
+                };
+                setFinancialVisibility(resolved);
+                try {
+                    localStorage.setItem(
+                        FINANCIAL_VISIBILITY_KEY,
+                        JSON.stringify(resolved)
+                    );
+                } catch (e) {
+                    /* ignore quota */
+                }
+            } catch (e) {
+                // Fall back to whatever is cached in localStorage.
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    // ── 2. Cross-tab signal — cashier sees the toggle instantly ──────
+    useEffect(() => {
+        let channel;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel(FINANCIAL_VISIBILITY_CHANNEL);
+                channel.onmessage = (event) => {
+                    const next = event?.data?.payload;
+                    if (!next) return;
+                    setFinancialVisibility({
+                        total_revenue: Boolean(next.total_revenue),
+                        outstanding_balance: Boolean(next.outstanding_balance),
+                        payments_collected: Boolean(next.payments_collected),
+                    });
+                };
+            }
+        } catch (e) {
+            /* BroadcastChannel not available */
+        }
+
+        const handleStorage = (event) => {
+            if (event.key !== FINANCIAL_VISIBILITY_KEY) return;
+            try {
+                const next = JSON.parse(event.newValue || '{}');
+                setFinancialVisibility({
+                    total_revenue: Boolean(next.total_revenue),
+                    outstanding_balance: Boolean(next.outstanding_balance),
+                    payments_collected: Boolean(next.payments_collected),
+                });
+            } catch (e) {
+                /* ignore malformed payload */
+            }
+        };
+        window.addEventListener('storage', handleStorage);
+
+        return () => {
+            if (channel) channel.close();
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, []);
+
+    // ── 3. Poll the server every 10s so cashiers on other devices
+    //       see the toggle without refreshing the page.
+    useEffect(() => {
+        const interval = setInterval(async () => {
+            try {
+                const res = await api.get(FINANCIAL_VISIBILITY_ENDPOINT);
+                const payload =
+                    res?.data?.data?.data ||
+                    res?.data?.data ||
+                    res?.data ||
+                    {};
+                const resolved = {
+                    total_revenue: Boolean(payload?.total_revenue),
+                    outstanding_balance: Boolean(payload?.outstanding_balance),
+                    payments_collected: Boolean(payload?.payments_collected),
+                };
+                setFinancialVisibility((prev) => {
+                    const changed =
+                        prev.total_revenue !== resolved.total_revenue ||
+                        prev.outstanding_balance !== resolved.outstanding_balance ||
+                        prev.payments_collected !== resolved.payments_collected;
+                    if (changed) {
+                        try {
+                            localStorage.setItem(
+                                FINANCIAL_VISIBILITY_KEY,
+                                JSON.stringify(resolved)
+                            );
+                        } catch (e) {
+                            /* ignore */
+                        }
+                    }
+                    return changed ? resolved : prev;
+                });
+            } catch (e) {
+                /* silent — next tick retries */
+            }
+        }, 10000);
+
+        return () => clearInterval(interval);
+    }, []);
+
+    // ── 4. Admin toggle — persist + broadcast ───────────────────────
+    const handleToggleFinancialVisibility = useCallback(async (key) => {
+        if (!canToggleFinancialVisibility) {
+            message.warning('Only administrators can hide or unhide financial values.');
+            return;
+        }
+
+        const current = financialVisibility;
+        const next = { ...current, [key]: !current[key] };
+
+        // Optimistic flip for instant feedback.
+        setFinancialVisibility(next);
+        try {
+            localStorage.setItem(FINANCIAL_VISIBILITY_KEY, JSON.stringify(next));
+        } catch (e) {
+            /* ignore quota */
+        }
+
+        // Broadcast to every other tab in the same browser instantly.
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                const channel = new BroadcastChannel(FINANCIAL_VISIBILITY_CHANNEL);
+                channel.postMessage({ payload: next });
+                channel.close();
+            }
+        } catch (e) {
+            /* ignore */
+        }
+
+        // Persist to the server so other devices pick it up via polling.
+        try {
+            await api.put(FINANCIAL_VISIBILITY_ENDPOINT, next);
+        } catch (e) {
+            // Roll back on failure.
+            setFinancialVisibility(current);
+            try {
+                localStorage.setItem(
+                    FINANCIAL_VISIBILITY_KEY,
+                    JSON.stringify(current)
+                );
+            } catch (err) {
+                /* ignore */
+            }
+            message.error(
+                e?.response?.data?.message ||
+                'Failed to save visibility. Please try again.'
+            );
+        }
+    }, [canToggleFinancialVisibility, financialVisibility, message]);
+
+    // ⭐ Mask that matches the visible value's digit count so the card
+    //    never shifts width when toggled.
+    const maskMatchingValue = (visibleValue) => {
+        const str = String(visibleValue ?? '');
+        if (!str) return '**********';
+        const hasCurrency = str.startsWith('₱');
+        const digits = str.replace(/[^\d.,]/g, '').length;
+        const length = Math.max(3, digits);
+        return (hasCurrency ? '₱' : '') + '*'.repeat(length);
+    };
+      const [searchText, setSearchText] = useState(
+        () => sessionStorage.getItem('ue_searchText') || ''
+    );
+    const [filterStatus, setFilterStatus] = useState(
+        () => sessionStorage.getItem('ue_filterStatus') || 'all'
+    );
+    const [filterEventType, setFilterEventType] = useState(
+        () => sessionStorage.getItem('ue_filterEventType') || 'all'
+    );
+    const [selectedDate, setSelectedDate] = useState(
+        () => {
+            const saved = sessionStorage.getItem('ue_selectedDate');
+            return saved ? dayjs(saved) : null;
+        }
+    );
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
-    const [activeTab, setActiveTab] = useState('orders');
+    const [activeTab, setActiveTab] = useState(
+        () => sessionStorage.getItem('ue_activeTab') || 'orders'
+    );
 
+       // ⭐ Dashboard period selector: weekly / monthly / yearly.
+    //    anchor is the reference date used to compute the period window.
+    const [dashboardPeriod, setDashboardPeriod] = useState(
+        () => sessionStorage.getItem('ue_dashboardPeriod') || 'monthly'
+    );
+    const [dashboardAnchor, setDashboardAnchor] = useState(
+        () => sessionStorage.getItem('ue_dashboardAnchor') || dayjs().format('YYYY-MM-DD')
+    );
+
+    // ⭐ Hide/show the whole Period Behavior toolbar. Persisted so a
+    //    reload keeps the operator's preference.
+    const [periodToolbarHidden, setPeriodToolbarHidden] = useState(
+        () => sessionStorage.getItem('ue_periodToolbarHidden') === 'true'
+    );
+
+     // Persist period + anchor across remounts.
+    useEffect(() => {
+        sessionStorage.setItem('ue_dashboardPeriod', dashboardPeriod);
+    }, [dashboardPeriod]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_dashboardAnchor', dashboardAnchor);
+    }, [dashboardAnchor]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_periodToolbarHidden', String(periodToolbarHidden));
+    }, [periodToolbarHidden]);
+
+    // ⭐ Toggle helper with a small toast so the operator gets feedback.
+    const handleTogglePeriodToolbar = useCallback(() => {
+        setPeriodToolbarHidden((prev) => {
+            const next = !prev;
+            message.success(
+                next ? 'Period selector hidden' : 'Period selector shown'
+            );
+            return next;
+        });
+    }, [message]);
+
+    // ⭐ Force the statistics query to refetch the moment the period
+    //    or anchor changes, so every KPI card on screen updates instantly.
+    //    (The client-side `stats` useMemo already recomputes automatically
+    //    because `filterByPeriod` depends on `periodRange`.)
+    useEffect(() => {
+        refetchStatistics();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [dashboardPeriod, dashboardAnchor]);
     const [eventInProgressHidden, setEventInProgressHidden] = useState(() => {
         const saved = localStorage.getItem(EVENT_IN_PROGRESS_HIDDEN_KEY);
         return saved === 'true';
     });
 
-    const [historySearchText, setHistorySearchText] = useState('');
-    const [historyFilterStatus, setHistoryFilterStatus] = useState('all');
-    const [historyDateRange, setHistoryDateRange] = useState([]);
+     const [historySearchText, setHistorySearchText] = useState(
+        () => sessionStorage.getItem('ue_historySearchText') || ''
+    );
+    const [historyFilterStatus, setHistoryFilterStatus] = useState(
+        () => sessionStorage.getItem('ue_historyFilterStatus') || 'all'
+    );
+    const [historyDateRange, setHistoryDateRange] = useState(
+        () => {
+            const saved = sessionStorage.getItem('ue_historyDateRange');
+            if (!saved) return [];
+            try {
+                const parsed = JSON.parse(saved);
+                return Array.isArray(parsed)
+                    ? parsed.map((d) => (d ? dayjs(d) : null))
+                    : [];
+            } catch {
+                return [];
+            }
+        }
+    );
     const [historyPage, setHistoryPage] = useState(1);
     const [historyPageSize, setHistoryPageSize] = useState(10);
-
     const [selectedBooking, setSelectedBooking] = useState(null);
     const [viewModalVisible, setViewModalVisible] = useState(false);
     const [editModalVisible, setEditModalVisible] = useState(false);
@@ -1149,47 +1652,225 @@ const UnifiedOrderEventsManagement = () => {
 
     const [viewModalData, setViewModalData] = useState(null);
 
-    // BOOKING PROFITABILITY MODAL STATE
+    // ── Persist filter / tab state to sessionStorage ─────────────────
+    // Prevents query-key churn when the user navigates away and back.
+    useEffect(() => {
+        sessionStorage.setItem('ue_searchText', searchText);
+    }, [searchText]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_filterStatus', filterStatus);
+    }, [filterStatus]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_filterEventType', filterEventType);
+    }, [filterEventType]);
+
+    useEffect(() => {
+        if (selectedDate) {
+            sessionStorage.setItem('ue_selectedDate', dayjs(selectedDate).format('YYYY-MM-DD'));
+        } else {
+            sessionStorage.removeItem('ue_selectedDate');
+        }
+    }, [selectedDate]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_activeTab', activeTab);
+    }, [activeTab]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_historySearchText', historySearchText);
+    }, [historySearchText]);
+
+    useEffect(() => {
+        sessionStorage.setItem('ue_historyFilterStatus', historyFilterStatus);
+    }, [historyFilterStatus]);
+
+    useEffect(() => {
+        if (historyDateRange && historyDateRange.length > 0) {
+            sessionStorage.setItem(
+                'ue_historyDateRange',
+                JSON.stringify(
+                    historyDateRange.map((d) => (d ? dayjs(d).format('YYYY-MM-DD') : null))
+                )
+            );
+        } else {
+            sessionStorage.removeItem('ue_historyDateRange');
+        }
+    }, [historyDateRange]);
+      // BOOKING PROFITABILITY MODAL STATE
     const [profitabilityModalVisible, setProfitabilityModalVisible] = useState(false);
     const [profitabilityBookingId, setProfitabilityBookingId] = useState(null);
 
-    // API HOOKS
-    const {
-        data: activeBookingsData,
-        isLoading: activeBookingsLoading,
-        refetch: refetchActiveBookings,
-    } = useBookings({
+    // ⭐ Cancelable loading line (shows above the header)
+    const [loadingLine, setLoadingLine] = useState(null);
+    const loadingLineRef = useRef(null);
+    const loadingLineTimerRef = useRef(null);
+
+    const showLoadingLine = useCallback((type, bookingNo) => {
+        if (loadingLineTimerRef.current) {
+            clearTimeout(loadingLineTimerRef.current);
+            loadingLineTimerRef.current = null;
+        }
+        if (loadingLineRef.current?.controller) {
+            try { loadingLineRef.current.controller.abort(); } catch (e) {}
+        }
+
+        const controller = new AbortController();
+        const labels = {
+            approve: 'Approving',
+            reject: 'Rejecting',
+            cancel: 'Cancelling',
+            reschedule: 'Rescheduling',
+            payment: 'Recording payment for',
+            start: 'Starting',
+            complete: 'Completing',
+            done: 'Marking as done',
+            equipment: 'Processing equipment for',
+            delivery: 'Processing delivery for',
+            kitchen: 'Refreshing kitchen for',
+            staff: 'Updating staff for',
+            ingredients: 'Calculating ingredients for',
+            update: 'Updating',
+            delete: 'Deleting',
+            save: 'Saving',
+        };
+
+        const verb = labels[type] || 'Processing';
+
+        const line = {
+            type,
+            bookingNo,
+            message: `${verb} booking ${bookingNo}…`,
+            controller,
+        };
+
+        loadingLineRef.current = line;
+        setLoadingLine(line);
+
+         loadingLineTimerRef.current = setTimeout(() => {
+            setLoadingLine(null);
+            loadingLineRef.current = null;
+            loadingLineTimerRef.current = null;
+        }, 5000);
+
+        return controller.signal;
+    }, []);
+
+    const hideLoadingLine = useCallback(() => {
+        if (loadingLineTimerRef.current) {
+            clearTimeout(loadingLineTimerRef.current);
+            loadingLineTimerRef.current = null;
+        }
+        loadingLineRef.current = null;
+        setLoadingLine(null);
+    }, []);
+
+    const handleCancelLoadingLine = useCallback(() => {
+        const current = loadingLineRef.current;
+        if (!current) return;
+        try { current.controller.abort(); } catch (e) {}
+        message.info(`Cancelled ${current.type} action for ${current.bookingNo}`);
+        hideLoadingLine();
+    }, [hideLoadingLine, message]);
+
+    useEffect(() => {
+        return () => {
+            if (loadingLineTimerRef.current) clearTimeout(loadingLineTimerRef.current);
+        };
+    }, []);
+    /**
+     * ⭐ Wraps any async action with the loading line + abort handling.
+     * The loading line shows FIRST, waits 5 seconds (giving the user
+     * time to Cancel), and ONLY THEN fires the backend request.
+     */
+    const runWithLoadingLine = useCallback(async (type, record, fn) => {
+        const bookingNo = safeString(record?.booking_no || record?.order_number || record?.id || '');
+        const signal = showLoadingLine(type, bookingNo);
+        const HOLD_MS = 5000;
+
+        try {
+            await new Promise((resolve, reject) => {
+                const timer = setTimeout(resolve, HOLD_MS);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    reject(new DOMException('Aborted', 'AbortError'));
+                });
+            });
+
+            const result = await fn(signal);
+            return result;
+        } catch (error) {
+            if (
+                error?.name === 'CanceledError' ||
+                error?.name === 'AbortError' ||
+                error?.code === 'ERR_CANCELED'
+            ) {
+                hideLoadingLine();
+                return null;
+            }
+            throw error;
+        } finally {
+            hideLoadingLine();
+        }
+    }, [showLoadingLine, hideLoadingLine]);
+        // API HOOKS
+       const debouncedSearchText = useDebouncedValue(searchText, 400);
+
+    const activeBookingsFilters = useMemo(() => ({
         status_in: 'confirmed,rescheduled,approved,ongoing',
-        search: searchText || undefined,
+        search: debouncedSearchText || undefined,
         event_type_id: filterEventType !== 'all' ? filterEventType : undefined,
         event_date: selectedDate ? dayjs(selectedDate).format('YYYY-MM-DD') : undefined,
         page: 1,
-        per_page: 100,
-    });
+        per_page: 50,
+     }), [debouncedSearchText, filterEventType, selectedDate]);
 
-    const {
-        data: historyBookingsData,
-        isLoading: historyBookingsLoading,
-        refetch: refetchHistoryBookings,
-    } = useBookings({
+    const historyBookingsFilters = useMemo(() => ({
         status: historyFilterStatus !== 'all' ? historyFilterStatus : undefined,
         status_in: historyFilterStatus === 'all' ? 'completed,cancelled,rejected' : undefined,
         search: historySearchText || undefined,
         date_from: historyDateRange?.[0] ? dayjs(historyDateRange[0]).format('YYYY-MM-DD') : undefined,
         date_to: historyDateRange?.[1] ? dayjs(historyDateRange[1]).format('YYYY-MM-DD') : undefined,
         page: 1,
-        per_page: 100,
-    });
+        per_page: 50,
+    }), [historyFilterStatus, historySearchText, historyDateRange]);
 
-    const bookingsLoading = activeBookingsLoading || historyBookingsLoading;
+    const {
+        data: activeBookingsData,
+        isPending: activeBookingsPending,
+        isLoading: activeBookingsLoading,
+        refetch: refetchActiveBookings,
+    } = useBookings(activeBookingsFilters);
+
+    const {
+        data: historyBookingsData,
+        isPending: historyBookingsPending,
+        isLoading: historyBookingsLoading,
+        refetch: refetchHistoryBookings,
+    } = useBookings(historyBookingsFilters);
+
+      // Only the tab the user is looking at gates the page.
+    const bookingsLoading =
+        activeTab === 'orders'
+            ? activeBookingsPending
+            : activeTab === 'history'
+                ? historyBookingsPending
+                : false;
+
     const refetchBookings = useCallback(() => Promise.allSettled([
         refetchActiveBookings(),
         refetchHistoryBookings(),
     ]), [refetchActiveBookings, refetchHistoryBookings]);
 
-    const { data: statistics, refetch: refetchStatistics } = useBookingStatistics();
-    const { data: eventTypesData, refetch: refetchEventTypes } = useEventTypes();
-    const eventTypes = safeArray(eventTypesData);
+    const {
+        data: statistics,
+        isPending: statisticsPending,
+        refetch: refetchStatistics,
+    } = useBookingStatistics(dashboardPeriod, dashboardAnchor);     const { data: eventTypesData, refetch: refetchEventTypes } = useEventTypes();
+    // useEventTypes returns a normalized list envelope { data, total, ... }
+    // not a bare array — unwrap it here so all consumers get the rows.
+    const eventTypes = safeArray(eventTypesData?.data);
 
     const { data: kitchenOrders, refetch: refetchKitchenOrders } = useKitchenOrders();
     const { data: deliveryOrders, refetch: refetchDeliveryOrders } = useDeliveryOrders();
@@ -1221,50 +1902,81 @@ const UnifiedOrderEventsManagement = () => {
     const returnEquipmentMutation = useReturnEquipment();
     const completeEventMutation = useCompleteEvent();
 
-    // THEME DETECTION
+    // THEME DETECTION — StrictMode-safe
     useEffect(() => {
         isMounted.current = true;
+
+        // Read once on mount
+        const saved = localStorage.getItem('theme');
+        const initialDark =
+            saved === 'dark' ||
+            (!saved && document.body.classList.contains('dark-mode'));
+        setIsDarkMode(initialDark);
+
         const updateTheme = () => {
-            if (isMounted.current) {
-                const isDark = document.body.classList.contains('dark-mode');
-                setIsDarkMode(isDark);
+            const isDark = document.body.classList.contains('dark-mode');
+            setIsDarkMode(isDark);
+        };
+
+        const handleThemeChange = (e) => {
+            setIsDarkMode(Boolean(e?.detail?.isDark));
+        };
+
+        const handleStorageChange = (e) => {
+            if (e.key === 'theme') {
+                setIsDarkMode(e.newValue === 'dark');
             }
         };
+
         const observer = new MutationObserver(updateTheme);
         observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
-        const handleThemeChange = (e) => {
-            if (isMounted.current) setIsDarkMode(e.detail.isDark);
-        };
-        const handleStorageChange = (e) => {
-            if (e.key === 'theme' && isMounted.current) setIsDarkMode(e.newValue === 'dark');
-        };
         window.addEventListener('themeChange', handleThemeChange);
         window.addEventListener('storage', handleStorageChange);
+
         return () => {
-            isMounted.current = false;
+            // NOTE: do NOT set isMounted.current = false here (StrictMode re-runs the effect)
             observer.disconnect();
             window.removeEventListener('themeChange', handleThemeChange);
             window.removeEventListener('storage', handleStorageChange);
         };
     }, []);
-
-    // LOAD STAFF
+    // ============================================================
+    // SKELETON — flip the module flag off after the very first render
+    // so any subsequent remount (in-app nav) skips the skeleton.
+    // ============================================================
     useEffect(() => {
-        const loadStaff = async () => {
-            setStaffLoading(true);
-            try {
-                const response = await api.get('/employees/active');
-                const staffData = normalizeApiResponse(response);
-                if (isMounted.current) setStaffList(Array.isArray(staffData) ? staffData : []);
-            } catch (error) {
-                console.error('Failed to load staff:', error);
-                if (isMounted.current) setStaffList([]);
-            } finally {
-                setStaffLoading(false);
-            }
-        };
-        loadStaff();
+        // Mark that the first mount of this page-load has happened.
+        // Any future mount (i.e. back-navigation) will read `false`.
+        __ueFirstMountAfterPageLoad = false;
     }, []);
+
+       // Hide the skeleton as soon as real data is available.
+    useEffect(() => {
+        if (!bookingsLoading && showSkeleton) {
+            setShowSkeleton(false);
+        }
+    }, [bookingsLoading, showSkeleton]);
+
+    // Hard cap: never hold the skeleton longer than 1.5s.
+    useEffect(() => {
+        if (!showSkeleton) return;
+        const t = setTimeout(() => setShowSkeleton(false), 1500);
+        return () => clearTimeout(t);
+    }, [showSkeleton]);
+
+    // LOAD STAFF — via React Query so multiple mounts of this page
+    // dedupe into a single /employees/active request.
+    const { data: staffListData, isLoading: staffListLoading } = useActiveEmployees();
+
+    useEffect(() => {
+        if (Array.isArray(staffListData)) {
+            setStaffList(staffListData);
+        }
+    }, [staffListData]);
+
+    useEffect(() => {
+        setStaffLoading(staffListLoading);
+    }, [staffListLoading]);
 
     // DATA PROCESSING
     const allBookings = useMemo(() => normalizeBookingCollection(activeBookingsData), [activeBookingsData]);
@@ -1306,24 +2018,178 @@ const UnifiedOrderEventsManagement = () => {
         });
     }, [allBookings]);
 
+    // ============================================================
+    // DASHBOARD PERIOD HELPERS
+    // Filter the client-side rows to the currently selected period,
+    // using service_events.event_date (event date), NOT created_at.
+    // ============================================================
+
+    const periodRange = useMemo(() => {
+        const anchor = dayjs(dashboardAnchor);
+
+        switch (dashboardPeriod) {
+            case 'weekly': {
+                const start = anchor.startOf('isoWeek');  // Monday
+                const end   = anchor.endOf('isoWeek');    // Sunday
+                return {
+                    start,
+                    end,
+                    label: `${start.format('MMM D')} – ${end.format('MMM D, YYYY')}`,
+                    navUnit: 'week',
+                };
+            }
+            case 'yearly': {
+                const start = anchor.startOf('year');
+                const end   = anchor.endOf('year');
+                return {
+                    start,
+                    end,
+                    label: start.format('YYYY'),
+                    navUnit: 'year',
+                };
+            }
+            case 'monthly':
+            default: {
+                const start = anchor.startOf('month');
+                const end   = anchor.endOf('month');
+                return {
+                    start,
+                    end,
+                    label: start.format('MMMM YYYY'),
+                    navUnit: 'month',
+                };
+            }
+        }
+    }, [dashboardPeriod, dashboardAnchor]);
+
+    // ⭐ Navigate to previous / next period.
+    const handleShiftPeriod = useCallback((direction) => {
+        const unit = periodRange.navUnit;
+        const next = direction === 'next'
+            ? dayjs(dashboardAnchor).add(1, unit)
+            : dayjs(dashboardAnchor).subtract(1, unit);
+        setDashboardAnchor(next.format('YYYY-MM-DD'));
+    }, [dashboardAnchor, periodRange.navUnit]);
+
+    const handleJumpToToday = useCallback(() => {
+        setDashboardAnchor(dayjs().format('YYYY-MM-DD'));
+    }, []);
+
+    // ⭐ Filter any booking array by the active period, using event_date.
+    const filterByPeriod = useCallback((rows) => {
+        if (!Array.isArray(rows) || rows.length === 0) return [];
+
+        const { start, end } = periodRange;
+        return rows.filter((row) => {
+            const eventDate = row?.event_date;
+            if (!eventDate) return false;
+            const d = dayjs(eventDate);
+            return (d.isSame(start, 'day') || d.isAfter(start, 'day'))
+                && (d.isSame(end, 'day')   || d.isBefore(end, 'day'));
+        });
+    }, [periodRange]);
     const stats = useMemo(() => {
-        const combinedBookings = [...allBookings, ...completedBookings];
-        const confirmed = allBookings.filter((booking) => {
+        // ⭐ When the server already returned period-scoped KPIs, prefer them.
+        //    That guarantees the KPI cards match the backend truth for the
+        //    currently selected period.
+        const serverStats = statistics?.data || null;
+        const serverHasPeriodData =
+            serverStats
+            && typeof serverStats === 'object'
+            && serverStats.period_start !== undefined
+            && serverStats.period_end !== undefined;
+
+        // ⭐ Confirmed set = bookings in operational statuses still active,
+        //    filtered by the currently selected dashboard period.
+        const confirmedRowsAll = allBookings.filter((booking) => {
             const status = String(booking.booking_status || '').toLowerCase();
-            return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status) && !booking.event_completed;
-        }).length;
-        const ongoing = ongoingBookings.length;
-        const completed = completedBookings.filter((booking) => String(booking.booking_status || '').toLowerCase() === 'completed' || booking.event_completed).length;
-        const totalRevenue = combinedBookings.reduce((sum, booking) => sum + safeNumber(booking.total_amount), 0);
-        const outstandingBalance = combinedBookings.reduce((sum, booking) => sum + safeNumber(booking.balance || 0), 0);
+            return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status)
+                && !booking.event_completed;
+        });
+
+        const confirmedRows = filterByPeriod(confirmedRowsAll);
+
+        // ⭐ Confirmed Bookings — server value when available.
+        const confirmedCount = serverHasPeriodData
+            ? safeNumber(serverStats.confirmed_bookings, confirmedRows.length)
+            : confirmedRows.length;
+
+        // ⭐ Ongoing — server value when available.
+        const ongoing = serverHasPeriodData
+            ? safeNumber(serverStats.ongoing, filterByPeriod(ongoingBookings).length)
+            : filterByPeriod(ongoingBookings).length;
+
+        // ⭐ Total Revenue = sum of confirmed bookings only (not history),
+        //    scoped to the selected period. Server value wins.
+        const totalRevenue = serverHasPeriodData
+            ? safeNumber(serverStats.total_revenue, 0)
+            : confirmedRows.reduce(
+                (sum, booking) => sum + safeNumber(booking.total_amount, 0),
+                0
+              );
+
+        // ⭐ Outstanding Balance = unpaid balances on confirmed bookings,
+        //    scoped to the selected period. Server value wins.
+        const outstandingBalance = serverHasPeriodData
+            ? safeNumber(
+                serverStats.outstanding_balance ?? serverStats.total_outstanding,
+                0
+              )
+            : confirmedRows.reduce((sum, booking) => {
+                const total = safeNumber(booking.total_amount, 0);
+                const paid  = safeNumber(booking.paid_amount, 0);
+                const balance =
+                    booking.balance !== undefined && booking.balance !== null
+                        ? safeNumber(booking.balance, 0)
+                        : Math.max(0, total - paid);
+                return sum + balance;
+              }, 0);
+
+        // ⭐ Total Payments Collected = completed payment amounts across ALL
+        //    bookings in the selected period (confirmed + history).
+        let totalPaymentsCollected;
+        if (serverHasPeriodData) {
+            totalPaymentsCollected = safeNumber(
+                serverStats.total_payments_collected ?? serverStats.total_paid,
+                0
+            );
+        } else {
+            const allRows = filterByPeriod([...allBookings, ...completedBookings]);
+            const seen = new Set();
+            const uniqueRows = allRows.filter((row) => {
+                const id = row.id || row.booking_id;
+                if (!id || seen.has(id)) return false;
+                seen.add(id);
+                return true;
+            });
+
+            totalPaymentsCollected = uniqueRows.reduce((sum, booking) => {
+                const payments = safeArray(booking.payments);
+                if (payments.length > 0) {
+                    const fromList = payments
+                        .filter((p) => String(p.status || '').toLowerCase() === 'completed')
+                        .filter((p) => String(p.payment_type || '').toLowerCase() !== 'refund')
+                        .reduce((sub, p) => sub + safeNumber(p.amount, 0), 0);
+                    if (fromList > 0) return sum + fromList;
+                }
+                return sum + safeNumber(booking.paid_amount, 0);
+            }, 0);
+        }
+
+        const completed = filterByPeriod(completedBookings).filter((booking) =>
+            String(booking.booking_status || '').toLowerCase() === 'completed'
+            || booking.event_completed
+        ).length;
+
         return {
-            confirmed_bookings: confirmed,
+            confirmed_bookings: confirmedCount,
             ongoing,
             completed,
             total_revenue: totalRevenue,
             outstanding_balance: outstandingBalance,
+            total_payments_collected: totalPaymentsCollected,
         };
-    }, [allBookings, ongoingBookings, completedBookings]);
+    }, [allBookings, ongoingBookings, completedBookings, filterByPeriod, statistics]);
 
     // HANDLERS
     const handleRefresh = () => {
@@ -1382,7 +2248,9 @@ const UnifiedOrderEventsManagement = () => {
 
     const handleUpdateBooking = async (values) => {
         try {
-            await api.put(`/bookings/${selectedBooking.id}`, values);
+            await runWithLoadingLine('update', selectedBooking, async (signal) => {
+                await api.put(`/bookings/${selectedBooking.id}`, values, { signal });
+            });
             message.success('Booking updated successfully');
             setEditModalVisible(false);
             refetchBookings();
@@ -1396,11 +2264,12 @@ const UnifiedOrderEventsManagement = () => {
         setSelectedBooking(record);
         setStatusUpdateModalVisible(true);
     };
-
     const handleConfirmStatusUpdate = async (status) => {
         if (!selectedBooking) return;
         try {
-            await api.put(`/bookings/${selectedBooking.id}`, { booking_status: status });
+            await runWithLoadingLine('update', selectedBooking, async (signal) => {
+                await api.put(`/bookings/${selectedBooking.id}`, { booking_status: status }, { signal });
+            });
             message.success(`Status updated to ${status} for Booking ${formatBookingId(selectedBooking.booking_no)}`);
             setStatusUpdateModalVisible(false);
             refetchBookings();
@@ -1411,7 +2280,6 @@ const UnifiedOrderEventsManagement = () => {
             message.error('Failed to update status');
         }
     };
-
     const openPaymentForBooking = (record, amount = null, paymentType = null) => {
         const totalAmount = safeNumber(record.total_amount, 0);
         const paidAmount = safeNumber(record.paid_amount, 0);
@@ -1549,9 +2417,11 @@ const UnifiedOrderEventsManagement = () => {
     ]);
 
     const submitStartEvent = async (record, reason = '', forceStart = false, options = {}) => {
-        await api.post(`/events/${record.id}/start`, {
-            force_start: forceStart,
-            reason: reason || null,
+        await runWithLoadingLine('start', record, async (signal) => {
+            await api.post(`/events/${record.id}/start`, {
+                force_start: forceStart,
+                reason: reason || null,
+            }, { signal });
         });
 
         const updatedBooking = {
@@ -1575,9 +2445,309 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
+        // ⭐ Un-start an event that was started by mistake.
+    //    Reverts booking_status back to 'confirmed' and clears the
+    //    ongoing/started markers so it reappears as a Confirmed Booking.
+    const handleUnstartEvent = useCallback(async (record) => {
+        if (!record) {
+            message.warning('No booking selected.');
+            return;
+        }
+        const status = safeString(record.booking_status).toLowerCase();
+        if (status !== 'ongoing') {
+            message.info('This event is not currently ongoing.');
+            return;
+        }
+
+        Modal.confirm({
+            title: 'Un-start Event?',
+            content: (
+                <div>
+                    <p>
+                        Booking <strong>{formatBookingId(record.booking_no)}</strong>{' '}
+                        will be moved back to <strong>Confirmed</strong>.
+                    </p>
+                    <p style={{ marginTop: 8 }}>
+                        Use this if the event was started by mistake. Any
+                        progress notes recorded so far will be cleared.
+                    </p>
+                </div>
+            ),
+            okText: 'Un-start Event',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                try {
+                    await runWithLoadingLine('update', record, async (signal) => {
+                        await api.post(
+                            `/bookings/${record.id}/unstart-event`,
+                            {},
+                            { signal }
+                        );
+                    });
+
+                    const updatedBooking = {
+                        ...record,
+                        booking_status: 'confirmed',
+                        event_done: false,
+                        event_done_at: null,
+                        event_completed: false,
+                        progress: 0,
+                    };
+                    syncBookingInCache(queryClient, updatedBooking);
+                    setSelectedBooking(updatedBooking);
+                    message.success('Event moved back to Confirmed Bookings.');
+
+                    queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
+                    queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'active' });
+                    refetchActiveBookings();
+                } catch (error) {
+                    message.error(
+                        error.response?.data?.message ||
+                        'Failed to un-start the event.'
+                    );
+                    throw error;
+                }
+            },
+        });
+    }, [message, queryClient, refetchActiveBookings, runWithLoadingLine]);
+
     const handleStartEvent = async (record, options = {}) => {
         const scheduledDate = record.event_date;
         const isScheduledToday = scheduledDate ? dayjs(scheduledDate).isSame(dayjs(), 'day') : true;
+
+               // ⭐ Always confirm BEFORE hitting the payment-summary endpoint so the
+        //    "not today" warning is the first thing the user sees. When
+        //    "Start Anyway" is pressed we ALSO need to re-verify the deposit,
+        //    otherwise a late-start override would silently bypass the 30%
+        //    deposit check.
+        if (!isScheduledToday && !options.skipFinalConfirmation) {
+            const scheduledLabel = scheduledDate
+                ? dayjs(scheduledDate).format('MMMM D, YYYY')
+                : 'an unspecified date';
+
+            return Modal.confirm({
+                title: null,
+                icon: null,
+                className: 'ue-deposit-modal',
+                width: 540,
+                footer: null,
+                maskClosable: false,
+                keyboard: false,
+                centered: true,
+                content: (
+                    <div>
+                        <div className="ue-deposit-header">
+                            <div className="ue-deposit-header-icon danger">
+                                <WarningOutlined />
+                            </div>
+                            <div className="ue-deposit-header-text">
+                                <div className="ue-deposit-title">
+                                    The event is not scheduled for today.
+                                </div>
+                                <div className="ue-deposit-subtitle">
+                                    Scheduled event date: <strong>{scheduledLabel}</strong>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="ue-deposit-body">
+                            <div className="ue-deposit-notice danger">
+                                <WarningOutlined />
+                                <span>
+                                    Starting the event outside its scheduled date
+                                    will be recorded in the audit trail.
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="ue-deposit-footer">
+                            <Button onClick={() => Modal.destroyAll()}>
+                                Cancel
+                            </Button>
+                                                     <Button
+                                danger
+                                type="primary"
+                                onClick={async () => {
+                                    Modal.destroyAll();
+
+                                    // ⭐ Re-check deposit status BEFORE the
+                                    //    override reason prompt. Force-starting
+                                    //    a booking whose 30% deposit is unpaid
+                                    //    must still surface the deposit modal.
+                                    let depositBalance = 0;
+                                    let totalPaid = safeNumber(record.paid_amount, 0);
+                                    let requiredDeposit = safeNumber(
+                                        (record.total_amount || 0) * 0.30,
+                                        0
+                                    );
+
+                                    try {
+                                        const summaryRes = await api.get(
+                                            `/bookings/${record.id}/payment-summary`
+                                        );
+                                        const summary =
+                                            normalizeApiResponse(summaryRes) || {};
+                                        const totalAmount = safeNumber(
+                                            summary.total_amount,
+                                            record.total_amount
+                                        );
+                                        totalPaid = safeNumber(
+                                            summary.total_paid,
+                                            record.paid_amount
+                                        );
+                                        requiredDeposit = safeNumber(
+                                            summary.required_deposit,
+                                            totalAmount * 0.30
+                                        );
+                                        depositBalance = Math.max(
+                                            0,
+                                            requiredDeposit - totalPaid
+                                        );
+                                    } catch (e) {
+                                        console.error(
+                                            'Deposit re-check failed:',
+                                            e
+                                        );
+                                        // Fall through — a network failure
+                                        // should not block the user.
+                                        depositBalance = 0;
+                                    }
+
+                                    // ⭐ Only show the DEPOSIT warning when
+                                    //    there is a real outstanding deposit.
+                                    //    Never recurse into handleStartEvent()
+                                    //    here, otherwise the "not today" modal
+                                    //    re-renders and traps the user.
+                                    if (depositBalance > 0.01) {
+                                        Modal.confirm({
+                                            title: null,
+                                            icon: null,
+                                            className: 'ue-deposit-modal',
+                                            width: 540,
+                                            footer: null,
+                                            maskClosable: false,
+                                            keyboard: false,
+                                            centered: true,
+                                            content: (
+                                                <div>
+                                                    <div className="ue-deposit-header">
+                                                        <div className="ue-deposit-header-icon">
+                                                            <WarningOutlined />
+                                                        </div>
+                                                        <div className="ue-deposit-header-text">
+                                                            <div className="ue-deposit-title">
+                                                                30% Deposit Required
+                                                            </div>
+                                                            <div className="ue-deposit-subtitle">
+                                                                This event is not fully covered
+                                                                by the required deposit.
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="ue-deposit-body">
+                                                        <div className="ue-deposit-summary">
+                                                            <div className="ue-deposit-summary-row">
+                                                                <span className="ue-deposit-summary-label">
+                                                                    Required deposit
+                                                                </span>
+                                                                <span className="ue-deposit-summary-value">
+                                                                    {formatCurrency(requiredDeposit)}
+                                                                </span>
+                                                            </div>
+                                                            <div className="ue-deposit-summary-row">
+                                                                <span className="ue-deposit-summary-label">
+                                                                    Amount paid
+                                                                </span>
+                                                                <span
+                                                                    className={`ue-deposit-summary-value ${totalPaid > 0 ? 'paid-ok' : ''}`}
+                                                                >
+                                                                    {formatCurrency(totalPaid)}
+                                                                </span>
+                                                            </div>
+                                                            <div className="ue-deposit-summary-row">
+                                                                <span className="ue-deposit-summary-label">
+                                                                    Deposit balance
+                                                                </span>
+                                                                <span className="ue-deposit-summary-value balance-due">
+                                                                    {formatCurrency(depositBalance)}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="ue-deposit-notice">
+                                                            <WarningOutlined />
+                                                            <span>
+                                                                Starting outside the scheduled
+                                                                date AND without the required
+                                                                deposit will be logged with the
+                                                                approver and reason.
+                                                            </span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="ue-deposit-footer">
+                                                        <Button
+                                                            onClick={() => {
+                                                                Modal.destroyAll();
+                                                                openPaymentForBooking(
+                                                                    record,
+                                                                    depositBalance,
+                                                                    'deposit'
+                                                                );
+                                                            }}
+                                                        >
+                                                            Pay Deposit
+                                                        </Button>
+                                                        <Button
+                                                            danger
+                                                            type="primary"
+                                                            onClick={() => {
+                                                                Modal.destroyAll();
+                                                                requestOverrideReason({
+                                                                    title:
+                                                                        'Start Event Without Deposit',
+                                                                    warning:
+                                                                        'This approval will be saved in event history.',
+                                                                    onConfirm: (reason) =>
+                                                                        submitStartEvent(
+                                                                            record,
+                                                                            reason,
+                                                                            true,
+                                                                            options
+                                                                        ),
+                                                                });
+                                                            }}
+                                                        >
+                                                            Start Event Anyway
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            ),
+                                        });
+                                        return;
+                                    }
+
+                                    // ⭐ Deposit is fine. Go straight to the
+                                    //    reason prompt — no recursion.
+                                    requestOverrideReason({
+                                        title: 'Start Outside Scheduled Date',
+                                        warning: `This event is scheduled for ${scheduledLabel}.`,
+                                        onConfirm: (reason) =>
+                                            submitStartEvent(record, reason, true, options),
+                                    });
+                                }}
+                            >
+                                Start Anyway
+                            </Button>
+                        </div>
+                    </div>
+                ),
+            });
+        }
 
         try {
             const response = await api.get(`/bookings/${record.id}/payment-summary`);
@@ -1744,11 +2914,13 @@ const UnifiedOrderEventsManagement = () => {
             content: 'Mark the operational work as Done? The booking will remain in Confirmed Bookings but will be removed from Ongoing Events until it is marked Complete.',
             okText: 'Mark as Done',
             cancelText: 'Cancel',
-            onOk: async () => {
+                    onOk: async () => {
                 try {
-                    await api.put(`/events/${record.id}/live-status`, {
-                        is_done: true,
-                        progress: 100,
+                    await runWithLoadingLine('done', record, async (signal) => {
+                        await api.put(`/events/${record.id}/live-status`, {
+                            is_done: true,
+                            progress: 100,
+                        }, { signal });
                     });
 
                     const updatedBooking = {
@@ -1776,11 +2948,12 @@ const UnifiedOrderEventsManagement = () => {
             },
         });
     };
-
     const submitCompleteEvent = async (record, reason = '', forceComplete = false) => {
-        await api.post(`/events/${record.id}/complete`, {
-            force_complete: forceComplete,
-            reason: reason || null,
+        await runWithLoadingLine('complete', record, async (signal) => {
+            await api.post(`/events/${record.id}/complete`, {
+                force_complete: forceComplete,
+                reason: reason || null,
+            }, { signal });
         });
 
         const updatedBooking = {
@@ -1910,30 +3083,35 @@ const UnifiedOrderEventsManagement = () => {
             return;
         }
         try {
-            const response = await approveSelectedEquipmentMutation.mutateAsync({
-                eventId: selectedBooking.id,
-                data: {
-                    equipment_item_ids: selectedEquipmentIds,
-                    checked_out_by: 'Event Management',
-                },
+            await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
+                const response = await approveSelectedEquipmentMutation.mutateAsync({
+                    eventId: selectedBooking.id,
+                    data: {
+                        equipment_item_ids: selectedEquipmentIds,
+                        checked_out_by: 'Event Management',
+                    },
+                    signal,
+                });
+                applyEquipmentResponse(response, 'checked_out');
             });
-            applyEquipmentResponse(response, 'checked_out');
             setSelectedEquipmentIds([]);
         } catch (error) {
             // The React Query hook displays the backend error message.
         }
     };
-
-    const handleApproveAllEquipmentFromDetails = async (formValues = {}) => {
+      const handleApproveAllEquipmentFromDetails = async (formValues = {}) => {
         try {
-            const response = await approveAllEquipmentMutation.mutateAsync({
-                eventId: selectedBooking.id,
-                data: {
-                    checked_out_by: formValues.checked_out_by || 'Event Management',
-                    expected_return_date: formValues.expected_return_date?.format?.('YYYY-MM-DD') || formValues.expected_return_date,
-                    condition_out: formValues.condition_out,
-                    notes: formValues.notes,
-                },
+            const response = await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
+                return approveAllEquipmentMutation.mutateAsync({
+                    eventId: selectedBooking.id,
+                    data: {
+                        checked_out_by: formValues.checked_out_by || 'Event Management',
+                        expected_return_date: formValues.expected_return_date?.format?.('YYYY-MM-DD') || formValues.expected_return_date,
+                        condition_out: formValues.condition_out,
+                        notes: formValues.notes,
+                    },
+                    signal,
+                });
             });
             const responsePayload = normalizeApiResponse(response) || {};
             const equipmentPayload = responsePayload.equipment || responsePayload;
@@ -1958,9 +3136,12 @@ const UnifiedOrderEventsManagement = () => {
     const handleApproveAllEquipment = async (record) => {
         setSelectedBooking(record);
         try {
-            const response = await approveAllEquipmentMutation.mutateAsync({
-                eventId: record.id,
-                data: { checked_out_by: 'Event Management' },
+            const response = await runWithLoadingLine('equipment', record, async (signal) => {
+                return approveAllEquipmentMutation.mutateAsync({
+                    eventId: record.id,
+                    data: { checked_out_by: 'Event Management' },
+                    signal,
+                });
             });
             const responsePayload = normalizeApiResponse(response) || {};
             const equipmentPayload = responsePayload.equipment || responsePayload;
@@ -1987,15 +3168,18 @@ const UnifiedOrderEventsManagement = () => {
             return;
         }
 
-        try {
-            const response = await returnEquipmentMutation.mutateAsync({
-                eventId: selectedBooking.id,
-                transactionId: selectedEquipmentItem.id || selectedEquipmentItem.booking_equipment_id,
-                data: {
-                    ...values,
-                    notes: values.return_notes || values.notes || null,
-                    quantity_used: safeNumber(values.quantity_used, selectedEquipmentItem.quantity_reserved),
-                },
+         try {
+            const response = await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
+                return returnEquipmentMutation.mutateAsync({
+                    eventId: selectedBooking.id,
+                    transactionId: selectedEquipmentItem.id || selectedEquipmentItem.booking_equipment_id,
+                    data: {
+                        ...values,
+                        notes: values.return_notes || values.notes || null,
+                        quantity_used: safeNumber(values.quantity_used, selectedEquipmentItem.quantity_reserved),
+                    },
+                    signal,
+                });
             });
             const responsePayload = normalizeApiResponse(response) || {};
             const returnedRow = responsePayload.booking_equipment_id || responsePayload.id
@@ -2094,9 +3278,11 @@ const UnifiedOrderEventsManagement = () => {
 
     const handleAddToKitchen = async (record) => {
         try {
-            const orderId = record?.order?.order_id || record?.order?.id;
-            if (!orderId) throw new Error('This booking does not have an order record yet.');
-            await addToKitchenMutation.mutateAsync(orderId);
+            await runWithLoadingLine('kitchen', record, async () => {
+                const orderId = record?.order?.order_id || record?.order?.id;
+                if (!orderId) throw new Error('This booking does not have an order record yet.');
+                await addToKitchenMutation.mutateAsync(orderId);
+            });
             message.success(`Kitchen Preparation refreshed for ${formatBookingId(record.booking_no)}`);
             await handleViewKitchenPrep(record);
             refetchBookings();
@@ -2105,7 +3291,6 @@ const UnifiedOrderEventsManagement = () => {
             message.error(error.response?.data?.message || error.message || 'Failed to refresh kitchen preparation');
         }
     };
-
     const handleUpdateKitchenTask = async (taskId, updates) => {
         try {
             const normalizedUpdates = {
@@ -2117,13 +3302,15 @@ const UnifiedOrderEventsManagement = () => {
             );
             setKitchenTasks(updatedTasks);
 
-            const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
-            if (orderId) {
-                await updateKitchenTaskMutation.mutateAsync({
-                    orderId,
-                    data: { tasks: updatedTasks }
-                });
-            }
+            await runWithLoadingLine('update', selectedBooking, async (signal) => {
+                const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
+                if (orderId) {
+                    await updateKitchenTaskMutation.mutateAsync({
+                        orderId,
+                        data: { tasks: updatedTasks }
+                    });
+                }
+            });
             message.success('Kitchen checklist updated');
             refetchBookings();
             refetchKitchenOrders();
@@ -2497,9 +3684,11 @@ const UnifiedOrderEventsManagement = () => {
 
     const handleAddToDelivery = async (record) => {
         try {
-            const orderId = record?.order?.order_id || record?.order?.id;
-            if (!orderId) throw new Error('This booking does not have an order record yet.');
-            await addToDeliveryMutation.mutateAsync(orderId);
+            await runWithLoadingLine('delivery', record, async () => {
+                const orderId = record?.order?.order_id || record?.order?.id;
+                if (!orderId) throw new Error('This booking does not have an order record yet.');
+                await addToDeliveryMutation.mutateAsync(orderId);
+            });
             message.success(`Delivery Preparation refreshed for ${formatBookingId(record.booking_no)}`);
             await handleViewDeliveryPrep(record);
             refetchBookings();
@@ -2520,13 +3709,15 @@ const UnifiedOrderEventsManagement = () => {
             );
             setDeliveryItems(updatedItems);
 
-            const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
-            if (orderId) {
-                await updateDeliveryItemMutation.mutateAsync({
-                    orderId,
-                    data: { items: updatedItems }
-                });
-            }
+            await runWithLoadingLine('delivery', selectedBooking, async (signal) => {
+                const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
+                if (orderId) {
+                    await updateDeliveryItemMutation.mutateAsync({
+                        orderId,
+                        data: { items: updatedItems }
+                    });
+                }
+            });
             message.success('Delivery item updated');
             refetchBookings();
             refetchDeliveryOrders();
@@ -2536,14 +3727,15 @@ const UnifiedOrderEventsManagement = () => {
             handleViewDeliveryPrep(selectedBooking);
         }
     };
-
     const handleRemoveDeliveryPreparationItem = async (itemId) => {
         try {
-            const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
-            if (!orderId) throw new Error('Order record is missing.');
-            const updatedItems = deliveryItems.filter(item => item.id !== itemId);
-            await updateDeliveryItemMutation.mutateAsync({ orderId, data: { items: updatedItems } });
-            setDeliveryItems(updatedItems);
+            await runWithLoadingLine('delete', selectedBooking, async (signal) => {
+                const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
+                if (!orderId) throw new Error('Order record is missing.');
+                const updatedItems = deliveryItems.filter(item => item.id !== itemId);
+                await updateDeliveryItemMutation.mutateAsync({ orderId, data: { items: updatedItems } });
+            });
+            setDeliveryItems(deliveryItems.filter(item => item.id !== itemId));
             message.success('Delivery item removed');
             refetchBookings();
             refetchDeliveryOrders();
@@ -2672,13 +3864,14 @@ const UnifiedOrderEventsManagement = () => {
             message.warning('Requested quantity exceeds the available equipment stock.');
             return;
         }
-
         try {
+            await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
             const availabilityResponses = await Promise.all(selectedItems.map((item) => api.get('/equipment/availability', {
                 params: {
                     equipment_id: item.equipment_id,
                     date: selectedBooking?.event_date || dayjs().format('YYYY-MM-DD'),
                 },
+                signal,
             })));
 
             const invalidIndex = availabilityResponses.findIndex((availabilityResponse, index) => {
@@ -2701,6 +3894,7 @@ const UnifiedOrderEventsManagement = () => {
                     quantity: item.quantity,
                 })),
             });
+            });
 
             message.success(`${selectedItems.length} equipment item(s) added to Delivery Preparation`);
             await handleViewDeliveryPrep(selectedBooking);
@@ -2715,7 +3909,6 @@ const UnifiedOrderEventsManagement = () => {
             message.error(error.response?.data?.message || 'Failed to add equipment item');
         }
     };
-
     // STAFF / CHECKLIST / DELIVERY TRACKING
     const getEventId = useCallback((record = selectedBooking) => (
         record?.booking_id || record?.id || null
@@ -3367,7 +4560,7 @@ const UnifiedOrderEventsManagement = () => {
 
             let addedCount = 0;
             let failedCount = 0;
-            const hideLoading = message.loading(`Adding ${itemsToAdd.length} items to purchase list...`, 0);
+            showLoadingLine('ingredients', selectedBooking);
 
             for (const ingredient of itemsToAdd) {
                 try {
@@ -3398,7 +4591,7 @@ const UnifiedOrderEventsManagement = () => {
                 }
             }
 
-            hideLoading();
+               hideLoadingLine();
 
             if (addedCount > 0) {
                 message.success(`✅ Added ${addedCount} items to purchase list${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
@@ -3410,12 +4603,25 @@ const UnifiedOrderEventsManagement = () => {
                 message.error('Failed to add items to purchase list.');
             }
         } catch (error) {
+            hideLoadingLine();
             console.error('Failed to add to shopping list:', error);
             message.error(error.response?.data?.message || 'Failed to add to shopping list');
         }
     };
 
     // ACTION MENU
+        // ⭐ Booking Profitability is restricted to admin + super-admin only.
+    //    Cashier accounts never see the menu item.
+    const canViewProfitability = useMemo(() => {
+        const roles = (user?.roles || user?.role_slugs || []).map((r) =>
+            String(r?.slug || r).toLowerCase()
+        );
+        const normalized = roles.map((r) => r.replace(/_/g, '-'));
+        return normalized.some((r) =>
+            ['admin', 'administrator', 'owner', 'super-admin', 'superadmin'].includes(r)
+        );
+    }, [user]);
+
     const getActionMenuItems = useCallback((record) => {
         const status = String(record.booking_status || '').toLowerCase();
         /** @type {any[]} */
@@ -3462,12 +4668,7 @@ const UnifiedOrderEventsManagement = () => {
                 icon: <PlusCircleOutlined />,
                 onClick: () => handleViewEquipmentDetails(record)
             },
-            {
-                key: 'profitability',
-                label: 'View Profitability',
-                icon: <RiseOutlined style={{ color: '#2563eb' }} />,
-                onClick: () => handleViewProfitability(record)
-            },
+                     // ⭐ Profitability is injected below ONLY for admin / super-admin.
             { type: 'divider' },
         ];
 
@@ -3480,8 +4681,15 @@ const UnifiedOrderEventsManagement = () => {
                     onClick: () => handleStartEvent(record)
                 });
             }
-            if (status === 'ongoing') {
+                      if (status === 'ongoing') {
                 items.push(
+                    // ⭐ Allow the operator to undo a mistaken start.
+                    {
+                        key: 'unstart',
+                        label: 'Un-start Event',
+                        icon: <CloseCircleOutlined style={{ color: '#ef4444' }} />,
+                        onClick: () => handleUnstartEvent(record),
+                    },
                     {
                         key: 'done',
                         label: record.event_done ? 'Marked as Done' : 'Mark as Done',
@@ -3497,6 +4705,24 @@ const UnifiedOrderEventsManagement = () => {
                     }
                 );
             }
+        }
+
+        //        if (canViewProfitability) {
+        //     items.unshift({
+        //         key: 'profitability',
+        //         label: 'View Profitability',
+        //         icon: <RiseOutlined style={{ color: '#2563eb' }} />,
+        //         onClick: () => handleViewProfitability(record),
+        //     });
+        // }
+
+         if (canViewProfitability) {
+            items.unshift({
+                key: 'profitability',
+                label: 'View Profitability',
+                icon: <RiseOutlined style={{ color: '#2563eb' }} />,
+                onClick: () => handleViewProfitability(record),
+            });
         }
 
         items.push(
@@ -3538,12 +4764,14 @@ const UnifiedOrderEventsManagement = () => {
         );
 
         return items;
-    }, [
+       }, [
         handleCalculateIngredients, handleViewKitchenPrep, handleViewDeliveryPrep,
         handleStaffAssignment, handleViewDeliveryTracking, handleViewChecklist,
         handleViewEquipmentDetails, handleViewProfitability, handleStartEvent,
+        handleUnstartEvent,
         handleMarkEventDone, handleCompleteEvent,
-        handleApproveAllEquipment, handleEdit, handleOpenLiveStatus, openPaymentForBooking
+        handleApproveAllEquipment, handleEdit, handleOpenLiveStatus, openPaymentForBooking,
+        canViewProfitability,
     ]);
 
     // TABLE COLUMNS
@@ -3965,11 +5193,76 @@ const UnifiedOrderEventsManagement = () => {
         exportToExcel(completedBookings, 'Event_History_Report', columns);
     };
 
-    // STATS
+              // STATS
     const renderStats = () => (
-        <div className="ue-stats-grid">
-            <div className="ue-stat-card">
-                <div className="ue-stat-icon green"><CheckCircleOutlined /></div>
+        <>
+            {/* ⭐ Period behavior toolbar — hidden when the operator
+                collapses it from the header toggle. */}
+            {!periodToolbarHidden && (
+            <div className="ue-period-bar">
+                <div className="ue-period-bar-left">
+                    <span className="ue-period-bar-label">Reporting Period</span>
+
+                    <div className="ue-period-segmented" role="tablist" aria-label="Reporting period">
+                        {[
+                            { value: 'weekly',  label: 'Weekly'  },
+                            { value: 'monthly', label: 'Monthly' },
+                            { value: 'yearly',  label: 'Yearly'  },
+                        ].map((opt) => (
+                            <button
+                                key={opt.value}
+                                type="button"
+                                role="tab"
+                                aria-selected={dashboardPeriod === opt.value}
+                                className={`ue-period-seg-btn ${dashboardPeriod === opt.value ? 'active' : ''}`}
+                                onClick={() => setDashboardPeriod(opt.value)}
+                            >
+                                {opt.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="ue-period-bar-right">
+                    <button
+                        type="button"
+                        className="ue-period-arrow-btn"
+                        onClick={() => handleShiftPeriod('prev')}
+                        aria-label="Previous period"
+                        title="Previous period"
+                    >
+                        <LeftOutlined />
+                    </button>
+
+                    <span className="ue-period-range-text" aria-live="polite">
+                        {periodRange.label}
+                    </span>
+
+                    <button
+                        type="button"
+                        className="ue-period-arrow-btn"
+                        onClick={() => handleShiftPeriod('next')}
+                        aria-label="Next period"
+                        title="Next period"
+                    >
+                        <RightOutlined />
+                    </button>
+
+                                     <button
+                        type="button"
+                        className="ue-period-today-btn"
+                        onClick={handleJumpToToday}
+                        title="Jump to today"
+                    >
+                        Today
+                    </button>
+                </div>
+            </div>
+            )}
+
+            <div className="ue-stats-grid">
+                <div className="ue-stat-card">
+                    <div className="ue-stat-icon green"><CheckCircleOutlined /></div>
                 <div>
                     <div className="ue-stat-label">Confirmed Bookings</div>
                     <div className="ue-stat-value">{stats.confirmed_bookings}</div>
@@ -3982,28 +5275,103 @@ const UnifiedOrderEventsManagement = () => {
                     <div className="ue-stat-value">{stats.ongoing}</div>
                 </div>
             </div>
-            <div className="ue-stat-card">
-                <div className="ue-stat-icon blue"><CheckCircleOutlined /></div>
-                <div>
-                    <div className="ue-stat-label">Completed</div>
-                    <div className="ue-stat-value">{stats.completed}</div>
+                     {/* ⭐ Hidden for cashiers, visible to admin + super-admin. */}
+            <Tooltip
+                title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
+                    effectiveVisibility.payments_collected ? 'Unhide value' : 'Hide value'
+                )}
+            >
+                <div className="ue-stat-card ue-stat-card-hideable">
+                    {canToggleFinancialVisibility && (
+                        <button
+                            type="button"
+                            className="ue-stat-hide-btn"
+                            onClick={() =>
+                                handleToggleFinancialVisibility('payments_collected')
+                            }
+                        >
+                            {effectiveVisibility.payments_collected
+                                ? <EyeOutlined />
+                                : <EyeInvisibleOutlined />}
+                        </button>
+                    )}
+                    <div className="ue-stat-icon blue"><WalletOutlined /></div>
+                    <div>
+                        <div className="ue-stat-label">Total Payments Collected</div>
+                        <div className="ue-stat-value">
+                            {effectiveVisibility.payments_collected
+                                ? <span className="ue-stat-masked">
+                                    {maskMatchingValue(formatCurrency(stats.total_payments_collected))}
+                                  </span>
+                                : formatCurrency(stats.total_payments_collected)}
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <div className="ue-stat-card">
-                <div className="ue-stat-icon purple"><DollarOutlined /></div>
-                <div>
-                    <div className="ue-stat-label">Total Revenue</div>
-                    <div className="ue-stat-value">{formatCurrency(stats.total_revenue)}</div>
+            </Tooltip>
+                      <Tooltip
+                title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
+                    effectiveVisibility.total_revenue ? 'Unhide value' : 'Hide value'
+                )}
+            >
+                <div className="ue-stat-card ue-stat-card-hideable">
+                    {canToggleFinancialVisibility && (
+                        <button
+                            type="button"
+                            className="ue-stat-hide-btn"
+                            onClick={() => handleToggleFinancialVisibility('total_revenue')}
+                        >
+                            {effectiveVisibility.total_revenue
+                                ? <EyeOutlined />
+                                : <EyeInvisibleOutlined />}
+                        </button>
+                    )}
+                    <div className="ue-stat-icon purple"><DollarOutlined /></div>
+                    <div>
+                        <div className="ue-stat-label">Total Revenue</div>
+                        <div className="ue-stat-value">
+                            {effectiveVisibility.total_revenue
+                                ? <span className="ue-stat-masked">
+                                    {maskMatchingValue(formatCurrency(stats.total_revenue))}
+                                  </span>
+                                : formatCurrency(stats.total_revenue)}
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <div className="ue-stat-card">
-                <div className="ue-stat-icon gold"><WalletOutlined /></div>
-                <div>
-                    <div className="ue-stat-label">Outstanding Balance</div>
-                    <div className="ue-stat-value">{formatCurrency(stats.outstanding_balance)}</div>
+            </Tooltip>
+                      <Tooltip
+                title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
+                    effectiveVisibility.outstanding_balance ? 'Unhide value' : 'Hide value'
+                )}
+            >
+                <div className="ue-stat-card ue-stat-card-hideable">
+                    {canToggleFinancialVisibility && (
+                        <button
+                            type="button"
+                            className="ue-stat-hide-btn"
+                            onClick={() =>
+                                handleToggleFinancialVisibility('outstanding_balance')
+                            }
+                        >
+                            {effectiveVisibility.outstanding_balance
+                                ? <EyeOutlined />
+                                : <EyeInvisibleOutlined />}
+                        </button>
+                    )}
+                         <div className="ue-stat-icon gold"><WalletOutlined /></div>
+                    <div>
+                        <div className="ue-stat-label">Outstanding Balance</div>
+                        <div className="ue-stat-value">
+                            {effectiveVisibility.outstanding_balance
+                                ? <span className="ue-stat-masked">
+                                    {maskMatchingValue(formatCurrency(stats.outstanding_balance))}
+                                  </span>
+                                : formatCurrency(stats.outstanding_balance)}
+                        </div>
+                    </div>
                 </div>
+            </Tooltip>
             </div>
-        </div>
+        </>
     );
 
     // ONGOING WARNING
@@ -5499,9 +6867,11 @@ const UnifiedOrderEventsManagement = () => {
     const handleRecordPayment = async (values) => {
         try {
             const validatedValues = await paymentForm.validateFields();
-            await api.post(`/bookings/${selectedBooking.id}/record-payment`, {
-                ...validatedValues,
-                ...values,
+            await runWithLoadingLine('payment', selectedBooking, async (signal) => {
+                await api.post(`/bookings/${selectedBooking.id}/record-payment`, {
+                    ...validatedValues,
+                    ...values,
+                }, { signal });
             });
             message.success('Payment recorded successfully');
             setPaymentModalVisible(false);
@@ -5970,16 +7340,18 @@ const UnifiedOrderEventsManagement = () => {
                                         <Button className="ue-vd-action-btn" icon={<PlusCircleOutlined />} onClick={() => handleViewEquipmentDetails(record)}>
                                             Equipment
                                         </Button>
-                                        <Button
-                                            className="ue-vd-action-btn"
-                                            icon={<RiseOutlined style={{ color: '#2563eb' }} />}
-                                            onClick={() => {
-                                                setViewModalVisible(false);
-                                                handleViewProfitability(record);
-                                            }}
-                                        >
-                                            Profitability
-                                        </Button>
+                                                                             {canViewProfitability && (
+                                            <Button
+                                                className="ue-vd-action-btn"
+                                                icon={<RiseOutlined style={{ color: '#2563eb' }} />}
+                                                onClick={() => {
+                                                    setViewModalVisible(false);
+                                                    handleViewProfitability(record);
+                                                }}
+                                            >
+                                                Profitability
+                                            </Button>
+                                        )}
                                     </div>
                                 </div>
 
@@ -6041,10 +7413,20 @@ const UnifiedOrderEventsManagement = () => {
         );
     };
 
-    // MAIN RENDER
+          // MAIN RENDER
     const containerClass = `ue-container ${isDarkMode ? 'ue-dark-mode' : ''}`;
     const tableClass = `ue-table ${isDarkMode ? 'ue-table-dark' : ''}`;
 
+    // ============================================================
+    // SKELETON — only during the very first mount of a page load.
+    // Back-navigation hits the module flag already set to false and
+    // renders cached data instantly (no skeleton, no blank flash).
+    // ============================================================
+    const shouldShowSkeleton = showSkeleton;
+
+    if (shouldShowSkeleton) {
+        return <OrderEventsSkeleton isDarkMode={isDarkMode} />;
+    }
     const tabItems = [
         {
             key: 'orders',
@@ -6224,8 +7606,25 @@ const UnifiedOrderEventsManagement = () => {
                 }
             }}
         >
-            <App>
+                        <App>
                 <div className={containerClass}>
+                    {loadingLine && (
+                        <div className="ue-loading-line" role="status" aria-live="polite">
+                            <div className="ue-loading-line-text">
+                                {loadingLine.message}
+                            </div>
+                            <button
+                                type="button"
+                                className="ue-loading-line-cancel"
+                                onClick={handleCancelLoadingLine}
+                            >
+                                Cancel
+                            </button>
+                            <div className="ue-loading-line-track">
+                                <div className="ue-loading-line-fill" />
+                            </div>
+                        </div>
+                    )}
                     <div className="ue-header">
                         <div className="ue-header-left">
                             <div className="ue-logo-icon"><MdEventNote /></div>
@@ -6234,11 +7633,37 @@ const UnifiedOrderEventsManagement = () => {
                                 <span>UNIFIED OPERATIONS</span>
                             </div>
                         </div>
-                        <div className="ue-header-right">
+                                              <div className="ue-header-right">
                             <div className="ue-date-display">
                                 <CalendarOutlined />
                                 <span>{dayjs().format('dddd, MMMM DD, YYYY')}</span>
                             </div>
+
+                            {/* ⭐ Hide/unhide the Period Behavior toolbar. */}
+                            <Tooltip
+                                title={
+                                    periodToolbarHidden
+                                        ? 'Show Period selector'
+                                        : 'Hide Period selector'
+                                }
+                            >
+                                <button
+                                    type="button"
+                                    className={`ue-period-toggle-btn ${periodToolbarHidden ? 'is-hidden' : ''}`}
+                                    onClick={handleTogglePeriodToolbar}
+                                    aria-label={
+                                        periodToolbarHidden
+                                            ? 'Show Period selector'
+                                            : 'Hide Period selector'
+                                    }
+                                    aria-pressed={periodToolbarHidden}
+                                >
+                                    {periodToolbarHidden
+                                        ? <EyeInvisibleOutlined />
+                                        : <EyeOutlined />}
+                                </button>
+                            </Tooltip>
+
                             <Divider type="vertical" style={{ height: 28 }} />
                             <Button icon={<ReloadOutlined />} onClick={handleRefresh}>Refresh</Button>
                             <Button icon={<ExportOutlined />} onClick={activeTab === 'history' ? exportHistory : exportAllOrders}>Export</Button>
@@ -6269,11 +7694,13 @@ const UnifiedOrderEventsManagement = () => {
                     {renderEquipmentReturnModal()}
                     {renderEquipmentDetailsModal()}
 
-                    <ProfitabilityModal
-                        visible={profitabilityModalVisible}
-                        onClose={handleCloseProfitability}
-                        bookingId={profitabilityBookingId}
-                    />
+                                      {canViewProfitability && (
+                        <ProfitabilityModal
+                            visible={profitabilityModalVisible}
+                            onClose={handleCloseProfitability}
+                            bookingId={profitabilityBookingId}
+                        />
+                    )}
                 </div>
             </App>
         </ConfigProvider>

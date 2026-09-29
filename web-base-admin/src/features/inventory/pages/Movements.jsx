@@ -2,16 +2,16 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  App, Button, Card, Col, ConfigProvider, Descriptions, Empty, Input, Modal, Row,
-  Select, Space, Spin, Statistic, Table, Tag, Typography, theme as antdTheme,
-  Badge, Divider, Tooltip, message
+  App, Button, Card, Col, ConfigProvider, DatePicker, Descriptions, Empty, Input,
+  Modal, Row, Segmented, Select, Space, Spin, Statistic, Table, Tag, Typography,
+  theme as antdTheme, Badge, Divider, Tooltip, message
 } from 'antd';
 import {
   ArrowDownOutlined, ArrowUpOutlined, EyeOutlined, ReloadOutlined, SwapOutlined,
   UserOutlined, WarningOutlined, SearchOutlined, FilterOutlined, LeftOutlined,
   RightOutlined, CalendarOutlined, PrinterOutlined, ExportOutlined, RiseOutlined,
   FallOutlined, ClockCircleOutlined, BoxPlotOutlined, DollarOutlined,
-  CheckCircleOutlined, CloseCircleOutlined, MoreOutlined
+  CheckCircleOutlined, CloseCircleOutlined, MoreOutlined, ClearOutlined
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useInventoryMovements } from '../../../hooks/useInventoryQueries';
@@ -52,7 +52,43 @@ const Movements = () => {
   const [type, setType] = useState('all');
   const [selected, setSelected] = useState(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const movementsQuery = useInventoryMovements({ per_page: 500 });
+
+  // ⭐ Date filter state — defaults to "all" so nothing is hidden on first load.
+  const [period, setPeriod] = useState('all');           // all | daily | weekly | monthly
+  const [referenceDate, setReferenceDate] = useState(dayjs());
+
+  // ⭐ Compute the actual [date_from, date_to] from period + referenceDate.
+  const dateRange = useMemo(() => {
+    if (period === 'all') return { date_from: undefined, date_to: undefined };
+
+    const base = referenceDate || dayjs();
+
+    if (period === 'daily') {
+      return {
+        date_from: base.startOf('day').format('YYYY-MM-DD'),
+        date_to: base.endOf('day').format('YYYY-MM-DD'),
+      };
+    }
+
+    if (period === 'weekly') {
+      return {
+        date_from: base.startOf('week').format('YYYY-MM-DD'),
+        date_to: base.endOf('week').format('YYYY-MM-DD'),
+      };
+    }
+
+    // monthly
+    return {
+      date_from: base.startOf('month').format('YYYY-MM-DD'),
+      date_to: base.endOf('month').format('YYYY-MM-DD'),
+    };
+  }, [period, referenceDate]);
+
+  const movementsQuery = useInventoryMovements({
+    per_page: 500,
+    date_from: dateRange.date_from,
+    date_to: dateRange.date_to,
+  });
 
   useEffect(() => {
     const detect = () => setIsDarkMode(document.body.classList.contains('dark-mode'));
@@ -72,6 +108,14 @@ const Movements = () => {
 
   const counts = useMemo(() => Object.keys(TYPE_LABELS).reduce((acc, key) => ({ ...acc, [key]: rows.filter((row) => row.movement_type === key).length }), {}), [rows]);
 
+  // ⭐ Human-readable label for the active period.
+  const periodLabel = useMemo(() => {
+    if (period === 'all') return 'All Time';
+    const base = referenceDate || dayjs();
+    if (period === 'daily')   return base.format('MMMM D, YYYY');
+    if (period === 'weekly')  return `${base.startOf('week').format('MMM D')} – ${base.endOf('week').format('MMM D, YYYY')}`;
+    return base.format('MMMM YYYY');
+  }, [period, referenceDate]);
   // ==================== STATISTICS ====================
   const totalMovements = rows.length;
   const stockInCount = counts.stock_in || 0;
@@ -139,6 +183,34 @@ const Movements = () => {
               <span className="sm-quantity-after">{row.quantity_after ?? '—'}</span>
             </div>
           </div>
+        );
+      }
+    },
+    {
+      title: 'SOURCE',
+      dataIndex: 'source',
+      key: 'source',
+      width: 160,
+      render: (value) => {
+        const colorMap = {
+          'Purchase': '#10b981',
+          'Order': '#1a7ab5',
+          'Waste Management': '#f59e0b',
+          'Ingredients Management': '#8b5cf6',
+          'Return': '#06b6d4',
+          'Auto Reorder': '#6b7280',
+        };
+        return (
+          <span style={{
+            padding: '2px 10px',
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 600,
+            color: colorMap[value] || '#6b7280',
+            background: (colorMap[value] || '#6b7280') + '15',
+          }}>
+            {value || '—'}
+          </span>
         );
       }
     },
@@ -253,9 +325,9 @@ const Movements = () => {
             </div>
           </div>
           <div className="sm-header-right">
-            <div className="sm-date-display">
+                       <div className="sm-date-display">
               <CalendarOutlined />
-              <span>{formattedDate}</span>
+              <span>{period === 'all' ? formattedDate : `${periodLabel} • ${rows.length} movement${rows.length !== 1 ? 's' : ''}`}</span>
             </div>
             <Divider type="vertical" style={{ height: 28 }} />
             <Tooltip title="Refresh data">
@@ -323,7 +395,7 @@ const Movements = () => {
         {/* ==================== MAIN CARD ==================== */}
         <Card className="sm-main-card" variant="borderless">
           <div className="sm-table-container">
-            {/* Filters */}
+              {/* Filters */}
             <div className={filtersClass}>
               <div className="sm-filter-group sm-search-group">
                 <SearchOutlined />
@@ -350,6 +422,52 @@ const Movements = () => {
                   ))}
                 </Select>
               </div>
+
+              {/* ⭐ Period indicator — Daily / Weekly / Monthly / All */}
+              <div className="sm-filter-group">
+                <CalendarOutlined />
+                <Segmented
+                  value={period}
+                  onChange={(value) => setPeriod(value)}
+                  options={[
+                    { label: 'All',     value: 'all' },
+                    { label: 'Daily',   value: 'daily' },
+                    { label: 'Weekly',  value: 'weekly' },
+                    { label: 'Monthly', value: 'monthly' },
+                  ]}
+                  className="sm-period-segmented"
+                />
+              </div>
+
+              {/* ⭐ Reference date picker — only shown when a period is active */}
+              {period !== 'all' && (
+                <div className="sm-filter-group">
+                  <DatePicker
+                    value={referenceDate}
+                    onChange={(value) => setReferenceDate(value || dayjs())}
+                    picker={period === 'monthly' ? 'month' : period === 'weekly' ? 'week' : 'date'}
+                    allowClear={false}
+                    className="sm-period-picker"
+                  />
+                </div>
+              )}
+
+              {/* ⭐ Active range chip + clear button */}
+              {period !== 'all' && (
+                <div className="sm-filter-group sm-period-chip">
+                  <span className="sm-period-chip-label">
+                    <CalendarOutlined /> {periodLabel}
+                  </span>
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<ClearOutlined />}
+                    onClick={() => { setPeriod('all'); setReferenceDate(dayjs()); }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              )}
             </div>
 
             {/* Table - Scrollable Body Only (No Pagination) */}

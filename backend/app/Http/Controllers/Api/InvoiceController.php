@@ -11,24 +11,61 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Carbon\Carbon;
 
 class InvoiceController extends Controller
 {
+    private function resolveBillingPeriod(?string $period, ?string $anchor): array
+    {
+        $period     = strtolower((string) ($period ?: 'monthly'));
+        $anchorDate = $anchor ? Carbon::parse($anchor) : now();
+
+        switch ($period) {
+            case 'weekly':
+                return [
+                    $anchorDate->copy()->startOfWeek(Carbon::MONDAY),
+                    $anchorDate->copy()->endOfWeek(Carbon::SUNDAY),
+                ];
+            case 'yearly':
+                return [
+                    $anchorDate->copy()->startOfYear(),
+                    $anchorDate->copy()->endOfYear(),
+                ];
+            case 'all':
+                return [null, null];
+            case 'monthly':
+            default:
+                return [
+                    $anchorDate->copy()->startOfMonth(),
+                    $anchorDate->copy()->endOfMonth(),
+                ];
+        }
+    }
+
     public function index(Request $request)
     {
         try {
             $query = Invoice::with([
                 'booking.serviceEvent.customer.person',
                 'booking.serviceEvent.eventType',
-                'booking.payments'
+                'booking.payments',
             ]);
+
+            $period = $request->input('period', 'monthly');
+            $anchor = $request->input('anchor', now()->toDateString());
+            [$start, $end] = $this->resolveBillingPeriod($period, $anchor);
+
+            if ($start && $end) {
+                $query->whereHas('booking.serviceEvent', function ($q) use ($start, $end) {
+                    $q->whereDate('event_date', '>=', $start->toDateString())
+                      ->whereDate('event_date', '<=', $end->toDateString());
+                });
+            }
 
             if (! $request->boolean('include_history')) {
                 $query->whereHas('booking', fn($q) => $q->where('booking_no', 'not like', 'HIST-%'));
             }
 
-            // Operational invoice lists show outstanding balances only. Paid
-            // invoices remain available through /payments/history and reports.
             if (! $request->boolean('include_paid')) {
                 $query->whereColumn('paid_amount', '<', 'total_amount')
                     ->where('status', '!=', 'cancelled');
@@ -53,15 +90,19 @@ class InvoiceController extends Controller
                 });
             }
 
-            $rows = $query->latest('invoice_id')->paginate($request->integer('per_page', 20));
+            $perPage = min(500, max(1, $request->integer('per_page', 20)));
+            $rows = $query->latest('invoice_id')->paginate($perPage);
 
             $rows->getCollection()->transform(function ($invoice) {
                 return $this->formatInvoice($invoice);
             });
 
-            return $this->ok($rows);
+            return $this->ok($rows)
+                ->header('Cache-Control', 'private, max-age=60');
         } catch (\Exception $e) {
-            Log::error('Invoice index error: ' . $e->getMessage());
+            Log::error('Invoice index error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to load invoices: ' . $e->getMessage(), 500);
         }
     }
@@ -73,11 +114,14 @@ class InvoiceController extends Controller
                 'booking.serviceEvent.customer.person',
                 'booking.serviceEvent.eventType',
                 'booking.items.menuItem',
-                'booking.payments'
+                'booking.payments',
             ]);
             return $this->ok($this->formatInvoice($invoice));
         } catch (\Exception $e) {
-            Log::error('Invoice show error: ' . $e->getMessage());
+            Log::error('Invoice show error: ' . $e->getMessage(), [
+                'invoice_id' => $invoice->invoice_id ?? null,
+                'trace'      => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to load invoice: ' . $e->getMessage(), 500);
         }
     }
@@ -86,24 +130,23 @@ class InvoiceController extends Controller
     {
         try {
             $data = $request->validate([
-                'booking_id' => ['required', 'exists:bookings,booking_id'],
-                'subtotal' => ['nullable', 'numeric', 'min:0'],
-                'discount' => ['nullable', 'numeric', 'min:0'],
-                'discount_type' => ['nullable', 'in:fixed,percentage'],
+                'booking_id'         => ['required', 'exists:bookings,booking_id'],
+                'subtotal'           => ['nullable', 'numeric', 'min:0'],
+                'discount'           => ['nullable', 'numeric', 'min:0'],
+                'discount_type'      => ['nullable', 'in:fixed,percentage'],
                 'additional_charges' => ['nullable', 'numeric', 'min:0'],
-                'total_amount' => ['nullable', 'numeric', 'min:0'],
-                'due_date' => ['nullable', 'date'],
-                'notes' => ['nullable', 'string'],
+                'total_amount'       => ['nullable', 'numeric', 'min:0'],
+                'due_date'           => ['nullable', 'date'],
+                'notes'              => ['nullable', 'string'],
             ]);
 
             $booking = Booking::with([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
                 'items.menuItem',
-                'quotation'
+                'quotation',
             ])->findOrFail($data['booking_id']);
 
-            // Check if invoice already exists
             if ($booking->invoice) {
                 return $this->fail('Invoice already exists for this booking.', 422);
             }
@@ -116,30 +159,27 @@ class InvoiceController extends Controller
                 return $this->fail('Cashiers may generate invoices only for confirmed bookings.', 403);
             }
 
-            // Cashier-generated invoices use the approved booking/quotation price. Only an
-            // administrator may introduce price, discount, or additional-charge adjustments.
             $approvedSubtotal = $booking->quotation?->total_amount ?? $this->calculateSubtotalFromBooking($booking);
             $subtotal = ($isCashier && ! $isAdministrator) ? $approvedSubtotal : ($data['subtotal'] ?? $approvedSubtotal);
             $discount = ($isCashier && ! $isAdministrator) ? 0 : ($data['discount'] ?? 0);
             $discountType = ($isCashier && ! $isAdministrator) ? 'fixed' : ($data['discount_type'] ?? 'fixed');
             $additionalCharges = ($isCashier && ! $isAdministrator) ? 0 : ($data['additional_charges'] ?? 0);
 
-            // Calculate total amount
             $totalAmount = $this->calculateTotalAmount($subtotal, $discount, $discountType, $additionalCharges);
 
             $invoice = DB::transaction(function () use ($booking, $data, $subtotal, $discount, $discountType, $additionalCharges, $totalAmount) {
                 return Invoice::create([
-                    'invoice_number' => $this->generateInvoiceNumber(),
-                    'booking_id' => $booking->booking_id,
-                    'subtotal' => $subtotal,
-                    'discount' => $discount,
-                    'discount_type' => $discountType,
+                    'invoice_number'     => $this->generateInvoiceNumber(),
+                    'booking_id'         => $booking->booking_id,
+                    'subtotal'           => $subtotal,
+                    'discount'           => $discount,
+                    'discount_type'      => $discountType,
                     'additional_charges' => $additionalCharges,
-                    'total_amount' => $totalAmount,
-                    'paid_amount' => 0,
-                    'status' => 'unpaid',
-                    'due_date' => $data['due_date'] ?? now()->addDays(30)->toDateString(),
-                    'notes' => $data['notes'] ?? null,
+                    'total_amount'       => $totalAmount,
+                    'paid_amount'        => 0,
+                    'status'             => 'unpaid',
+                    'due_date'           => $data['due_date'] ?? now()->addDays(30)->toDateString(),
+                    'notes'              => $data['notes'] ?? null,
                 ]);
             });
 
@@ -150,7 +190,9 @@ class InvoiceController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             return $this->fail('Validation failed', 422, $e->errors());
         } catch (\Exception $e) {
-            Log::error('Invoice store error: ' . $e->getMessage());
+            Log::error('Invoice store error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to create invoice: ' . $e->getMessage(), 500);
         }
     }
@@ -169,16 +211,15 @@ class InvoiceController extends Controller
             }
 
             $data = $request->validate([
-                'subtotal' => ['nullable', 'numeric', 'min:0'],
-                'discount' => ['nullable', 'numeric', 'min:0'],
-                'discount_type' => ['nullable', 'in:fixed,percentage'],
+                'subtotal'           => ['nullable', 'numeric', 'min:0'],
+                'discount'           => ['nullable', 'numeric', 'min:0'],
+                'discount_type'      => ['nullable', 'in:fixed,percentage'],
                 'additional_charges' => ['nullable', 'numeric', 'min:0'],
-                'due_date' => ['nullable', 'date'],
-                'status' => ['nullable', 'in:unpaid,partial,paid,overdue,cancelled'],
-                'notes' => ['nullable', 'string'],
+                'due_date'           => ['nullable', 'date'],
+                'status'             => ['nullable', 'in:unpaid,partial,paid,overdue,cancelled'],
+                'notes'              => ['nullable', 'string'],
             ]);
 
-            // Recalculate total amount
             $subtotal = $data['subtotal'] ?? $invoice->subtotal;
             $discount = $data['discount'] ?? $invoice->discount;
             $discountType = $data['discount_type'] ?? $invoice->discount_type ?? 'fixed';
@@ -187,14 +228,14 @@ class InvoiceController extends Controller
             $totalAmount = $this->calculateTotalAmount($subtotal, $discount, $discountType, $additionalCharges);
 
             $invoice->update([
-                'subtotal' => $subtotal,
-                'discount' => $discount,
-                'discount_type' => $discountType,
+                'subtotal'           => $subtotal,
+                'discount'           => $discount,
+                'discount_type'      => $discountType,
                 'additional_charges' => $additionalCharges,
-                'total_amount' => $totalAmount,
-                'due_date' => $data['due_date'] ?? $invoice->due_date,
-                'status' => $data['status'] ?? $invoice->status,
-                'notes' => $data['notes'] ?? $invoice->notes,
+                'total_amount'       => $totalAmount,
+                'due_date'           => $data['due_date'] ?? $invoice->due_date,
+                'status'             => $data['status'] ?? $invoice->status,
+                'notes'              => $data['notes'] ?? $invoice->notes,
             ]);
 
             return $this->ok(
@@ -204,7 +245,9 @@ class InvoiceController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             return $this->fail('Validation failed', 422, $e->errors());
         } catch (\Exception $e) {
-            Log::error('Invoice update error: ' . $e->getMessage());
+            Log::error('Invoice update error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to update invoice: ' . $e->getMessage(), 500);
         }
     }
@@ -215,63 +258,69 @@ class InvoiceController extends Controller
             $invoice->delete();
             return $this->ok(null, 'Invoice deleted successfully.');
         } catch (\Exception $e) {
-            Log::error('Invoice delete error: ' . $e->getMessage());
+            Log::error('Invoice delete error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to delete invoice: ' . $e->getMessage(), 500);
         }
     }
 
-    /**
-     * Get confirmed bookings that don't have invoices yet
-     * FIXED: Only shows bookings WITHOUT invoices
-     */
     public function getConfirmedBookings(Request $request)
     {
         try {
-            $bookings = Booking::with([
+                    $bookings = Booking::with([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
                 'items.menuItem',
-                'quotation'
+                'quotation',
+                'invoice',
             ])
-                ->whereIn('booking_status', ['confirmed', 'completed'])
+                ->whereIn('booking_status', ['confirmed', 'approved'])
                 ->where('booking_no', 'not like', 'HIST-%')
-                ->whereDoesntHave('invoice')  // CRITICAL: Only bookings without invoices
+                ->whereDoesntHave('invoice')
                 ->latest('booking_id')
-                ->paginate($request->integer('per_page', 20));
+                ->paginate(min(500, max(1, $request->integer('per_page', 200))));
 
             $bookings->getCollection()->transform(function ($booking) {
-                $person = $booking->serviceEvent?->customer?->person;
+                $person   = $booking->serviceEvent?->customer?->person;
                 $subtotal = $this->calculateSubtotalFromBooking($booking);
+                $invoice  = $booking->invoice;
 
                 return [
-                    'booking_id' => $booking->booking_id,
-                    'booking_no' => $booking->booking_no,
-                    'customer_name' => $person?->full_name ?? 'Unknown',
-                    'customer_email' => $person?->email ?? 'N/A',
-                    'customer_phone' => $person?->phone ?? 'N/A',
+                    'booking_id'       => $booking->booking_id,
+                    'booking_no'       => $booking->booking_no,
+                    'has_invoice'      => (bool) $invoice,
+                    'invoice_id'       => $invoice?->invoice_id,
+                    'invoice_number'   => $invoice?->invoice_number,
+                    'customer_name'    => $person?->full_name ?? 'Unknown',
+                    'customer_email'   => $person?->email ?? 'N/A',
+                    'customer_phone'   => $person?->phone ?? 'N/A',
                     'customer_address' => $person?->address_line_1,
-                    'event_type' => $booking->serviceEvent?->eventType?->name,
-                    'event_date' => $booking->serviceEvent?->event_date?->toDateString(),
-                    'event_time' => $booking->serviceEvent?->event_time,
-                    'venue' => $booking->serviceEvent?->venue,
-                    'guests_count' => $booking->serviceEvent?->guests_count ?? 0,
-                    'subtotal' => $subtotal,
-                    'total_amount' => $booking->quotation?->total_amount ?? $subtotal,
+                    'event_type'       => $booking->serviceEvent?->eventType?->name,
+                    'event_date'       => $booking->serviceEvent?->event_date?->toDateString(),
+                    'event_time'       => $booking->serviceEvent?->event_time,
+                    'venue'            => $booking->serviceEvent?->venue,
+                    'guests_count'     => $booking->serviceEvent?->guests_count ?? 0,
+                    'subtotal'         => $subtotal,
+                    'total_amount'     => $booking->quotation?->total_amount ?? $subtotal,
                     'required_deposit' => $booking->required_deposit ?? 0,
-                    'status' => $booking->booking_status,
-                    'items' => $booking->items->map(function ($item) {
+                    'status'           => $booking->booking_status,
+                    'items'            => $booking->items->map(function ($item) {
                         return [
                             'description' => $item->custom_item_name ?? $item->menuItem?->name ?? 'Menu Item',
-                            'quantity' => (int) $item->quantity,
-                            'unit_price' => (float) $item->unit_price,
+                            'quantity'    => (int) $item->quantity,
+                            'unit_price'  => (float) $item->unit_price,
                         ];
                     }),
                 ];
             });
 
-            return $this->ok($bookings);
+            return $this->ok($bookings)
+                ->header('Cache-Control', 'private, max-age=60');
         } catch (\Exception $e) {
-            Log::error('Get confirmed bookings error: ' . $e->getMessage());
+            Log::error('Get confirmed bookings error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to load confirmed bookings: ' . $e->getMessage(), 500);
         }
     }
@@ -282,7 +331,7 @@ class InvoiceController extends Controller
             $query = Invoice::with([
                 'booking.serviceEvent.customer.person',
                 'booking.serviceEvent.eventType',
-                'booking.payments'
+                'booking.payments',
             ])
                 ->whereRaw('paid_amount < total_amount')
                 ->where('status', '!=', 'cancelled')
@@ -298,11 +347,13 @@ class InvoiceController extends Controller
                 });
             }
 
-            $rows = $query->latest('due_date')->paginate($request->integer('per_page', 20));
+            $rows = $query->latest('due_date')->paginate(
+                min(500, max(1, $request->integer('per_page', 20)))
+            );
 
             $rows->getCollection()->transform(function ($invoice) {
-                $balance = $invoice->total_amount - $invoice->paid_amount;
-                $dueDate = $invoice->due_date;
+                $balance     = $invoice->total_amount - $invoice->paid_amount;
+                $dueDate     = $invoice->due_date;
                 $daysOverdue = $dueDate && $dueDate->isPast() ? $dueDate->diffInDays(now()) : 0;
 
                 $paymentHistory = ($invoice->booking?->payments ?? collect())
@@ -311,46 +362,46 @@ class InvoiceController extends Controller
                     ->values()
                     ->map(function ($p) {
                         return [
-                            'amount' => $p->amount,
+                            'amount'        => $p->amount,
                             'signed_amount' => $p->payment_type === 'refund' ? -(float) $p->amount : (float) $p->amount,
-                            'date' => $p->payment_date?->toDateString(),
-                            'method' => $p->payment_method,
-                            'type' => $p->payment_type,
-                            'status' => $p->status,
-                            'reference' => $p->reference_number,
+                            'date'          => $p->payment_date?->toDateString(),
+                            'method'        => $p->payment_method,
+                            'type'          => $p->payment_type,
+                            'status'        => $p->status,
+                            'reference'     => $p->reference_number,
                         ];
                     });
 
                 return [
-                    'id' => $invoice->invoice_id,
-                    'invoice_id' => $invoice->invoice_id,
-                    'invoice_number' => $invoice->invoice_number ?? 'N/A',
-                    'booking_id' => $invoice->booking_id,
-                    'booking_no' => $invoice->booking?->booking_no ?? 'N/A',
-                    'customer_name' => $invoice->booking?->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                    'customer_email' => $invoice->booking?->serviceEvent?->customer?->person?->email ?? 'N/A',
-                    'customer_phone' => $invoice->booking?->serviceEvent?->customer?->person?->phone ?? 'N/A',
-                    'event_type' => $invoice->booking?->serviceEvent?->eventType?->name,
-                    'event_date' => $invoice->booking?->serviceEvent?->event_date?->toDateString(),
-                    'total_debt' => (float) $invoice->total_amount,
-                    'paid_debt' => (float) $invoice->paid_amount,
-                    'remaining_debt' => (float) $balance,
-                    'remaining_balance' => (float) $balance,
-                    'total_paid' => (float) $invoice->paid_amount,
-                    'payment_progress' => (float) $invoice->total_amount > 0
+                    'id'                 => $invoice->invoice_id,
+                    'invoice_id'         => $invoice->invoice_id,
+                    'invoice_number'     => $invoice->invoice_number ?? 'N/A',
+                    'booking_id'         => $invoice->booking_id,
+                    'booking_no'         => $invoice->booking?->booking_no ?? 'N/A',
+                    'customer_name'      => $invoice->booking?->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'customer_email'     => $invoice->booking?->serviceEvent?->customer?->person?->email ?? 'N/A',
+                    'customer_phone'     => $invoice->booking?->serviceEvent?->customer?->person?->phone ?? 'N/A',
+                    'event_type'         => $invoice->booking?->serviceEvent?->eventType?->name,
+                    'event_date'         => $invoice->booking?->serviceEvent?->event_date?->toDateString(),
+                    'total_debt'         => (float) $invoice->total_amount,
+                    'paid_debt'          => (float) $invoice->paid_amount,
+                    'remaining_debt'     => (float) $balance,
+                    'remaining_balance'  => (float) $balance,
+                    'total_paid'         => (float) $invoice->paid_amount,
+                    'payment_progress'   => (float) $invoice->total_amount > 0
                         ? round(min(100, ((float) $invoice->paid_amount / (float) $invoice->total_amount) * 100), 2)
                         : 0,
-                    'next_payment' => $balance > 0 ? $dueDate?->toDateString() : null,
-                    'subtotal' => (float) $invoice->subtotal,
-                    'discount' => (float) $invoice->discount,
+                    'next_payment'       => $balance > 0 ? $dueDate?->toDateString() : null,
+                    'subtotal'           => (float) $invoice->subtotal,
+                    'discount'           => (float) $invoice->discount,
                     'additional_charges' => (float) $invoice->additional_charges,
-                    'due_date' => $dueDate?->toDateString(),
-                    'days_overdue' => $daysOverdue,
-                    'status' => $invoice->status,
-                    'payment_history' => $paymentHistory,
-                    'deposit_paid' => $this->calculateDepositPaid($invoice),
-                    'is_deposit_paid' => $this->isDepositPaid($invoice),
-                    'created_at' => $invoice->created_at?->toDateTimeString(),
+                    'due_date'           => $dueDate?->toDateString(),
+                    'days_overdue'       => $daysOverdue,
+                    'status'             => $invoice->status,
+                    'payment_history'    => $paymentHistory,
+                    'deposit_paid'       => $this->calculateDepositPaid($invoice),
+                    'is_deposit_paid'    => $this->isDepositPaid($invoice),
+                    'created_at'         => $invoice->created_at?->toDateTimeString(),
                 ];
             });
 
@@ -359,17 +410,19 @@ class InvoiceController extends Controller
                 ->whereHas('booking', fn($q) => $q->where('booking_no', 'not like', 'HIST-%'));
 
             $summary = [
-                'total_debt' => (float) (clone $base)->sum(DB::raw('total_amount - paid_amount')),
-                'overdue_debt' => (float) (clone $base)->whereDate('due_date', '<', today())->sum(DB::raw('total_amount - paid_amount')),
-                'overdue_count' => (clone $base)->whereDate('due_date', '<', today())->count(),
-                'total_invoices' => (clone $base)->count(),
-                'collection_rate' => $this->calculateCollectionRate(),
+                'total_debt'              => (float) (clone $base)->sum(DB::raw('total_amount - paid_amount')),
+                'overdue_debt'            => (float) (clone $base)->whereDate('due_date', '<', today())->sum(DB::raw('total_amount - paid_amount')),
+                'overdue_count'           => (clone $base)->whereDate('due_date', '<', today())->count(),
+                'total_invoices'          => (clone $base)->count(),
+                'collection_rate'         => $this->calculateCollectionRate(),
                 'deposit_collection_rate' => $this->calculateDepositCollectionRate(),
             ];
 
             return $this->ok(['data' => $rows, 'summary' => $summary]);
         } catch (\Exception $e) {
-            Log::error('Debts error: ' . $e->getMessage());
+            Log::error('Debts error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to load debts: ' . $e->getMessage(), 500);
         }
     }
@@ -377,22 +430,29 @@ class InvoiceController extends Controller
     public function payments(Invoice $invoice)
     {
         try {
-            $payments = $invoice->booking?->payments()->latest('payment_id')->get() ?? collect();
+            $booking  = $invoice->booking;
+            $payments = $booking
+                ? $booking->payments()->latest('payment_id')->get()
+                : collect();
+
             return $this->ok($payments->map(function ($payment) {
                 return [
-                    'id' => $payment->payment_id,
+                    'id'             => $payment->payment_id,
                     'payment_number' => $payment->payment_number,
-                    'amount' => (float) $payment->amount,
-                    'method' => $payment->payment_method,
-                    'type' => $payment->payment_type,
-                    'status' => $payment->status,
-                    'date' => $payment->payment_date?->toDateString(),
-                    'reference' => $payment->reference_number,
-                    'notes' => $payment->notes,
+                    'amount'         => (float) $payment->amount,
+                    'method'         => $payment->payment_method,
+                    'type'           => $payment->payment_type,
+                    'status'         => $payment->status,
+                    'date'           => $payment->payment_date?->toDateString(),
+                    'reference'      => $payment->reference_number,
+                    'notes'          => $payment->notes,
                 ];
             })->values());
         } catch (\Exception $e) {
-            Log::error('Invoice payments error: ' . $e->getMessage());
+            Log::error('Invoice payments error: ' . $e->getMessage(), [
+                'invoice_id' => $invoice->invoice_id ?? null,
+                'trace'      => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to load payments: ' . $e->getMessage(), 500);
         }
     }
@@ -407,10 +467,10 @@ class InvoiceController extends Controller
 
             $invoice->loadMissing(['booking.serviceEvent.customer.person']);
             $customer = $invoice->booking?->serviceEvent?->customer;
-            $person = $customer?->person;
-            $email = $person?->email;
+            $person   = $customer?->person;
+            $email    = $person?->email;
 
-            $gmailStatus = $email ? 'sent' : 'no_email';
+            $gmailStatus     = $email ? 'sent' : 'no_email';
             $messengerStatus = 'unavailable';
 
             if ($email) {
@@ -432,9 +492,9 @@ class InvoiceController extends Controller
                     );
 
                     ChatMessage::query()->create([
-                        'thread_id' => $thread->thread_id,
+                        'thread_id'      => $thread->thread_id,
                         'sender_user_id' => null,
-                        'message' => $data['message'],
+                        'message'        => $data['message'],
                     ]);
 
                     $messengerStatus = 'sent';
@@ -452,33 +512,35 @@ class InvoiceController extends Controller
 
             if ($customer?->user_id) {
                 Notification::create([
-                    'user_id' => $customer->user_id,
-                    'type' => 'payment_reminder',
+                    'user_id'  => $customer->user_id,
+                    'type'     => 'payment_reminder',
                     'priority' => Notification::PRIORITY_HIGH,
-                    'title' => $data['subject'],
-                    'message' => $data['message'],
-                    'data' => [
-                        'invoice_id' => $invoice->invoice_id,
-                        'invoice_number' => $invoice->invoice_number,
-                        'gmail_delivery_status' => $gmailStatus,
+                    'title'    => $data['subject'],
+                    'message'  => $data['message'],
+                    'data'     => [
+                        'invoice_id'                => $invoice->invoice_id,
+                        'invoice_number'            => $invoice->invoice_number,
+                        'gmail_delivery_status'     => $gmailStatus,
                         'messenger_delivery_status' => $messengerStatus,
-                        'delivery_status' => $deliveryStatus,
+                        'delivery_status'           => $deliveryStatus,
                     ],
-                    'is_read' => false,
-                    'is_sent' => true,
-                    'sent_at' => now(),
+                    'is_read'  => false,
+                    'is_sent'  => true,
+                    'sent_at'  => now(),
                 ]);
             }
 
             return $this->ok([
-                'delivery_status' => $deliveryStatus,
-                'gmail_delivery_status' => $gmailStatus,
+                'delivery_status'           => $deliveryStatus,
+                'gmail_delivery_status'     => $gmailStatus,
                 'messenger_delivery_status' => $messengerStatus,
             ], 'Reminder sent successfully.');
         } catch (\Illuminate\Validation\ValidationException $e) {
             return $this->fail('Validation failed', 422, $e->errors());
         } catch (\Exception $e) {
-            Log::error('Send reminder error: ' . $e->getMessage());
+            Log::error('Send reminder error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to send reminder: ' . $e->getMessage(), 500);
         }
     }
@@ -489,72 +551,105 @@ class InvoiceController extends Controller
             $invoice->load(['booking.serviceEvent.customer.person', 'booking.items.menuItem']);
             return $this->ok($this->formatInvoice($invoice), 'Invoice data ready for download.');
         } catch (\Exception $e) {
-            Log::error('Invoice download error: ' . $e->getMessage());
+            Log::error('Invoice download error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
             return $this->fail('Failed to download invoice: ' . $e->getMessage(), 500);
         }
     }
 
-    // ==================== PRIVATE HELPER METHODS ====================
+    // ==================== PRIVATE HELPERS ====================
 
     private function formatInvoice($invoice): array
     {
         $invoice->loadMissing([
             'booking.serviceEvent.customer.person',
             'booking.serviceEvent.eventType',
-            'booking.items.menuItem'
+            'booking.items.menuItem',
         ]);
 
         $booking = $invoice->booking;
-        $event = $booking?->serviceEvent;
-        $person = $event?->customer?->person;
+        $event   = $booking?->serviceEvent;
+        $person  = $event?->customer?->person;
+
+        if (! $booking) {
+            return [
+                'id'               => $invoice->invoice_id,
+                'invoice_id'       => $invoice->invoice_id,
+                'invoice_number'   => $invoice->invoice_number ?? 'N/A',
+                'booking_id'       => null,
+                'booking_no'       => 'N/A',
+                'customer_name'    => 'Unknown',
+                'customer_email'   => 'N/A',
+                'customer_phone'   => 'N/A',
+                'event_type'       => 'General',
+                'event_date'       => null,
+                'subtotal'         => (float) $invoice->subtotal,
+                'discount'         => (float) $invoice->discount,
+                'discount_type'    => $invoice->discount_type ?? 'fixed',
+                'additional_charges' => (float) $invoice->additional_charges,
+                'total_amount'     => (float) $invoice->total_amount,
+                'paid_amount'      => (float) $invoice->paid_amount,
+                'balance'          => (float) ($invoice->total_amount - $invoice->paid_amount),
+                'required_deposit' => round((float) $invoice->total_amount * 0.30, 2),
+                'deposit_paid'     => 0.0,
+                'is_deposit_paid'  => false,
+                'status'           => $invoice->status,
+                'issue_date'       => $invoice->created_at?->toDateString(),
+                'due_date'         => $invoice->due_date?->toDateString(),
+                'notes'            => $invoice->notes,
+                'items'            => [],
+                'payments'         => [],
+            ];
+        }
 
         return [
-            'id' => $invoice->invoice_id,
-            'invoice_id' => $invoice->invoice_id,
-            'invoice_number' => $invoice->invoice_number ?? 'N/A',
-            'booking_id' => $booking?->booking_id,
-            'booking_no' => $booking?->booking_no ?? 'N/A',
-            'customer_name' => $person?->full_name ?? 'Unknown',
-            'customer_email' => $person?->email ?? 'N/A',
-            'customer_phone' => $person?->phone ?? 'N/A',
-            'customer_address' => $person?->address_line_1,
-            'event_type' => $event?->eventType?->name ?? 'General',
-            'event_date' => $event?->event_date?->toDateString(),
-            'subtotal' => (float) $invoice->subtotal,
-            'discount' => (float) $invoice->discount,
-            'discount_type' => $invoice->discount_type ?? 'fixed',
+            'id'                 => $invoice->invoice_id,
+            'invoice_id'         => $invoice->invoice_id,
+            'invoice_number'     => $invoice->invoice_number ?? 'N/A',
+            'booking_id'         => $booking->booking_id,
+            'booking_no'         => $booking->booking_no ?? 'N/A',
+            'customer_name'      => $person?->full_name ?? 'Unknown',
+            'customer_email'     => $person?->email ?? 'N/A',
+            'customer_phone'     => $person?->phone ?? 'N/A',
+            'customer_address'   => $person?->address_line_1,
+            'event_type'         => $event?->eventType?->name ?? 'General',
+            'event_date'         => $event?->event_date?->toDateString(),
+            'subtotal'           => (float) $invoice->subtotal,
+            'discount'           => (float) $invoice->discount,
+            'discount_type'      => $invoice->discount_type ?? 'fixed',
             'additional_charges' => (float) $invoice->additional_charges,
-            'total_amount' => (float) $invoice->total_amount,
-            'paid_amount' => (float) $invoice->paid_amount,
-            'balance' => (float) ($invoice->total_amount - $invoice->paid_amount),
-            'required_deposit' => round((float) $invoice->total_amount * 0.30, 2),
-            'deposit_paid' => $this->calculateDepositPaid($invoice),
-            'is_deposit_paid' => $this->isDepositPaid($invoice),
-            'status' => $invoice->status,
-            'issue_date' => $invoice->created_at?->toDateString(),
-            'due_date' => $invoice->due_date?->toDateString(),
-            'notes' => $invoice->notes,
-            'items' => $booking?->items->map(function ($item) {
+            'total_amount'       => (float) $invoice->total_amount,
+            'paid_amount'        => (float) $invoice->paid_amount,
+            'balance'            => (float) ($invoice->total_amount - $invoice->paid_amount),
+            'required_deposit'   => round((float) $invoice->total_amount * 0.30, 2),
+            'deposit_paid'       => $this->calculateDepositPaid($invoice),
+            'is_deposit_paid'    => $this->isDepositPaid($invoice),
+            'status'             => $invoice->status,
+            'issue_date'         => $invoice->created_at?->toDateString(),
+            'due_date'           => $invoice->due_date?->toDateString(),
+            'notes'              => $invoice->notes,
+            'items'              => $booking->items->map(function ($item) {
                 return [
                     'description' => $item->custom_item_name ?? $item->menuItem?->name ?? 'Menu Item',
-                    'quantity' => (int) $item->quantity,
-                    'unit_price' => (float) $item->unit_price,
-                    'total' => (float) $item->unit_price * (int) $item->quantity,
+                    'quantity'    => (int) $item->quantity,
+                    'unit_price'  => (float) $item->unit_price,
+                    'total'       => (float) $item->unit_price * (int) $item->quantity,
                 ];
-            })->values() ?? [],
-            'payments' => ($booking?->relationLoaded('payments')
+            })->values(),
+            'payments' => ($booking->relationLoaded('payments')
                 ? $booking->payments
-                : ($booking?->payments()->get() ?? collect()))
+                : ($booking->payments()->get() ?? collect()))
                 ->where('status', 'completed')
                 ->values()
                 ->map(function ($p) {
                     return [
-                        'id' => $p->payment_id,
-                        'amount' => $p->amount,
-                        'method' => $p->payment_method,
-                        'type' => $p->payment_type,
+                        'id'        => $p->payment_id,
+                        'amount'    => $p->amount,
+                        'method'    => $p->payment_method,
+                        'type'      => $p->payment_type,
                         'reference' => $p->reference_number,
-                        'date' => $p->payment_date?->toDateString(),
+                        'date'      => $p->payment_date?->toDateString(),
                     ];
                 }),
         ];
@@ -562,48 +657,63 @@ class InvoiceController extends Controller
 
     private function calculateSubtotalFromBooking($booking): float
     {
+        if (! $booking) {
+            return 0.0;
+        }
+
+        if (! $booking->relationLoaded('items')) {
+            $booking->loadMissing('items');
+        }
+
         $total = 0;
-        foreach ($booking->items as $item) {
-            $total += ($item->unit_price ?? 0) * ($item->quantity ?? 1);
+        foreach (($booking->items ?? collect()) as $item) {
+            $total += ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1));
         }
         return (float) $total;
     }
 
     private function calculateTotalAmount(float $subtotal, float $discount, string $discountType, float $additionalCharges): float
     {
-        $discountAmount = 0;
-
-        if ($discountType === 'percentage') {
-            $discountAmount = $subtotal * ($discount / 100);
-        } else {
-            $discountAmount = $discount;
-        }
+        $discountAmount = $discountType === 'percentage'
+            ? $subtotal * ($discount / 100)
+            : $discount;
 
         return max(0, $subtotal - $discountAmount + $additionalCharges);
     }
 
     private function calculateDepositPaid($invoice): float
     {
-        $depositPayments = $invoice->booking?->payments()
+        $booking = $invoice->booking;
+
+        if (! $booking) {
+            return 0.0;
+        }
+
+        return (float) $booking->payments()
             ->where('payment_type', 'deposit')
             ->where('status', 'completed')
             ->sum('amount');
-        return (float) $depositPayments;
     }
 
     private function isDepositPaid($invoice): bool
     {
-        $requiredDeposit = $invoice->booking?->required_deposit ?? ($invoice->total_amount * 0.3 ?? 0);
-        $paidDeposit = $this->calculateDepositPaid($invoice);
-        return $paidDeposit >= $requiredDeposit;
+        $requiredDeposit = (float) ($invoice->booking?->required_deposit ?? 0);
+
+        if ($requiredDeposit <= 0) {
+            $requiredDeposit = (float) $invoice->total_amount * 0.30;
+        }
+
+        return $this->calculateDepositPaid($invoice) >= $requiredDeposit;
     }
 
     private function calculateCollectionRate(): float
     {
         $query = Invoice::where('status', '!=', 'cancelled')
             ->whereHas('booking', fn($q) => $q->where('booking_no', 'not like', 'HIST-%'));
+
         $total = (float) (clone $query)->sum('total_amount');
-        $paid = (float) (clone $query)->sum('paid_amount');
+        $paid  = (float) (clone $query)->sum('paid_amount');
+
         return $total <= 0 ? 100 : round(($paid / $total) * 100, 2);
     }
 
@@ -613,17 +723,19 @@ class InvoiceController extends Controller
             ->where('booking_no', 'not like', 'HIST-%')
             ->with(['quotation', 'payments'])
             ->get();
+
         $totalDeposits = 0;
-        $paidDeposits = 0;
+        $paidDeposits  = 0;
 
         foreach ($bookings as $booking) {
-            $required = $booking->required_deposit ?? ($booking->quotation?->total_amount * 0.3 ?? 0);
-            $paid = $booking->payments
+            $required = (float) ($booking->required_deposit ?? ($booking->quotation?->total_amount * 0.3 ?? 0));
+            $paid = (float) $booking->payments
                 ->where('payment_type', 'deposit')
                 ->where('status', 'completed')
                 ->sum('amount');
+
             $totalDeposits += $required;
-            $paidDeposits += min($paid, $required);
+            $paidDeposits  += min($paid, $required);
         }
 
         return $totalDeposits <= 0 ? 100 : round(($paidDeposits / $totalDeposits) * 100, 2);

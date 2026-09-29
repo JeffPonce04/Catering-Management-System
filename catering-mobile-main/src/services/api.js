@@ -18,8 +18,10 @@ export const getBaseUrl = () => {
     if (Platform.OS === 'android') {
       // Android emulator reaches the host computer through 10.0.2.2.
       // For a real Android phone, set EXPO_PUBLIC_API_URL in mobile/.env.
-      return 'http://10.121.221.155:8000/api';
+      return 'http://10.121.221.219:8000/api';
     }
+
+
 
     if (Platform.OS === 'web') {
       return 'http://localhost:8000/api';
@@ -193,6 +195,22 @@ export const apiHelpers = {
 // ============================================================
 // AUTH API
 // ============================================================
+
+// ============================================================
+// FOOD ALLERGY API — reuses the Web Admin `food_allergens` Setting group
+// ============================================================
+
+export const allergyAPI = {
+  /** Master list of allergens (same list the Web Admin uses). */
+  getMasterList: () => api.get('/v1/public/allergens'),
+
+  /** Current customer's saved allergies (array of slugs). */
+  getMyAllergies: () => api.get('/v1/auth/me/allergies'),
+
+  /** Persist the customer's selected allergens (array of slugs). */
+  updateMyAllergies: (allergies) =>
+    api.put('/v1/auth/me/allergies', { allergies }),
+};
 
 export const authAPI = {
   login: (data) => {

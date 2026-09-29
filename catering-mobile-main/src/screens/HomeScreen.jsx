@@ -19,7 +19,9 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
+import { useAllergies } from '../contexts/AllergyContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { getMatchingAllergies, humanizeAllergen } from '../utils/allergyHelper';
 import { categoryService } from '../services/categoryService';
 import { menuService } from '../services/menuService';
 import { packageService } from '../services/packageService';
@@ -85,6 +87,11 @@ const CUSTOMER_COMMENTS = [
 const HomeScreen = ({ navigation }) => {
   const { colors } = useTheme();
   const { isGuest, isAuthenticated } = useAuth();
+  const { myAllergies } = useAllergies();
+  const customerAllergies = React.useMemo(
+    () => (Array.isArray(myAllergies) ? myAllergies : []),
+    [myAllergies]
+  );
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -481,7 +488,7 @@ const HomeScreen = ({ navigation }) => {
           <Text style={[styles.menuDescription, { color: colors.textSecondary }]} numberOfLines={2}>
             {item.description || 'Delicious dish prepared with love'}
           </Text>
-          <View style={styles.menuMeta}>
+                <View style={styles.menuMeta}>
             <View style={styles.metaItem}>
               <Feather name="clock" size={12} color={colors.textSecondary} />
               <Text style={[styles.metaText, { color: colors.textSecondary }]}>
@@ -492,6 +499,20 @@ const HomeScreen = ({ navigation }) => {
               {renderStars(item.rating || 4.5, 12)}
             </View>
           </View>
+
+          {/* ⭐ Food allergy warning line */}
+          {(() => {
+            const matches = getMatchingAllergies(item, customerAllergies);
+            if (matches.length === 0) return null;
+            return (
+              <View style={styles.homeAllergyBadge}>
+                <MaterialCommunityIcons name="alert" size={11} color="#FFF" />
+                <Text style={styles.homeAllergyBadgeText} numberOfLines={1}>
+                  Contains: {matches.map((m) => humanizeAllergen(m)).join(', ')}
+                </Text>
+              </View>
+            );
+          })()}
         </View>
       </TouchableOpacity>
     );
@@ -1094,6 +1115,25 @@ const styles = StyleSheet.create({
   metaItem: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaText: { fontSize: 11 },
   starsRow: { flexDirection: 'row', gap: 2 },
+
+  homeAllergyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFEBEE',
+    borderLeftWidth: 3,
+    borderLeftColor: '#D32F2F',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginTop: 6,
+  },
+  homeAllergyBadgeText: {
+    flex: 1,
+    fontSize: 10,
+    color: '#B71C1C',
+    fontWeight: '600',
+  },
   
   emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   emptyStateText: { fontSize: 16, marginTop: 12, fontWeight: '500' },

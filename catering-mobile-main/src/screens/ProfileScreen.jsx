@@ -21,12 +21,19 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
-
+import { useAllergies } from '../contexts/AllergyContext';
+import { humanizeAllergen } from '../utils/allergyHelper';
+import { allergyAPI } from '../services/api';
 const ProfileScreen = ({ navigation }) => {
   const { user, updateProfile, changePassword, logout, isGuest, updateProfilePhoto } = useAuth();
+  const { masterList, myAllergies, saveAllergies } = useAllergies();
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  
+
+  // ⭐ Food allergies
+  const [allergiesModalVisible, setAllergiesModalVisible] = useState(false);
+  const [draftAllergies, setDraftAllergies] = useState([]);
+  const [isSavingAllergies, setIsSavingAllergies] = useState(false);
   // Edit Profile State
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [editFullName, setEditFullName] = useState(user?.full_name || user?.name || '');
@@ -184,6 +191,39 @@ const ProfileScreen = ({ navigation }) => {
       Alert.alert('Error', 'An error occurred while updating profile');
     } finally {
       setIsUpdating(false);
+    }
+  };
+
+  // ⭐ Food allergy handlers
+  const openAllergiesModal = () => {
+    if (isGuest) {
+      Alert.alert('Guest Mode', 'Please login to manage your food allergies.');
+      return;
+    }
+    setDraftAllergies([...myAllergies]);
+    setAllergiesModalVisible(true);
+  };
+
+  const toggleDraftAllergy = (slug) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setDraftAllergies((prev) =>
+      prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug]
+    );
+  };
+
+  const handleSaveAllergies = async () => {
+    setIsSavingAllergies(true);
+    try {
+      const result = await saveAllergies(draftAllergies);
+      if (result.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Saved', 'Your food allergies have been updated.');
+        setAllergiesModalVisible(false);
+      } else {
+        Alert.alert('Error', result.message || 'Failed to save allergies.');
+      }
+    } finally {
+      setIsSavingAllergies(false);
     }
   };
 
@@ -388,8 +428,35 @@ const ProfileScreen = ({ navigation }) => {
           ))}
         </View>
 
-        <View style={styles.menuSection}>
+          <View style={styles.menuSection}>
           <Text style={styles.sectionTitle}>Preferences</Text>
+
+          {/* ⭐ Food Allergies */}
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={openAllergiesModal}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.menuIcon, { backgroundColor: '#FF444410' }]}>
+              <Feather name="alert-triangle" size={22} color="#FF4444" />
+            </View>
+            <View style={styles.menuContent}>
+              <Text style={styles.menuLabel}>Food Allergies</Text>
+              <Text style={styles.menuDescription}>
+                {myAllergies?.length > 0
+                  ? `${myAllergies.length} ${myAllergies.length === 1 ? 'allergy' : 'allergies'} saved`
+                  : 'Select allergies to get warnings'}
+              </Text>
+            </View>
+            {myAllergies?.length > 0 ? (
+              <View style={styles.allergyCountBadge}>
+                <Text style={styles.allergyCountText}>{myAllergies.length}</Text>
+              </View>
+            ) : (
+              <Feather name="chevron-right" size={18} color="#C6C6C8" />
+            )}
+          </TouchableOpacity>
+
           <View style={styles.menuItem}>
             <View style={[styles.menuIcon, { backgroundColor: '#FF8FB110' }]}>
               <Feather name="bell" size={22} color="#FF8FB1" />
@@ -514,6 +581,127 @@ const ProfileScreen = ({ navigation }) => {
                   <ActivityIndicator color="#FFF" />
                 ) : (
                   <Text style={styles.saveButtonText}>Save Changes</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+       {/* ⭐ Food Allergies Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={allergiesModalVisible}
+        onRequestClose={() => setAllergiesModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <LinearGradient colors={['#FF6B9D', '#FF8FB1']} style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Food Allergies</Text>
+              <TouchableOpacity
+                onPress={() => setAllergiesModalVisible(false)}
+                style={styles.modalClose}
+              >
+                <Feather name="x" size={24} color="#FFF" />
+              </TouchableOpacity>
+            </LinearGradient>
+
+            <ScrollView style={styles.modalBody}>
+              <Text style={styles.allergyIntro}>
+                Select all food allergies that apply to you. Menu items containing
+                your selected allergies will be clearly marked with a warning.
+              </Text>
+
+                          {(masterList || []).length === 0 ? (
+                <View style={styles.allergyEmpty}>
+                  <ActivityIndicator color="#FF6B9D" />
+                  <Text style={styles.allergyEmptyText}>
+                    Loading allergens… (if this takes too long, tap Save to retry)
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.allergyRetryButton}
+                    onPress={async () => {
+                      try {
+                        const res = await allergyAPI.getMasterList();
+                        const payload = res?.data?.data ?? res?.data ?? [];
+                        if (Array.isArray(payload) && payload.length > 0) {
+                          // Force context refresh
+                          window?.dispatchEvent?.(new Event('focus'));
+                        }
+                      } catch (e) { /* ignore */ }
+                    }}
+                  >
+                    <Feather name="refresh-cw" size={14} color="#FF6B9D" />
+                    <Text style={styles.allergyRetryText}>Retry</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                (masterList || []).map((allergen) => {
+                  const slug = String(allergen.id || '').toLowerCase();
+                  const selected = draftAllergies.includes(slug);
+                  return (
+                    <TouchableOpacity
+                      key={slug}
+                      style={[styles.allergyRow, selected && styles.allergyRowSelected]}
+                      onPress={() => toggleDraftAllergy(slug)}
+                      activeOpacity={0.7}
+                    >
+                      <View
+                        style={[
+                          styles.allergyCheckbox,
+                          selected && styles.allergyCheckboxSelected,
+                        ]}
+                      >
+                        {selected && (
+                          <Feather name="check" size={14} color="#FFFFFF" />
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.allergyName,
+                            selected && styles.allergyNameSelected,
+                          ]}
+                        >
+                          {allergen.name || humanizeAllergen(slug)}
+                        </Text>
+                        {!!allergen.description && (
+                          <Text style={styles.allergyDescription}>
+                            {allergen.description}
+                          </Text>
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+
+              <View style={styles.allergyHint}>
+                <Feather name="info" size={14} color="#FF6B9D" />
+                <Text style={styles.allergyHintText}>
+                  Your allergies are stored on your account and used whenever you
+                  browse the menu.
+                </Text>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.cancelButton]}
+                onPress={() => setAllergiesModalVisible(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.saveButton]}
+                onPress={handleSaveAllergies}
+                disabled={isSavingAllergies}
+              >
+                {isSavingAllergies ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save ({draftAllergies.length})</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -970,6 +1158,110 @@ const styles = StyleSheet.create({
   passwordHintText: {
     flex: 1,
     fontSize: 12,
+    color: '#FF6B9D',
+  },
+
+  // ⭐ Food allergy styles
+  allergyCountBadge: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+  },
+  allergyCountText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  allergyIntro: {
+    fontSize: 13,
+    color: '#5A5A5E',
+    lineHeight: 19,
+    marginBottom: 16,
+  },
+  allergyEmpty: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    gap: 12,
+  },
+  allergyEmptyText: {
+    fontSize: 13,
+    color: '#8E8E93',
+  },
+  allergyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#F0F0F0',
+    backgroundColor: '#FFFFFF',
+    marginBottom: 8,
+    gap: 12,
+  },
+  allergyRowSelected: {
+    borderColor: '#FF6B9D',
+    backgroundColor: '#FFF0F5',
+  },
+  allergyCheckbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#C6C6C8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 2,
+  },
+  allergyCheckboxSelected: {
+    borderColor: '#FF6B9D',
+    backgroundColor: '#FF6B9D',
+  },
+  allergyName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  allergyNameSelected: {
+    color: '#C2185B',
+  },
+  allergyDescription: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  allergyHint: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: '#FFF0F5',
+    borderRadius: 8,
+  },
+  allergyHintText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#FF6B9D',
+    lineHeight: 17,
+  },
+    allergyRetryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: '#FFF0F5',
+  },
+  allergyRetryText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: '#FF6B9D',
   },
 });

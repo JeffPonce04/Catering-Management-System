@@ -10,3 +10,39 @@
 .loadingText {
   margin-left: 10px;
 }
+
+
+/* Full page loading (used for login and initial load) */
+.loadingScreen {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  min-height: 100vh;
+  background: #f5f8ff;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+/* Page content loading (used inside AppLayout - navigation stays visible) */
+.pageLoadingScreen {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  min-height: 60vh;
+  color: #0f172a;
+  font-weight: 600;
+  padding: 40px;
+}
+
+.loadingText {
+  font-size: 14px;
+}
+
+/* Dark mode support */
+:global(.dark-mode) .loadingScreen,
+:global(.dark-mode) .pageLoadingScreen {
+  background: #0f172a;
+  color: #e2e8f0;
+}

@@ -61,6 +61,22 @@ class BookingPolicyService
         return (float) $this->get('deposit_amount', 0);
     }
 
+    /**
+     * ⭐ Deposit percentage of the total booking amount.
+     * Default: 30%.
+     *
+     * When a value is stored in the `booking` group as `deposit_percentage`,
+     * that value wins. Otherwise this falls back to 30%.
+     */
+    public function depositPercentage(): float
+    {
+        $value = $this->get('deposit_percentage', null);
+        if ($value !== null && $value !== '') {
+            return (float) $value;
+        }
+        return 30.0;
+    }
+
     public function requireDeposit(): bool
     {
         return (bool) $this->get('require_deposit', false);
@@ -82,15 +98,6 @@ class BookingPolicyService
     public function adminRescheduleResponseHours(): int
     {
         return (int) $this->get('admin_reschedule_response_hours', 48);
-    }
-
-    /**
-     * Deposit percentage of the total booking amount.
-     * Default: 30%.
-     */
-    public function depositPercentage(): float
-    {
-        return (float) $this->get('deposit_percentage', 30);
     }
 
     /**

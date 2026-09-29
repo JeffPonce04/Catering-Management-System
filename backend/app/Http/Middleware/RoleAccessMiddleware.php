@@ -275,7 +275,6 @@ class RoleAccessMiddleware
 
         return true;
     }
-
     private function adminCanAccessBookingSettings(string $path, string $method): bool
     {
         if ($path === 'settings' && $method === 'GET') {
@@ -286,6 +285,22 @@ class RoleAccessMiddleware
             return in_array($method, ['GET', 'PUT', 'POST', 'PATCH'], true);
         }
 
+        // ⭐ Admin can READ all settings sections so any page that loads
+        //    a section snapshot (business, payroll, inventory, etc.) does
+        //    not 403. Writing is still restricted to the sections below.
+        if ($method === 'GET' && $this->startsWithAny($path, ['settings'])) {
+            return true;
+        }
+
+        // ⭐ Admin can WRITE the booking section and the insight visibility
+        //    section. Everything else requires super-admin.
+              if ($path === 'settings/insight-visibility') {
+            return in_array($method, ['GET', 'PUT', 'POST', 'PATCH'], true);
+        }
+
+        if ($path === 'settings/financial-visibility') {
+            return in_array($method, ['GET', 'PUT', 'POST', 'PATCH'], true);
+        }
         return false;
     }
 
@@ -298,10 +313,25 @@ class RoleAccessMiddleware
         if ($this->startsWithAny($path, ['refunds'])) {
             return false;
         }
-
         if ($method === 'GET' && $path === 'settings/business') {
             return true;
         }
+
+        // ⭐ Cashiers may READ the insight visibility state so their
+        // KPI cards reflect whatever the admin has hidden. They cannot
+        // write — the PUT is not whitelisted for cashiers, and it also
+        // carries the `role:admin,super-admin` middleware in routes/api.php.
+        //
+        // Match both the exact path and any trailing slash variant so a
+        // `settings/insight-visibility/` typo in a client never falls through.
+              if ($method === 'GET' && rtrim($path, '/') === 'settings/insight-visibility') {
+            return true;
+        }
+
+        if ($method === 'GET' && rtrim($path, '/') === 'settings/financial-visibility') {
+            return true;
+        }
+
         if ($method === 'GET' && $this->startsWithAny($path, [
             'bookings',
             'bookings-statistics',

@@ -3184,7 +3184,284 @@
 }
 
 /* Ensure consistent vertical alignment for the whole row */
-.payslip-workdetails-table-landscape th,
-.payslip-workdetails-table-landscape td {
+
+/* ============================================================
+   SKELETON LOADING — Payroll light gray theme
+   ============================================================ */
+
+@keyframes prf-skeleton-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes prf-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Base bars: solid light gray ---------- */
+.prf-skeleton-text,
+.prf-skeleton-circle,
+.prf-skeleton-icon {
+  background: #e8eaed;
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.prf-skeleton-circle { border-radius: 50% !important; }
+
+.prf-skeleton-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+/* ---------- Moving shimmer band ---------- */
+.prf-skeleton-text::after,
+.prf-skeleton-circle::after,
+.prf-skeleton-icon::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transform: translateX(-100%);
+  animation: prf-skeleton-sweep 1.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+/* ---------- Card entrance ---------- */
+.prf-skeleton-card {
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 12px;
+  box-shadow: none;
+  opacity: 0;
+  animation: prf-skeleton-fade-in 0.4s cubic-bezier(0.34, 1.2, 0.64, 1) forwards;
+}
+
+/* ---------- Container ---------- */
+.prf-skeleton-container {
+  pointer-events: none;
+}
+
+/* ---------- Header skeleton ---------- */
+.prf-skeleton-header {
+  background: #ffffff;
+  border: 1px solid #eef1f5;
+  border-radius: 20px;
+  box-shadow: none;
+  padding: 16px 32px;
+  height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.prf-skeleton-header .prf-header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.prf-skeleton-header .prf-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ---------- KPI card skeleton ---------- */
+.prf-skeleton-card.prf-kpi-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+/* ---------- Tabs row ---------- */
+.prf-skeleton-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 24px 0;
+  border-bottom: 1px solid #eef1f5;
+  min-height: 56px;
+}
+
+/* ---------- Period nav ---------- */
+.prf-skeleton-period-nav {
+  background: #ffffff;
+  border-bottom: 1px solid #eef1f5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 24px;
+  flex-wrap: wrap;
+}
+
+.prf-skeleton-period-nav .prf-period-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---------- Filters ---------- */
+.prf-skeleton-filters {
+  background: #f8fafc;
+  border-bottom: 1px solid #eef1f5;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Table ---------- */
+.prf-skeleton-table-wrap {
+  background: #ffffff;
+  flex: 1;
+  min-height: 400px;
+}
+
+.prf-skeleton-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.prf-skeleton-table thead th {
+  background: #f8fafc;
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid #eef1f5;
+  font-weight: 500;
+}
+
+.prf-skeleton-table thead th:last-child {
+  text-align: right;
+  padding-right: 24px;
+}
+
+.prf-skeleton-row {
+  opacity: 0;
+  animation: prf-skeleton-fade-in 0.4s ease forwards;
+}
+
+.prf-skeleton-row td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f4f6f9;
   vertical-align: middle;
+}
+
+.prf-skeleton-row:last-child td {
+  border-bottom: none;
+}
+
+/* Offset shimmer per row for organic feel */
+.prf-skeleton-row:nth-child(2n) .prf-skeleton-text::after,
+.prf-skeleton-row:nth-child(2n) .prf-skeleton-circle::after {
+  animation-delay: 0.2s;
+}
+.prf-skeleton-row:nth-child(3n) .prf-skeleton-text::after,
+.prf-skeleton-row:nth-child(3n) .prf-skeleton-circle::after {
+  animation-delay: 0.4s;
+}
+
+/* ============================================================
+   DARK MODE
+   ============================================================ */
+.dark-mode .prf-skeleton-text,
+.dark-mode .prf-skeleton-circle,
+.dark-mode .prf-skeleton-icon {
+  background: #1e293b;
+}
+
+.dark-mode .prf-skeleton-text::after,
+.dark-mode .prf-skeleton-circle::after,
+.dark-mode .prf-skeleton-icon::after {
+  background: linear-gradient(
+    90deg,
+    rgba(148, 163, 184, 0) 0%,
+    rgba(148, 163, 184, 0.25) 50%,
+    rgba(148, 163, 184, 0) 100%
+  );
+}
+
+.dark-mode .prf-skeleton-card,
+.dark-mode .prf-skeleton-header,
+.dark-mode .prf-skeleton-table-wrap {
+  background: #13172b;
+  border-color: #1e2340;
+}
+
+.dark-mode .prf-skeleton-tabs-row,
+.dark-mode .prf-skeleton-period-nav,
+.dark-mode .prf-skeleton-filters,
+.dark-mode .prf-skeleton-table thead th {
+  background: #0b1220;
+  border-bottom-color: #1e2340;
+}
+
+.dark-mode .prf-skeleton-row td {
+  border-bottom-color: #1a2233;
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  .prf-skeleton-text::after,
+  .prf-skeleton-circle::after,
+  .prf-skeleton-icon::after,
+  .prf-skeleton-card,
+  .prf-skeleton-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 1024px) {
+  .prf-skeleton-header {
+    flex-direction: column;
+    align-items: flex-start;
+    height: auto;
+    gap: 14px;
+  }
+
+  .prf-skeleton-period-nav {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 640px) {
+  .prf-skeleton-header {
+    padding: 12px 16px;
+  }
+
+  .prf-skeleton-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .prf-skeleton-tabs-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
 }

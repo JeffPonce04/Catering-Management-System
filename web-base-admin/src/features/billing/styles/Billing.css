@@ -2420,3 +2420,234 @@
         max-width: 100%;
     }
 }
+/* ============================================================
+   SKELETON LOADING — Light Gray Theme
+   ============================================================ */
+
+/* The actual shimmer blocks used inside BillingSkeleton */
+.bi-skeleton-block {
+    display: block;
+    background: #e5e8ec;
+    background-image: linear-gradient(
+        90deg,
+        #e5e8ec 0%,
+        #f3f5f8 40%,
+        #e5e8ec 80%
+    );
+    background-size: 300% 100%;
+    animation: bi-skeleton-shimmer 1.4s ease-in-out infinite;
+    will-change: background-position;
+}
+
+@keyframes bi-skeleton-shimmer {
+    0% {
+        background-position: 100% 0;
+    }
+    100% {
+        background-position: -100% 0;
+    }
+}
+
+/* Dark mode: slightly lighter blocks against dark surface */
+.bi-skeleton-shell-dark .bi-skeleton-block {
+    background: #1e2340;
+    background-image: linear-gradient(
+        90deg,
+        #1e2340 0%,
+        #2a3050 40%,
+        #1e2340 80%
+    );
+    background-size: 300% 100%;
+}
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+    .bi-skeleton-block {
+        animation: none;
+    }
+}
+
+/* Skeleton tables — ensure grid cells collapse gracefully on small screens */
+@media (max-width: 900px) {
+    .bi-billing-container .bi-skeleton-block {
+        max-width: 100%;
+    }
+}
+
+/* ============================================================
+   BILLING PERIOD BEHAVIOR BAR
+   ============================================================ */
+.bi-period-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 18px;
+    margin: 0 32px 16px;
+    background: var(--bi-card-bg, #ffffff);
+    border: 1px solid var(--bi-border, #e8edf2);
+    border-radius: 12px;
+}
+
+.bi-period-bar-left, .bi-period-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.bi-period-bar-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #64748b;
+    margin-right: 4px;
+}
+
+.bi-period-segmented {
+    display: inline-flex;
+    padding: 3px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
+
+.bi-period-seg-btn {
+    appearance: none;
+    border: none;
+    background: transparent;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #64748b;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.bi-period-seg-btn.active {
+    background: #ffffff;
+    color: #1a7ab5;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.bi-period-arrow-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #475569;
+    cursor: pointer;
+}
+
+.bi-period-range-text {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 168px;
+    height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+}
+
+.bi-period-today-btn {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #1a7ab5;
+    background: rgba(26, 122, 181, 0.08);
+    border: 1px solid rgba(26, 122, 181, 0.25);
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.bi-period-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    padding: 0;
+    margin-left: 4px;
+    border: 1px solid #e8edf2;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #64748b;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.bi-period-toggle-btn:hover,
+.bi-period-toggle-btn.is-hidden {
+    color: #1a7ab5;
+    border-color: #bfdbfe;
+    background: #eff6ff;
+}
+
+/* Hide/unhide button on KPI cards */
+.bi-kpi-card-hideable {
+    position: relative;
+}
+
+.bi-kpi-hide-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.06);
+    color: #64748b;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.15s, background 0.15s;
+}
+
+.bi-kpi-hide-btn:hover {
+    opacity: 1;
+    background: rgba(26, 122, 181, 0.15);
+    color: #1a7ab5;
+}
+
+.bi-dark-mode .bi-period-bar {
+    background: #13172b;
+    border-color: #1e2340;
+}
+
+.bi-dark-mode .bi-period-segmented {
+    background: #0a0e1a;
+    border-color: #1e2340;
+}
+
+.bi-dark-mode .bi-period-seg-btn.active {
+    background: #1e2340;
+    color: #93c5fd;
+}
+
+.bi-dark-mode .bi-period-arrow-btn,
+.bi-dark-mode .bi-period-range-text,
+.bi-dark-mode .bi-period-toggle-btn {
+    background: #0a0e1a;
+    border-color: #1e2340;
+    color: #cbd5e1;
+}

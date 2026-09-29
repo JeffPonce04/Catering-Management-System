@@ -84,6 +84,10 @@ Route::prefix('v1')->group(function () {
     Route::get('/public/promotions', [PromotionController::class, 'index']);
     Route::get('/public/meal-categories', [MealCategoryController::class, 'index']);
 
+    // ⭐ Master allergen list — PUBLIC so the mobile profile screen can
+    //    display it before login. Mobile fetches this on every cold start.
+    Route::get('/public/allergens', [SettingController::class, 'getAllergens']);
+
 
     // Public delivery zones — used by the customer booking form to look up the
     // delivery fee for a selected location. Returns only active zones.
@@ -113,7 +117,11 @@ Route::prefix('v1')->group(function () {
         // ⭐ Self-profile update — used by the mobile app so employees can
         //    update their own Person fields (name, email, phone, address, etc.)
         //    without admin privileges.
-        Route::match(['put', 'post'], '/auth/self-profile', [AuthController::class, 'updateSelfProfile']);
+               Route::match(['put', 'post'], '/auth/self-profile', [AuthController::class, 'updateSelfProfile']);
+
+        // ⭐ Customer food allergies — one source of truth (food_allergens Setting group).
+        Route::get('/auth/me/allergies', [SettingController::class, 'getMyAllergies']);
+        Route::put('/auth/me/allergies', [SettingController::class, 'updateMyAllergies']);
 
         // ==================== CART ====================
         Route::get('/cart', [CartController::class, 'show']);
@@ -147,9 +155,10 @@ Route::prefix('v1')->group(function () {
         });
 
         // ==================== DASHBOARD ====================
-        Route::get('/dashboard', [DashboardController::class, 'index']);
+             Route::get('/dashboard', [DashboardController::class, 'index']);
         Route::get('/dashboard/stats', [DashboardController::class, 'index']);
         Route::get('/dashboard/charts', [DashboardController::class, 'charts']);
+        Route::get('/dashboard/detail/{card}', [DashboardController::class, 'detail']);
         Route::get('/dashboard/monthly-summary', [DashboardController::class, 'index']);
         Route::get('/dashboard/recent-bookings', [DashboardController::class, 'recentBookings']);
         Route::get('/dashboard/upcoming-events', [DashboardController::class, 'upcomingEvents']);
@@ -250,6 +259,16 @@ Route::prefix('v1')->group(function () {
             Route::get('/time-slots', [BookingController::class, 'getAvailableTimeSlots']);
         });
 
+               // ============================================================
+        // ⭐ Cashier access to Orders & Events module
+        //    The frontend route + API must both allow cashiers.
+        //    The RoleAccessMiddleware::cashierCanAccess already whitelists
+        //    'orders' and 'events' read endpoints. This block ensures the
+        //    full CRUD surface used by the UnifiedOrderEvents page is
+        //    reachable for cashiers without being blocked by a missing
+        //    route-level role gate.
+        // ============================================================
+
         // ============================================================
         // ==================== BOOKINGS ====================
         // ============================================================
@@ -272,6 +291,11 @@ Route::prefix('v1')->group(function () {
         Route::get('/bookings/check-conflicts-notify', [BookingController::class, 'checkConflictsAndNotify']);
         Route::post('/bookings/{booking}/create-event', [BookingController::class, 'createEvent']);
         Route::post('/bookings/{booking}/cancel-reschedule-proposal', [BookingController::class, 'cancelRescheduleProposal']);
+
+        // ⭐ Un-start an event started by mistake. Reverts booking_status
+        //    from 'ongoing' back to 'confirmed' and clears the ongoing
+        //    EventTracking row so the booking reappears in Confirmed Bookings.
+        Route::post('/bookings/{booking}/unstart-event', [BookingController::class, 'unstartEvent']);
 
         Route::post('/bookings/{booking}/request-refund',   [BookingController::class, 'requestRefund']);
         Route::post('/bookings/{booking}/approve-refund',   [BookingController::class, 'approveRefund']);
@@ -314,7 +338,10 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         Route::match(['get', 'post'], '/inventory/purchase-requests', [InventoryController::class, 'purchaseRequests']);
         Route::get('/inventory/purchase-requests/{purchaseRequest}', [InventoryController::class, 'showPurchaseRequest']);
         Route::put('/inventory/purchase-requests/{purchaseRequest}', [InventoryController::class, 'updatePurchaseRequest']);
-        Route::get('/inventory/purchase-suggestions', [InventoryController::class, 'purchaseSuggestions']);
+                Route::get('/inventory/purchase-suggestions', [InventoryController::class, 'purchaseSuggestions']);
+        Route::get('/inventory/approved-requests', [InventoryController::class, 'approvedRequests']);
+        Route::get('/inventory/approved-request-files', [InventoryController::class, 'approvedRequestFiles']);
+        Route::put('/inventory/approved-request-files/{date}/rename', [InventoryController::class, 'renameApprovedRequestFile']);
         Route::get('/inventory/notifications', [InventoryController::class, 'inventoryNotifications']);
         Route::get('/inventory/maintenance-schedule', [InventoryController::class, 'maintenanceSchedule']);
         Route::get('/inventory/maintenance', [InventoryController::class, 'maintenanceRecords']);
@@ -354,9 +381,42 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
             'delivery-zones' => DeliveryZoneController::class,
             'shift-types' => ShiftTypeController::class,
         ]);
-
         // ==================== SYSTEM SETTINGS ====================
         Route::put('/settings', [SettingController::class, 'updateCompatibility']);
+
+        // ⭐ Food Allergens master list — CRUD
+        Route::get('/settings/allergens', [SettingController::class, 'getAllergens']);
+        Route::post('/settings/allergens', [SettingController::class, 'createAllergen']);
+        Route::put('/settings/allergens/{allergenId}', [SettingController::class, 'updateAllergen']);
+        Route::delete('/settings/allergens/{allergenId}', [SettingController::class, 'deleteAllergen']);
+        // ⭐ Insight visibility (Hide/Unhide KPI cards).
+        //   GET  → any authenticated user (cashier must SEE the hidden state)
+        //   PUT  → admin / super-admin only
+        //
+        //   Declared BEFORE the `settings` prefix group so it never hits
+        //   `PUT /settings/{section}` and its section allow-list.
+        //   Note: RoleAccessMiddleware::adminCanAccessBookingSettings and
+        //   cashierCanAccess already whitelist these two paths, so the
+        //   request passes through the role.access gate.
+         Route::get('/settings/insight-visibility', [SettingController::class, 'getInsightVisibility']);
+        Route::get('/settings/financial-visibility', [SettingController::class, 'getFinancialVisibility']);
+        Route::put('/settings/financial-visibility', [SettingController::class, 'updateFinancialVisibility']);
+
+        // ⭐ Billing KPI visibility — Hide/Unhide for Billing & Invoicing KPIs.
+        Route::get('/settings/billing-visibility', [SettingController::class, 'getBillingVisibility']);
+        Route::put('/settings/billing-visibility', [SettingController::class, 'updateBillingVisibility']);
+
+        // ⭐ Financial visibility (Hide/Unhide for Order & Events KPIs).
+        //   GET  → any authenticated user (cashiers must SEE the mask)
+        //   PUT  → admin / super-admin only (checked inside controller)
+        Route::get('/settings/financial-visibility', [SettingController::class, 'getFinancialVisibility']);
+        Route::put('/settings/financial-visibility', [SettingController::class, 'updateFinancialVisibility']);
+        // ⭐ Role enforcement is done inside RoleAccessMiddleware
+        //    (see adminCanAccessBookingSettings + cashierCanAccess).
+        //    No extra `role:` middleware needed → avoids the "Target class
+        //    [role] does not exist" error when the alias isn't registered.
+        Route::put('/settings/insight-visibility', [SettingController::class, 'updateInsightVisibility']);
+
         Route::prefix('settings')->group(function () {
             Route::get('/', [SettingController::class, 'index']);
             Route::post('/reset', [SettingController::class, 'reset']);
@@ -558,17 +618,16 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         Route::post('/payments/{payment}/refund', [PaymentController::class, 'refund']);
 
         // ==================== INVOICES ====================
-        Route::get('/invoices', [InvoiceController::class, 'index']);
-        Route::get('/invoices/confirmed-bookings', [InvoiceController::class, 'getConfirmedBookings']);
-        Route::post('/invoices', [InvoiceController::class, 'store']);
-        Route::get('/invoices/{invoice}', [InvoiceController::class, 'show']);
-        Route::put('/invoices/{invoice}', [InvoiceController::class, 'update']);
-        Route::delete('/invoices/{invoice}', [InvoiceController::class, 'destroy']);
-        Route::get('/invoices/{invoice}/payments', [InvoiceController::class, 'payments']);
-        Route::post('/invoices/{invoice}/reminder', [InvoiceController::class, 'sendReminder']);
-        Route::get('/invoices/{invoice}/download', [InvoiceController::class, 'download']);
-        Route::get('/debts', [InvoiceController::class, 'debts']);
-
+      Route::get('/invoices', [InvoiceController::class, 'index']);
+Route::get('/invoices/confirmed-bookings', [InvoiceController::class, 'getConfirmedBookings']);
+Route::post('/invoices', [InvoiceController::class, 'store']);
+Route::get('/invoices/{invoice}', [InvoiceController::class, 'show'])->whereNumber('invoice');
+Route::put('/invoices/{invoice}', [InvoiceController::class, 'update'])->whereNumber('invoice');
+Route::delete('/invoices/{invoice}', [InvoiceController::class, 'destroy'])->whereNumber('invoice');
+Route::get('/invoices/{invoice}/payments', [InvoiceController::class, 'payments'])->whereNumber('invoice');
+Route::post('/invoices/{invoice}/reminder', [InvoiceController::class, 'sendReminder'])->whereNumber('invoice');
+Route::get('/invoices/{invoice}/download', [InvoiceController::class, 'download'])->whereNumber('invoice');
+Route::get('/debts', [InvoiceController::class, 'debts']);
         // ==================== DEPOSITS ====================
         Route::get('/deposits/pending', [DepositController::class, 'pending']);
         Route::post('/deposits/send-reminders', [DepositController::class, 'sendReminders']);

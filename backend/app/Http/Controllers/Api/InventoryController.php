@@ -74,7 +74,7 @@ class InventoryController extends Controller
         ]);
     }
 
-    public function movements(Request $request)
+        public function movements(Request $request)
     {
         $limit = min(max($request->integer('per_page', 200), 1), 500);
         $query = InventoryMovement::with(['ingredient', 'performedBy.person'])->latest('movement_id');
@@ -90,10 +90,28 @@ class InventoryController extends Controller
             $query->where('ingredient_id', $request->input('ingredient_id'));
         }
 
+        // ⭐ Date range filter — needed for the Daily / Weekly / Monthly period indicator
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->input('date_from'));
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->input('date_to'));
+        }
+
         $ingredientMovements = $query->limit($limit)->get()->map(fn (InventoryMovement $movement) => $this->formatMovement($movement));
 
-        $equipmentMovements = BookingEquipment::with(['equipment', 'booking.serviceEvent.customer.person'])
-            ->whereIn('status', ['reserved', 'checked_out', 'returned', 'damaged', 'missing'])
+        $equipmentQuery = BookingEquipment::with(['equipment', 'booking.serviceEvent.customer.person'])
+            ->whereIn('status', ['reserved', 'checked_out', 'returned', 'damaged', 'missing']);
+
+        // ⭐ Same date filter for equipment movements
+        if ($request->filled('date_from')) {
+            $equipmentQuery->whereDate('updated_at', '>=', $request->input('date_from'));
+        }
+        if ($request->filled('date_to')) {
+            $equipmentQuery->whereDate('updated_at', '<=', $request->input('date_to'));
+        }
+
+        $equipmentMovements = $equipmentQuery
             ->latest('updated_at')
             ->limit($limit)
             ->get()
@@ -137,10 +155,18 @@ class InventoryController extends Controller
                 'reason' => ['required', Rule::in(['spoilage', 'expired', 'damage', 'prep_waste', 'other'])],
                 'notes' => ['nullable', 'string'],
             ]);
-
             $row = DB::transaction(function () use ($data, $service) {
                 $record = WasteRecord::create($data + ['recorded_by' => auth()->id()]);
-                $service->move((int) $data['ingredient_id'], -(float) $data['quantity'], 'waste', $data['notes'] ?? $data['reason']);
+                $movement = $service->move(
+                    (int) $data['ingredient_id'],
+                    -(float) $data['quantity'],
+                    'waste',
+                    'Waste Management: ' . ($data['notes'] ?? $data['reason'])
+                );
+                $movement->update([
+                    'reference_type' => 'WasteRecord',
+                    'reference_id' => $record->waste_record_id,
+                ]);
                 return $record;
             });
 
@@ -191,12 +217,34 @@ class InventoryController extends Controller
                     return [$existing, false];
                 }
 
-                return [PurchaseRequest::create($data + [
+                            $user = auth()->user();
+                $adminRoles = ['admin', 'administrator', 'super_admin', 'superadmin', 'super-admin', 'owner'];
+                $isAdmin = $user && $user->hasAnyRole($adminRoles);
+                $isShortage = ! empty($data['booking_id']);
+
+                // ⭐ Admin-created shortages for a confirmed booking are auto-approved.
+                $status = ($isAdmin && $isShortage) ? 'approved' : 'pending';
+
+                $request = PurchaseRequest::create($data + [
                     'pr_number' => 'PRQ-' . now()->format('YmdHisv') . '-' . random_int(100, 999),
-                    'status' => 'pending',
+                    'status' => $status,
                     'urgency' => $data['urgency'] ?? 'normal',
-                    'requested_by' => auth()->id(),
-                ]), true];
+                    'requested_by' => $user?->user_id ?? 1,
+                ]);
+
+                // ⭐ Audit log the auto-approval so it's traceable.
+                if ($status === 'approved') {
+                    AuditLog::log(
+                        'update',
+                        'inventory',
+                        $request->purchase_request_id,
+                        ['status' => 'pending'],
+                        ['status' => 'approved'],
+                        'Auto-approved: Admin created shortage for confirmed order'
+                    );
+                }
+
+                return [$request, true];
             });
 
             return $this->ok(
@@ -833,12 +881,13 @@ class InventoryController extends Controller
 
     return max(0, $total - $checkedOut);
 }
-
     private function formatMovement(InventoryMovement $movement): array
     {
+        [$source, $reference] = $this->resolveMovementSource($movement);
+
         $type = match ($movement->movement_type) {
-            'purchase' => 'stock_in',
-            'usage' => 'stock_out',
+            'purchase', 'return', 'restock', 'stock_in' => 'stock_in',
+            'usage', 'waste', 'stock_out' => 'stock_out',
             'adjustment' => 'manual_adjustment',
             default => $movement->movement_type,
         };
@@ -859,6 +908,8 @@ class InventoryController extends Controller
             'quantity_before' => (float) $movement->quantity_before,
             'quantity_after' => (float) $movement->quantity_after,
             'reason' => $movement->reason,
+            'source' => $source,
+            'reference' => $reference,
             'reference_type' => $movement->reference_type,
             'reference_id' => $movement->reference_id,
             'updated_by' => $user?->person?->full_name ?? $user?->email ?? 'System',
@@ -866,6 +917,39 @@ class InventoryController extends Controller
             'movement_at' => optional($movement->created_at)->toISOString(),
             'created_at' => $movement->created_at,
         ];
+    }
+
+    private function resolveMovementSource(InventoryMovement $movement): array
+    {
+        $type = $movement->movement_type;
+        $reason = strtolower((string) $movement->reason);
+        $refType = $movement->reference_type;
+
+        if ($type === 'waste' || str_contains($reason, 'waste')) {
+            return ['Waste Management', $refType ? "{$refType} #{$movement->reference_id}" : 'Waste Record'];
+        }
+
+        if ($type === 'usage' && ($refType === 'Booking' || str_contains($reason, 'booking'))) {
+            return ['Order', $refType ? "{$refType} #{$movement->reference_id}" : '—'];
+        }
+
+        if ($type === 'purchase' && ($refType === 'PurchaseRequest' || str_contains($reason, 'purchase'))) {
+            return ['Purchase', $refType ? "{$refType} #{$movement->reference_id}" : '—'];
+        }
+
+        if (str_contains($reason, 'ingredient_created') || str_contains($reason, 'ingredient_updated') || str_contains($reason, 'stock_update')) {
+            return ['Ingredients Management', '—'];
+        }
+
+        if (str_contains($reason, 'auto_reorder')) {
+            return ['Auto Reorder', '—'];
+        }
+
+        if ($type === 'return') {
+            return ['Return', $refType ? "{$refType} #{$movement->reference_id}" : '—'];
+        }
+
+        return [ucfirst($type), $refType ? "{$refType} #{$movement->reference_id}" : '—'];
     }
 
     private function formatEquipmentMovement(BookingEquipment $tracking): array
@@ -1036,4 +1120,92 @@ class InventoryController extends Controller
         return Carbon::parse(trim($date . ' ' . $time));
     }
 
+    /**
+     * ⭐ List all approved requests (for the Approved Requests page).
+     */
+    public function approvedRequests(Request $request)
+    {
+        $query = PurchaseRequest::with([
+            'ingredient',
+            'supplier',
+            'requester.person',
+            'booking.serviceEvent.customer.person',
+            'booking.serviceEvent.eventType',
+        ])->where('status', 'approved');
+
+        if ($request->filled('date')) {
+            $query->whereDate('created_at', $request->input('date'));
+        }
+
+        if ($request->filled('search')) {
+            $search = trim((string) $request->input('search'));
+            $query->where(function ($builder) use ($search) {
+                $builder->where('pr_number', 'like', "%{$search}%")
+                    ->orWhereHas('ingredient', fn ($i) => $i->where('name', 'like', "%{$search}%"));
+            });
+        }
+
+        $rows = $query->latest('purchase_request_id')
+            ->paginate(min(max($request->integer('per_page', 50), 1), 500));
+
+        $rows->getCollection()->transform(fn (PurchaseRequest $pr) => $this->formatPurchaseRequest($pr));
+
+        return $this->ok($rows);
+    }
+
+    /**
+     * ⭐ Group approved requests by date into "request files".
+     */
+    public function approvedRequestFiles(Request $request)
+    {
+        $rows = PurchaseRequest::with(['ingredient'])
+            ->where('status', 'approved')
+            ->orderBy('created_at')
+            ->get();
+
+        $grouped = $rows->groupBy(fn ($pr) => optional($pr->created_at)->toDateString());
+
+        // ⭐ Read custom file names from settings so admin edits persist.
+        $customNames = \App\Models\Setting::getValue('inventory', 'approved_request_file_names', []);
+        if (is_string($customNames)) {
+            $customNames = json_decode($customNames, true) ?: [];
+        }
+
+        $files = $grouped->map(function ($items, $date) use ($customNames) {
+            $defaultName = \Carbon\Carbon::parse($date)->format('F j, Y') . ' Request';
+            return [
+                'date' => $date,
+                'name' => $customNames[$date] ?? $defaultName,
+                'request_count' => $items->count(),
+                'total_quantity' => (float) $items->sum('quantity'),
+                'requests' => $items->map(fn ($pr) => $this->formatPurchaseRequest($pr))->values(),
+            ];
+        })->values();
+
+        return $this->ok($files);
+    }
+
+    /**
+     * ⭐ Rename an approved request file/group.
+     */
+    public function renameApprovedRequestFile(Request $request, string $date)
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+        ]);
+
+        $customNames = \App\Models\Setting::getValue('inventory', 'approved_request_file_names', []);
+        if (is_string($customNames)) {
+            $customNames = json_decode($customNames, true) ?: [];
+        }
+        if (! is_array($customNames)) {
+            $customNames = [];
+        }
+
+        $customNames[$date] = $validated['name'];
+
+        \App\Models\Setting::setValue('inventory', 'approved_request_file_names', $customNames, 'json');
+
+        return $this->ok(['date' => $date, 'name' => $validated['name']], 'Request file renamed.');
+    }
 }

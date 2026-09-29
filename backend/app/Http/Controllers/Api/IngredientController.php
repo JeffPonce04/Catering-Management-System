@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\Ingredient;
 use App\Models\InventoryStock;
 use App\Models\AuditLog;
+use App\Services\InventoryService;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
@@ -44,8 +45,7 @@ class IngredientController extends Controller
         $request->merge(['low_stock' => true]);
         return $this->index($request);
     }
-
-    public function store(Request $request)
+    public function store(Request $request, InventoryService $inventory)
     {
         $validated = $this->validatePayload($request);
 
@@ -55,12 +55,25 @@ class IngredientController extends Controller
             return $ingredient->fresh('stock');
         });
 
+        $initialQty = (float) ($validated['current_quantity']
+            ?? $validated['current_stock']
+            ?? $validated['quantity']
+            ?? 0);
+
+        if ($initialQty > 0) {
+            $inventory->move(
+                (int) $ingredient->ingredient_id,
+                $initialQty,
+                'purchase',
+                'Ingredients Management: initial stock for ' . $ingredient->name
+            );
+        }
+
         $this->logIngredientAction('stock_added', $ingredient, ['source' => 'ingredient_created']);
         $this->notifyStockStatus($ingredient);
 
         return $this->ok($this->formatIngredient($ingredient), 'Ingredient created successfully.');
     }
-
     public function show(Ingredient $ingredient)
     {
         $ingredient->load(['stock', 'movements']);
@@ -90,18 +103,33 @@ class IngredientController extends Controller
         return $this->show($fresh);
     }
 
-    public function updateStock(Request $request, Ingredient $ingredient)
+      public function updateStock(Request $request, Ingredient $ingredient, InventoryService $inventory)
     {
         $validated = $request->validate([
             'current_stock' => ['nullable', 'numeric', 'min:0'],
             'current_quantity' => ['nullable', 'numeric', 'min:0'],
             'quantity' => ['nullable', 'numeric', 'min:0'],
         ]);
-        $quantity = $validated['current_stock'] ?? $validated['current_quantity'] ?? $validated['quantity'] ?? null;
-        abort_if($quantity === null, 422, 'A stock quantity is required.');
-        $ingredient->stock()->updateOrCreate([], ['current_quantity' => $quantity]);
+        $newQty = $validated['current_stock'] ?? $validated['current_quantity'] ?? $validated['quantity'] ?? null;
+        abort_if($newQty === null, 422, 'A stock quantity is required.');
+
+        $ingredient->loadMissing('stock');
+        $oldQty = (float) ($ingredient->stock?->current_quantity ?? 0);
+        $delta = (float) $newQty - $oldQty;
+
+        if (abs($delta) > 0.0001) {
+            $inventory->move(
+                (int) $ingredient->ingredient_id,
+                $delta,
+                $delta > 0 ? 'purchase' : 'usage',
+                "Ingredients Management: manual stock update (was {$oldQty}, now {$newQty})"
+            );
+        } else {
+            $ingredient->stock()->updateOrCreate([], ['current_quantity' => $newQty]);
+        }
+
         $fresh = $ingredient->fresh('stock');
-        $this->logIngredientAction('stock_adjusted', $fresh, ['source' => 'stock_update', 'current_quantity' => $quantity]);
+        $this->logIngredientAction('stock_adjusted', $fresh, ['source' => 'stock_update', 'current_quantity' => $newQty]);
         $this->notifyStockStatus($fresh);
         return $this->show($fresh);
     }

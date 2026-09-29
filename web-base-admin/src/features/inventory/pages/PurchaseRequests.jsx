@@ -15,7 +15,9 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useAuth } from '../../../contexts/AuthContext';
-import { ADMIN_ROLES, hasAllowedRole } from '../../../utils/roleRoutes';
+import { hasAllowedRole } from '../../../utils/roleRoutes';
+
+const ADMIN_ROLES = ['admin', 'administrator', 'super-admin', 'super_admin', 'superadmin', 'owner'];
 import {
   useCreatePurchaseRequest, useProducts, usePurchaseRequests, usePurchaseSuggestions,
   useSuppliers, useUpdatePurchaseRequest,
@@ -66,8 +68,7 @@ const renderPaginationItem = (_, type, originalElement) => {
 // ============================================================
 const PurchaseRequests = () => {
   const { user } = useAuth();
-  const isAdmin = hasAllowedRole(user, ADMIN_ROLES);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+const isAdmin = hasAllowedRole(user, ADMIN_ROLES) || user?.role === 'admin' || user?.role === 'super-admin';  const [isDarkMode, setIsDarkMode] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [status, setStatus] = useState('all');

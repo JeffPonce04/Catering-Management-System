@@ -7,3 +7,48 @@
 .bqm-table .ant-table-placeholder .ant-table-cell {
     height: 420px;
 }
+
+
+/* ⭐ REQUEST #6, #7, #8: Hide/Unhide buttons on insight cards */
+.bqm-kpi-card-hideable {
+    position: relative;
+}
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--bqm-border);
+    background: var(--bqm-surface);
+    color: var(--bqm-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+    z-index: 2;
+}
+.bqm-kpi-card-hideable:hover .bqm-kpi-hide-btn {
+    opacity: 1;
+}
+.bqm-kpi-card-hideable .bqm-kpi-hide-btn:hover {
+    color: #3b82f6;
+    border-color: #3b82f6;
+}
+
+/* ⭐ REQUEST #10: red highlight for approved + deposit deadline passed */
+.bqm-deposit-deadline-passed {
+    animation: bqmPulseRed 1.8s ease-in-out infinite;
+}
+@keyframes bqmPulseRed {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); }
+    50%      { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+}
+
+/* ⭐ REQUEST #11: amber 3-day warning */
+.bqm-three-day-warning {
+    border-left: 3px solid #f59e0b;
+}

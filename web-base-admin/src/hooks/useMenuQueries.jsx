@@ -354,16 +354,18 @@ const useMutationWithMessage = ({ mutationFn, successText, onSuccess }) => {
 // CACHE CONFIGURATION
 // ============================================================
 const queryOptions = {
+  // Match the Booking / Orders caching model:
+  // data is fresh for the whole session, only refetches on
+  // explicit invalidate (mutations) or manual .refetch().
   staleTime: Infinity,
-  gcTime: Infinity,
+  gcTime: 24 * 60 * 60 * 1000,
   refetchOnWindowFocus: false,
   refetchOnMount: false,
   refetchOnReconnect: false,
   refetchInterval: false,
-  keepPreviousData: true,
+  placeholderData: (prev) => prev,
   retry: 1,
   retryDelay: 1000,
-  initialData: undefined,
 };
 
 // ============================================================
@@ -656,10 +658,11 @@ export const useRedeemPromoCode = () => {
 // ============================================================
 // INGREDIENTS QUERIES
 // ============================================================
-export const useIngredients = (params = {}) => useQuery({
+export const useIngredients = (params = {}, options = {}) => useQuery({
   queryKey: menuKeys.ingredients(params),
   queryFn: async () => paginated(await ingredientAPI.getIngredients(params), mapIngredient),
   ...queryOptions,
+  enabled: options.enabled !== false,
 });
 
 export const useCreateIngredient = () => useMutationWithMessage({
@@ -706,10 +709,11 @@ export const useDeleteRecipe = () => useMutationWithMessage({
 // ============================================================
 // STATISTICS
 // ============================================================
-export const useMenuStatistics = () => useQuery({
+export const useMenuStatistics = (options = {}) => useQuery({
   queryKey: menuKeys.statistics,
   queryFn: async () => payloadOf(await statisticsAPI.getMenuStatistics()) || {},
   ...queryOptions,
+  enabled: options.enabled !== false,
   retry: false,
 });
 

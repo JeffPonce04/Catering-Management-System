@@ -4,7 +4,7 @@ import { useLocation } from 'react-router-dom';
 import {
     Card, Table, Button, Space, Input, Select, Modal, Tag, message, Divider, Tooltip, Typography,
     Row, Col, Alert, Form, Switch, Avatar, Badge, ConfigProvider, theme as antdTheme,
-    InputNumber, Descriptions, DatePicker, Collapse, Dropdown
+    InputNumber, Descriptions, DatePicker, Collapse, Dropdown, Empty
 } from 'antd';
 import {
     SettingOutlined, UserOutlined, HistoryOutlined, TruckOutlined,
@@ -17,7 +17,8 @@ import {
     SearchOutlined, CrownOutlined, CloseOutlined,
     MoreOutlined, EyeOutlined, StopOutlined, LogoutOutlined, KeyOutlined, UserDeleteOutlined,
     LockOutlined as LockIcon, BookOutlined, ClockCircleOutlined, WalletOutlined,
-    CalendarFilled, SafetyCertificateOutlined, DatabaseOutlined, NotificationOutlined,SaveOutlined
+    CalendarFilled, SafetyCertificateOutlined, DatabaseOutlined, NotificationOutlined, SaveOutlined,
+    PercentageOutlined
 } from '@ant-design/icons';
 import {
     useSettings,
@@ -33,7 +34,11 @@ import {
     useUnbanUser,
     useForceLogoutUser,
     useForceChangePassword,
-    useEmployeesWithoutAccounts
+    useEmployeesWithoutAccounts,
+    useAllergens,
+    useCreateAllergen,
+    useUpdateAllergen,
+    useDeleteAllergen,
 } from '../../../hooks/useSettingsQueries';
 import { useAuth } from '../../../contexts/AuthContext';
 import { isSuperAdmin } from '../../../utils/roleRoutes';
@@ -113,6 +118,11 @@ const SystemSettings = () => {
     const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
     const [employeeSearch, setEmployeeSearch] = useState('');
 
+    // ⭐ Food Allergens state — declared BEFORE any handler uses them
+    const [allergenModalOpen, setAllergenModalOpen] = useState(false);
+    const [editingAllergen, setEditingAllergen] = useState(null);
+    const [allergenForm] = Form.useForm();
+
     const { data: settings, refetch: refetchSettings } = useSettings({ enabled: canManageBookingPolicy });
     const updateSettings = useUpdateSettingsSection();
 
@@ -147,6 +157,62 @@ const SystemSettings = () => {
         { enabled: createAccountOpen }
     );
 
+    // ⭐ Food Allergens queries
+    const { data: allergens = [], isLoading: allergensLoading } = useAllergens();
+    const createAllergen = useCreateAllergen();
+    const updateAllergen = useUpdateAllergen();
+    const deleteAllergen = useDeleteAllergen();
+
+    // ⭐ Allergen handlers
+    const openCreateAllergen = () => {
+        setEditingAllergen(null);
+        allergenForm.resetFields();
+        setAllergenModalOpen(true);
+    };
+
+    const openEditAllergen = (allergen) => {
+        setEditingAllergen(allergen);
+        allergenForm.setFieldsValue({
+            name: allergen.name,
+            description: allergen.description || '',
+        });
+        setAllergenModalOpen(true);
+    };
+
+    const handleSaveAllergen = async (values) => {
+        try {
+            if (editingAllergen) {
+                await updateAllergen.mutateAsync({
+                    allergenId: editingAllergen.id,
+                    data: { name: values.name, description: values.description || '' },
+                });
+            } else {
+                await createAllergen.mutateAsync({
+                    name: values.name,
+                    description: values.description || '',
+                });
+            }
+            setAllergenModalOpen(false);
+            setEditingAllergen(null);
+            allergenForm.resetFields();
+        } catch {
+            // handled by hook
+        }
+    };
+
+    const handleDeleteAllergen = (allergen) => {
+        Modal.confirm({
+            title: 'Delete Allergen',
+            content: `Remove "${allergen.name}" from the allergens list? Menu items using it will keep their existing allergen tags.`,
+            okText: 'Delete',
+            okType: 'danger',
+            onOk: async () => {
+                await deleteAllergen.mutateAsync(allergen.id);
+            },
+        });
+    };
+
+    // ⭐ Booking settings state — includes deposit_percentage
     const [bookingSettings, setBookingSettings] = useState({
         minimum_pax: 10,
         allow_same_day_booking: false,
@@ -155,6 +221,7 @@ const SystemSettings = () => {
         cancellation_cutoff_days: 3,
         deposit_payment_days: 7,
         deposit_amount: 5000,
+        deposit_percentage: 30,
         require_deposit: true,
     });
 
@@ -740,7 +807,7 @@ const SystemSettings = () => {
                                         showIcon
                                         style={{ marginBottom: 20 }}
                                     />
-                                    <SettingsCollapse defaultActiveKey={['1', '2', '3']}>
+                                    <SettingsCollapse defaultActiveKey={['1', '2', 'allergens', '3']}>
                                         <SettingsPanel header="👥 Guest Requirements" key="1">
                                             <Row gutter={[24, 16]}>
                                                 <Col xs={24} sm={12} lg={8}>
@@ -803,6 +870,80 @@ const SystemSettings = () => {
                                             </Row>
                                         </SettingsPanel>
 
+                                        <SettingsPanel header="🥜 Food Allergens" key="allergens">
+                                            <Alert
+                                                message="Master Allergen List"
+                                                description="These allergens are available for selection when creating or editing menu items in Menu Management."
+                                                type="info"
+                                                showIcon
+                                                style={{ marginBottom: 16 }}
+                                            />
+                                            <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'flex-end' }}>
+                                                <Button
+                                                    type="primary"
+                                                    icon={<PlusOutlined />}
+                                                    onClick={openCreateAllergen}
+                                                >
+                                                    Add Allergen
+                                                </Button>
+                                            </div>
+                                            <Table
+                                                dataSource={allergens}
+                                                rowKey="id"
+                                                loading={allergensLoading}
+                                                pagination={false}
+                                                size="middle"
+                                                locale={{
+                                                    emptyText: (
+                                                        <div style={{ padding: '24px 0' }}>
+                                                            <Empty description="No allergens yet. Click 'Add Allergen' to create one." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                                                        </div>
+                                                    )
+                                                }}
+                                                columns={[
+                                                    {
+                                                        title: 'Allergen',
+                                                        dataIndex: 'name',
+                                                        key: 'name',
+                                                        render: (text) => <strong>{text}</strong>,
+                                                    },
+                                                    {
+                                                        title: 'Description',
+                                                        dataIndex: 'description',
+                                                        key: 'description',
+                                                        render: (text) => text || <span style={{ color: '#94a3b8' }}>—</span>,
+                                                    },
+                                                    {
+                                                        title: 'Actions',
+                                                        key: 'actions',
+                                                        width: 130,
+                                                        align: 'right',
+                                                        render: (_, record) => (
+                                                            <Space size="small">
+                                                                <Tooltip title="Edit">
+                                                                    <Button
+                                                                        type="text"
+                                                                        size="small"
+                                                                        icon={<EditOutlined />}
+                                                                        onClick={() => openEditAllergen(record)}
+                                                                    />
+                                                                </Tooltip>
+                                                                <Tooltip title="Delete">
+                                                                    <Button
+                                                                        type="text"
+                                                                        danger
+                                                                        size="small"
+                                                                        icon={<DeleteOutlined />}
+                                                                        onClick={() => handleDeleteAllergen(record)}
+                                                                    />
+                                                                </Tooltip>
+                                                            </Space>
+                                                        ),
+                                                    },
+                                                ]}
+                                            />
+                                        </SettingsPanel>
+
                                         <SettingsPanel header="💰 Payment & Cancellation Policies" key="3">
                                             <Row gutter={[24, 16]}>
                                                 <Col xs={24} sm={12} lg={8}>
@@ -849,15 +990,39 @@ const SystemSettings = () => {
                                                 <Col xs={24} sm={12} lg={8}>
                                                     <div className="settings-config-card">
                                                         <div className="settings-config-label">
-                                                            <Space><WalletOutlined style={{ color: '#52c41a' }} /><span>Deposit Amount</span></Space>
+                                                            <Space><PercentageOutlined style={{ color: '#52c41a' }} /><span>Deposit Percentage</span></Space>
+                                                        </div>
+                                                        <div style={{ marginTop: 8 }}>
+                                                            <InputNumber
+                                                                min={0}
+                                                                max={100}
+                                                                step={1}
+                                                                value={bookingSettings.deposit_percentage}
+                                                                onChange={(v) => setBookingSettings({ ...bookingSettings, deposit_percentage: v })}
+                                                                style={{ width: '100%' }}
+                                                                addonAfter="% of total"
+                                                                disabled={!bookingSettings.require_deposit}
+                                                            />
+                                                        </div>
+                                                        <div className="settings-config-hint">
+                                                            Deposit = {bookingSettings.deposit_percentage || 0}% of the booking total. Example: ₱10,000 total → ₱{(((bookingSettings.deposit_percentage || 0) / 100) * 10000).toLocaleString('en-PH', { minimumFractionDigits: 2 })} deposit
+                                                        </div>
+                                                    </div>
+                                                </Col>
+                                                <Col xs={24} sm={12} lg={8}>
+                                                    <div className="settings-config-card">
+                                                        <div className="settings-config-label">
+                                                            <Space><WalletOutlined style={{ color: '#52c41a' }} /><span>Fixed Deposit Amount (Fallback)</span></Space>
                                                         </div>
                                                         <div style={{ marginTop: 8 }}>
                                                             <InputNumber min={0} step={100} value={bookingSettings.deposit_amount}
                                                                 onChange={(v) => setBookingSettings({ ...bookingSettings, deposit_amount: v })}
                                                                 style={{ width: '100%' }} prefix="₱"
-                                                                disabled={!bookingSettings.require_deposit} />
+                                                                disabled={!bookingSettings.require_deposit || Number(bookingSettings.deposit_percentage || 0) > 0} />
                                                         </div>
-                                                        <div className="settings-config-hint">Fixed deposit amount (₱)</div>
+                                                        <div className="settings-config-hint">
+                                                            Used only when Deposit Percentage is 0
+                                                        </div>
                                                     </div>
                                                 </Col>
                                             </Row>
@@ -1150,6 +1315,38 @@ const SystemSettings = () => {
                     </Form.Item>
                     <Form.Item name="is_active" label="Account Status" valuePropName="checked">
                         <Switch checkedChildren="Active" unCheckedChildren="Inactive" />
+                    </Form.Item>
+                </Form>
+            </Modal>
+
+            {/* ==================== ALLERGEN MODAL ==================== */}
+            <Modal
+                title={<Space><PlusOutlined /> {editingAllergen ? 'Edit Allergen' : 'Add Allergen'}</Space>}
+                open={allergenModalOpen}
+                onCancel={() => { setAllergenModalOpen(false); setEditingAllergen(null); allergenForm.resetFields(); }}
+                onOk={() => allergenForm.submit()}
+                confirmLoading={createAllergen.isPending || updateAllergen.isPending}
+                okText={editingAllergen ? 'Save Changes' : 'Create Allergen'}
+                width={480}
+                destroyOnHidden
+            >
+                <Form form={allergenForm} layout="vertical" onFinish={handleSaveAllergen} preserve={false}>
+                    <Form.Item
+                        name="name"
+                        label="Allergen Name"
+                        rules={[
+                            { required: true, message: 'Please enter an allergen name' },
+                            { max: 80, message: 'Name must be 80 characters or less' },
+                        ]}
+                    >
+                        <Input placeholder="e.g., Peanuts, Shellfish, Soy" size="large" />
+                    </Form.Item>
+                    <Form.Item
+                        name="description"
+                        label="Description (Optional)"
+                        rules={[{ max: 255, message: 'Description must be 255 characters or less' }]}
+                    >
+                        <Input.TextArea rows={3} placeholder="Short description of what this allergen covers" />
                     </Form.Item>
                 </Form>
             </Modal>

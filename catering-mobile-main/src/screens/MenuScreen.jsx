@@ -20,8 +20,10 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '../contexts/AuthContext';
+import { useAllergies } from '../contexts/AllergyContext';
 import { useCart } from '../contexts/CartContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { getMatchingAllergies, humanizeAllergen } from '../utils/allergyHelper';
 import { categoryService } from '../services/categoryService';
 import { menuService } from '../services/menuService';
 import { packageService } from '../services/packageService';
@@ -80,7 +82,14 @@ const effectivePrice = (item, mode) => {
 const MenuScreen = ({ navigation }) => {
   const { colors } = useTheme();
   const { isGuest } = useAuth();
+  const { myAllergies } = useAllergies();
   const { addToCart, getItemQuantity, removeItem } = useCart();
+
+  // ⭐ Fast lookup — recomputed only when myAllergies changes
+  const customerAllergies = React.useMemo(
+    () => (Array.isArray(myAllergies) ? myAllergies : []),
+    [myAllergies]
+  );
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -509,6 +518,20 @@ const MenuScreen = ({ navigation }) => {
               color={isFavorite ? '#FF6B9D' : '#fff'}
             />
           </TouchableOpacity>
+
+          {/* ⭐ Food allergy warning badge */}
+          {(() => {
+            const matches = getMatchingAllergies(item, customerAllergies);
+            if (matches.length === 0) return null;
+            return (
+              <View style={styles.gridAllergyBadge}>
+                <MaterialCommunityIcons name="alert" size={10} color="#FFF" />
+                <Text style={styles.gridAllergyBadgeText}>
+                  {matches.length} allergen{matches.length > 1 ? 's' : ''}
+                </Text>
+              </View>
+            );
+          })()}
           <TouchableOpacity
             style={[styles.gridCartButton, cartQuantity > 0 && styles.gridCartButtonActive]}
             onPress={() => handleQuickAdd(item)}
@@ -610,7 +633,7 @@ const MenuScreen = ({ navigation }) => {
             <Text style={[styles.listName, { color: colors.text }]} numberOfLines={1}>
               {item.name}
             </Text>
-            <TouchableOpacity onPress={() => toggleFavorite(itemId)}>
+                      <TouchableOpacity onPress={() => toggleFavorite(itemId)}>
               <Ionicons
                 name={isFavorite ? 'heart' : 'heart-outline'}
                 size={20}
@@ -618,6 +641,20 @@ const MenuScreen = ({ navigation }) => {
               />
             </TouchableOpacity>
           </View>
+
+          {/* ⭐ Food allergy warning line */}
+          {(() => {
+            const matches = getMatchingAllergies(item, customerAllergies);
+            if (matches.length === 0) return null;
+            return (
+              <View style={styles.listAllergyBadge}>
+                <MaterialCommunityIcons name="alert" size={12} color="#FFF" />
+                <Text style={styles.listAllergyBadgeText} numberOfLines={1}>
+                  Contains: {matches.map((m) => humanizeAllergen(m)).join(', ')}
+                </Text>
+              </View>
+            );
+          })()}
 
           <Text
             style={[styles.listDescription, { color: colors.textSecondary }]}
@@ -1091,10 +1128,39 @@ const MenuScreen = ({ navigation }) => {
               <View style={styles.detailContent}>
                 <Text style={[styles.detailName, { color: colors.text }]}>{item.name}</Text>
 
-                <Text style={[styles.detailPrice, { color: '#FF6B9D' }]}>
+                               <Text style={[styles.detailPrice, { color: '#FF6B9D' }]}>
                   ₱{activePrice}
                   {isTray ? '/tray' : '/pax'}
                 </Text>
+
+                {/* ⭐ Allergy warning panel */}
+                {(() => {
+                  const matches = getMatchingAllergies(item, customerAllergies);
+                  if (matches.length === 0) return null;
+                  return (
+                    <View style={styles.detailAllergyWarningPanel}>
+                      <View style={styles.detailAllergyWarningHeader}>
+                        <MaterialCommunityIcons name="alert-circle" size={20} color="#B71C1C" />
+                        <Text style={styles.detailAllergyWarningTitle}>
+                          Contains your selected aller{matches.length > 1 ? 'gens' : 'gen'}
+                        </Text>
+                      </View>
+                      <View style={styles.detailAllergyWarningTags}>
+                        {matches.map((slug) => (
+                          <View key={slug} style={styles.detailAllergyWarningTag}>
+                            <Text style={styles.detailAllergyWarningTagText}>
+                              ⚠ {humanizeAllergen(slug)}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                      <Text style={styles.detailAllergyWarningNote}>
+                        This dish may not be suitable for you. Please contact the
+                        kitchen before ordering.
+                      </Text>
+                    </View>
+                  );
+                })()}
 
                 {isTray && trayDescText ? (
                   <View style={styles.trayDescriptionBox}>
@@ -1111,51 +1177,86 @@ const MenuScreen = ({ navigation }) => {
                     {item.description || 'No description available.'}
                   </Text>
                 </View>
-
                 <View style={styles.detailSection}>
                   <Text style={[styles.detailSectionTitle, { color: colors.text }]}>
                     Dietary
                   </Text>
-                  {dietaryInfo ? (
-                    <View style={styles.detailDietaryContainer}>
-                      {(Array.isArray(dietaryInfo) ? dietaryInfo : [dietaryInfo]).map(
-                        (diet, index) => (
-                          <View key={index} style={styles.detailDietaryTag}>
+                  {(() => {
+                    // ⭐ Prefer the server-built list; fall back to the flags.
+                    let list = Array.isArray(dietaryInfo) ? dietaryInfo : [];
+                    if (list.length === 0) {
+                      list = [];
+                      if (item.is_vegetarian)  list.push('Vegetarian');
+                      if (item.is_vegan)       list.push('Vegan');
+                      if (item.is_gluten_free) list.push('Gluten-Free');
+                      if (item.is_halal)       list.push('Halal');
+                    } else if (typeof dietaryInfo === 'string' && dietaryInfo.trim()) {
+                      list = [dietaryInfo];
+                    }
+
+                    if (list.length === 0) {
+                      return (
+                        <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                          No dietary information available
+                        </Text>
+                      );
+                    }
+
+                    return (
+                      <View style={styles.detailDietaryContainer}>
+                        {list.map((diet, index) => (
+                          <View key={`${diet}-${index}`} style={styles.detailDietaryTag}>
                             <Ionicons name="checkmark-circle" size={16} color="#4CAF50" />
                             <Text style={styles.detailDietaryText}>{diet}</Text>
                           </View>
-                        )
-                      )}
-                    </View>
-                  ) : (
-                    <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
-                      Not specified
-                    </Text>
-                  )}
+                        ))}
+                      </View>
+                    );
+                  })()}
                 </View>
 
-                <View style={styles.detailSection}>
+                        <View style={styles.detailSection}>
                   <Text style={[styles.detailSectionTitle, { color: colors.text }]}>
                     Food Allergy
                   </Text>
-                  {allergyInfo ? (
-                    <View style={styles.detailAllergyContainer}>
-                      {(Array.isArray(allergyInfo) ? allergyInfo : [allergyInfo]).map(
-                        (allergy, index) => (
-                          <View key={index} style={styles.detailAllergyTag}>
-                            <Ionicons name="warning" size={16} color="#FF4444" />
-                            <Text style={styles.detailAllergyText}>{allergy}</Text>
-                          </View>
-                        )
-                      )}
-                    </View>
-                  ) : (
-                    <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
-                      No information available
-                    </Text>
-                  )}
-                </View>
+                  {(() => {
+                    // ⭐ Prefer the new aliases the backend now returns.
+                    const raw =
+                      item.allergy_info ??
+                      item.allergy_information ??
+                      item.allergens_array ??
+                      item.allergens ??
+                      item.allergies ??
+                      null;
 
+                    const list = Array.isArray(raw)
+                      ? raw
+                      : (typeof raw === 'string'
+                          ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+                          : []);
+
+                    if (list.length === 0) {
+                      return (
+                        <Text style={[styles.detailFallback, { color: colors.textSecondary }]}>
+                          No allergy information available
+                        </Text>
+                      );
+                    }
+
+                    return (
+                      <View style={styles.detailAllergyContainer}>
+                        {list.map((allergy, index) => (
+                          <View key={`${allergy}-${index}`} style={styles.detailAllergyTag}>
+                            <Ionicons name="warning" size={16} color="#FF4444" />
+                            <Text style={styles.detailAllergyText}>
+                              {humanizeAllergen(allergy)}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    );
+                  })()}
+                </View>
                 <View style={styles.quantitySection}>
                   <Text style={[styles.detailSectionTitle, { color: colors.text }]}>
                     Quantity
@@ -2106,7 +2207,96 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: 'center',
   },
-  applyFilterText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+   applyFilterText: { color: '#FFF', fontSize: 16, fontWeight: '600' },
+
+  // ⭐ Food allergy warning styles
+  gridAllergyBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#D32F2F',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  gridAllergyBadgeText: {
+    color: '#FFF',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  listAllergyBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFEBEE',
+    borderLeftWidth: 3,
+    borderLeftColor: '#D32F2F',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginTop: 6,
+    marginBottom: 4,
+  },
+  listAllergyBadgeText: {
+    flex: 1,
+    color: '#B71C1C',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  detailAllergyWarningPanel: {
+    backgroundColor: '#FFEBEE',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: '#FFCDD2',
+    padding: 14,
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  detailAllergyWarningHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  detailAllergyWarningTitle: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#B71C1C',
+  },
+  detailAllergyWarningTags: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+  },
+  detailAllergyWarningTag: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#FFCDD2',
+  },
+  detailAllergyWarningTagText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#D32F2F',
+  },
+  detailAllergyWarningNote: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#7A1F1F',
+    fontStyle: 'italic',
+  },
 });
 
 export default MenuScreen;

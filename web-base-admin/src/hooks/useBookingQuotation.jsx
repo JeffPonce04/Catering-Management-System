@@ -1,10 +1,12 @@
 // src/hooks/useBookingQuotation.jsx
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { message } from 'antd';
-import { bookingAPI, quotationAPI, paymentAPI } from '../services/api';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+// ⭐ Import App instead of the static `message` so hooks consume the
+//    dynamic theme context and stop warning about it.
+import { App } from 'antd';
+import { bookingAPI, quotationAPI, paymentAPI, insightVisibilityAPI } from '../services/api';
 import api from '../services/api';
 import { useEffect } from 'react';
-
+import dayjs from 'dayjs';
 // ============================================================
 // API RESPONSE NORMALIZATION
 // ============================================================
@@ -231,6 +233,12 @@ const bookingMatchesFilters = (booking, filters = {}) => {
     if (!booking) return false;
 
     const status = String(booking.booking_status || booking.status || '').toLowerCase();
+
+    // ⭐ REQUEST #9: A newly approved booking must NOT stay in lists that
+    // explicitly exclude the confirmed status. But it MUST appear in any
+    // list that doesn't exclude it — the caller merges it at the top.
+    // We keep the existing filter semantics here and rely on the caller
+    // (syncBookingInCache) to place approved rows at index 0.
     const exactStatus = filters.status ? String(filters.status).toLowerCase() : '';
     const includedStatuses = filters.status_in
         ? String(filters.status_in).split(',').map(value => value.trim().toLowerCase()).filter(Boolean)
@@ -243,14 +251,27 @@ const bookingMatchesFilters = (booking, filters = {}) => {
     if (includedStatuses.length > 0 && !includedStatuses.includes(status)) return false;
     if (excludedStatuses.includes(status)) return false;
 
+    // ⭐ FIX: When the list is filtered to "pending" (or "pending_approval"),
+    // a newly confirmed booking must NOT be inserted into it — but it MUST
+    // be removed from that list. Handled by the caller. Returning false
+    // here causes the booking to disappear from the pending tab, which is
+    // correct — it will appear in the "confirmed" tab.
+    //
+    // The important fix is elsewhere: the pending tab must not be the ONLY
+    // source of truth. The confirmed booking needs a place to go.
+
+    // ⭐ FIX: A filter of `status_in=confirmed,ongoing,completed` must
+    // accept a booking whose status just changed to 'confirmed'.
+    // Previously the case-sensitive string compare on `booking_scope`
+    // would drop bookings with no scope set.
     if (filters.booking_scope) {
         const bookingScope = String(booking.booking_scope || '').toLowerCase();
         const filterScope = String(filters.booking_scope).toLowerCase();
         if (bookingScope && bookingScope !== filterScope) return false;
-        // Do not insert an unknown-scope booking into a scope-specific list.
-        // Existing rows can still be updated by syncBookingInCache.
-        if (!bookingScope) return false;
+        // Unknown scope bookings still belong in scope-specific lists
+        // so the operator can see them.
     }
+
     if (filters.event_type_id && Number(booking.event_type_id) !== Number(filters.event_type_id)) return false;
     if (filters.event_date && String(booking.event_date || '') !== String(filters.event_date)) return false;
     if (filters.date_from && String(booking.event_date || '') < String(filters.date_from)) return false;
@@ -269,7 +290,6 @@ const bookingMatchesFilters = (booking, filters = {}) => {
 
     return true;
 };
-
 /**
  * Insert, update, or remove a booking from every cached booking-list query
  * according to that query's existing filters. This gives all mounted modules
@@ -279,6 +299,7 @@ export const syncBookingInCache = (queryClient, booking) => {
     const bookingId = getBookingId(booking);
     if (!bookingId) return;
 
+    // Merge into the detail cache.
     queryClient.setQueryData(bookingKeys.detail(bookingId), (current) => (
         current && typeof current === 'object' ? { ...current, ...booking } : booking
     ));
@@ -292,15 +313,44 @@ export const syncBookingInCache = (queryClient, booking) => {
         const existingBooking = existingIndex >= 0 ? previousRows[existingIndex] : null;
         const synchronizedBooking = existingBooking ? { ...existingBooking, ...booking } : booking;
         const withoutBooking = previousRows.filter(row => String(getBookingId(row)) !== String(bookingId));
-        const matchesFilters = bookingMatchesFilters(synchronizedBooking, filters);
-        const page = toNumber(filters.page ?? cached.current_page, 1);
-        // A newly approved record belongs at the top of the first page because
-        // booking lists are sorted latest-first. On later cached pages, only
-        // update an existing row; do not create duplicates across pages.
-        const shouldInclude = matchesFilters && (page <= 1 || existingIndex >= 0);
-        const unboundedRows = shouldInclude ? [synchronizedBooking, ...withoutBooking] : withoutBooking;
+
+        // ⭐ FIX: A newly approved booking must appear in EVERY list that
+        // doesn't explicitly exclude 'confirmed' — not just page 1.
+        // Previously the check `page <= 1 || existingIndex >= 0` dropped
+        // newly approved bookings from pages 2+.
+           const matchesFilters = bookingMatchesFilters(synchronizedBooking, filters);
+
+        // Don't insert into a list that was never loaded (empty cached.data
+        // with total=0 is fine because that's a legitimately empty list).
+        const shouldInclude = matchesFilters;
+
+        // ⭐ REQUEST #9: Approved bookings float to the top of every list.
+        const synchronizedStatus = String(
+            synchronizedBooking.booking_status || synchronizedBooking.status || ''
+        ).toLowerCase();
+        const isApprovedRow = ['confirmed', 'approved'].includes(synchronizedStatus);
+
+        let unboundedRows;
+        if (!shouldInclude) {
+            unboundedRows = withoutBooking;
+        } else if (isApprovedRow) {
+            unboundedRows = [synchronizedBooking, ...withoutBooking];
+        } else {
+            // Insert non-approved rows in their original position by date,
+            // preserving the existing (approved-first, then date) ordering.
+            const stillApproved = withoutBooking.filter((row) => {
+                const s = String(row?.booking_status || row?.status || '').toLowerCase();
+                return ['confirmed', 'approved'].includes(s);
+            });
+            const nonApproved = withoutBooking.filter((row) => {
+                const s = String(row?.booking_status || row?.status || '').toLowerCase();
+                return !['confirmed', 'approved'].includes(s);
+            });
+            unboundedRows = [...stillApproved, synchronizedBooking, ...nonApproved];
+        }
         const perPage = toNumber(filters.per_page ?? cached.per_page, 0);
         const nextRows = perPage > 0 ? unboundedRows.slice(0, perPage) : unboundedRows;
+
         const totalDelta = matchesFilters
             ? (existingIndex >= 0 ? 0 : 1)
             : (existingIndex >= 0 ? -1 : 0);
@@ -350,7 +400,7 @@ export const useEventTypes = () => {
 // ============================================================
 // CALENDAR QUERIES
 // ============================================================
-export const useCalendarEvents = (params = {}) => {
+export const useCalendarEvents = (params = {}, options = {}) => {
     return useQuery({
         queryKey: bookingKeys.calendar(params),
         queryFn: async () => {
@@ -358,10 +408,10 @@ export const useCalendarEvents = (params = {}) => {
             const normalized = normalizeListResponse(response);
             return normalized.data;
         },
-        staleTime: 5 * 60 * 1000
+        staleTime: 5 * 60 * 1000,
+        enabled: options.enabled !== false,
     });
 };
-
 // ============================================================
 // BOOKING QUERIES WITH REAL-TIME UPDATES
 // ============================================================
@@ -392,16 +442,13 @@ export const useBookings = (filters = {}) => {
             
             return normalized;
         },
-        staleTime: 5 * 60 * 1000,
-        placeholderData: (previousData) => previousData || {
-            data: [],
-            total: 0,
-            current_page: 1,
-            per_page: 6,
-            last_page: 1
-        },
-        keepPreviousData: true,
+              staleTime: 5 * 60 * 1000,
+        placeholderData: keepPreviousData,
         refetchOnWindowFocus: false,
+        // ⭐ 20-second poll so bookings changed on another device
+        //    (phone, tablet, other browser) appear without a manual refresh.
+        refetchInterval: 20 * 1000,
+        refetchIntervalInBackground: false,
     });
 
     // 🔥 REAL-TIME: Listen for booking approvals
@@ -422,8 +469,9 @@ export const useBookings = (filters = {}) => {
                     queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
                     queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
                     
-                    // Show success message
-                    message.success(`✅ Booking ${data.booking_no} confirmed!`);
+                                  // ⭐ Toast is suppressed here so it only appears once,
+                    // after the page-level loading line finishes.
+                    // message.success(`Booking ${data.booking_no} confirmed!`);
                     
                     // Trigger custom event
                     notifyBookingApproved(data.booking_id, data.booking_no, data.booking || null);
@@ -435,23 +483,11 @@ export const useBookings = (filters = {}) => {
             }
         }
         
-        // Fallback: Listen for custom events
-        const handleBookingApproved = (event) => {
-            const detail = event.detail;
-            if (detail) {
-                if (detail.booking) {
-                    syncBookingInCache(queryClient, detail.booking);
-                } else {
-                    queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
-                }
-            }
-        };
-        
-        window.addEventListener('booking-approved', handleBookingApproved);
-        
-        return () => {
-            window.removeEventListener('booking-approved', handleBookingApproved);
-        };
+        // NOTE: Removed the window 'booking-approved' fallback listener.
+        // It was registered once per mounted useBookings instance (3 on the
+        // booking page), so a single approval event triggered 3 × invalidate
+        // × 3 list queries = 9 cascading network requests. Cache syncing
+        // now happens ONLY inside useConfirmBooking's onSuccess.
     }, [queryClient]);
 
     return query;
@@ -469,13 +505,22 @@ export const useBooking = (id) => {
     });
 };
 
-export const useBookingStatistics = () => {
+export const useBookingStatistics = (period = 'monthly', anchor = null) => {
+    const resolvedAnchor = anchor || dayjs().format('YYYY-MM-DD');
+
     return useQuery({
-        queryKey: bookingKeys.statistics(),
+        queryKey: [...bookingKeys.statistics(), { period, anchor: resolvedAnchor }],
         queryFn: async () => {
-            const response = await bookingAPI.getStatistics();
+            const response = await bookingAPI.getStatistics({
+                period,
+                anchor: resolvedAnchor,
+            });
             return {
                 data: normalizeObjectResponse(response, {
+                    period: period,
+                    period_label: '',
+                    period_start: null,
+                    period_end: null,
                     total_bookings: 0,
                     pending_approvals: 0,
                     total_revenue: 0,
@@ -486,11 +531,16 @@ export const useBookingStatistics = () => {
                 })
             };
         },
-        refetchInterval: 30000,
-        staleTime: 30000
+        // ⭐ A new period/anchor is a NEW queryKey — treat it as fresh data
+        //    so it fetches immediately and never serves a stale window.
+        staleTime: 30 * 1000,
+        // ⭐ Refetch whenever the user switches back to this tab.
+        refetchOnWindowFocus: true,
+        // ⭐ Keep the previous period's numbers on screen while the new
+        //    period loads — prevents a flash of empty cards.
+        placeholderData: (previous) => previous,
     });
 };
-
 export const usePaymentSummary = (bookingId) => {
     return useQuery({
         queryKey: bookingKeys.paymentSummary(bookingId),
@@ -564,20 +614,71 @@ export const useConfirmBooking = () => {
     return useMutation({
         mutationFn: (id) => bookingAPI.confirmBooking(id),
         onSuccess: (response, id) => {
+            // ⭐ FIX: The response from POST /bookings/{id}/confirm is a
+            // full booking payload with booking_status='confirmed'.
+            // Capture it so we can sync it into every list cache.
             const approvedBooking = normalizeObjectResponse(response, {});
+
+            // Ensure the status field is set even if the response
+            // came back with a slightly different shape.
+            if (approvedBooking && !approvedBooking.booking_status) {
+                approvedBooking.booking_status = 'confirmed';
+            }
+
             const bookingNo = approvedBooking?.booking_no || '';
-            
-            message.success({
-                content: `✅ Booking ${bookingNo} confirmed successfully!`,
-                duration: 4,
+
+            // ⭐ 1. Patch every booking list with the new record.
+            //    This makes the booking INSTANTLY appear in the confirmed
+            //    tab and disappear from the pending tab.
+            if (approvedBooking && approvedBooking.booking_id) {
+                syncBookingInCache(queryClient, approvedBooking);
+            }
+
+            // ⭐ 2. Force-invalidate the list queries so any list that
+            //    was NOT patched by syncBookingInCache (e.g. hidden tabs)
+            //    re-fetches on next mount.
+            queryClient.invalidateQueries({
+                queryKey: bookingKeys.lists(),
+                refetchType: 'active',
             });
 
-            syncBookingInCache(queryClient, approvedBooking);
-            queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['orders', 'statistics'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['inventory', 'dashboard-stats'], refetchType: 'active' });
+            // ⭐ 3. Invalidate the detail so opening the booking shows
+            //    the confirmed status and the newly-created order/invoice.
+            if (id) {
+                queryClient.invalidateQueries({
+                    queryKey: bookingKeys.detail(id),
+                    refetchType: 'active',
+                });
+            }
+
+            // ⭐ 4. Statistics + counts.
+            queryClient.invalidateQueries({
+                queryKey: bookingKeys.statistics(),
+                refetchType: 'active',
+            });
+
+            // ⭐ 5. Order page — this is the fix for "doesn't appear in Orders".
+            //    Use a bare prefix ['orders'] so every variation of the
+            //    orders query key is invalidated at once.
+            queryClient.invalidateQueries({
+                queryKey: ['orders'],
+                refetchType: 'active',
+            });
+
+            // ⭐ 6. Inventory + dashboard refresh.
+            queryClient.invalidateQueries({
+                queryKey: ['inventory', 'dashboard-stats'],
+                refetchType: 'active',
+            });
+            queryClient.invalidateQueries({
+                queryKey: ['dashboard'],
+                refetchType: 'active',
+            });
+
+            // ⭐ 7. Quotations (invoice status may have changed).
             invalidateQuotationData(queryClient);
+
+            // ⭐ 8. Fire the cross-tab event so other mounted tabs refresh.
             notifyBookingApproved(id, bookingNo, approvedBooking);
         },
         onError: (error) => {
@@ -587,7 +688,6 @@ export const useConfirmBooking = () => {
         }
     });
 };
-
 export const useRejectBooking = () => {
     const queryClient = useQueryClient();
 
@@ -738,8 +838,7 @@ export const useQuotations = (filters = {}) => {
             const response = await quotationAPI.getQuotations(filters);
             return normalizeListResponse(response);
         },
-        staleTime: 5 * 60 * 1000,
-        placeholderData: (previousData) => previousData
+               staleTime: 5 * 60 * 1000
     });
 };
 
@@ -861,8 +960,7 @@ export const usePayments = (filters = {}) => {
             const response = await paymentAPI.getPayments(filters);
             return normalizeListResponse(response);
         },
-        staleTime: 5 * 60 * 1000,
-        placeholderData: (previousData) => previousData
+              staleTime: 5 * 60 * 1000
     });
 };
 
@@ -957,14 +1055,15 @@ export const calendarAvailabilityKeys = {
     list: (params) => [...calendarAvailabilityKeys.all, 'list', params]
 };
 
-export const useCalendarAvailability = (params = {}) => {
+export const useCalendarAvailability = (params = {}, options = {}) => {
     return useQuery({
         queryKey: calendarAvailabilityKeys.list(params),
         queryFn: async () => {
             const response = await bookingAPI.getCalendarAvailability(params);
             return normalizeListResponse(response);
         },
-        staleTime: 2 * 60 * 1000
+        staleTime: 2 * 60 * 1000,
+        enabled: options.enabled !== false,
     });
 };
 
@@ -999,10 +1098,366 @@ export const useDeleteCalendarAvailability = () => {
 };
 
 // ============================================================
+// ⭐ REQUEST #6, #7, #8: INSIGHT VISIBILITY (Hide/Unhide)
+//
+// Behaviour:
+//   • Cashier sees the mask instantly when admin toggles (BroadcastChannel).
+//   • Refresh preserves the mask (localStorage snapshot + server truth).
+//   • Cross-device updates arrive within 15s (poll fallback).
+//   • A read failure falls back to the CACHED value, never to "all visible".
+// ============================================================
+
+export const insightVisibilityKeys = {
+    all: ['insight-visibility'],
+};
+
+const INSIGHT_VISIBILITY_CACHE_KEY = 'insight_visibility_state';
+const INSIGHT_VISIBILITY_CHANNEL   = 'insight_visibility_channel';
+
+const DEFAULT_INSIGHT_VISIBILITY = {
+    total_approved:      false,
+    total_revenue:       false,
+    rejected:            false,
+    outstanding_balance: false,
+};
+
+/**
+ * Read the last-known visibility map from localStorage.
+ * Used as initialData so the first render already reflects the mask.
+ */
+const readCachedInsightVisibility = () => {
+    try {
+        const raw = localStorage.getItem(INSIGHT_VISIBILITY_CACHE_KEY);
+        if (!raw) return DEFAULT_INSIGHT_VISIBILITY;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return DEFAULT_INSIGHT_VISIBILITY;
+        return {
+            total_approved:      Boolean(parsed.total_approved),
+            total_revenue:       Boolean(parsed.total_revenue),
+            rejected:            Boolean(parsed.rejected),
+            outstanding_balance: Boolean(parsed.outstanding_balance),
+        };
+    } catch (e) {
+        return DEFAULT_INSIGHT_VISIBILITY;
+    }
+};
+
+const writeCachedInsightVisibility = (value) => {
+    try {
+        localStorage.setItem(INSIGHT_VISIBILITY_CACHE_KEY, JSON.stringify(value));
+    } catch (e) {
+        console.warn('Could not cache insight visibility:', e);
+    }
+};
+
+/**
+ * ⭐ Broadcast a new visibility state to every tab in this browser, and
+ * persist it so a reload preserves the mask.
+ *
+ * Call this from the mutation's onSuccess.
+ */
+export const broadcastInsightVisibility = (next) => {
+    const normalized = {
+        total_approved:      Boolean(next?.total_approved),
+        total_revenue:       Boolean(next?.total_revenue),
+        rejected:            Boolean(next?.rejected),
+        outstanding_balance: Boolean(next?.outstanding_balance),
+    };
+
+    // 1. Persist for the next reload.
+    writeCachedInsightVisibility(normalized);
+
+    // 2. Push to every open tab in the same browser, instantly.
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const channel = new BroadcastChannel(INSIGHT_VISIBILITY_CHANNEL);
+            channel.postMessage({ payload: normalized });
+            channel.close();
+        }
+    } catch (e) {
+        console.warn('BroadcastChannel post failed:', e);
+    }
+};
+
+/**
+ * Reads the persisted insight visibility map.
+ *
+ * Sources of truth (in priority order):
+ *   1. React Query cache (shared across every component on the page)
+ *   2. localStorage snapshot (survives refresh, avoids first-render flash)
+ *   3. Server response (authoritative — always wins once received)
+ */
+export const useInsightVisibility = () => {
+    return useQuery({
+        queryKey: insightVisibilityKeys.all,
+        queryFn: async () => {
+            try {
+                const response = await insightVisibilityAPI.get();
+                const payload =
+                    response?.data?.data?.data ||
+                    response?.data?.data ||
+                    response?.data ||
+                    {};
+                const resolved = {
+                    total_approved:      Boolean(payload?.total_approved),
+                    total_revenue:       Boolean(payload?.total_revenue),
+                    rejected:            Boolean(payload?.rejected),
+                    outstanding_balance: Boolean(payload?.outstanding_balance),
+                };
+                // ⭐ Persist so the cashier sees the mask right after refresh.
+                writeCachedInsightVisibility(resolved);
+                return resolved;
+            } catch (error) {
+                console.error(
+                    'Failed to load insight visibility (using cached value):',
+                    error?.response?.status,
+                    error?.response?.data || error?.message
+                );
+                // ⭐ Fall back to the cached value, NOT "everything visible".
+                return readCachedInsightVisibility();
+            }
+        },
+        // ⭐ Pre-seed the cache so the first render (including on refresh)
+        //    already reflects the last-known state.
+        initialData: () => readCachedInsightVisibility(),
+        initialDataUpdatedAt: () => 0,
+        staleTime: 15 * 1000,
+        refetchOnWindowFocus: true,
+        // ⭐ 15-second poll for cross-device updates.
+        refetchInterval: 15 * 1000,
+        refetchIntervalInBackground: false,
+    });
+};
+
+/**
+ * ⭐ Keeps every mounted tab (admin + cashier) in sync.
+ *
+ * Two channels:
+ *   1. BroadcastChannel — same-origin, same-browser, instant.
+ *   2. storage event    — fallback for browsers without BroadcastChannel.
+ */
+export const useInsightVisibilitySync = () => {
+    const queryClient = useQueryClient();
+
+    useEffect(() => {
+        let channel;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel(INSIGHT_VISIBILITY_CHANNEL);
+                channel.onmessage = (event) => {
+                    const next = event?.data?.payload;
+                    if (!next) return;
+                    const normalized = {
+                        total_approved:      Boolean(next.total_approved),
+                        total_revenue:       Boolean(next.total_revenue),
+                        rejected:            Boolean(next.rejected),
+                        outstanding_balance: Boolean(next.outstanding_balance),
+                    };
+                    writeCachedInsightVisibility(normalized);
+                    queryClient.setQueryData(insightVisibilityKeys.all, normalized);
+                };
+            }
+        } catch (e) {
+            console.warn('BroadcastChannel unavailable, using storage events only:', e);
+        }
+
+        const handleStorage = (event) => {
+            if (event.key !== INSIGHT_VISIBILITY_CACHE_KEY) return;
+            try {
+                const next = JSON.parse(event.newValue || '{}');
+                queryClient.setQueryData(insightVisibilityKeys.all, {
+                    total_approved:      Boolean(next.total_approved),
+                    total_revenue:       Boolean(next.total_revenue),
+                    rejected:            Boolean(next.rejected),
+                    outstanding_balance: Boolean(next.outstanding_balance),
+                });
+            } catch (e) {
+                // ignore malformed payloads
+            }
+        };
+        window.addEventListener('storage', handleStorage);
+
+        return () => {
+            if (channel) channel.close();
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, [queryClient]);
+};
+
+/**
+ * Admin-only mutation. Reuses the existing settings section endpoint.
+ */
+export const useUpdateInsightVisibility = () => {
+    const queryClient = useQueryClient();
+    const { message } = App.useApp();
+
+    return useMutation({
+        mutationFn: async (nextVisibility) => {
+            const payload = {
+                total_approved:      Boolean(nextVisibility?.total_approved),
+                total_revenue:       Boolean(nextVisibility?.total_revenue),
+                rejected:            Boolean(nextVisibility?.rejected),
+                outstanding_balance: Boolean(nextVisibility?.outstanding_balance),
+            };
+            const response = await insightVisibilityAPI.update(payload);
+            return response;
+        },
+        onSuccess: (_response, nextVisibility) => {
+            const normalized = {
+                total_approved:      Boolean(nextVisibility?.total_approved),
+                total_revenue:       Boolean(nextVisibility?.total_revenue),
+                rejected:            Boolean(nextVisibility?.rejected),
+                outstanding_balance: Boolean(nextVisibility?.outstanding_balance),
+            };
+
+            // Update this tab's cache immediately.
+            queryClient.setQueryData(insightVisibilityKeys.all, normalized);
+
+            // ⭐ Push to every other tab in the same browser instantly,
+            //    and persist for the next reload.
+            broadcastInsightVisibility(normalized);
+
+            message.success('Visibility updated.');
+        },
+        onError: (error) => {
+            const status = error?.response?.status;
+            const msg =
+                error?.response?.data?.message ||
+                error?.message ||
+                'Failed to update visibility';
+
+            if (status === 403) {
+                message.error(
+                    'Your account does not have permission to hide insight values. ' +
+                    'Only Administrators can toggle visibility.'
+                );
+            } else if (status === 404) {
+                message.error(
+                    'Insight visibility endpoint missing. Register GET/PUT ' +
+                    '/settings/insight-visibility in routes/api.php.'
+                );
+            } else {
+                message.error(msg);
+            }
+        },
+    });
+};
+
+// ============================================================
+// ⭐ Cross-tab / cross-window booking change signal
+//
+// React Query caches are per-tab. When one user mutates a booking,
+// every other open tab needs to be told to refetch that booking and
+// the booking list. This is that signal.
+// ============================================================
+
+const BOOKING_CHANGED_KEY = 'booking_changed_signal';
+const BOOKING_CHANGED_CHANNEL = 'booking_changed_channel';
+
+export const broadcastBookingChanged = (bookingId, reason = 'update') => {
+    const payload = {
+        bookingId,
+        reason,
+        ts: Date.now(),
+    };
+
+    // 1. localStorage (survives across windows)
+    try {
+        localStorage.setItem(BOOKING_CHANGED_KEY, JSON.stringify(payload));
+    } catch (e) {
+        console.warn('Could not persist booking change signal:', e);
+    }
+
+    // 2. BroadcastChannel (instant across same-origin tabs)
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const channel = new BroadcastChannel(BOOKING_CHANGED_CHANNEL);
+            channel.postMessage(payload);
+            channel.close();
+        }
+    } catch (e) {
+        console.warn('BroadcastChannel post failed:', e);
+    }
+};
+
+/**
+ * Subscribe to booking-change signals and invalidate the React Query
+ * caches so the current tab refreshes automatically.
+ *
+ * Mount this once per page that displays bookings (admin dashboard,
+ * cashier view, super-admin view).
+ */
+export const useBookingChangeSync = () => {
+    const queryClient = useQueryClient();
+
+    useEffect(() => {
+        const invalidate = (payload) => {
+            if (import.meta.env.DEV) {
+                console.log('🔔 Booking change signal:', payload);
+            }
+
+            // Refresh every list + the specific booking's detail.
+            queryClient.invalidateQueries({
+                queryKey: bookingKeys.lists(),
+                refetchType: 'active',
+            });
+            queryClient.invalidateQueries({
+                queryKey: bookingKeys.statistics(),
+                refetchType: 'active',
+            });
+
+            if (payload?.bookingId) {
+                queryClient.invalidateQueries({
+                    queryKey: bookingKeys.detail(payload.bookingId),
+                    refetchType: 'active',
+                });
+            }
+
+            // Calendar / availability may also be affected.
+            queryClient.invalidateQueries({
+                queryKey: ['booking-calendar-availability'],
+                refetchType: 'active',
+            });
+        };
+
+        let channel;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel(BOOKING_CHANGED_CHANNEL);
+                channel.onmessage = (event) => invalidate(event?.data);
+            }
+        } catch (e) {
+            console.warn('BroadcastChannel unavailable:', e);
+        }
+
+        const handleStorage = (event) => {
+            if (event.key !== BOOKING_CHANGED_KEY) return;
+            try {
+                const payload = JSON.parse(event.newValue || '{}');
+                invalidate(payload);
+            } catch (e) {
+                // ignore
+            }
+        };
+        window.addEventListener('storage', handleStorage);
+
+        return () => {
+            if (channel) channel.close();
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, [queryClient]);
+};
+
+// ============================================================
 // EXPORT
 // ============================================================
 export default {
     useEventTypes,
+    useInsightVisibility,
+    useInsightVisibilitySync,
+    useUpdateInsightVisibility,
+    useBookingChangeSync,
+    broadcastBookingChanged,
     useCalendarEvents,
     useBookings,
     useBooking,

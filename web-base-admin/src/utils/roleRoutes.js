@@ -39,8 +39,16 @@ export const INVENTORY_ROLES = [...ADMIN_ROLES, ...INVENTORY_MANAGER_ROLES];
 export const STAFF_ROLES = [...ADMIN_ROLES, ...STAFF_MANAGER_ROLES];
 export const PAYROLL_PREPARATION_ROLES = [...ADMIN_ROLES, ...STAFF_MANAGER_ROLES];
 export const REPORT_ROLES = [...ADMIN_ROLES, ...CASHIER_ROLES];
-export const SETTINGS_ROLES = ADMIN_ROLES;
-
+// Settings are stricter than general admin operations on the backend.
+// Super admins always have access; operational admins (admin, administrator,
+// owner) are included so they can manage settings too. If the backend
+// `role.access` middleware rejects operational admins on /settings/*, revert
+// SETTINGS_ADMIN_ROLES back to SUPER_ADMIN_ROLES only.
+export const SETTINGS_ADMIN_ROLES = [
+  ...SUPER_ADMIN_ROLES,
+  ...OPERATIONAL_ADMIN_ROLES,
+];
+export const SETTINGS_ROLES = SETTINGS_ADMIN_ROLES;
 export const ROLE_HOME = {
   super_admin: '/dashboard',
   superadmin: '/dashboard',
@@ -91,8 +99,13 @@ const PATH_ROLE_RULES = [
   { test: (path) => path === '/customer-feedback', roles: CUSTOMER_ROLES },
   { test: (path) => path === '/cashierpage', roles: BOOKING_ROLES },
   { test: (path) => path === '/booking', roles: BOOKING_ROLES },
-  { test: (path) => path.startsWith('/orders&events'), roles: ADMIN_ROLES },
-  { test: (path) => path === '/menu', roles: [...ADMIN_ROLES, ...HEAD_CHEF_ROLES] },
+  // ⭐ Cashiers get read-only access to Orders & Events.
+  //    Write actions (approve, complete, profitability) are still blocked
+  //    at the API layer by RoleAccessMiddleware.
+  {
+    test: (path) => path.startsWith('/orders&events'),
+    roles: [...ADMIN_ROLES, ...CASHIER_ROLES],
+  },  { test: (path) => path === '/menu', roles: [...ADMIN_ROLES, ...HEAD_CHEF_ROLES] },
   { test: inventoryPath, roles: INVENTORY_ROLES },
   { test: (path) => path === '/staff/payroll', roles: PAYROLL_PREPARATION_ROLES },
   { test: (path) => path === '/staff' || path.startsWith('/staff/'), roles: STAFF_ROLES },
@@ -136,12 +149,19 @@ export const getUserRoles = (user) => {
 
 export const hasAllowedRole = (user, allowedRoles = []) => {
   const allowed = allowedRoles.map(normalizeRoleName).filter(Boolean);
-  if (allowed.length === 0) return true;
 
+  // Deny when the caller passes an empty allowlist — an empty list means
+  // "nobody is allowed" not "everybody is allowed". Returning `true` here
+  // caused non-admin users to slip through gates that expected zero roles
+  // to mean "no access".
+  if (allowed.length === 0) return false;
+
+  // Deny when the user object has no recognizable role.
   const userRoles = getUserRoles(user);
+  if (userRoles.length === 0) return false;
+
   return userRoles.some((role) => allowed.includes(role));
 };
-
 export const isSuperAdmin = (user) => hasAllowedRole(user, SUPER_ADMIN_ROLES);
 export const isOperationalAdmin = (user) => hasAllowedRole(user, OPERATIONAL_ADMIN_ROLES);
 export const isCashier = (user) => hasAllowedRole(user, CASHIER_ROLES);

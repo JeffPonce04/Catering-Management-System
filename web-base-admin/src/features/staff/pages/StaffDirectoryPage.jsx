@@ -46,6 +46,238 @@ import '../styles/StaffManagement.css';
 const { Search: AntSearch } = Input;
 const { Option } = Select;
 
+// ==================== SKELETON LOADING COMPONENTS ====================
+const SkeletonBlock = ({ width = '100%', height = 14, radius = 8, style = {}, className = '' }) => (
+    <div
+        className={`catering-skeleton-block ${className}`}
+        style={{
+            width,
+            height,
+            borderRadius: radius,
+            flexShrink: 0,
+            /* Inline base color — cannot be overridden by CSS shorthand conflicts */
+            backgroundColor: 'var(--skeleton-bg, #e5e8ec)',
+            backgroundImage: 'linear-gradient(100deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0) 30%, rgba(255,255,255,0.85) 50%, rgba(255,255,255,0) 70%, rgba(255,255,255,0) 100%)',
+            backgroundSize: '220% 100%',
+            backgroundRepeat: 'no-repeat',
+            animation: 'catering-skeleton-shimmer 1.5s linear infinite',
+            ...style,
+        }}
+        aria-hidden="true"
+    />
+);
+
+/* ---------- Reusable skeleton for the staff directory table ---------- */
+const StaffTableSkeleton = () => {
+    // Mirrors the actual column widths of the real staff directory table.
+    const gridTemplate =
+        '50px 2.2fr 1.4fr 1.4fr 1.3fr 1fr 1.2fr 2fr 1.6fr';
+
+    return (
+        <table className="catering-table catering-skeleton-table" style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+            <colgroup>
+                <col style={{ width: '50px' }} />
+                <col style={{ width: '220px' }} />
+                <col style={{ width: '140px' }} />
+                <col style={{ width: '140px' }} />
+                <col style={{ width: '130px' }} />
+                <col style={{ width: '100px' }} />
+                <col style={{ width: '120px' }} />
+                <col style={{ width: '200px' }} />
+                <col style={{ width: '160px' }} />
+            </colgroup>
+            <thead>
+                <tr>
+                    {['#', 'Employee', 'Department', 'Position', 'Status', 'Salary Grade', 'Hourly Rate', 'Contact', 'Actions'].map((label, i) => (
+                        <th key={i} style={{ padding: '12px 16px' }}>
+                            <SkeletonBlock width="70%" height={11} radius={5} />
+                        </th>
+                    ))}
+                </tr>
+            </thead>
+            <tbody>
+                {Array.from({ length: 6 }).map((_, rowIdx) => (
+                    <tr key={rowIdx}>
+                        {/* Row number */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={18} height={12} radius={4} />
+                        </td>
+                        {/* Employee: avatar + name + id */}
+                        <td style={{ padding: '16px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                <SkeletonBlock width={40} height={40} radius={20} />
+                                <div style={{ flex: 1 }}>
+                                    <SkeletonBlock width="80%" height={13} radius={5} style={{ marginBottom: 6 }} />
+                                    <SkeletonBlock width="55%" height={10} radius={5} />
+                                </div>
+                            </div>
+                        </td>
+                        {/* Department tag */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={90} height={22} radius={6} />
+                        </td>
+                        {/* Position tag */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={100} height={22} radius={6} />
+                        </td>
+                        {/* Status pill */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={86} height={24} radius={12} />
+                        </td>
+                        {/* Salary grade */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={60} height={12} radius={5} />
+                        </td>
+                        {/* Hourly rate */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width={80} height={12} radius={5} />
+                        </td>
+                        {/* Contact: email + phone */}
+                        <td style={{ padding: '16px' }}>
+                            <SkeletonBlock width="85%" height={11} radius={5} style={{ marginBottom: 6 }} />
+                            <SkeletonBlock width="65%" height={11} radius={5} />
+                        </td>
+                        {/* 4 action buttons */}
+                        <td style={{ padding: '16px' }}>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <SkeletonBlock width={32} height={32} radius={8} />
+                                <SkeletonBlock width={32} height={32} radius={8} />
+                                <SkeletonBlock width={32} height={32} radius={8} />
+                                <SkeletonBlock width={32} height={32} radius={8} />
+                            </div>
+                        </td>
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+    );
+};
+
+/* ---------- Full-page skeleton that mirrors the whole Staff Management view ---------- */
+const StaffManagementSkeleton = () => {
+    return (
+        <div className="catering-layout catering-skeleton-shell" aria-busy="true" aria-live="polite">
+
+            {/* ===== HEADER ===== */}
+            <header className="catering-header">
+                <div className="catering-logo">
+                    <SkeletonBlock width={44} height={44} radius={8} />
+                    <div className="catering-logo-text" style={{ gap: 6 }}>
+                        <SkeletonBlock width={220} height={16} radius={6} />
+                        <SkeletonBlock width={140} height={10} radius={5} />
+                    </div>
+                </div>
+                <div className="catering-header-right">
+                    <SkeletonBlock width={160} height={14} radius={6} />
+                    <SkeletonBlock width={280} height={36} radius={8} />
+                    <SkeletonBlock width={36} height={36} radius={8} />
+                    <SkeletonBlock width={36} height={36} radius={8} />
+                </div>
+            </header>
+
+            <main className="catering-main">
+                {/* ===== STATS GRID (5 cards) ===== */}
+                <div className="catering-stats-grid">
+                    {Array.from({ length: 5 }).map((_, i) => (
+                        <div key={i} className="catering-stat-card">
+                            <SkeletonBlock width={48} height={48} radius={12} />
+                            <div className="catering-stat-content" style={{ flex: 1 }}>
+                                <SkeletonBlock width="50%" height={22} radius={6} style={{ marginBottom: 8 }} />
+                                <SkeletonBlock width="70%" height={12} radius={5} />
+                            </div>
+                            <SkeletonBlock width={60} height={10} radius={5} />
+                        </div>
+                    ))}
+                </div>
+
+                {/* ===== QUICK ACTIONS (9 pills) ===== */}
+                <div className="catering-quick-actions">
+                    {Array.from({ length: 9 }).map((_, i) => (
+                        <SkeletonBlock
+                            key={i}
+                            width={130 + (i % 3) * 20}
+                            height={36}
+                            radius={40}
+                        />
+                    ))}
+                </div>
+
+                {/* ===== FILTERS BAR ===== */}
+                <div className="catering-filters">
+                    <div className="catering-filter-tabs">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                            <SkeletonBlock key={i} width={80 + (i % 2) * 20} height={28} radius={32} />
+                        ))}
+                    </div>
+                    <SkeletonBlock width={180} height={36} radius={8} />
+                    <div className="catering-badge-group">
+                        <SkeletonBlock width={110} height={26} radius={20} />
+                    </div>
+                </div>
+
+                {/* ===== TABLE CARD ===== */}
+                <div className="catering-table-card">
+                    <div className="catering-table-header">
+                        <div className="catering-table-title">
+                            <SkeletonBlock width={160} height={18} radius={6} style={{ marginBottom: 8 }} />
+                            <SkeletonBlock width={220} height={12} radius={5} />
+                        </div>
+                        <div className="catering-table-actions">
+                            <SkeletonBlock width={130} height={38} radius={10} />
+                        </div>
+                    </div>
+
+                    <div className="catering-table-container">
+                        <StaffTableSkeleton />
+                    </div>
+
+                    {/* ===== PAGINATION ===== */}
+                    <div className="catering-pagination">
+                        <SkeletonBlock width={260} height={13} radius={5} />
+                        <div className="catering-pagination-controls">
+                            {Array.from({ length: 6 }).map((_, i) => (
+                                <SkeletonBlock key={i} width={36} height={36} radius={8} />
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    );
+};
+
+/* ---------- Fade-out wrapper for graceful skeleton exit ---------- */
+const SkeletonTransition = ({ show, children }) => {
+    const [visible, setVisible] = React.useState(show);
+    const [fading, setFading] = React.useState(false);
+
+    React.useEffect(() => {
+        if (show) {
+            setVisible(true);
+            setFading(false);
+        } else if (visible) {
+            setFading(true);
+            const t = setTimeout(() => {
+                setVisible(false);
+                setFading(false);
+            }, 260);
+            return () => clearTimeout(t);
+        }
+    }, [show, visible]);
+
+    if (!visible) return null;
+    return (
+        <div
+            style={{
+                opacity: fading ? 0 : 1,
+                transition: 'opacity 0.26s ease-out',
+            }}
+        >
+            {children}
+        </div>
+    );
+};
+
 const StaffManagement = () => {
     // ==================== STATE MANAGEMENT ====================
     const [searchQuery, setSearchQuery] = useState('');
@@ -3932,8 +4164,13 @@ const renderComplianceModal = () => (
     );
 
     // ==================== MAIN RENDER ====================
+    // Full-page skeleton on first load (no employees yet)
+    if (isLoading && employees.length === 0) {
+        return <StaffManagementSkeleton />;
+    }
+
     return (
-        <div className="catering-layout">
+        <div className="catering-layout catering-content-enter">
             <header className="catering-header">
                 <div className="catering-logo">
                     <div className="catering-logo-icon"><PeopleIcon /></div>
@@ -4063,10 +4300,11 @@ const renderComplianceModal = () => (
                         </div>
                     </div>
 
-                    <div className="catering-table-container">
-                        {isLoading ? (
-                            <div className="catering-loading-spinner"><LoadingOutlined spin /> Loading staff members...</div>
-                        ) : (
+                                     <div className="catering-table-container">
+                        <SkeletonTransition show={isLoading}>
+                            <StaffTableSkeleton />
+                        </SkeletonTransition>
+                        {!isLoading && (
                             <table className="catering-table">
                                 <thead>
                                     <tr>
@@ -4215,7 +4453,7 @@ const renderComplianceModal = () => (
                                         <tr><td colSpan="10" className="catering-table-empty"><div className="catering-empty-state"><TeamOutlined className="catering-empty-icon" /><h3>No staff members found</h3><p>Try adjusting your filters or add a new staff member</p><button className="catering-btn catering-btn-primary" onClick={handleAddEmployee}><PlusOutlined /> Add Staff Member</button></div></td></tr>
                                     )}
                                 </tbody>
-                            </table>
+                                                       </table>
                         )}
                     </div>
 

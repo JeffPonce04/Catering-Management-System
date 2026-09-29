@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
         });
         $middleware->alias([
             'role.access' => RoleAccessMiddleware::class,
+            'role.access' => \App\Http\Middleware\RoleAccessMiddleware::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

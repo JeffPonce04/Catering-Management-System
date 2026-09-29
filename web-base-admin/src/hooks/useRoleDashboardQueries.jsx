@@ -70,12 +70,14 @@ export const useRoleDashboardData = (role) => {
   const { user } = useAuth();
   const roles = getUserRoles(user);
 
+  const userId = user?.id ?? 'anon';
+
   return useQuery({
-    queryKey: ['dashboard', 'role-focused', role, roles],
+    queryKey: ['dashboard', 'role-focused', userId, role, roles],
     queryFn: () => settleRequests(getRoleRequests(role)),
     enabled: Boolean(user && role),
-    staleTime: 3 * 60 * 1000,
-    gcTime: 20 * 60 * 1000,
+    staleTime: 30 * 60 * 1000,       // 30 min
+    gcTime: 24 * 60 * 60 * 1000,     // 24 hours — survives logout/login
     refetchOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

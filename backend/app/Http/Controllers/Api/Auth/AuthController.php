@@ -822,14 +822,22 @@ class AuthController extends Controller
             'full_name' => ['nullable', 'string', 'max:160'],
             'first_name' => ['nullable', 'string', 'max:80'],
             'last_name' => ['nullable', 'string', 'max:80'],
+            'middle_name' => ['nullable', 'string', 'max:80'],
+            'suffix' => ['nullable', 'string', 'max:20'],
             'email' => ['nullable', 'email', 'max:120', 'unique:persons,email,' . $person->person_id . ',person_id'],
             'phone' => ['nullable', 'string', 'max:30'],
             'phone_number' => ['nullable', 'string', 'max:30'],
             'bio' => ['nullable', 'string', 'max:1000'],
+            'location' => ['nullable', 'string', 'max:255'],
             'address' => ['nullable', 'string'],
             'address_line_1' => ['nullable', 'string'],
+            'address_line_2' => ['nullable', 'string'],
             'city' => ['nullable', 'string', 'max:80'],
             'province' => ['nullable', 'string', 'max:80'],
+            'postal_code' => ['nullable', 'string', 'max:20'],
+            'country' => ['nullable', 'string', 'max:80'],
+            'gender' => ['nullable', 'string', 'max:30'],
+            'birth_date' => ['nullable', 'date'],
         ]);
 
         $personData = [];
@@ -841,7 +849,7 @@ class AuthController extends Controller
         }
         if ($request->filled('first_name')) $personData['first_name'] = $request->first_name;
         if ($request->filled('last_name')) $personData['last_name'] = $request->last_name;
-        if ($request->filled('email')) $personData['email'] = $request->email;
+        if ($request->filled('email')) $personData['email'] = strtolower(trim($request->email));
         if ($request->filled('phone')) $personData['phone'] = $request->phone;
         if ($request->filled('phone_number')) $personData['phone'] = $request->phone_number;
         if ($request->filled('address')) $personData['address_line_1'] = $request->address;
@@ -851,13 +859,25 @@ class AuthController extends Controller
 
         if (!empty($personData)) $person->update($personData);
 
+        // Persist bio and location via settings
         if (array_key_exists('bio', $validated)) {
             Setting::setValue('user_profile', 'user_' . $user->user_id . '_bio', $validated['bio'] ?? '', 'string');
         }
+        if (array_key_exists('location', $validated)) {
+            Setting::setValue('user_profile', 'user_' . $user->user_id . '_location', $validated['location'] ?? '', 'string');
+        }
 
-        return $this->user($request);
+        // NOTE: Username is intentionally NOT synced with email.
+        // Username and email are independent identities. Overwriting
+        // username whenever the user changes email caused the
+        // "User ID changes when I change my email" bug.
+
+        // FIXED: Reload relationships so the response includes fresh person
+        // and employee data (profile photo, department, position, etc.)
+        $user->refresh()->load(['person', 'roles', 'customer', 'employee.department', 'employee.position']);
+
+        return $this->ok(['user' => $this->payload($user)]);
     }
-
     // ============================================================
     // ⭐ SELF-PROFILE UPDATE (for mobile app / employee self-service)
     // Only updates the caller's OWN person fields. Cannot touch
@@ -873,7 +893,7 @@ class AuthController extends Controller
 
         $person = $user->person;
 
-             // ⭐ Use Laravel's Rule::unique builder so the "except" clause is
+        // ⭐ Use Laravel's Rule::unique builder so the "except" clause is
         //    guaranteed to reference the right primary key regardless of
         //    whether Person uses `person_id` or `id` as its key.
         $personKeyName = $person->getKeyName();      // e.g. 'person_id'
@@ -922,19 +942,12 @@ class AuthController extends Controller
             $personData['gender'] = ($gender === 'prefer_not_to_say' || $gender === '') ? null : $gender;
         }
         if (array_key_exists('birth_date', $validated))      $personData['birth_date'] = $validated['birth_date'];
-
         if (! empty($personData)) {
             $person->update($personData);
         }
 
-        // Keep the linked user's username in sync when email changes.
-        if (
-            array_key_exists('email', $personData) &&
-            $personData['email'] &&
-            $user->username !== $personData['email']
-        ) {
-            $user->update(['username' => $personData['email']]);
-        }
+        // NOTE: Username is intentionally NOT synced with email.
+        // Same reason as updateProfile() above.
 
         $user->refresh()->load(['person', 'roles', 'customer', 'employee']);
 
@@ -950,13 +963,26 @@ class AuthController extends Controller
         $person = $user->person;
         if (!$person) return $this->fail('Person record not found', 404);
 
-        $request->validate(['profile_photo' => 'required|image|max:2048']);
+        // FIXED: Removed 'max:2048' size limit — now accepts any image size
+        $request->validate(['profile_photo' => 'required|image']);
+
+        // Delete the old photo first to avoid orphaned files
+        if ($person->profile_photo) {
+            $old = $person->profile_photo;
+            if (!str_starts_with($old, 'http://') && !str_starts_with($old, 'https://')) {
+                \Illuminate\Support\Facades\Storage::disk('public')->delete(
+                    ltrim(str_replace('/storage/', '', $old), '/')
+                );
+            }
+        }
 
         $path = $request->file('profile_photo')->store('profile-photos', 'public');
         $person->update(['profile_photo' => $path]);
 
+        $user->refresh()->load(['person', 'roles', 'customer', 'employee.department', 'employee.position']);
+
         return $this->ok([
-            'user' => $this->payload($user->fresh(['person', 'roles', 'customer', 'employee'])),
+            'user' => $this->payload($user),
         ], 'Profile photo updated successfully');
     }
 
@@ -1406,18 +1432,42 @@ class AuthController extends Controller
 
         $primaryRole = $this->primaryRole($user);
         $bio = Setting::getValue('user_profile', 'user_' . $user->user_id . '_bio', '');
+        $location = Setting::getValue('user_profile', 'user_' . $user->user_id . '_location', '');
+
+        // FIXED: Properly resolve profile photo URL
+        $profilePhoto = $person->profile_photo ?? null;
+        $profilePhotoUrl = null;
+
+        if ($profilePhoto) {
+            if (
+                str_starts_with($profilePhoto, 'http://') ||
+                str_starts_with($profilePhoto, 'https://') ||
+                str_starts_with($profilePhoto, '/')
+            ) {
+                $profilePhotoUrl = $profilePhoto;
+            } else {
+                $profilePhotoUrl = url(\Illuminate\Support\Facades\Storage::disk('public')->url($profilePhoto));
+            }
+        }
+
+        // FIXED: Include employee data so the user account reflects employee profile
+        $employee = $user->employee;
 
         return [
             'id' => $user->user_id,
-            'user_id' => $user->user_id,
+            'user_id' => $user->username,
             'username' => $user->username,
+            'internal_user_id' => $user->user_id,
             'full_name' => trim(($person->first_name ?? '') . ' ' . ($person->last_name ?? '')),
             'first_name' => $person->first_name ?? null,
             'last_name' => $person->last_name ?? null,
+            'middle_name' => $person->middle_name ?? null,
+            'suffix' => $person->suffix ?? null,
             'email' => $person->email ?? null,
             'phone_number' => $person->phone ?? null,
             'phone' => $person->phone ?? null,
             'bio' => $bio,
+            'location' => $location,
             'country_code' => '+63',
             'role' => $primaryRole,
             'primary_role' => $primaryRole,
@@ -1425,10 +1475,13 @@ class AuthController extends Controller
             'is_verified' => (bool) $user->email_verified_at,
             'is_active' => (bool) $user->is_active,
             'is_banned' => (bool) ($user->is_banned ?? false),
-            'profile_photo' => $person->profile_photo ?? null,
-            'profile_photo_url' => $person->profile_photo_url ?? null,
+            'profile_photo' => $profilePhoto,
+            'profile_photo_url' => $profilePhotoUrl,
             'customer_id' => $customerId,
-            'employee_id' => $user->employee?->employee_id,
+            'employee_id' => $employee?->employee_id,
+            'employee_code' => $employee?->employee_code,
+            'department' => $employee?->department?->name,
+            'position' => $employee?->position?->title ?? $employee?->position?->name,
             'created_at' => $user->created_at,
             'updated_at' => $user->updated_at,
         ];

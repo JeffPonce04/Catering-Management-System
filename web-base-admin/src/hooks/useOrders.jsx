@@ -22,10 +22,7 @@ export const useOrders = (filters = {}) => {
     return useQuery({
         queryKey: orderKeys.list(filters),
         queryFn: () => orderAPI.getOrders(filters),
-        select: (response) => {
-            console.log('Orders API Full Response:', response.data);
-            
-            // Extract data from nested structure
+            select: (response) => {
             const responseData = response.data;
             
             // Handle different response structures
@@ -57,10 +54,7 @@ export const useOrders = (filters = {}) => {
                     perPage = data.per_page || 15;
                 }
                 
-                console.log('Parsed Orders:', ordersArray);
-                console.log('Total Orders:', total);
-                
-                return {
+                               return {
                     data: ordersArray,
                     total: total,
                     current_page: currentPage,
@@ -69,10 +63,7 @@ export const useOrders = (filters = {}) => {
                 };
             }
             
-            // Fallback: try to extract data directly
-            const fallbackData = responseData?.data?.data || responseData?.data || [];
-            console.log('Fallback Orders:', fallbackData);
-            
+                     const fallbackData = responseData?.data?.data || responseData?.data || [];
             return {
                 data: Array.isArray(fallbackData) ? fallbackData : [],
                 total: Array.isArray(fallbackData) ? fallbackData.length : 0,
@@ -81,21 +72,19 @@ export const useOrders = (filters = {}) => {
                 per_page: 15
             };
         },
-        staleTime: 5 * 60 * 1000,
-        keepPreviousData: true,
-        refetchOnWindowFocus: true,
-        refetchOnMount: true
+             staleTime: 5 * 60 * 1000,
+        placeholderData: (prev) => prev,
+        refetchOnWindowFocus: false,
+        refetchOnMount: false,
     });
 };
-
 export const useOrder = (id) => {
     return useQuery({
         queryKey: orderKeys.detail(id),
         queryFn: () => orderAPI.getOrder(id),
-        select: (response) => {
-            console.log('Order Detail Response:', response.data);
-            return response.data?.data?.data || response.data?.data || response.data;
-        },
+               select: (response) => (
+            response.data?.data?.data || response.data?.data || response.data
+        ),
         enabled: !!id,
         staleTime: 5 * 60 * 1000
     });
@@ -105,8 +94,8 @@ export const useKitchenOrders = () => {
     return useQuery({
         queryKey: orderKeys.kitchen(),
         queryFn: () => orderAPI.getKitchenOrders(),
-        select: (response) => {
-            console.log('Kitchen Orders Response:', response.data);
+            select: (response) => {
+            if (!response || !response.data) return undefined;
             const data = response.data?.data?.data || response.data?.data || [];
             return Array.isArray(data) ? data : [];
         },
@@ -118,8 +107,8 @@ export const useDeliveryOrders = () => {
     return useQuery({
         queryKey: orderKeys.delivery(),
         queryFn: () => orderAPI.getDeliveryOrders(),
-        select: (response) => {
-            console.log('Delivery Orders Response:', response.data);
+                  select: (response) => {
+            if (!response || !response.data) return undefined;
             const data = response.data?.data?.data || response.data?.data || [];
             return Array.isArray(data) ? data : [];
         },
@@ -131,8 +120,8 @@ export const useOrderStatistics = () => {
     return useQuery({
         queryKey: orderKeys.statistics(),
         queryFn: () => orderAPI.getStatistics(),
-        select: (response) => {
-            console.log('Statistics Response:', response.data);
+                  select: (response) => {
+            if (!response || !response.data) return undefined;
             const stats = response.data?.data?.data || response.data?.data || response.data;
             return {
                 total_orders: stats?.total_orders || 0,
@@ -149,8 +138,7 @@ export const useOrderStatistics = () => {
                 ingredients_computed: stats?.ingredients_computed || 0
             };
         },
-        staleTime: 2 * 60 * 1000,
-        refetchInterval: 30000
+        staleTime: 60 * 1000,
     });
 };
 
@@ -158,10 +146,9 @@ export const useIngredientsComputed = (orderId) => {
     return useQuery({
         queryKey: orderKeys.ingredients(orderId),
         queryFn: () => orderAPI.getIngredientsComputed(orderId),
-        select: (response) => {
-            console.log('Ingredients Response:', response.data);
-            return response.data?.data?.data || response.data?.data || [];
-        },
+              select: (response) => (
+            response.data?.data?.data || response.data?.data || []
+        ),
         enabled: !!orderId,
         staleTime: 5 * 60 * 1000
     });

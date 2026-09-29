@@ -231,45 +231,247 @@ const persistSideStatusMap = (map) => {
     // ignore quota errors
   }
 };
+// ==================== SKELETONS (Dashboard-style) ====================
 
-// ==================== SKELETONS ====================
+// Base building blocks
+const SkeletonText = ({ width = '100%', height = 14, className = '', style = {} }) => (
+  <div className={`att-skeleton-text ${className}`} style={{ width, height, ...style }} />
+);
+
+const SkeletonCircle = ({ size = 48, className = '', style = {} }) => (
+  <div
+    className={`att-skeleton-circle ${className}`}
+    style={{ width: size, height: size, minWidth: size, ...style }}
+  />
+);
+
+// Attendance Records table skeleton
 const SkeletonTable = () => (
-  <div className="skeleton-table-container">
-    <div className="skeleton-table-header">
-      {['Date & Time','Employee','Type','Selfie','Status','Actions'].map((h) => (
-        <div key={h} className="skeleton-header-cell">{h}</div>
+  <div className="att-skeleton-table-container">
+    <div className="att-skeleton-table-header">
+      {['Date & Time', 'Employee', 'Type', 'Selfie', 'Status', 'Actions'].map((h, i) => (
+        <div key={h} className="att-skeleton-header-cell" style={{ animationDelay: `${i * 0.05}s` }}>
+          <SkeletonText width="70%" height={11} />
+        </div>
       ))}
     </div>
-    <div className="skeleton-table-body">
-      {[...Array(5)].map((_, i) => (
-        <div key={i} className="skeleton-row">
-          {[...Array(6)].map((_, j) => <div key={j} className="skeleton-cell"><div className="skeleton-text"></div></div>)}
+    <div className="att-skeleton-table-body">
+      {[...Array(6)].map((_, i) => (
+        <div key={i} className="att-skeleton-row" style={{ animationDelay: `${i * 0.06}s` }}>
+          <div className="att-skeleton-cell">
+            <SkeletonText width="80%" height={12} />
+            <SkeletonText width="55%" height={10} style={{ marginTop: 4 }} />
+          </div>
+          <div className="att-skeleton-cell" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <SkeletonCircle size={28} />
+            <div style={{ flex: 1 }}>
+              <SkeletonText width="70%" height={12} />
+              <SkeletonText width="45%" height={10} style={{ marginTop: 4 }} />
+            </div>
+          </div>
+          <div className="att-skeleton-cell">
+            <div className="att-skeleton-pill" />
+          </div>
+          <div className="att-skeleton-cell">
+            <div className="att-skeleton-pill att-skeleton-pill-sm" />
+          </div>
+          <div className="att-skeleton-cell">
+            <div className="att-skeleton-pill" />
+          </div>
+          <div className="att-skeleton-cell" style={{ display: 'flex', gap: 6 }}>
+            <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+            <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+          </div>
         </div>
       ))}
     </div>
   </div>
 );
 
-const SkeletonStatusPanelTable = () => (
-  <div className="skeleton-table-container">
-    <div className="skeleton-table-header">
-      {[...Array(10)].map((_, i) => <div key={i} className="skeleton-table-header-cell"></div>)}
+// Employee Overview (Status Panel) skeleton — avatar + varied bars
+const SkeletonStatusPanelTable = () => {
+  const rowWidths = [
+    [140, 90, 110, 80, 70, 100],
+    [120, 80, 130, 90, 60, 95],
+    [150, 95, 105, 75, 75, 110],
+    [130, 85, 120, 85, 65, 90],
+    [145, 90, 100, 80, 70, 105],
+  ];
+
+  return (
+    <div className="att-skeleton-table-container">
+      <div className="att-skeleton-table-header att-skeleton-header-10">
+        {[...Array(10)].map((_, i) => (
+          <div key={i} className="att-skeleton-header-cell" style={{ animationDelay: `${i * 0.04}s` }}>
+            <SkeletonText width="65%" height={11} />
+          </div>
+        ))}
+      </div>
+      <div className="att-skeleton-table-body">
+        {[...Array(5)].map((_, i) => {
+          const widths = rowWidths[i % rowWidths.length];
+          return (
+            <div key={i} className="att-skeleton-status-row" style={{ animationDelay: `${i * 0.06}s` }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <SkeletonCircle size={34} />
+                <div style={{ flex: 1 }}>
+                  <SkeletonText width={widths[0]} height={12} />
+                  <SkeletonText width={widths[1]} height={10} style={{ marginTop: 4 }} />
+                </div>
+              </div>
+              <SkeletonText width={widths[2]} height={12} />
+              <SkeletonText width={widths[3]} height={12} />
+              <SkeletonText width={widths[4]} height={12} />
+              <div className="att-skeleton-pill" />
+              <div className="att-skeleton-pill att-skeleton-pill-sm" />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+                <SkeletonCircle size={28} style={{ borderRadius: 8 }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
-    <div className="skeleton-table-body">
-      {[...Array(5)].map((_, i) => (
-        <div key={i} className="skeleton-status-row">
-          <div className="skeleton-avatar"></div>
-          <div className="skeleton-text"></div>
-          <div className="skeleton-text short"></div>
-          <div className="skeleton-text"></div>
-          <div className="skeleton-badge"></div>
-          <div className="skeleton-badge"></div>
-          <div className="skeleton-actions"></div>
+  );
+};
+
+// ==================== PAGE-WIDE SKELETON (pixel-matched to real UI) ====================
+const AttendancePageSkeleton = () => {
+  const isDark = (() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') return true;
+    if (saved === 'light') return false;
+    return document.body.classList.contains('dark-mode');
+  })();
+
+  return (
+    <div className={`attendance-container att-sk-container ${isDark ? 'att-dark-mode' : ''}`}>
+      <div className="att-sk-inner">
+
+        {/* ===== HEADER (matches .attendance-header) ===== */}
+        <div className="att-sk-card att-sk-header-block" style={{ animationDelay: '0s' }}>
+          <div className="att-sk-header-left">
+            <div className="att-skeleton-circle att-sk-header-icon" />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div className="att-skeleton-text" style={{ width: 200, height: 18 }} />
+              <div className="att-skeleton-text" style={{ width: 320, height: 10 }} />
+            </div>
+          </div>
+          <div className="att-sk-header-actions">
+            <div className="att-skeleton-circle att-sk-action-btn" />
+            <div className="att-skeleton-circle att-sk-action-btn" />
+            <div className="att-skeleton-circle att-sk-action-btn" />
+          </div>
         </div>
-      ))}
+
+        {/* ===== TABS (matches .main-tabs) ===== */}
+        <div className="att-sk-card att-sk-tabs-block" style={{ animationDelay: '0.05s' }}>
+          <div className="att-skeleton-text att-sk-tab-pill" style={{ width: 155 }} />
+          <div className="att-skeleton-text att-sk-tab-pill" style={{ width: 155 }} />
+          <div className="att-skeleton-text att-sk-tab-pill" style={{ width: 125 }} />
+        </div>
+
+        {/* ===== CUTOFF SELECTOR (matches .cutoff-selector) ===== */}
+        <div className="att-sk-card att-sk-cutoff-block" style={{ animationDelay: '0.10s' }}>
+          <div className="att-sk-cutoff-left">
+            <div className="att-skeleton-text" style={{ width: 30, height: 30, borderRadius: 8 }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="att-skeleton-text" style={{ width: 110, height: 10 }} />
+              <div className="att-skeleton-text" style={{ width: 180, height: 15 }} />
+            </div>
+          </div>
+          <div className="att-sk-cutoff-right">
+            <div className="att-skeleton-text" style={{ width: 130, height: 34, borderRadius: 8 }} />
+            <div className="att-skeleton-text" style={{ width: 130, height: 34, borderRadius: 8 }} />
+            <div className="att-skeleton-text" style={{ width: 190, height: 34, borderRadius: 8 }} />
+          </div>
+        </div>
+
+        {/* ===== KPI CARDS (6 across, matches .attendance-insights-grid) ===== */}
+        <div className="att-sk-kpi-grid">
+          {[...Array(6)].map((_, i) => (
+            <div
+              key={i}
+              className="att-sk-card att-sk-kpi-card"
+              style={{ animationDelay: `${0.15 + i * 0.05}s` }}
+            >
+              <div className="att-skeleton-circle att-sk-kpi-icon" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+                <div className="att-skeleton-text" style={{ width: 55, height: 22 }} />
+                <div className="att-skeleton-text" style={{ width: 90, height: 10 }} />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* ===== SEARCH BAR (matches .search-filter-bar) ===== */}
+        <div className="att-sk-card att-sk-search-block" style={{ animationDelay: '0.35s' }}>
+          <div className="att-skeleton-text" style={{ width: '100%', height: 44, borderRadius: 8 }} />
+          <div className="att-skeleton-text" style={{ width: 90, height: 44, borderRadius: 8 }} />
+        </div>
+
+        {/* ===== TABLE (matches .attendance-table.formal) ===== */}
+        <div className="att-sk-card att-sk-table-block" style={{ animationDelay: '0.40s' }}>
+          {/* Header row */}
+          <div className="att-sk-table-header">
+            <div className="att-skeleton-text" style={{ width: 80, height: 10 }} />
+            <div className="att-skeleton-text" style={{ width: 70, height: 10 }} />
+            <div className="att-skeleton-text" style={{ width: 45, height: 10 }} />
+            <div className="att-skeleton-text" style={{ width: 50, height: 10 }} />
+            <div className="att-skeleton-text" style={{ width: 55, height: 10 }} />
+            <div className="att-skeleton-text" style={{ width: 60, height: 10, marginLeft: 'auto' }} />
+          </div>
+
+          {/* Body rows — mirror the real row structure */}
+          <div className="att-sk-table-body">
+            {[...Array(10)].map((_, i) => (
+              <div
+                key={i}
+                className="att-sk-table-row"
+                style={{ animationDelay: `${0.45 + i * 0.05}s` }}
+              >
+                {/* Date & Time — 2 lines */}
+                <div className="att-sk-col-date">
+                  <div className="att-skeleton-text" style={{ width: 85, height: 12 }} />
+                  <div className="att-skeleton-text" style={{ width: 60, height: 10, marginTop: 6 }} />
+                </div>
+
+                {/* Employee — name + code */}
+                <div className="att-sk-col-employee">
+                  <div className="att-skeleton-text" style={{ width: 105, height: 12 }} />
+                  <div className="att-skeleton-text" style={{ width: 55, height: 10, marginTop: 6 }} />
+                </div>
+
+                {/* Type — pill */}
+                <div className="att-sk-col-type">
+                  <div className="att-skeleton-pill" />
+                </div>
+
+                {/* Selfie — text like "No selfie" */}
+                <div className="att-sk-col-selfie">
+                  <div className="att-skeleton-text" style={{ width: 62, height: 12 }} />
+                </div>
+
+                {/* Status — pill with icon */}
+                <div className="att-sk-col-status">
+                  <div className="att-skeleton-pill att-skeleton-pill-wide" />
+                </div>
+
+                {/* Actions — 2 buttons aligned right */}
+                <div className="att-sk-col-actions">
+                  <div className="att-skeleton-circle att-sk-action-icon" />
+                  <div className="att-skeleton-circle att-sk-action-icon" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 // ==================== STATUS HELPERS ====================
 const getAttendanceStatus = (schedule, attendance) => {
@@ -584,6 +786,31 @@ const Staff_Attendance = () => {
   const mainContentRef = useRef(null);
   const queryClient = useQueryClient();
 
+  // Theme sync (matches Dashboard behavior)
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') return true;
+    if (saved === 'light') return false;
+    return document.body.classList.contains('dark-mode');
+  });
+
+  useEffect(() => {
+    const handleThemeChange = (e) => setIsDarkMode(Boolean(e?.detail?.isDark));
+    const handleStorage = (e) => {
+      if (e.key === 'theme') setIsDarkMode(e.newValue === 'dark');
+    };
+    window.addEventListener('themeChange', handleThemeChange);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('themeChange', handleThemeChange);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
+  // ⭐ Page-wide skeleton gate (mirrors Dashboard behavior)
+  const [showPageSkeleton, setShowPageSkeleton] = useState(true);
+  const [pageAnimate, setPageAnimate] = useState(false);
+
   // ---- Refs that must survive re-renders ----
   const hasInitiallyLoadedRef = useRef(false);
   const fetchInFlightRef = useRef(false);
@@ -732,7 +959,22 @@ const Staff_Attendance = () => {
   }), [selectedYear, selectedMonth, dates]);
 
   const { data: mobileAttendanceData, isLoading: mobileLoading, refetch: refetchMobile, isFetching: isMobileFetching } = useMobileAttendance(mobileAttendanceParams);
-  const { refetch: refetchStats } = useAttendanceStatistics(selectedYear, selectedMonth + 1);
+
+  // ⭐ Skeleton → content orchestration (must be AFTER mobileLoading is declared)
+  const isPageLoading = mobileLoading || (employeeOverviewLoading && activeMainTab === 'status-panel');
+  useEffect(() => {
+    if (!isPageLoading) {
+      const t = setTimeout(() => {
+        setShowPageSkeleton(false);
+        setPageAnimate(false);
+        requestAnimationFrame(() => setPageAnimate(true));
+      }, 100);
+      return () => clearTimeout(t);
+    } else {
+      setShowPageSkeleton(true);
+      setPageAnimate(false);
+    }
+  }, [isPageLoading]);  const { refetch: refetchStats } = useAttendanceStatistics(selectedYear, selectedMonth + 1);
   const { refetch: refetchStatusPanelSummary } = useStatusPanelSummary();
   const { data: employeesData } = useEmployeesList();
   const { data: departmentsData } = useDepartmentsList();
@@ -2194,10 +2436,14 @@ const Staff_Attendance = () => {
     }
   `;
 
-  return (
-    <div className="attendance-container">
-      <style>{injectedStyles}</style>
+  // ⭐ Show full page skeleton while loading
+  if (showPageSkeleton) {
+    return <AttendancePageSkeleton />;
+  }
 
+  return (
+    <div className={`attendance-container ${pageAnimate ? 'att-animate-in' : ''} ${isDarkMode ? 'att-dark-mode' : ''}`}>
+      <style>{injectedStyles}</style>
       {showNotification && (
         <div className={`attendance-notification ${notificationType}`}>
           <div className="notification-icon">

@@ -2618,3 +2618,513 @@
 .catering-quick-action {
   transition: all 0.3s ease;
 }
+
+/* ==================== SKELETON LOADING (CLEAN & ALIVE) ==================== */
+
+/* ------------------------------------------------------------------
+   1. BASE SKELETON BLOCK
+   Solid gray base + moving white highlight.
+   The base color is set inline (see SkeletonBlock component) so it
+   can never be stripped by CSS shorthand conflicts.
+   ------------------------------------------------------------------ */
+.catering-skeleton-block {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  /* Fallback for older browsers / any React render that skips the inline style */
+  background-color: var(--skeleton-bg, #e5e8ec);
+  will-change: background-position;
+}
+
+/* Dark-mode base color, driven by a CSS variable so JSX stays clean */
+.dark-mode {
+  --skeleton-bg: #1e2340;
+}
+
+/* ------------------------------------------------------------------
+   2. THE SHIMMER
+   Moves a white highlight left → right across the block.
+   ------------------------------------------------------------------ */
+@keyframes catering-skeleton-shimmer {
+  0% {
+    background-position: 180% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
+}
+
+/* ------------------------------------------------------------------
+   3. OPTIONAL PULSE
+   Very subtle opacity fade so idle blocks feel like they are breathing.
+   ------------------------------------------------------------------ */
+@keyframes catering-skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.88; }
+}
+
+.catering-skeleton-block {
+  animation:
+    catering-skeleton-shimmer 1.6s linear infinite,
+    catering-skeleton-pulse 2.4s ease-in-out infinite;
+}
+
+/* ------------------------------------------------------------------
+   4. SHELL FADE-IN
+   ------------------------------------------------------------------ */
+@keyframes catering-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.catering-skeleton-shell {
+  pointer-events: none;
+  animation: catering-skeleton-fade-in 0.35s ease-out both;
+}
+
+/* ------------------------------------------------------------------
+   5. STAGGERED REVEALS (stat cards, quick actions, filters, table, pagination)
+   ------------------------------------------------------------------ */
+@keyframes catering-skeleton-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.catering-skeleton-shell .catering-stat-card {
+  animation: catering-skeleton-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.catering-skeleton-shell .catering-stat-card:nth-child(1) { animation-delay: 0.04s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(2) { animation-delay: 0.10s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(3) { animation-delay: 0.16s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(4) { animation-delay: 0.22s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(5) { animation-delay: 0.28s; }
+
+@keyframes catering-skeleton-slide-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block {
+  animation:
+    catering-skeleton-shimmer 1.6s linear infinite,
+    catering-skeleton-pulse 2.4s ease-in-out infinite,
+    catering-skeleton-slide-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.catering-skeleton-shell .catering-filters {
+  animation: catering-skeleton-fade-in 0.5s ease-out 0.25s both;
+}
+
+@keyframes catering-skeleton-soft-zoom {
+  from { opacity: 0; transform: scale(0.995) translateY(4px); }
+  to   { opacity: 1; transform: scale(1)     translateY(0); }
+}
+
+.catering-skeleton-shell .catering-table-card {
+  animation: catering-skeleton-soft-zoom 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+
+/* ------------------------------------------------------------------
+   6. TABLE SKELETON (rows + header)
+   ------------------------------------------------------------------ */
+.catering-skeleton-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.catering-skeleton-table th {
+  text-align: left;
+  padding: 12px 16px;
+  background-color: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.catering-skeleton-table td {
+  padding: 16px;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: middle;
+}
+
+.catering-skeleton-table tbody tr:hover {
+  background: transparent;
+}
+
+.catering-skeleton-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Stagger row entry */
+@keyframes catering-skeleton-row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.catering-skeleton-table tbody tr {
+  animation: catering-skeleton-row-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.catering-skeleton-table tbody tr:nth-child(1) { animation-delay: 0.05s; }
+.catering-skeleton-table tbody tr:nth-child(2) { animation-delay: 0.10s; }
+.catering-skeleton-table tbody tr:nth-child(3) { animation-delay: 0.15s; }
+.catering-skeleton-table tbody tr:nth-child(4) { animation-delay: 0.20s; }
+.catering-skeleton-table tbody tr:nth-child(5) { animation-delay: 0.25s; }
+.catering-skeleton-table tbody tr:nth-child(6) { animation-delay: 0.30s; }
+
+/* Pagination fade-in last */
+.catering-skeleton-shell .catering-pagination {
+  animation: catering-skeleton-fade-in 0.5s ease-out 0.55s both;
+}
+
+/* ------------------------------------------------------------------
+   7. DARK MODE — table overrides
+   ------------------------------------------------------------------ */
+.dark-mode .catering-skeleton-table th {
+  background-color: #0a0e1a;
+  border-bottom-color: #1e2340;
+}
+
+.dark-mode .catering-skeleton-table td {
+  border-bottom-color: #1e2340;
+}
+
+/* ------------------------------------------------------------------
+   8. CONTENT ENTRY (real data replaces skeleton)
+   ------------------------------------------------------------------ */
+@keyframes catering-content-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.catering-content-enter {
+  animation: catering-content-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ------------------------------------------------------------------
+   9. REDUCED MOTION
+   ------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .catering-skeleton-block,
+  .catering-skeleton-shell,
+  .catering-skeleton-shell .catering-stat-card,
+  .catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block,
+  .catering-skeleton-shell .catering-filters,
+  .catering-skeleton-shell .catering-table-card,
+  .catering-skeleton-shell .catering-pagination,
+  .catering-skeleton-table tbody tr,
+  .catering-content-enter {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+  .catering-skeleton-block {
+    background-image: none !important;
+    opacity: 1 !important;
+  }
+}
+
+/*
+ * Bawat block ay may 3-layer na galaw:
+ *   1. Shimmer  — dumudulas na liwanag kaliwa-kanan
+ *   2. Breathe  — bahagyang paghinga (laki + opacity)
+ *   3. Float    — napakaliit na pag-indayog pataas-baba
+ * Kaya kahit walang data, mukhang "buhay" ang loading.
+ */
+.catering-skeleton-block {
+  display: block;
+  position: relative;
+  overflow: hidden;
+  /* Solid gray base — this is what makes the block visible */
+  background-color: #e5e8ec;
+  /* Moving highlight sweep layered on top of the gray */
+  background-image: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0) 25%,
+    rgba(255, 255, 255, 0.55) 45%,
+    rgba(255, 255, 255, 0.85) 50%,
+    rgba(255, 255, 255, 0.55) 55%,
+    rgba(255, 255, 255, 0) 75%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  transform-origin: center;
+  animation:
+    catering-skeleton-shimmer 1.5s linear infinite,
+    catering-skeleton-breathe 2.2s ease-in-out infinite,
+    catering-skeleton-float 3.2s ease-in-out infinite;
+  will-change: background-position, opacity, transform;
+}
+/* Dumudulas na highlight — parang scanner ng liwanag */
+@keyframes catering-skeleton-shimmer {
+  0%   { background-position: 150% 0; }
+  100% { background-position: -50% 0; }
+}
+
+/* Bahagyang paghinga — opacity at scale */
+@keyframes catering-skeleton-breathe {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.85; transform: scale(1); }
+}
+/* Napakaliit na pag-indayog pataas-baba */
+@keyframes catering-skeleton-float {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -1px; }
+}
+
+/* ---------- Randomize timing per block para organic ang galaw ---------- */
+
+/* Header blocks — mabagal na pulse */
+.catering-skeleton-shell .catering-header .catering-skeleton-block {
+  animation-duration: 1.6s, 2.4s, 3.6s;
+  animation-delay: 0s, 0s, 0s;
+}
+
+/* Stat cards — mas mabilis na shimmer */
+.catering-skeleton-shell .catering-stat-card .catering-skeleton-block {
+  animation-duration: 1.3s, 2s, 3s;
+}
+
+/* Quick-action pills — kumakaway pa-kaliwa at pa-kanan */
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block {
+  animation-duration: 1.5s, 2.1s, 2.6s;
+}
+
+/* Filter bar — subtle lang */
+.catering-skeleton-shell .catering-filters .catering-skeleton-block {
+  animation-duration: 1.7s, 2.5s, 3.5s;
+}
+
+/* Table header blocks — steady shimmer */
+.catering-skeleton-table thead .catering-skeleton-block {
+  animation-duration: 1.4s, 2.2s, 3.4s;
+}
+
+/* Table cells — iba-iba para parang "alive" ang bawat row */
+.catering-skeleton-table tbody tr:nth-child(odd) .catering-skeleton-block {
+  animation-duration: 1.5s, 2.3s, 3.1s;
+  animation-delay: 0.05s, 0.1s, 0s;
+}
+.catering-skeleton-table tbody tr:nth-child(even) .catering-skeleton-block {
+  animation-duration: 1.7s, 2.6s, 3.5s;
+  animation-delay: 0.15s, 0.2s, 0.05s;
+}
+
+/* Row 1-8: unti-unting lumiliwanag ang pulse para may wave effect */
+.catering-skeleton-table tbody tr:nth-child(1) .catering-skeleton-block { animation-delay: 0.00s, 0.00s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(2) .catering-skeleton-block { animation-delay: 0.08s, 0.10s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(3) .catering-skeleton-block { animation-delay: 0.16s, 0.20s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(4) .catering-skeleton-block { animation-delay: 0.24s, 0.30s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(5) .catering-skeleton-block { animation-delay: 0.32s, 0.40s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(6) .catering-skeleton-block { animation-delay: 0.40s, 0.50s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(7) .catering-skeleton-block { animation-delay: 0.48s, 0.60s, 0s; }
+.catering-skeleton-table tbody tr:nth-child(8) .catering-skeleton-block { animation-delay: 0.56s, 0.70s, 0s; }
+
+/* Shell keeps the exact same spacing as the real page */
+.catering-skeleton-shell {
+  pointer-events: none;
+  animation: catering-skeleton-fade-in 0.35s ease-out both;
+}
+
+.catering-skeleton-shell .catering-header,
+.catering-skeleton-shell .catering-main {
+  cursor: default;
+}
+
+/* Shell fade-in when the skeleton first mounts */
+@keyframes catering-skeleton-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Buong-page na sweep: isang manipis na highlight na dumadaan
+   mula taas pababa, paulit-ulit — feeling "scanning" */
+.catering-skeleton-shell::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0) 40%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0) 60%,
+    transparent 100%
+  );
+  background-size: 100% 300%;
+  animation: catering-skeleton-page-scan 3.5s linear infinite;
+  mix-blend-mode: overlay;
+}
+
+@keyframes catering-skeleton-page-scan {
+  0%   { background-position: 0 -150%; }
+  100% { background-position: 0 150%; }
+}
+
+/* Dark mode: mas subtle ang scan */
+.dark-mode .catering-skeleton-shell::after {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(96, 165, 250, 0) 40%,
+    rgba(96, 165, 250, 0.08) 50%,
+    rgba(96, 165, 250, 0) 60%,
+    transparent 100%
+  );
+  background-size: 100% 300%;
+}
+/* Stat cards rise in one after another */
+.catering-skeleton-shell .catering-stat-card {
+  animation: catering-skeleton-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.catering-skeleton-shell .catering-stat-card:nth-child(1) { animation-delay: 0.04s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(2) { animation-delay: 0.10s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(3) { animation-delay: 0.16s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(4) { animation-delay: 0.22s; }
+.catering-skeleton-shell .catering-stat-card:nth-child(5) { animation-delay: 0.28s; }
+
+@keyframes catering-skeleton-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+/* Quick-action pills glide in from the left */
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block {
+  animation:
+    catering-skeleton-shimmer 1.6s ease-in-out infinite,
+    catering-skeleton-slide-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(1) { animation-delay: 0s,    0.05s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(2) { animation-delay: 0s,    0.08s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(3) { animation-delay: 0s,    0.11s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(4) { animation-delay: 0s,    0.14s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(5) { animation-delay: 0s,    0.17s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(6) { animation-delay: 0s,    0.20s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(7) { animation-delay: 0s,    0.23s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(8) { animation-delay: 0s,    0.26s; }
+.catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block:nth-child(9) { animation-delay: 0s,    0.29s; }
+
+@keyframes catering-skeleton-slide-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Filter bar fades in */
+.catering-skeleton-shell .catering-filters {
+  animation: catering-skeleton-fade-in 0.5s ease-out 0.25s both;
+}
+
+/* Table card gently scales into place */
+.catering-skeleton-shell .catering-table-card {
+  animation: catering-skeleton-soft-zoom 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+
+@keyframes catering-skeleton-soft-zoom {
+  from { opacity: 0; transform: scale(0.995) translateY(4px); }
+  to   { opacity: 1; transform: scale(1)     translateY(0); }
+}
+
+/* Skeleton table needs the exact same box model as .catering-table */
+.catering-skeleton-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.catering-skeleton-table th {
+  text-align: left;
+  padding: 12px 16px;
+  background-color: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.catering-skeleton-table td {
+  padding: 16px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.catering-skeleton-table tr:hover {
+  background: transparent;
+}
+
+/* Stagger table rows so the skeleton "fills in" top-to-bottom */
+.catering-skeleton-table tbody tr {
+  animation: catering-skeleton-row-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.catering-skeleton-table tbody tr:nth-child(1) { animation-delay: 0.05s, 0.00s; }
+.catering-skeleton-table tbody tr:nth-child(2) { animation-delay: 0.10s, 0.15s; }
+.catering-skeleton-table tbody tr:nth-child(3) { animation-delay: 0.15s, 0.30s; }
+.catering-skeleton-table tbody tr:nth-child(4) { animation-delay: 0.20s, 0.45s; }
+.catering-skeleton-table tbody tr:nth-child(5) { animation-delay: 0.25s, 0.60s; }
+.catering-skeleton-table tbody tr:nth-child(6) { animation-delay: 0.30s, 0.75s; }
+.catering-skeleton-table tbody tr:nth-child(7) { animation-delay: 0.35s, 0.90s; }
+.catering-skeleton-table tbody tr:nth-child(8) { animation-delay: 0.40s, 1.05s; }
+@keyframes catering-skeleton-row-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Pagination softly fades in last */
+.catering-skeleton-shell .catering-pagination {
+  animation: catering-skeleton-fade-in 0.5s ease-out 0.7s both;
+}
+
+/* Respect user motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .catering-skeleton-block,
+  .catering-skeleton-shell,
+  .catering-skeleton-shell::after,
+  .catering-skeleton-shell .catering-stat-card,
+  .catering-skeleton-shell .catering-quick-actions > .catering-skeleton-block,
+  .catering-skeleton-shell .catering-filters,
+  .catering-skeleton-shell .catering-table-card,
+  .catering-skeleton-shell .catering-pagination,
+  .catering-skeleton-table tbody tr,
+  .catering-skeleton-table thead .catering-skeleton-block {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    translate: none !important;
+  }
+}
+/* Dark mode shimmer */
+.dark-mode .catering-skeleton-block {
+  background-color: #1e2340;
+  background-image: linear-gradient(
+    110deg,
+    rgba(96, 165, 250, 0) 0%,
+    rgba(96, 165, 250, 0) 30%,
+    rgba(96, 165, 250, 0.12) 50%,
+    rgba(96, 165, 250, 0) 70%,
+    rgba(96, 165, 250, 0) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+}
+
+.dark-mode .catering-skeleton-table th {
+  background: #0a0e1a;
+  border-bottom-color: #1e2340;
+}
+
+.dark-mode .catering-skeleton-table td {
+  border-bottom-color: #1e2340;
+}
+
+/* Real content enters softly when it replaces the skeleton */
+.catering-content-enter {
+  animation: catering-content-enter 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes catering-content-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catering-content-enter {
+    animation: none;
+  }
+}

@@ -1318,3 +1318,44 @@
         max-height: none !important;
     }
 }
+
+.sm-period-segmented {
+  background: #f1f5f9;
+  border-radius: 10px;
+}
+
+.sm-dark-mode .sm-period-segmented {
+  background: #1a1f35;
+}
+
+.sm-period-picker {
+  width: 160px;
+}
+
+.sm-period-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #e6f0fa;
+  border: 1px solid #c7e0f5;
+  border-radius: 10px;
+  padding: 2px 6px 2px 12px;
+}
+
+.sm-dark-mode .sm-period-chip {
+  background: #16263b;
+  border-color: #1f3a5c;
+}
+
+.sm-period-chip-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a7ab5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sm-dark-mode .sm-period-chip-label {
+  color: #7db8de;
+}

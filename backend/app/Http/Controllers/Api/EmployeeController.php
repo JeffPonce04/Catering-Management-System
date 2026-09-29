@@ -195,7 +195,7 @@ class EmployeeController extends Controller
         return $this->ok($employee);
     }
 
-        public function update(EmployeeRequest $request, Employee $employee)
+    public function update(EmployeeRequest $request, Employee $employee)
     {
         $oldPhotoPath = null;
         $newPhotoPath = null;
@@ -244,14 +244,16 @@ class EmployeeController extends Controller
                     'pagibig_number',
                     'tin_number',
                     'notes',
-                ]))->filter(static fn ($value) => $value !== null)->toArray();
+                ]))->filter(static fn($value) => $value !== null)->toArray();
 
-                foreach ([
-                    'sss_number' => 'sss',
-                    'philhealth_number' => 'philhealth',
-                    'pagibig_number' => 'pagibig',
-                    'tin_number' => 'tin',
-                ] as $databaseField => $alias) {
+                foreach (
+                    [
+                        'sss_number' => 'sss',
+                        'philhealth_number' => 'philhealth',
+                        'pagibig_number' => 'pagibig',
+                        'tin_number' => 'tin',
+                    ] as $databaseField => $alias
+                ) {
                     if (! array_key_exists($databaseField, $employeeData) && $request->has($alias)) {
                         $employeeData[$databaseField] = $request->input($alias);
                     }
@@ -266,7 +268,6 @@ class EmployeeController extends Controller
                 }
 
                 $employee->update($employeeData);
-
                 // ⭐ #2 — Block the linked user account whenever the employee
                 //    status becomes inactive or terminated. This prevents them
                 //    from logging into Attendance Tracking.
@@ -288,6 +289,22 @@ class EmployeeController extends Controller
                     }
                 }
 
+                // FIXED: Keep the linked user account's person data in sync
+                //        with the employee's person data. This makes the user
+                //        profile reflect the employee profile automatically.
+                if ($employee->user) {
+                    try {
+                        $employee->user->update([
+                            'username' => $employee->person->email ?? $employee->user->username,
+                        ]);
+                    } catch (Throwable $e) {
+                        Log::warning('Failed to sync user username with employee email', [
+                            'user_id' => $employee->user->user_id,
+                            'exception' => $e->getMessage(),
+                        ]);
+                    }
+                }
+
                 return $this->ok(
                     $employee->fresh(['person', 'department', 'position.salaryGrade']),
                     'Employee updated'
@@ -306,7 +323,7 @@ class EmployeeController extends Controller
 
         return $response;
     }
-       public function destroy(Employee $employee)
+    public function destroy(Employee $employee)
     {
         DB::transaction(function () use ($employee) {
             // ⭐ #2 — Block the linked user account when archived.
@@ -328,7 +345,7 @@ class EmployeeController extends Controller
 
         return $this->ok(null, 'Employee archived');
     }
-        public function restore($id)
+    public function restore($id)
     {
         $employee = Employee::withTrashed()->findOrFail($id);
 
@@ -443,7 +460,7 @@ class EmployeeController extends Controller
         ]);
     }
 
-       public function bulkStatus(Request $request)
+    public function bulkStatus(Request $request)
     {
         $data = $request->validate([
             'ids' => 'required|array|min:1',
@@ -544,14 +561,14 @@ class EmployeeController extends Controller
 
             // Missing time-in / time-out is always a hard blocker
             $incomplete = $allAttendance->first(
-                fn (AttendanceLog $row) => $row->status !== 'absent' && (! $row->time_in || ! $row->time_out)
+                fn(AttendanceLog $row) => $row->status !== 'absent' && (! $row->time_in || ! $row->time_out)
             );
             if ($incomplete) {
                 $blockers->push('Missing time-in/time-out on ' . $incomplete->attendance_date?->toDateString());
             }
 
             // Pending attendance decision is a hard blocker
-            $pending = $allAttendance->first(fn (AttendanceLog $row) => $row->approval_status === 'pending');
+            $pending = $allAttendance->first(fn(AttendanceLog $row) => $row->approval_status === 'pending');
             if ($pending) {
                 $blockers->push('Attendance decision pending on ' . $pending->attendance_date?->toDateString());
             }
@@ -572,7 +589,7 @@ class EmployeeController extends Controller
             }
 
             // Payroll-ready gate — bypass for admins
-            $notFinalized = $allAttendance->first(fn (AttendanceLog $row) => ! $row->payroll_ready_at);
+            $notFinalized = $allAttendance->first(fn(AttendanceLog $row) => ! $row->payroll_ready_at);
             if ($notFinalized) {
                 if ($isAdmin) {
                     $softNotes->push('Attendance was not finalized for payroll; admin override applied.');

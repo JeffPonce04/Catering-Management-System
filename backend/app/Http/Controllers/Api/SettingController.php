@@ -49,7 +49,6 @@ class SettingController extends Controller
         'staff_government_contributions',
         'staff_employee_id',
     ];
-
     private const SYSTEM_GROUPS = [
         'system_business',
         'system_security_ext',
@@ -58,6 +57,8 @@ class SettingController extends Controller
         'system_backups',
     ];
 
+    // ⭐ Allergens settings group — stores the master list of food allergens
+    private const ALLERGENS_GROUP = 'food_allergens';
     // ============================================================
     // SETTINGS
     // ============================================================
@@ -120,6 +121,378 @@ class SettingController extends Controller
             return $this->ok(null, $section . ' settings updated successfully');
         } catch (\Exception $e) {
             return $this->fail('Failed to update settings: ' . $e->getMessage(), 500);
+        }
+    }
+
+       /* ============================================================
+     * ⭐ INSIGHT VISIBILITY (Hide/Unhide KPI values)
+     *
+     * Stored as a single Setting row:
+     *   group = 'insight_visibility'
+     *   key   = 'map'
+     *   value = { total_approved: bool, total_revenue: bool, rejected: bool }
+     *
+     * `false` = visible, `true` = hidden.
+     * Reuses the existing Setting model — no migration, no new table.
+     * ============================================================ */
+
+        private const INSIGHT_VISIBILITY_GROUP = 'insight_visibility';
+    private const INSIGHT_VISIBILITY_KEY   = 'map';
+
+    // ⭐ Financial visibility — Hide/Unhide for Order & Events KPI cards.
+    //    Same storage pattern as insight_visibility, separate group so the
+    //    two features never collide.
+    private const FINANCIAL_VISIBILITY_GROUP = 'financial_visibility';
+    private const FINANCIAL_VISIBILITY_KEY   = 'map';
+
+    // ⭐ Billing KPI visibility — Hide/Unhide for Billing & Invoicing KPIs.
+    private const BILLING_VISIBILITY_GROUP = 'billing_kpi_visibility';
+    private const BILLING_VISIBILITY_KEY   = 'map';
+
+    private function defaultInsightVisibility(): array
+    {
+        return [
+            'total_approved' => false,
+            'total_revenue'  => false,
+            'rejected'       => false,
+        ];
+    }
+
+     private function defaultFinancialVisibility(): array
+    {
+        return [
+            'total_revenue'       => false,
+            'outstanding_balance' => false,
+            'payments_collected'  => false,
+        ];
+    }
+
+    private function defaultBillingVisibility(): array
+    {
+        return [
+            'total_revenue'       => false,
+            'total_collected'     => false,
+            'outstanding_balance' => false,
+            'total_refunds'       => false,
+        ];
+    }
+
+    /**
+     * ⭐ BILLING VISIBILITY — Hide/Unhide for Billing & Invoicing KPIs.
+     *    Any authenticated user can READ. Only admin / super-admin can WRITE.
+     */
+    public function getBillingVisibility(Request $request)
+    {
+        try {
+            $setting = Setting::where('group', self::BILLING_VISIBILITY_GROUP)
+                ->where('key', self::BILLING_VISIBILITY_KEY)
+                ->first();
+
+            $value = [];
+            if ($setting) {
+                $value = $this->decodeValue($setting->value, $setting->type);
+                if (! is_array($value) && is_string($setting->value)) {
+                    $decoded = json_decode($setting->value, true);
+                    if (is_array($decoded)) {
+                        $value = $decoded;
+                    }
+                }
+            }
+
+            return $this->ok(array_merge($this->defaultBillingVisibility(), [
+                'total_revenue'       => (bool) ($value['total_revenue']       ?? false),
+                'total_collected'     => (bool) ($value['total_collected']     ?? false),
+                'outstanding_balance' => (bool) ($value['outstanding_balance'] ?? false),
+                'total_refunds'       => (bool) ($value['total_refunds']       ?? false),
+            ]));
+        } catch (\Throwable $e) {
+            return $this->ok($this->defaultBillingVisibility());
+        }
+    }
+
+    public function updateBillingVisibility(Request $request)
+    {
+        try {
+            $actor = $request->user();
+            if (! $actor) {
+                return $this->fail('Unauthenticated.', 401);
+            }
+
+            $isAllowed = $actor->roles()
+                ->where('is_active', true)
+                ->whereIn('slug', ['admin', 'administrator', 'owner', 'super-admin', 'super_admin', 'superadmin'])
+                ->exists();
+
+            if (! $isAllowed) {
+                return $this->fail('Only administrators can hide or unhide billing values.', 403);
+            }
+
+            $input = $request->input('data', $request->all());
+            if (! is_array($input)) {
+                $input = [];
+            }
+
+            $payload = array_merge($this->defaultBillingVisibility(), [
+                'total_revenue'       => (bool) ($input['total_revenue']       ?? false),
+                'total_collected'     => (bool) ($input['total_collected']     ?? false),
+                'outstanding_balance' => (bool) ($input['outstanding_balance'] ?? false),
+                'total_refunds'       => (bool) ($input['total_refunds']       ?? false),
+            ]);
+
+            Setting::updateOrCreate(
+                [
+                    'group' => self::BILLING_VISIBILITY_GROUP,
+                    'key'   => self::BILLING_VISIBILITY_KEY,
+                ],
+                [
+                    'value' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'string',
+                ]
+            );
+
+            try {
+                Cache::forget('settings_' . self::BILLING_VISIBILITY_GROUP);
+            } catch (\Throwable $cacheErr) {
+                \Log::warning('billing_visibility cache forget failed: ' . $cacheErr->getMessage());
+            }
+
+            try {
+                AuditLog::log('system_settings_updated', 'settings', null, null, [
+                    'section' => self::BILLING_VISIBILITY_GROUP,
+                    'keys'    => array_keys($payload),
+                    'values'  => $payload,
+                ]);
+            } catch (\Throwable $auditErr) {
+                \Log::warning('billing_visibility audit log failed: ' . $auditErr->getMessage());
+            }
+
+            return $this->ok($payload, 'Billing visibility updated.');
+        } catch (\Throwable $e) {
+            \Log::error('updateBillingVisibility failed', [
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+            ]);
+            return $this->fail('Failed to update billing visibility: ' . $e->getMessage(), 500);
+        }
+    }
+
+    public function getInsightVisibility(Request $request)
+    {
+        try {
+            $setting = Setting::where('group', self::INSIGHT_VISIBILITY_GROUP)
+                ->where('key', self::INSIGHT_VISIBILITY_KEY)
+                ->first();
+
+            $value = [];
+            if ($setting) {
+                $value = $this->decodeValue($setting->value, $setting->type);
+                // If the stored type collapsed to string but the value is
+                // JSON, decode it here.
+                if (! is_array($value) && is_string($setting->value)) {
+                    $decoded = json_decode($setting->value, true);
+                    if (is_array($decoded)) {
+                        $value = $decoded;
+                    }
+                }
+            }
+            return $this->ok(array_merge($this->defaultInsightVisibility(), [
+                'total_approved' => (bool) ($value['total_approved'] ?? false),
+                'total_revenue'  => (bool) ($value['total_revenue']  ?? false),
+                'rejected'       => (bool) ($value['rejected']       ?? false),
+            ]));
+        } catch (\Throwable $e) {
+            // Never 500 on this call — return the safe default so the UI
+            // simply shows everything instead of erroring.
+            return $this->ok($this->defaultInsightVisibility());
+        }
+    }
+
+    public function updateInsightVisibility(Request $request)
+    {
+        try {
+            // Accept either { data: {...} } or a raw body.
+            $input = $request->input('data', $request->all());
+            if (! is_array($input)) {
+                $input = [];
+            }
+
+            $payload = array_merge($this->defaultInsightVisibility(), [
+                'total_approved' => (bool) ($input['total_approved'] ?? false),
+                'total_revenue'  => (bool) ($input['total_revenue']  ?? false),
+                'rejected'       => (bool) ($input['rejected']       ?? false),
+            ]);
+
+            Setting::updateOrCreate(
+                [
+                    'group' => self::INSIGHT_VISIBILITY_GROUP,
+                    'key'   => self::INSIGHT_VISIBILITY_KEY,
+                ],
+                [
+                    'value' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'string',
+                ]
+            );
+
+            try {
+                Cache::forget('settings_' . self::INSIGHT_VISIBILITY_GROUP);
+            } catch (\Throwable $cacheErr) {
+                \Log::warning('insight_visibility cache forget failed: ' . $cacheErr->getMessage());
+            }
+
+            try {
+                $this->logSettingChange(self::INSIGHT_VISIBILITY_GROUP, $payload);
+            } catch (\Throwable $auditErr) {
+                \Log::warning('insight_visibility audit log failed: ' . $auditErr->getMessage());
+            }
+
+            return $this->ok($payload, 'Insight visibility updated.');
+        } catch (\Throwable $e) {
+            \Log::error('updateInsightVisibility failed', [
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            $debug = config('app.debug') ? [
+                'exception' => get_class($e),
+                'message'   => $e->getMessage(),
+                'file'      => $e->getFile(),
+                'line'      => $e->getLine(),
+            ] : null;
+
+            return $this->fail(
+                'Failed to update insight visibility: ' . $e->getMessage(),
+                500,
+                $debug
+            );
+        }
+    }
+
+    /* ============================================================
+     * ⭐ FINANCIAL VISIBILITY (Hide/Unhide for Orders & Events KPIs)
+     *
+     * Stored as a single Setting row:
+     *   group = 'financial_visibility'
+     *   key   = 'map'
+     *   value = {
+     *       total_revenue: bool,
+     *       outstanding_balance: bool,
+     *       payments_collected: bool
+     *   }
+     *
+     * `false` = visible, `true` = hidden.
+     * Any authenticated user can READ (cashiers must see the mask).
+     * Only admin / super-admin can WRITE.
+     * ============================================================ */
+
+    public function getFinancialVisibility(Request $request)
+    {
+        try {
+            $setting = Setting::where('group', self::FINANCIAL_VISIBILITY_GROUP)
+                ->where('key', self::FINANCIAL_VISIBILITY_KEY)
+                ->first();
+
+            $value = [];
+            if ($setting) {
+                $value = $this->decodeValue($setting->value, $setting->type);
+                if (! is_array($value) && is_string($setting->value)) {
+                    $decoded = json_decode($setting->value, true);
+                    if (is_array($decoded)) {
+                        $value = $decoded;
+                    }
+                }
+            }
+
+            return $this->ok(array_merge($this->defaultFinancialVisibility(), [
+                'total_revenue'       => (bool) ($value['total_revenue']       ?? false),
+                'outstanding_balance' => (bool) ($value['outstanding_balance'] ?? false),
+                'payments_collected'  => (bool) ($value['payments_collected']  ?? false),
+            ]));
+        } catch (\Throwable $e) {
+            // Never 500 — return the safe default so the UI keeps working.
+            return $this->ok($this->defaultFinancialVisibility());
+        }
+    }
+
+    public function updateFinancialVisibility(Request $request)
+    {
+        try {
+            $actor = $request->user();
+            if (! $actor) {
+                return $this->fail('Unauthenticated.', 401);
+            }
+
+            // ⭐ Only admin / super-admin can hide or unhide.
+            $isAllowed = $actor->roles()
+                ->where('is_active', true)
+                ->whereIn('slug', ['admin', 'administrator', 'owner', 'super-admin', 'super_admin', 'superadmin'])
+                ->exists();
+
+            if (! $isAllowed) {
+                return $this->fail(
+                    'Only administrators can hide or unhide financial values.',
+                    403
+                );
+            }
+
+            $input = $request->input('data', $request->all());
+            if (! is_array($input)) {
+                $input = [];
+            }
+
+            $payload = array_merge($this->defaultFinancialVisibility(), [
+                'total_revenue'       => (bool) ($input['total_revenue']       ?? false),
+                'outstanding_balance' => (bool) ($input['outstanding_balance'] ?? false),
+                'payments_collected'  => (bool) ($input['payments_collected']  ?? false),
+            ]);
+
+            Setting::updateOrCreate(
+                [
+                    'group' => self::FINANCIAL_VISIBILITY_GROUP,
+                    'key'   => self::FINANCIAL_VISIBILITY_KEY,
+                ],
+                [
+                    'value' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'string',
+                ]
+            );
+
+            try {
+                Cache::forget('settings_' . self::FINANCIAL_VISIBILITY_GROUP);
+            } catch (\Throwable $cacheErr) {
+                \Log::warning('financial_visibility cache forget failed: ' . $cacheErr->getMessage());
+            }
+
+            try {
+                AuditLog::log(
+                    'system_settings_updated',
+                    'settings',
+                    null,
+                    null,
+                    [
+                        'section' => self::FINANCIAL_VISIBILITY_GROUP,
+                        'keys'    => array_keys($payload),
+                        'values'  => $payload,
+                    ]
+                );
+            } catch (\Throwable $auditErr) {
+                \Log::warning('financial_visibility audit log failed: ' . $auditErr->getMessage());
+            }
+
+            return $this->ok($payload, 'Financial visibility updated.');
+        } catch (\Throwable $e) {
+            \Log::error('updateFinancialVisibility failed', [
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+            ]);
+
+            return $this->fail(
+                'Failed to update financial visibility: ' . $e->getMessage(),
+                500
+            );
         }
     }
 
@@ -1710,22 +2083,31 @@ class SettingController extends Controller
     private function logSettingChange(string $section, array $data): void
     {
         $action = match ($section) {
-            'pricing' => 'pricing_rules_changed',
-            'payroll' => 'payroll_settings_updated',
-            'inventory' => 'inventory_settings_updated',
-            'notifications' => 'notification_settings_updated',
-            'payment' => 'payment_settings_updated',
-            default => 'system_settings_updated',
+            'pricing'             => 'pricing_rules_changed',
+            'payroll'             => 'payroll_settings_updated',
+            'inventory'           => 'inventory_settings_updated',
+            'notifications'       => 'notification_settings_updated',
+            'payment'             => 'payment_settings_updated',
+            'insight_visibility'  => 'system_settings_updated',
+            default               => 'system_settings_updated',
         };
 
-        AuditLog::log(
-            $action,
-            'settings',
-            null,
-            null,
-            ['section' => $section, 'keys' => array_keys($data)],
-            AuditLogCatalog::label($action)
-        );
+        // ⭐ Never let audit failure break the caller.
+        try {
+            AuditLog::log(
+                $action,
+                'settings',
+                null,
+                null,
+                [
+                    'section' => $section,
+                    'keys'    => array_keys($data),
+                ],
+                AuditLogCatalog::label($action) ?: 'Settings updated'
+            );
+        } catch (\Throwable $e) {
+            \Log::warning('logSettingChange failed for ' . $section . ': ' . $e->getMessage());
+        }
     }
 
     private function ensureSystemRoles(): void
@@ -1767,6 +2149,289 @@ class SettingController extends Controller
         $action = AuditLogCatalog::label($log->action);
         $table = ucfirst(str_replace('_', ' ', $log->table_name));
         return "{$action} on {$table}";
+    }
+    // ============================================================
+    // FOOD ALLERGENS MANAGEMENT
+    // ============================================================
+
+    /**
+     * ⭐ Get the master list of food allergens.
+     */
+    public function getAllergens(Request $request)
+    {
+        try {
+            $allergens = $this->loadOrSeedAllergens();
+            return $this->ok($allergens);
+        } catch (\Throwable $e) {
+            \Log::error('getAllergens failed: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->fail('Failed to load allergens: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ Central loader — always guarantees a non-empty list.
+     *    Used by getAllergens, createAllergen, updateAllergen, deleteAllergen
+     *    and the customer allergy endpoints.
+     */
+    private function loadOrSeedAllergens(): array
+    {
+        $setting = Setting::where('group', self::ALLERGENS_GROUP)
+            ->where('key', 'allergens')
+            ->first();
+
+        $allergens = [];
+        if ($setting && $setting->value) {
+            $decoded = json_decode($setting->value, true);
+            if (is_array($decoded) && !empty($decoded)) {
+                return $decoded;
+            }
+        }
+
+        // Seed from defaults.
+        $defaults = $this->allDefaults();
+        $seed = $defaults['food_allergens']['allergens'] ?? [
+            ['id' => 'peanuts',     'name' => 'Peanuts',       'description' => 'Peanut and peanut-derived products'],
+            ['id' => 'tree_nuts',   'name' => 'Tree Nuts',     'description' => 'Almonds, cashews, walnuts, etc.'],
+            ['id' => 'milk',        'name' => 'Milk / Dairy',  'description' => 'Milk, cheese, butter, yogurt'],
+            ['id' => 'eggs',        'name' => 'Eggs',          'description' => 'Egg and egg-derived products'],
+            ['id' => 'wheat',       'name' => 'Wheat / Gluten','description' => 'Wheat, barley, rye, oats'],
+            ['id' => 'soy',         'name' => 'Soy',           'description' => 'Soybeans and soy-derived products'],
+            ['id' => 'fish',        'name' => 'Fish',          'description' => 'All fish species'],
+            ['id' => 'shellfish',   'name' => 'Shellfish',     'description' => 'Shrimp, crab, lobster, mollusks'],
+            ['id' => 'sesame',      'name' => 'Sesame',        'description' => 'Sesame seeds and sesame oil'],
+            ['id' => 'sulfites',    'name' => 'Sulfites',      'description' => 'Sulfur dioxide and sulfites'],
+        ];
+
+        Setting::updateOrCreate(
+            ['group' => self::ALLERGENS_GROUP, 'key' => 'allergens'],
+            [
+                'value' => json_encode($seed, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'type'  => 'array',
+            ]
+        );
+
+        return $seed;
+    }
+    /**
+     * ⭐ Create a new food allergen.
+     */
+    public function createAllergen(Request $request)
+    {
+        try {
+            $validated = $request->validate([
+                'name'        => ['required', 'string', 'max:80'],
+                'description' => ['nullable', 'string', 'max:255'],
+            ]);
+
+               $allergens = $this->loadOrSeedAllergens();
+
+            // Generate a unique slug-style ID from the name.
+            $baseId = Str::slug($validated['name'], '_') ?: 'allergen';
+            $id = $baseId;
+            $counter = 1;
+            $existingIds = array_column($allergens, 'id');
+            while (in_array($id, $existingIds, true)) {
+                $id = $baseId . '_' . $counter++;
+            }
+
+            $allergens[] = [
+                'id'          => $id,
+                'name'        => $validated['name'],
+                'description' => $validated['description'] ?? null,
+            ];
+
+            Setting::updateOrCreate(
+                ['group' => self::ALLERGENS_GROUP, 'key' => 'allergens'],
+                [
+                    'value' => json_encode(array_values($allergens), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'array',
+                ]
+            );
+
+            try {
+                AuditLog::log('allergen_created', 'settings', null, null, [
+                    'allergen_id' => $id,
+                    'name'        => $validated['name'],
+                ]);
+            } catch (\Throwable $e) { /* silent */ }
+
+            return $this->ok($allergens, 'Allergen created successfully.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            return $this->fail('Failed to create allergen: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ Update an existing food allergen by its ID.
+     */
+    public function updateAllergen(Request $request, string $allergenId)
+    {
+        try {
+            $validated = $request->validate([
+                'name'        => ['required', 'string', 'max:80'],
+                'description' => ['nullable', 'string', 'max:255'],
+            ]);
+
+                   $allergens = $this->loadOrSeedAllergens();
+
+            $found = false;
+            foreach ($allergens as &$allergen) {
+                if (($allergen['id'] ?? null) === $allergenId) {
+                    $allergen['name'] = $validated['name'];
+                    $allergen['description'] = $validated['description'] ?? null;
+                    $found = true;
+                    break;
+                }
+            }
+            unset($allergen);
+
+            if (! $found) {
+                return $this->fail('Allergen not found.', 404);
+            }
+
+            Setting::updateOrCreate(
+                ['group' => self::ALLERGENS_GROUP, 'key' => 'allergens'],
+                [
+                    'value' => json_encode(array_values($allergens), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'array',
+                ]
+            );
+
+            try {
+                AuditLog::log('allergen_updated', 'settings', null, null, [
+                    'allergen_id' => $allergenId,
+                    'name'        => $validated['name'],
+                ]);
+            } catch (\Throwable $e) { /* silent */ }
+
+            return $this->ok($allergens, 'Allergen updated successfully.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            return $this->fail('Failed to update allergen: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ Delete a food allergen by its ID.
+     */
+    public function deleteAllergen(string $allergenId)
+    {
+        try {
+                    $allergens = $this->loadOrSeedAllergens();
+
+            $filtered = array_values(array_filter(
+                $allergens,
+                fn ($allergen) => ($allergen['id'] ?? null) !== $allergenId
+            ));
+
+            if (count($filtered) === count($allergens)) {
+                return $this->fail('Allergen not found.', 404);
+            }
+
+            Setting::updateOrCreate(
+                ['group' => self::ALLERGENS_GROUP, 'key' => 'allergens'],
+                [
+                    'value' => json_encode($filtered, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'array',
+                ]
+            );
+
+            try {
+                AuditLog::log('allergen_deleted', 'settings', null, null, [
+                    'allergen_id' => $allergenId,
+                ]);
+            } catch (\Throwable $e) { /* silent */ }
+
+            return $this->ok($filtered, 'Allergen deleted successfully.');
+        } catch (\Throwable $e) {
+            return $this->fail('Failed to delete allergen: ' . $e->getMessage(), 500);
+        }
+    }
+    // ============================================================
+    // CUSTOMER FOOD ALLERGIES
+    // ============================================================
+
+    /**
+     * ⭐ Return the current customer's saved allergies.
+     * Returns the allergen SLUGS (matching food_allergens list IDs).
+     */
+    public function getMyAllergies(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (! $user) {
+                return $this->fail('Unauthenticated.', 401);
+            }
+
+            $person = $user->person;
+            if (! $person) {
+                return $this->ok([]);
+            }
+
+            $allergies = is_array($person->allergies) ? $person->allergies : [];
+            return $this->ok(array_values($allergies));
+        } catch (\Throwable $e) {
+            return $this->fail('Failed to load allergies: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ Save the current customer's allergies.
+     * Accepts an array of allergen slugs from the master `food_allergens` list.
+     */
+    public function updateMyAllergies(Request $request)
+    {
+        try {
+            $user = $request->user();
+            if (! $user) {
+                return $this->fail('Unauthenticated.', 401);
+            }
+
+            $validated = $request->validate([
+                'allergies'   => ['present', 'array'],
+                'allergies.*' => ['string', 'max:80'],
+            ]);
+
+            // Normalize + validate against master list.
+            $submitted = collect($validated['allergies'])
+                ->map(fn ($v) => strtolower(trim((string) $v)))
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+            $masterList = $this->loadOrSeedAllergens();
+            $masterIds = array_map(
+                fn ($a) => strtolower((string) ($a['id'] ?? '')),
+                $masterList
+            );
+
+            $clean = array_values(array_intersect($submitted, $masterIds));
+
+            $person = $user->person;
+            if (! $person) {
+                return $this->fail('No person record found for this user.', 422);
+            }
+
+            $person->update(['allergies' => $clean]);
+
+            try {
+                AuditLog::log('customer_allergies_updated', 'persons', $person->person_id, null, [
+                    'user_id'   => $user->user_id,
+                    'allergies' => $clean,
+                ]);
+            } catch (\Throwable $e) { /* silent */ }
+
+            return $this->ok($clean, 'Allergies saved successfully.');
+        } catch (ValidationException $e) {
+            return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Throwable $e) {
+            return $this->fail('Failed to save allergies: ' . $e->getMessage(), 500);
+        }
     }
 
     // ============================================================
@@ -1838,7 +2503,7 @@ class SettingController extends Controller
                 'account_lock_duration' => 30,
                 'suspicious_activity_threshold' => 5,
             ],
-            'booking' => [
+                'booking' => [
                 'minimum_pax' => 10,
                 'allow_same_day_booking' => false,
                 'allow_holiday_booking' => false,
@@ -1846,7 +2511,22 @@ class SettingController extends Controller
                 'cancellation_cutoff_days' => 3,
                 'deposit_payment_days' => 7,
                 'deposit_amount' => 5000,
+                'deposit_percentage' => 30,
                 'require_deposit' => true,
+            ],
+            'food_allergens' => [
+                'allergens' => [
+                    ['id' => 'peanuts', 'name' => 'Peanuts', 'description' => 'Peanut and peanut-derived products'],
+                    ['id' => 'tree_nuts', 'name' => 'Tree Nuts', 'description' => 'Almonds, cashews, walnuts, etc.'],
+                    ['id' => 'milk', 'name' => 'Milk / Dairy', 'description' => 'Milk, cheese, butter, yogurt'],
+                    ['id' => 'eggs', 'name' => 'Eggs', 'description' => 'Egg and egg-derived products'],
+                    ['id' => 'wheat', 'name' => 'Wheat / Gluten', 'description' => 'Wheat, barley, rye, oats'],
+                    ['id' => 'soy', 'name' => 'Soy', 'description' => 'Soybeans and soy-derived products'],
+                    ['id' => 'fish', 'name' => 'Fish', 'description' => 'All fish species'],
+                    ['id' => 'shellfish', 'name' => 'Shellfish', 'description' => 'Shrimp, crab, lobster, mollusks'],
+                    ['id' => 'sesame', 'name' => 'Sesame', 'description' => 'Sesame seeds and sesame oil'],
+                    ['id' => 'sulfites', 'name' => 'Sulfites', 'description' => 'Sulfur dioxide and sulfites'],
+                ],
             ],
 
             'staff_salary_types' => [
