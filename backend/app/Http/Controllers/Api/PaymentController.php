@@ -270,13 +270,48 @@ class PaymentController extends Controller
                 'force_duplicate' => ['nullable', 'boolean'],
             ]);
 
-            $booking = Booking::with(['invoice', 'quotation'])->findOrFail($data['booking_id']);
+            $booking = Booking::with(['invoice', 'quotation', 'items', 'mealServices'])->findOrFail($data['booking_id']);
 
-            if (!$booking->invoice) {
-                return $this->fail('No invoice found for this booking. Please create an invoice first.', 422);
-            }
-
+            // ⭐ Auto-create the invoice the first time a payment is attempted.
             $invoice = $booking->invoice;
+            if (! $invoice) {
+                $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
+                if ($subtotal <= 0) {
+                    $itemsTotal = (float) $booking->items->sum(
+                        fn($item) => ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1))
+                    );
+                    $mealsTotal = (float) $booking->mealServices->sum(
+                        fn($meal) => ((int) ($meal->pax ?? 0)) * ((float) ($meal->price_per_head ?? 0))
+                    );
+                    $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
+                }
+
+                $prefix = 'INV-' . now()->format('Ymd') . '-';
+
+                $lastInvoice = Invoice::withTrashed()
+                    ->where('invoice_number', 'like', $prefix . '%')
+                    ->orderByDesc('invoice_number')
+                    ->first();
+
+                $nextSequence = $lastInvoice && preg_match('/-(\d+)$/', $lastInvoice->invoice_number, $m)
+                    ? ((int) $m[1] + 1)
+                    : 1;
+
+                $invoice = Invoice::create([
+                    'invoice_number'     => $prefix . str_pad((string) $nextSequence, 4, '0', STR_PAD_LEFT),
+                    'booking_id'         => $booking->booking_id,
+                    'subtotal'           => round($subtotal, 2),
+                    'discount'           => 0,
+                    'discount_type'      => 'fixed',
+                    'additional_charges' => 0,
+                    'total_amount'       => round($subtotal, 2),
+                    'paid_amount'        => 0,
+                    'status'             => 'unpaid',
+                    'due_date'           => now()->addDays(30)->toDateString(),
+                    'notes'              => 'Auto-created on first payment.',
+                ]);
+                $booking->setRelation('invoice', $invoice);
+            }
             $balance = max(0, (float) $invoice->total_amount - (float) $invoice->paid_amount);
             $requiredDeposit = round((float) $invoice->total_amount * 0.30, 2);
             $isFirstPayment = ! BookingPayment::where('booking_id', $booking->booking_id)
@@ -284,9 +319,16 @@ class PaymentController extends Controller
                 ->where('payment_type', '!=', 'refund')
                 ->exists();
 
+            // ⭐ Deposit detection — more lenient so a 30% payment is
+            //    always classified as a deposit, even if the amount is
+            //    off by a few pesos due to rounding or manual entry.
             if ((float) $data['amount'] >= $balance) {
                 $data['payment_type'] = 'full';
-            } elseif ($isFirstPayment && abs((float) $data['amount'] - $requiredDeposit) < 0.01) {
+            } elseif (
+                $isFirstPayment &&
+                $requiredDeposit > 0 &&
+                (float) $data['amount'] >= ($requiredDeposit - 1.00)
+            ) {
                 $data['payment_type'] = 'deposit';
             } else {
                 $data['payment_type'] = 'partial';
@@ -671,13 +713,37 @@ class PaymentController extends Controller
                 'proof_of_payment' => ['nullable', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:2048'],
             ]);
 
-            $booking = Booking::with(['invoice', 'quotation'])->findOrFail($data['booking_id']);
+            $booking = Booking::with(['invoice', 'quotation', 'items', 'mealServices'])->findOrFail($data['booking_id']);
 
-            if (!$booking->invoice) {
-                return $this->fail('No invoice found for this booking. Please create an invoice first.', 422);
-            }
-
+            // ⭐ Auto-create the invoice the first time a payment is attempted.
             $invoice = $booking->invoice;
+            if (! $invoice) {
+                $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
+                if ($subtotal <= 0) {
+                    $itemsTotal = (float) $booking->items->sum(
+                        fn($item) => ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1))
+                    );
+                    $mealsTotal = (float) $booking->mealServices->sum(
+                        fn($meal) => ((int) ($meal->pax ?? 0)) * ((float) ($meal->price_per_head ?? 0))
+                    );
+                    $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
+                }
+
+                $invoice = Invoice::create([
+                    'invoice_number'     => Invoice::nextInvoiceNumber(),
+                    'booking_id'         => $booking->booking_id,
+                    'subtotal'           => round($subtotal, 2),
+                    'discount'           => 0,
+                    'discount_type'      => 'fixed',
+                    'additional_charges' => 0,
+                    'total_amount'       => round($subtotal, 2),
+                    'paid_amount'        => 0,
+                    'status'             => 'unpaid',
+                    'due_date'           => now()->addDays(30)->toDateString(),
+                    'notes'              => 'Auto-created on first payment.',
+                ]);
+                $booking->setRelation('invoice', $invoice);
+            }
             $balance = max(0, (float) $invoice->total_amount - (float) $invoice->paid_amount);
             $requiredDeposit = round((float) $invoice->total_amount * 0.30, 2);
             $isFirstPayment = ! BookingPayment::where('booking_id', $booking->booking_id)
@@ -685,9 +751,15 @@ class PaymentController extends Controller
                 ->where('payment_type', '!=', 'refund')
                 ->exists();
 
+            // ⭐ Deposit detection — more lenient so a 30% payment is
+            //    always classified as a deposit.
             if ((float) $data['amount'] >= $balance) {
                 $data['payment_type'] = 'full';
-            } elseif ($isFirstPayment && abs((float) $data['amount'] - $requiredDeposit) < 0.01) {
+            } elseif (
+                $isFirstPayment &&
+                $requiredDeposit > 0 &&
+                (float) $data['amount'] >= ($requiredDeposit - 1.00)
+            ) {
                 $data['payment_type'] = 'deposit';
             } else {
                 $data['payment_type'] = 'partial';

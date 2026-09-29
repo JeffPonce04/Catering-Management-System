@@ -614,8 +614,8 @@ class BookingService
                 'action_type' => 'included',
                 'special_instructions' => trim(
                     ($meal['meal_type'] ?? 'Meal') . ' | Day ' . $dayNumber . ' | ' .
-                    ($serviceDate ?? '') . ' ' . ($meal['serving_time'] ?? '') . ' | ' .
-                    ($meal['notes'] ?? '')
+                        ($serviceDate ?? '') . ' ' . ($meal['serving_time'] ?? '') . ' | ' .
+                        ($meal['notes'] ?? '')
                 ),
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -760,15 +760,17 @@ class BookingService
                     $person->first_name = $nameParts[0] ?? $person->first_name;
                     $person->last_name = $nameParts[1] ?? $person->last_name;
                 }
-                foreach ([
-                    'customer_email' => 'email',
-                    'customer_phone' => 'phone',
-                    'customer_address' => 'address_line_1',
-                    'address_line_1' => 'address_line_1',
-                    'city' => 'city',
-                    'province' => 'province',
-                    'postal_code' => 'postal_code',
-                ] as $input => $column) {
+                foreach (
+                    [
+                        'customer_email' => 'email',
+                        'customer_phone' => 'phone',
+                        'customer_address' => 'address_line_1',
+                        'address_line_1' => 'address_line_1',
+                        'city' => 'city',
+                        'province' => 'province',
+                        'postal_code' => 'postal_code',
+                    ] as $input => $column
+                ) {
                     if (array_key_exists($input, $data)) $person->{$column} = $data[$input];
                 }
                 if (array_key_exists('country', $data)) $person->country = $data['country'];
@@ -841,7 +843,7 @@ class BookingService
             if ($booking->quotation) {
                 $booking->quotation->update(['total_amount' => $newTotal]);
             }
-                    $defaultDepositPct = $this->policyService->depositPercentage();
+            $defaultDepositPct = $this->policyService->depositPercentage();
             $computedDeposit = $data['required_deposit'] ?? round($newTotal * ($defaultDepositPct / 100), 2);
 
             $booking->update([
@@ -969,7 +971,7 @@ class BookingService
 
             $timeQuery = Booking::whereHas('serviceEvent', function ($q) use ($targetDate, $normalizedTime) {
                 $q->whereDate('event_date', $targetDate)
-                  ->whereRaw('LOWER(TRIM(event_time)) = ?', [$normalizedTime]);
+                    ->whereRaw('LOWER(TRIM(event_time)) = ?', [$normalizedTime]);
             })->whereIn('booking_status', [
                 'confirmed',
                 'pending_approval',
@@ -1101,7 +1103,7 @@ class BookingService
             $serviceEvent = $this->createOrUpdateServiceEvent($customer, $data);
             $totalAmount = $data['total_amount'] ?? $this->calculateTotalAmount($data);
 
-                      $requiredDeposit = $data['required_deposit'] ?? null;
+            $requiredDeposit = $data['required_deposit'] ?? null;
             if ($requiredDeposit === null) {
                 if ($this->policyService->requireDeposit()) {
                     $depositPct = $this->policyService->depositPercentage();
@@ -1220,14 +1222,13 @@ class BookingService
                 $quotation = $this->ensureQuotationForBooking($booking);
                 $quotation->update(['status' => 'approved']);
                 $booking->setRelation('quotation', $quotation);
+                $order = $this->createOrderFromBooking($booking);
 
-                               $order = $this->createOrderFromBooking($booking);
+                // ⭐ REQUEST — Auto-create the invoice on approval so the
+                // cashier can pay the deposit straight from Order & Events
+                // without visiting Billing first.
+                $this->ensureInvoiceForBooking($booking);
 
-                // ⭐ Invoices are NOT auto-created on approval. The cashier
-                //    creates them manually from the "Select Booking" list on
-                //    the Payment page (POST /invoices). This keeps
-                //    `whereDoesntHave('invoice')` bookings visible until the
-                //    cashier explicitly generates the invoice.
                 $this->saveProfitabilitySnapshot($booking, 'projected', true);
                 $bookingId = $booking->booking_id;
                 $orderId = $order?->order_id;
@@ -1380,12 +1381,63 @@ class BookingService
         }
     }
 
-       // ⭐ Removed — invoices are created manually by the cashier via
+    // ⭐ Removed — invoices are created manually by the cashier via
     //    POST /invoices (InvoiceController::store). This method is
     //    intentionally not called during booking approval.
     // ============================================================
     // BACKGROUND JOB METHODS
     // ============================================================
+
+    /**
+     * ⭐ Create the invoice for a booking if it doesn't have one yet.
+     * Called automatically on approval so the deposit can be paid from
+     * Order & Events without first visiting the Billing module.
+     */
+    private function ensureInvoiceForBooking(Booking $booking): ?Invoice
+    {
+        try {
+            $booking->loadMissing(['invoice', 'quotation', 'items', 'mealServices']);
+
+            if ($booking->invoice) {
+                return $booking->invoice;
+            }
+
+            $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
+
+            if ($subtotal <= 0) {
+                $itemsTotal = (float) $booking->items->sum(
+                    fn($item) => ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1))
+                );
+                $mealsTotal = (float) $booking->mealServices->sum(
+                    fn($meal) => ((int) ($meal->pax ?? 0)) * ((float) ($meal->price_per_head ?? 0))
+                );
+                $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
+            }
+
+            $invoice = Invoice::create([
+                'invoice_number'     => Invoice::nextInvoiceNumber(),
+                'booking_id'         => $booking->booking_id,
+                'subtotal'           => round($subtotal, 2),
+                'discount'           => 0,
+                'discount_type'      => 'fixed',
+                'additional_charges' => 0,
+                'total_amount'       => round($subtotal, 2),
+                'paid_amount'        => 0,
+                'status'             => 'unpaid',
+                'due_date'           => now()->addDays(30)->toDateString(),
+                'notes'              => 'Auto-created on approval.',
+            ]);
+
+            $booking->setRelation('invoice', $invoice);
+
+            return $invoice;
+        } catch (\Throwable $e) {
+            Log::warning('Auto-invoice creation failed: ' . $e->getMessage(), [
+                'booking_id' => $booking->booking_id,
+            ]);
+            return null;
+        }
+    }
 
     public function createKitchenPreparation(Booking $booking, Order $order): void
     {

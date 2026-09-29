@@ -117,7 +117,7 @@ Route::prefix('v1')->group(function () {
         // ⭐ Self-profile update — used by the mobile app so employees can
         //    update their own Person fields (name, email, phone, address, etc.)
         //    without admin privileges.
-               Route::match(['put', 'post'], '/auth/self-profile', [AuthController::class, 'updateSelfProfile']);
+        Route::match(['put', 'post'], '/auth/self-profile', [AuthController::class, 'updateSelfProfile']);
 
         // ⭐ Customer food allergies — one source of truth (food_allergens Setting group).
         Route::get('/auth/me/allergies', [SettingController::class, 'getMyAllergies']);
@@ -155,7 +155,7 @@ Route::prefix('v1')->group(function () {
         });
 
         // ==================== DASHBOARD ====================
-             Route::get('/dashboard', [DashboardController::class, 'index']);
+        Route::get('/dashboard', [DashboardController::class, 'index']);
         Route::get('/dashboard/stats', [DashboardController::class, 'index']);
         Route::get('/dashboard/charts', [DashboardController::class, 'charts']);
         Route::get('/dashboard/detail/{card}', [DashboardController::class, 'detail']);
@@ -259,7 +259,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/time-slots', [BookingController::class, 'getAvailableTimeSlots']);
         });
 
-               // ============================================================
+        // ============================================================
         // ⭐ Cashier access to Orders & Events module
         //    The frontend route + API must both allow cashiers.
         //    The RoleAccessMiddleware::cashierCanAccess already whitelists
@@ -278,6 +278,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/calendar-events', [BookingController::class, 'calendar']);
         Route::post('/bookings/{booking}/confirm', [BookingController::class, 'approve']);
         Route::post('/bookings/{booking}/reject', [BookingController::class, 'reject']);
+        Route::post('/bookings/{booking}/unreject', [BookingController::class, 'unreject']);
         Route::post('/bookings/{booking}/cancel', [BookingController::class, 'cancel']);
         Route::post('/bookings/{booking}/reschedule', [BookingController::class, 'reschedule']);
         Route::post('/bookings/{booking}/request-reschedule', [BookingController::class, 'requestReschedule']);
@@ -305,9 +306,9 @@ Route::prefix('v1')->group(function () {
         Route::post('/bookings/{booking}/admin-direct-refund', [BookingController::class, 'adminDirectRefund']);
 
 
-       Route::post('/bookings/{booking}/customer-update', [BookingController::class, 'customerUpdate']);
-Route::post('/bookings/{booking}/customer-reschedule-response', [BookingController::class, 'customerRescheduleResponse']);
-Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::class, 'customerPostRejectionDecision']);
+        Route::post('/bookings/{booking}/customer-update', [BookingController::class, 'customerUpdate']);
+        Route::post('/bookings/{booking}/customer-reschedule-response', [BookingController::class, 'customerRescheduleResponse']);
+        Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::class, 'customerPostRejectionDecision']);
         // ============================================================
         // ⭐ NEW: BOOKING AVAILABILITY + RESCHEDULE VALIDATION ROUTES
         // ============================================================
@@ -338,7 +339,7 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         Route::match(['get', 'post'], '/inventory/purchase-requests', [InventoryController::class, 'purchaseRequests']);
         Route::get('/inventory/purchase-requests/{purchaseRequest}', [InventoryController::class, 'showPurchaseRequest']);
         Route::put('/inventory/purchase-requests/{purchaseRequest}', [InventoryController::class, 'updatePurchaseRequest']);
-                Route::get('/inventory/purchase-suggestions', [InventoryController::class, 'purchaseSuggestions']);
+        Route::get('/inventory/purchase-suggestions', [InventoryController::class, 'purchaseSuggestions']);
         Route::get('/inventory/approved-requests', [InventoryController::class, 'approvedRequests']);
         Route::get('/inventory/approved-request-files', [InventoryController::class, 'approvedRequestFiles']);
         Route::put('/inventory/approved-request-files/{date}/rename', [InventoryController::class, 'renameApprovedRequestFile']);
@@ -398,7 +399,7 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         //   Note: RoleAccessMiddleware::adminCanAccessBookingSettings and
         //   cashierCanAccess already whitelist these two paths, so the
         //   request passes through the role.access gate.
-         Route::get('/settings/insight-visibility', [SettingController::class, 'getInsightVisibility']);
+        Route::get('/settings/insight-visibility', [SettingController::class, 'getInsightVisibility']);
         Route::get('/settings/financial-visibility', [SettingController::class, 'getFinancialVisibility']);
         Route::put('/settings/financial-visibility', [SettingController::class, 'updateFinancialVisibility']);
 
@@ -406,11 +407,6 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         Route::get('/settings/billing-visibility', [SettingController::class, 'getBillingVisibility']);
         Route::put('/settings/billing-visibility', [SettingController::class, 'updateBillingVisibility']);
 
-        // ⭐ Financial visibility (Hide/Unhide for Order & Events KPIs).
-        //   GET  → any authenticated user (cashiers must SEE the mask)
-        //   PUT  → admin / super-admin only (checked inside controller)
-        Route::get('/settings/financial-visibility', [SettingController::class, 'getFinancialVisibility']);
-        Route::put('/settings/financial-visibility', [SettingController::class, 'updateFinancialVisibility']);
         // ⭐ Role enforcement is done inside RoleAccessMiddleware
         //    (see adminCanAccessBookingSettings + cashierCanAccess).
         //    No extra `role:` middleware needed → avoids the "Target class
@@ -618,16 +614,16 @@ Route::post('/bookings/{booking}/customer-post-rejection', [BookingController::c
         Route::post('/payments/{payment}/refund', [PaymentController::class, 'refund']);
 
         // ==================== INVOICES ====================
-      Route::get('/invoices', [InvoiceController::class, 'index']);
-Route::get('/invoices/confirmed-bookings', [InvoiceController::class, 'getConfirmedBookings']);
-Route::post('/invoices', [InvoiceController::class, 'store']);
-Route::get('/invoices/{invoice}', [InvoiceController::class, 'show'])->whereNumber('invoice');
-Route::put('/invoices/{invoice}', [InvoiceController::class, 'update'])->whereNumber('invoice');
-Route::delete('/invoices/{invoice}', [InvoiceController::class, 'destroy'])->whereNumber('invoice');
-Route::get('/invoices/{invoice}/payments', [InvoiceController::class, 'payments'])->whereNumber('invoice');
-Route::post('/invoices/{invoice}/reminder', [InvoiceController::class, 'sendReminder'])->whereNumber('invoice');
-Route::get('/invoices/{invoice}/download', [InvoiceController::class, 'download'])->whereNumber('invoice');
-Route::get('/debts', [InvoiceController::class, 'debts']);
+        Route::get('/invoices', [InvoiceController::class, 'index']);
+        Route::get('/invoices/confirmed-bookings', [InvoiceController::class, 'getConfirmedBookings']);
+        Route::post('/invoices', [InvoiceController::class, 'store']);
+        Route::get('/invoices/{invoice}', [InvoiceController::class, 'show'])->whereNumber('invoice');
+        Route::put('/invoices/{invoice}', [InvoiceController::class, 'update'])->whereNumber('invoice');
+        Route::delete('/invoices/{invoice}', [InvoiceController::class, 'destroy'])->whereNumber('invoice');
+        Route::get('/invoices/{invoice}/payments', [InvoiceController::class, 'payments'])->whereNumber('invoice');
+        Route::post('/invoices/{invoice}/reminder', [InvoiceController::class, 'sendReminder'])->whereNumber('invoice');
+        Route::get('/invoices/{invoice}/download', [InvoiceController::class, 'download'])->whereNumber('invoice');
+        Route::get('/debts', [InvoiceController::class, 'debts']);
         // ==================== DEPOSITS ====================
         Route::get('/deposits/pending', [DepositController::class, 'pending']);
         Route::post('/deposits/send-reminders', [DepositController::class, 'sendReminders']);

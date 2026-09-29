@@ -7,6 +7,7 @@ use App\Models\Booking;
 use App\Services\ProfitabilityService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class ProfitabilityController extends Controller
@@ -93,7 +94,7 @@ class ProfitabilityController extends Controller
                 'date_from' => $request->input('date_from'),
                 'date_to' => $request->input('date_to'),
                 'event_type_id' => $request->input('event_type_id'),
-                'statuses' => $request->input('statuses', ['completed', 'confirmed']),
+                'statuses' => $request->input('statuses', ['completed', 'confirmed', 'ongoing']),
             ];
 
             $report = $this->profitabilityService->getAggregateReport($filters);
@@ -114,7 +115,7 @@ class ProfitabilityController extends Controller
             $filters = [
                 'date_from' => $request->input('date_from'),
                 'date_to' => $request->input('date_to'),
-                'statuses' => $request->input('statuses', ['completed', 'confirmed']),
+                'statuses' => $request->input('statuses', ['completed', 'confirmed', 'ongoing']),
             ];
 
             $data = $this->profitabilityService->getMenuPerformance($filters);
@@ -136,55 +137,73 @@ class ProfitabilityController extends Controller
             $monthStart = now()->startOfMonth()->toDateString();
             $monthEnd = now()->endOfMonth()->toDateString();
 
-            // Revenue today
-            $revenueToday = Booking::whereHas('serviceEvent', fn($q) => $q->whereDate('event_date', $today))
-                ->whereIn('booking_status', ['confirmed', 'completed'])
-                ->with(['invoice', 'quotation'])
-                ->get()
-                ->sum(fn($b) => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0));
+            // ⭐ Revenue today — event-date basis, excludes cancelled/rejected.
+            $revenueToday = (float) Booking::query()
+                ->whereHas('serviceEvent', fn($q) => $q->whereDate('event_date', $today))
+                ->whereNotIn('booking_status', ['cancelled', 'rejected'])
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->join('invoices', 'bookings.booking_id', '=', 'invoices.booking_id')
+                ->sum('invoices.total_amount');
 
-            // Revenue this month
-            $revenueMonth = Booking::whereHas('serviceEvent', fn($q) => $q->whereBetween('event_date', [$monthStart, $monthEnd]))
-                ->whereIn('booking_status', ['confirmed', 'completed'])
-                ->with(['invoice', 'quotation'])
-                ->get()
-                ->sum(fn($b) => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0));
+            // ⭐ Revenue this month — same basis for consistency.
+            $revenueMonth = (float) Booking::query()
+                ->whereHas('serviceEvent', fn($q) => $q->whereBetween('event_date', [$monthStart, $monthEnd]))
+                ->whereNotIn('booking_status', ['cancelled', 'rejected'])
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->join('invoices', 'bookings.booking_id', '=', 'invoices.booking_id')
+                ->sum('invoices.total_amount');
 
-            // Get completed bookings for profitability
-            $completedBookings = Booking::where('booking_status', 'completed')
-                ->with(['serviceEvent', 'payments', 'invoice', 'quotation', 'charges', 'items.menuItem.recipeIngredients.ingredient'])
+            // ⭐ Total profit for the current month — scoped to the same
+            //    period so the KPI reconciles with the Profitability report.
+            $monthBookings = Booking::query()
+                ->whereHas('serviceEvent', fn($q) => $q->whereBetween('event_date', [$monthStart, $monthEnd]))
+                ->whereIn('booking_status', ['completed', 'confirmed', 'ongoing'])
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->with([
+                    'serviceEvent',
+                    'payments',
+                    'invoice',
+                    'quotation',
+                    'charges',
+                    'items.menuItem.recipeIngredients.ingredient',
+                ])
                 ->get();
 
             $totalProfit = 0;
-            foreach ($completedBookings as $booking) {
+            $totalRevenueForMargin = 0;
+            foreach ($monthBookings as $booking) {
                 $profitability = $this->profitabilityService->getProfitability($booking, true);
-                $totalProfit += $profitability['profit'];
+                $totalProfit += (float) ($profitability['profit'] ?? 0);
+                $totalRevenueForMargin += (float) ($profitability['total_revenue']
+                    ?? $profitability['revenue']
+                    ?? 0);
             }
 
-            // Outstanding payments
-            $outstanding = Booking::whereIn('booking_status', ['confirmed', 'completed'])
-                ->with(['invoice', 'quotation', 'payments'])
-                ->get()
-                ->sum(function ($booking) {
-                    $total = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
-                    $paid = (float) $booking->payments->where('status', 'completed')->sum('amount');
-                    return max(0, $total - $paid);
-                });
-
-            $completedCount = $completedBookings->count();
-            $avgProfitMargin = 0;
-            if ($completedCount > 0) {
-                $totalRevenue = $completedBookings->sum(fn($b) => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0));
-                $avgProfitMargin = $totalRevenue > 0 ? round(($totalProfit / $totalRevenue) * 100, 2) : 0;
-            }
+            // ⭐ Outstanding payments — includes partial + unpaid invoices.
+            $outstanding = (float) Booking::query()
+                ->whereIn('booking_status', ['confirmed', 'completed', 'ongoing'])
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->join('invoices', 'bookings.booking_id', '=', 'invoices.booking_id')
+                ->whereRaw('invoices.paid_amount < invoices.total_amount')
+                ->sum(DB::raw('GREATEST(invoices.total_amount - invoices.paid_amount, 0)'));
+            $completedCount = $monthBookings->where('booking_status', 'completed')->count();
+            $avgProfitMargin = $totalRevenueForMargin > 0
+                ? round(($totalProfit / $totalRevenueForMargin) * 100, 2)
+                : 0;
 
             return $this->ok([
-                'revenue_today' => round($revenueToday, 2),
-                'revenue_this_month' => round($revenueMonth, 2),
-                'total_profit' => round($totalProfit, 2),
-                'profit_margin' => $avgProfitMargin,
-                'completed_bookings' => $completedCount,
-                'outstanding_payments' => round($outstanding, 2),
+                'revenue_today'              => round($revenueToday, 2),
+                'revenue_this_month'         => round($revenueMonth, 2),
+                'profit_this_month'          => round($totalProfit, 2),
+                'total_profit'               => round($totalProfit, 2),
+                'profit_margin'              => $avgProfitMargin,
+                'completed_bookings'         => $completedCount,
+                'outstanding_payments'       => round($outstanding, 2),
+                'period'                     => [
+                    'start' => $monthStart,
+                    'end'   => $monthEnd,
+                    'label' => now()->format('F Y'),
+                ],
             ]);
         } catch (\Exception $e) {
             Log::error('Dashboard error: ' . $e->getMessage());

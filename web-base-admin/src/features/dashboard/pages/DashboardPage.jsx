@@ -468,7 +468,10 @@ const DetailModal = ({ cardKey, period, anchor, onClose }) => {
                 <span>Total</span>
                 <strong>
                   {typeof data?.total === 'number'
-                    ? (data.title?.includes('Bookings') || data.title?.includes('Events') || data.title?.includes('Staff')
+                    ? (data.title?.includes('Bookings')
+                        || data.title?.includes('Events')
+                        || data.title?.includes('Staff')
+                        || data.title?.includes('Pending')
                         ? data.total.toLocaleString()
                         : formatCurrency(data.total))
                     : '—'}
@@ -600,8 +603,13 @@ function AdminDashboard() {
   const events = dashboardData.events || {};
   const reports = dashboardData.reports || {};
 
+  // ⭐ FIX #2 — Re-trigger entrance animations & chart renders whenever the
+  // period or anchor changes so the UI visibly updates without waiting for
+  // the network round-trip (placeholderData keeps old data visible).
   useEffect(() => {
     if (!loading) {
+      setAnimate(false);
+      setChartsReady(false);
       const raf = requestAnimationFrame(() => {
         setShowSkeleton(false);
         setAnimate(true);
@@ -612,8 +620,7 @@ function AdminDashboard() {
     setShowSkeleton(true);
     setAnimate(false);
     setChartsReady(false);
-  }, [loading]);
-
+  }, [loading, period, anchor]);
   useEffect(() => {
     const handleThemeChange = (e) => setIsDarkMode(Boolean(e?.detail?.isDark));
     const handleStorage = (e) => { if (e.key === 'theme') setIsDarkMode(e.newValue === 'dark'); };
@@ -708,10 +715,11 @@ function AdminDashboard() {
         change: profitChange.label,
         changeType: profitChange.type,
       },
-      {
+        {
         id: 'total_pending',
         label: 'Total Pending',
-        value: formatCurrency(stats.total_pending ?? stats.outstanding_balance ?? 0),
+        // ⭐ Count of pending bookings (e.g. 30), NOT a currency amount.
+        value: formatNumber(stats.total_pending ?? 0),
         icon: CreditCard,
         bgColor: '#fef3c7',
         color: '#f59e0b',
@@ -1080,9 +1088,9 @@ function AdminDashboard() {
               )}
             </div>
 
-            <div className="dash-status-badge">
+                      <div className={`dash-status-badge ${refreshing ? 'dash-status-refreshing' : ''}`}>
               <span className="dash-status-dot"></span>
-              {loading ? 'Loading' : refreshing ? 'Refreshing' : 'Live'}
+              {loading ? 'Loading' : refreshing ? 'Updating…' : 'Live'}
             </div>
             <button className="dash-refresh-btn" onClick={() => refetch()}>
               <RefreshCw className={`dash-icon-sm ${isFetching ? 'dash-spin' : ''}`} />
@@ -1125,8 +1133,8 @@ function AdminDashboard() {
                 </div>
                 <div className="dash-chart-body dash-chart-medium">
                   {revenueExpenseData.length > 0 && chartsReady ? (
-                    <ResponsiveContainer
-                      key={`rev-${period}-${zoomedPanel === 'revenue-chart' ? 'zoom' : 'normal'}`}
+                                   <ResponsiveContainer
+                      key={`rev-${period}-${anchor}-${zoomedPanel === 'revenue-chart' ? 'zoom' : 'normal'}`}
                       width="100%"
                       height="100%"
                     >

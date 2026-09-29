@@ -9,10 +9,10 @@ import {
   Users, UserCheck, UserMinus, Clock3, CalendarDays, FileClock,
   WalletCards, BadgeCheck, BookOpenCheck, ReceiptText, FileText,
   CalendarCheck2, CircleDollarSign, UserRound, Quote,
+  ChevronLeft, ChevronRight,
 } from 'lucide-react';
-import { useRoleDashboardData } from '../../../hooks/useRoleDashboardQueries';
+import { useDashboardData, EMPTY_DASHBOARD_DATA } from '../../../hooks/useDashboardQueries';
 import '../../dashboard/styles/Dashboard.css';
-
 const PIE_COLORS = ['#4361ee', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#0ea5e9'];
 const safeArray = (value) => (Array.isArray(value) ? value : []);
 const toNumber = (value, fallback = 0) => {
@@ -49,8 +49,19 @@ const formatDate = (value) => {
 const EmptyRows = ({ columns, message }) => (
   <tr><td colSpan={columns} className="dash-table-empty">{message}</td></tr>
 );
-
-const DashboardHeader = ({ title, subtitle, loading, refreshing, onRefresh }) => (
+const DashboardHeader = ({
+  title,
+  subtitle,
+  loading,
+  refreshing,
+  onRefresh,
+  period,
+  onPeriodChange,
+  rangeLabel,
+  onPrev,
+  onNext,
+  onReset,
+}) => (
   <header className="dash-header dash-animate-header">
     <div className="dash-header-left">
       <div className="dash-header-brand">
@@ -62,6 +73,35 @@ const DashboardHeader = ({ title, subtitle, loading, refreshing, onRefresh }) =>
       </div>
     </div>
     <div className="dash-header-right">
+      {onPeriodChange && (
+        <div className="dash-period-selector">
+          <button className="dash-period-nav" onClick={onPrev} title="Previous period">
+            <ChevronLeft size={16} />
+          </button>
+          <select
+            value={period}
+            onChange={(e) => onPeriodChange(e.target.value)}
+            className="dash-period-select"
+          >
+            {PERIOD_OPTIONS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+          <button className="dash-period-nav" onClick={onNext} title="Next period">
+            <ChevronRight size={16} />
+          </button>
+          {rangeLabel && (
+            <span
+              className="dash-period-label"
+              onClick={onReset}
+              title="Reset to current period"
+              style={{ cursor: 'pointer' }}
+            >
+              {rangeLabel}
+            </span>
+          )}
+        </div>
+      )}
       <div className="dash-status-badge">
         <span className="dash-status-dot" />
         {loading ? 'Loading' : refreshing ? 'Refreshing' : 'Live'}
@@ -366,11 +406,47 @@ const CashierDashboard = ({ data, animate }) => {
   );
 };
 
+// ⭐ Period selector options (mirrors Dashboard.jsx)
+const PERIOD_OPTIONS = [
+  { value: 'weekly',  label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly',  label: 'Yearly' },
+];
+
+const shiftAnchor = (period, anchorDate, direction) => {
+  const d = anchorDate ? new Date(anchorDate) : new Date();
+  if (period === 'weekly')  d.setDate(d.getDate() + direction * 7);
+  if (period === 'monthly') d.setMonth(d.getMonth() + direction);
+  if (period === 'yearly')  d.setFullYear(d.getFullYear() + direction);
+  return d.toISOString().slice(0, 10);
+};
+
+const todayAnchor = () => new Date().toISOString().slice(0, 10);
+
 export default function RoleFocusedDashboard({ role }) {
   const [animate, setAnimate] = useState(false);
-  const { data = {}, isLoading, isFetching, error, refetch } = useRoleDashboardData(role);
 
-  useEffect(() => setAnimate(true), []);
+  // ⭐ FIX #3 — use the SAME period/anchor-driven hook as the admin dashboard.
+  const [period, setPeriod] = useState('monthly');
+  const [anchor, setAnchor] = useState(todayAnchor());
+
+  const {
+    data: dashboardData = EMPTY_DASHBOARD_DATA,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+  } = useDashboardData(period, anchor);
+
+  const data = dashboardData || EMPTY_DASHBOARD_DATA;
+  const loading = isLoading && !data.stats;
+
+  // Re-run entrance animations when period/anchor changes.
+  useEffect(() => {
+    setAnimate(false);
+    const raf = requestAnimationFrame(() => setAnimate(true));
+    return () => cancelAnimationFrame(raf);
+  }, [period, anchor, loading]);
 
   const metadata = useMemo(() => {
     if (role === 'inventory') return { title: 'Inventory Dashboard', subtitle: 'Real-time stock, equipment and purchase-request operations' };
@@ -378,16 +454,38 @@ export default function RoleFocusedDashboard({ role }) {
     return { title: 'Cashier Dashboard', subtitle: 'Booking, quotation, invoice and payment-processing overview' };
   }, [role]);
 
+  const rangeLabel = data.range?.label || '';
+
+  const goPrev = () => setAnchor((a) => shiftAnchor(period, a, -1));
+  const goNext = () => {
+    const next = shiftAnchor(period, anchor, 1);
+    if (new Date(next) <= new Date()) setAnchor(next);
+  };
+  const resetToToday = () => setAnchor(todayAnchor());
+
+  const handlePeriodChange = (newPeriod) => {
+    setPeriod(newPeriod);
+    setAnchor(todayAnchor());
+  };
+
   return (
     <div className="dash-container">
       <div className="dash-inner">
         <DashboardHeader
           {...metadata}
-          loading={isLoading}
-          refreshing={isFetching && !isLoading}
+          loading={loading}
+          refreshing={isFetching && !loading}
           onRefresh={() => refetch()}
+          period={period}
+          onPeriodChange={handlePeriodChange}
+          rangeLabel={rangeLabel}
+          onPrev={goPrev}
+          onNext={goNext}
+          onReset={resetToToday}
         />
-        {(error?.message || data.warning) && <div className="dash-alert">{error?.message || data.warning}</div>}
+        {(error?.message || data.warning) && (
+          <div className="dash-alert">{error?.message || data.warning}</div>
+        )}
         {role === 'inventory' && <InventoryDashboard data={data} animate={animate} />}
         {role === 'staff' && <StaffDashboard data={data} animate={animate} />}
         {role === 'cashier' && <CashierDashboard data={data} animate={animate} />}

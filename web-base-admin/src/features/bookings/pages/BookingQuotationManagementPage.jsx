@@ -96,7 +96,7 @@ import {
     useBookingStatistics,
     useCalendarAvailability,
     useCalendarEvents,
-    useConfirmBooking,
+      useConfirmBooking,
     useCreateQuotation,
     useDeleteCalendarAvailability,
     useDeleteQuotation,
@@ -104,6 +104,7 @@ import {
     useQuotations,
     useRecordPayment,
     useRejectBooking,
+    useUnrejectBooking,
     useRejectQuotation,
     useSaveCalendarAvailability,
     useSendQuotation,
@@ -256,9 +257,19 @@ const bookingStatusOptions = [
     { value: 'pending_approval', label: 'Pending Approval' },
     { value: 'confirmed', label: 'Confirmed' },
     { value: 'rescheduled', label: 'Rescheduled' },
-    { value: 'reschedule_requested', label: 'Reschedule Requested' }
+    { value: 'reschedule_requested', label: 'Reschedule Requested' },
+    // ⭐ REQUEST #4 — allow filtering directly to rejected rows.
+    { value: 'rejected', label: 'Rejected' },
 ];
 
+// ⭐ History tab uses its own option list so it doesn't inherit the
+// active-booking statuses.
+const historyStatusOptions = [
+    { value: 'all', label: 'All History' },
+    { value: 'completed', label: 'Completed' },
+    { value: 'cancelled', label: 'Cancelled' },
+    { value: 'rejected', label: 'Rejected' },
+];
 const availabilityOperationOptions = [
     { value: 'normal', label: 'Normal Operation' },
     { value: 'limited_slot', label: 'Limited Slot' }
@@ -495,14 +506,9 @@ const getDepositPendingState = (booking) => {
     // which reads `deposit_amount` (the *required* deposit) and could
     // make a paid booking look unpaid.
 
-    const payments = Array.isArray(booking.payments) ? booking.payments : [];
+      const payments = Array.isArray(booking.payments) ? booking.payments : [];
 
-    const hasCompletedDeposit = payments.some((p) => {
-        const s = String(p?.status || '').toLowerCase();
-        const t = String(p?.payment_type || '').toLowerCase();
-        return s === 'completed' && (t === 'deposit' || t === 'down_payment');
-    });
-
+    // ⭐ Any completed non-refund payment clears the yellow highlight.
     const hasAnyCompletedPayment = payments.some((p) => {
         const s = String(p?.status || '').toLowerCase();
         const t = String(p?.payment_type || '').toLowerCase();
@@ -518,8 +524,8 @@ const getDepositPendingState = (booking) => {
         explicitPaidAmount +
         billingPaid;
 
+    // ⭐ Clear yellow the moment ANY payment exists.
     if (
-        hasCompletedDeposit ||
         hasAnyCompletedPayment ||
         totalPaidFromAnySource > 0
     ) {
@@ -1190,9 +1196,13 @@ const BookingQuotationManagement = () => {
     const [cancelRescheduleReason, setCancelRescheduleReason] = useState('');
     const [cancelRescheduleSubmitting, setCancelRescheduleSubmitting] = useState(false);
 
-    const [todayBookingModalVisible, setTodayBookingModalVisible] = useState(false);
+       const [todayBookingModalVisible, setTodayBookingModalVisible] = useState(false);
     const [todayBookingData, setTodayBookingData] = useState(null);
     const [todayBookingAction, setTodayBookingAction] = useState(null);
+
+    // ⭐ REQUEST #2 — Rejected bookings modal (click the "Rejected" KPI card).
+    const [rejectedModalVisible, setRejectedModalVisible] = useState(false);
+    const [rejectedModalSearch, setRejectedModalSearch] = useState('');
 
     const [startEventModalVisible, setStartEventModalVisible] = useState(false);
     const [startEventBookingData, setStartEventBookingData] = useState(null);
@@ -1500,8 +1510,9 @@ const BookingQuotationManagement = () => {
         updateInsightVisibilityMutation,
         message,
     ]);
-    const confirmBookingMutation = useConfirmBooking();
+      const confirmBookingMutation = useConfirmBooking();
     const rejectBookingMutation = useRejectBooking();
+    const unrejectBookingMutation = useUnrejectBooking();
     const createQuotationMutation = useCreateQuotation();
     const rejectQuotationMutation = useRejectQuotation();
     const sendQuotationMutation = useSendQuotation();
@@ -1566,13 +1577,41 @@ const BookingQuotationManagement = () => {
         [allLoadedBookings],
     );
 
-    const rejectedBookingsCount = useMemo(
-        () => allLoadedBookings.filter((b) =>
-            safeString(b.booking_status).toLowerCase() === 'rejected'
-        ).length,
+      // ⭐ REQUEST #2 — Full list of rejected bookings for the KPI modal.
+    const rejectedBookingsList = useMemo(
+        () =>
+            allLoadedBookings
+                .filter((b) =>
+                    safeString(b.booking_status).toLowerCase() === 'rejected'
+                )
+                .sort((a, b) => {
+                    // Newest first by event date, then by booking_no.
+                    const da = dayjs(a?.event_date);
+                    const db = dayjs(b?.event_date);
+                    if (da.isValid() && db.isValid() && !da.isSame(db)) {
+                        return db.valueOf() - da.valueOf();
+                    }
+                    return safeString(b?.booking_no).localeCompare(
+                        safeString(a?.booking_no)
+                    );
+                }),
         [allLoadedBookings],
     );
 
+    const rejectedBookingsCount = rejectedBookingsList.length;
+    // ⭐ REQUEST #1 — Derive pending approvals from the loaded list.
+    // The table already fetches every active booking, so this number
+    // always matches the visible rows (e.g. the 9 pending rows in the
+    // screenshot). Falls back to the backend stat only when the list is
+    // still empty.
+    const pendingApprovalsCount = useMemo(
+        () => allLoadedBookings.filter((b) =>
+            ['pending', 'pending_approval', 'draft'].includes(
+                safeString(b.booking_status).toLowerCase()
+            )
+        ).length,
+        [allLoadedBookings],
+    );
     // ⭐ REQUEST #4: Only approved bookings contribute to total revenue.
     const approvedRevenue = useMemo(() => {
         return allLoadedBookings
@@ -2211,7 +2250,7 @@ const BookingQuotationManagement = () => {
                 { reason: values.reason },
                 { signal }
             );
-
+            broadcastBookingChanged(bookingId, 'cancelled');
             message.success('Booking cancelled and moved to history');
             setCancelReasonModalVisible(false);
             cancelForm.resetFields();
@@ -2537,6 +2576,7 @@ const BookingQuotationManagement = () => {
                 reference_number: values.reference_number || null,
                 notes: values.notes || '',
             });
+            broadcastBookingChanged(bookingId, 'refund_released');
             message.success(`Refund of ${formatCurrency(refundAmount)} released successfully.`);
             setConfirmRefundModalVisible(false);
             confirmRefundForm.resetFields();
@@ -2573,6 +2613,7 @@ const BookingQuotationManagement = () => {
                 reference_number: values.refund_reference || null,
                 reason: safeString(reason).trim() || 'Cancelled by admin.',
             });
+                    broadcastBookingChanged(bookingId, 'admin_direct_refund');
             message.success(
                 refundAmount > 0
                     ? `Booking cancelled. Refund of ${formatCurrency(refundAmount)} released.`
@@ -2611,6 +2652,11 @@ const BookingQuotationManagement = () => {
                     { signal }
                 );
 
+                              // ⭐ REQUEST #3, #6 — Broadcast so the yellow 3-day highlight
+                // disappears from every open tab immediately, and the row
+                // moves into history without a manual refresh.
+                broadcastBookingChanged(bookingId, 'rejected');
+
                 message.success('Booking rejected and removed from active bookings');
                 setRejectReasonModalVisible(false);
                 rejectForm.resetFields();
@@ -2637,8 +2683,54 @@ const BookingQuotationManagement = () => {
         }
     };
 
-    const openRejectModal = (booking) => {
+    /**
+     * ⭐ REQUEST #4, #5 — Restore a rejected booking back to pending approval.
+     * Uses a confirm modal so the admin can't mis-click.
+     */
+    const handleUnrejectBooking = (booking) => {
         if (!booking) {
+            message.error('No booking selected');
+            return;
+        }
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        modal.confirm({
+            title: 'Restore Rejected Booking?',
+            content: (
+                <div>
+                    <p>
+                        Booking <strong>{safeString(booking.booking_no)}</strong> will be
+                        restored to <strong>Pending Approval</strong> and will reappear in
+                        the active Bookings table.
+                    </p>
+                    <p style={{ marginTop: 8, color: '#6b7280' }}>
+                        The customer will not be automatically notified.
+                    </p>
+                </div>
+            ),
+            okText: 'Restore Booking',
+            okButtonProps: { style: { background: '#10b981', borderColor: '#10b981' } },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                const hideLoading = message.loading('Restoring booking...', 0);
+                try {
+                    await unrejectBookingMutation.mutateAsync(bookingId);
+                    hideLoading();
+                } catch (error) {
+                    hideLoading();
+                    throw error;
+                }
+            },
+        });
+    };
+
+    const openRejectModal = (booking) => {        if (!booking) {
             message.error('No booking selected');
             return;
         }
@@ -6272,8 +6364,55 @@ const BookingQuotationManagement = () => {
         { title: 'SERVICE', key: 'service_type', width: 130, render: (_, record) => <span className="bqm-service-text">{getServiceType(record)}</span> },
         { title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record?.event_type_id)}</span> },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
-        { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 150, align: 'center', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
-                    { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 260, render: (value, record) => {
+               {
+            title: 'AMOUNT',
+            dataIndex: 'total_amount',
+            key: 'total_amount',
+            width: 170,
+            align: 'center',
+            render: (value, record) => {
+                const total = safeNumber(value);
+                const paid = safeNumber(record?.paid_amount || 0);
+                const balance = safeNumber(
+                    record?.balance ?? Math.max(0, total - paid)
+                );
+
+                // ⭐ Only show Paid / Balance once the booking is APPROVED.
+                const status = safeString(record?.booking_status).toLowerCase();
+                const isApproved = status === 'confirmed' || status === 'approved';
+
+                return (
+                    <div className="bqm-amount-cell" style={{ lineHeight: 1.3 }}>
+                        <div className="bqm-amount" style={{ fontWeight: 600 }}>
+                            {formatCurrency(total)}
+                        </div>
+                        {isApproved && paid > 0 && (
+                            <div
+                                className="bqm-amount-paid"
+                                style={{ color: '#10b981', fontSize: 11 }}
+                            >
+                                Paid: {formatCurrency(paid)}
+                            </div>
+                        )}
+                        {isApproved && balance > 0 ? (
+                            <div
+                                className="bqm-amount-balance"
+                                style={{ color: '#ef4444', fontSize: 11, fontWeight: 600 }}
+                            >
+                                Balance: {formatCurrency(balance)}
+                            </div>
+                        ) : isApproved && paid > 0 ? (
+                            <div
+                                className="bqm-amount-paid"
+                                style={{ color: '#10b981', fontSize: 11, fontWeight: 600 }}
+                            >
+                                Fully Paid
+                            </div>
+                        ) : null}
+                    </div>
+                );
+            }
+        },         { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 260, render: (value, record) => {
             const config = getStatusConfig(value);
             const refundConfig = getRefundStatusConfig(record?.refund_status);
             const depositConfig = getDepositStateLabel(record?.deposit_decision_status);
@@ -6492,22 +6631,81 @@ const BookingQuotationManagement = () => {
         { title: 'EVENT DATE', dataIndex: 'event_date', key: 'event_date', width: 120, render: (value) => formatDateSafe(value) },
         { title: 'LOCATION', dataIndex: 'venue', key: 'venue', width: 180, ellipsis: true },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number">{safeNumber(value)}</span> },
-        { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 140, align: 'right', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
+                    {
+            title: 'AMOUNT',
+            dataIndex: 'total_amount',
+            key: 'total_amount',
+            width: 170,
+            align: 'right',
+            render: (value, record) => {
+                const total = safeNumber(value);
+                const paid = safeNumber(record?.paid_amount || 0);
+                const balance = safeNumber(
+                    record?.balance ?? Math.max(0, total - paid)
+                );
+
+                // ⭐ Only show Paid / Balance once the booking is APPROVED.
+                const status = safeString(record?.booking_status).toLowerCase();
+                const isApproved = status === 'confirmed' || status === 'approved';
+
+                return (
+                    <div className="bqm-amount-cell" style={{ lineHeight: 1.3, textAlign: 'right' }}>
+                        <div className="bqm-amount" style={{ fontWeight: 600 }}>
+                            {formatCurrency(total)}
+                        </div>
+                        {isApproved && paid > 0 && (
+                            <div style={{ color: '#10b981', fontSize: 11 }}>
+                                Paid: {formatCurrency(paid)}
+                            </div>
+                        )}
+                        {isApproved && balance > 0 ? (
+                            <div style={{ color: '#ef4444', fontSize: 11, fontWeight: 600 }}>
+                                Balance: {formatCurrency(balance)}
+                            </div>
+                        ) : isApproved && paid > 0 ? (
+                            <div style={{ color: '#10b981', fontSize: 11, fontWeight: 600 }}>
+                                Fully Paid
+                            </div>
+                        ) : null}
+                    </div>
+                );
+            }
+        },
         { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 120, render: (value) => { const config = getStatusConfig(value); return <span className="bqm-status" style={{ color: config.color, background: config.background }}>{config.icon}{config.text}</span>; } },
-        {
+             {
             title: 'ACTION',
             key: 'action',
-            width: 100,
+            width: 150,
             fixed: 'right',
-            render: (_, record) => (
-                <div className="bqm-action-group">
-                    <Tooltip title="View completed booking details">
-                        <button className="bqm-action-icon view" onClick={() => openBookingDetails(record)}>
-                            <EyeOutlined />
-                        </button>
-                    </Tooltip>
-                </div>
-            )
+            render: (_, record) => {
+                const status = safeString(record?.booking_status).toLowerCase();
+                const isRejected = status === 'rejected';
+                return (
+                    <div className="bqm-action-group">
+                        <Tooltip title="View booking details">
+                            <button
+                                className="bqm-action-icon view"
+                                onClick={() => openBookingDetails(record)}
+                            >
+                                <EyeOutlined />
+                            </button>
+                        </Tooltip>
+
+                        {/* ⭐ REQUEST #4 — Only rejected rows offer Un-reject. */}
+                        {isRejected && canApproveOperations && (
+                            <Tooltip title="Restore this rejected booking to Pending Approval">
+                                <button
+                                    className="bqm-action-icon confirm"
+                                    onClick={() => handleUnrejectBooking(record)}
+                                    style={{ borderColor: '#10b981', backgroundColor: '#ecfdf5' }}
+                                >
+                                    <CheckCircleOutlined style={{ color: '#10b981' }} />
+                                </button>
+                            </Tooltip>
+                        )}
+                    </div>
+                );
+            }
         }
     ];
 
@@ -7257,11 +7455,20 @@ const BookingQuotationManagement = () => {
                             </div>
                         </div>
 
-                        {/* ============ Pending Approvals ============ */}
+                                          {/* ============ Pending Approvals ============ */}
+                        {/*
+                          ⭐ REQUEST #1 — Prefer the client-derived count so
+                          the KPI always matches the visible table. Fall back
+                          to the backend stat only when nothing is loaded yet.
+                        */}
                         <div className="bqm-kpi-card">
                             <div className="bqm-kpi-icon orange"><ClockCircleOutlined /></div>
                             <div className="bqm-kpi-stats">
-                                <div className="bqm-kpi-value">{safeNumber(stats.pending_approvals)}</div>
+                                <div className="bqm-kpi-value">
+                                    {pendingApprovalsCount > 0
+                                        ? pendingApprovalsCount
+                                        : safeNumber(stats.pending_approvals)}
+                                </div>
                                 <div className="bqm-kpi-label">Pending Approvals</div>
                             </div>
                         </div>
@@ -7289,16 +7496,40 @@ const BookingQuotationManagement = () => {
                                 <div className="bqm-kpi-label">Total Revenue</div>
                             </div>
                         </div>
-
-                        {/* ============ Rejected ============ */}
-                        <div className="bqm-kpi-card bqm-kpi-card-hideable">
+                        {/* ============ Rejected (clickable) ============ */}
+                        {/*
+                          ⭐ REQUEST #2 — Clicking this card opens a modal
+                          listing every rejected booking.
+                        */}
+                        <div
+                            className="bqm-kpi-card bqm-kpi-card-hideable bqm-kpi-card-clickable"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => {
+                                setRejectedModalSearch('');
+                                setRejectedModalVisible(true);
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    setRejectedModalSearch('');
+                                    setRejectedModalVisible(true);
+                                }
+                            }}
+                            title="Click to view all rejected bookings"
+                        >
                             {canToggleInsightVisibility && (
                                 <button
                                     type="button"
                                     className="bqm-kpi-hide-btn"
                                     title={effectiveVisibility.rejected ? 'Unhide value' : 'Hide value'}
                                     aria-label={effectiveVisibility.rejected ? 'Unhide rejected count' : 'Hide rejected count'}
-                                    onClick={() => handleToggleInsight('rejected')}
+                                    onClick={(e) => {
+                                        // ⭐ Don't open the modal when the
+                                        // user only clicks the hide button.
+                                        e.stopPropagation();
+                                        handleToggleInsight('rejected');
+                                    }}
                                 >
                                     {effectiveVisibility.rejected ? <EyeOutlined /> : <LockOutlined />}
                                 </button>
@@ -7550,8 +7781,7 @@ const BookingQuotationManagement = () => {
                                                 <div className={filterGroupClass}><SearchOutlined /><Input value={historySearchText} onChange={(event) => { setHistorySearchText(event.target.value); }} placeholder="Quick search..." allowClear className="bqm-search-input" /></div>
                                                 <div className={filterGroupClass}><FileTextOutlined /><Input value={historyBookingId} onChange={(event) => { setHistoryBookingId(event.target.value); }} placeholder="Booking ID" allowClear className="bqm-search-input" /></div>
                                                 <div className={filterGroupClass}><UserOutlined /><Input value={historyCustomerName} onChange={(event) => { setHistoryCustomerName(event.target.value); }} placeholder="Customer Name" allowClear className="bqm-search-input" /></div>
-                                                <div className={filterGroupClass}><FilterOutlined /><Select value={historyStatus} onChange={(value) => { setHistoryStatus(value); }} className="bqm-filter-select" placeholder="Booking Status">{bookingStatusOptions.map((option) => (<Option key={option.value} value={option.value}>{option.label}</Option>))}</Select></div>
-                                                <div className={filterGroupClass}><AppstoreOutlined /><Select value={historyEventType} onChange={(value) => { setHistoryEventType(value); }} className="bqm-filter-select" placeholder="Event Type"><Option value="all">All Event Types</Option>{eventTypes.map((eventType) => (<Option key={eventType.event_type_id || eventType.id} value={eventType.event_type_id || eventType.id}>{eventType.name}</Option>))}</Select></div>
+<div className={filterGroupClass}><FilterOutlined /><Select value={historyStatus} onChange={(value) => { setHistoryStatus(value); }} className="bqm-filter-select" placeholder="Booking Status">{historyStatusOptions.map((option) => (<Option key={option.value} value={option.value}>{option.label}</Option>))}</Select></div>                                                <div className={filterGroupClass}><AppstoreOutlined /><Select value={historyEventType} onChange={(value) => { setHistoryEventType(value); }} className="bqm-filter-select" placeholder="Event Type"><Option value="all">All Event Types</Option>{eventTypes.map((eventType) => (<Option key={eventType.event_type_id || eventType.id} value={eventType.event_type_id || eventType.id}>{eventType.name}</Option>))}</Select></div>
                                                 <div className={filterGroupClass}><CalendarOutlined /><RangePicker value={historyDateRange} onChange={(value) => { setHistoryDateRange(value || []); }} format="YYYY-MM-DD" allowClear className="bqm-date-picker" placeholder={['Start Date', 'End Date']} /></div>
                                             </div>
                                             <div className="bqm-scrollable-table-wrapper">
@@ -8639,6 +8869,197 @@ const BookingQuotationManagement = () => {
                                 >
                                     Release Refund
                                 </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                                     {/* ⭐ REQUEST #2 — REJECTED BOOKINGS MODAL (KPI drill-down) */}
+                    <Modal
+                        title={
+                            <div className="bqm-modal-header-clean">
+                                <div className="bqm-modal-title-icon">
+                                    <CloseCircleOutlined style={{ color: '#ef4444' }} />
+                                </div>
+                                <div className="bqm-modal-title-text">
+                                    Rejected Bookings
+                                    <span
+                                        className="bqm-modal-badge"
+                                        style={{ marginLeft: 10, background: '#fef2f2', color: '#ef4444' }}
+                                    >
+                                        {rejectedBookingsList.length}
+                                    </span>
+                                </div>
+                            </div>
+                        }
+                        open={rejectedModalVisible}
+                        onCancel={() => {
+                            setRejectedModalVisible(false);
+                            setRejectedModalSearch('');
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={1000}
+                        className="bqm-modal-clean bqm-rejected-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
+                        destroyOnHidden={true}
+                    >
+                        <div className="bqm-modal-clean-content">
+                            <div className={filtersClass} style={{ marginBottom: 12 }}>
+                                <div className={`${filterGroupClass} bqm-search`}>
+                                    <SearchOutlined />
+                                    <Input
+                                        value={rejectedModalSearch}
+                                        onChange={(e) => setRejectedModalSearch(e.target.value)}
+                                        placeholder="Search booking #, customer, or venue..."
+                                        allowClear
+                                        className="bqm-search-input"
+                                    />
+                                </div>
+                                <Tag color="red" style={{ padding: '4px 12px', borderRadius: 8 }}>
+                                    {rejectedBookingsList.length} rejected booking
+                                    {rejectedBookingsList.length === 1 ? '' : 's'}
+                                </Tag>
+                            </div>
+
+                            <div className="bqm-scrollable-table-wrapper" style={{ maxHeight: '60vh', overflow: 'auto' }}>
+                                <Table
+                                    columns={[
+                                        {
+                                            title: 'BOOKING #',
+                                            dataIndex: 'booking_no',
+                                            key: 'booking_no',
+                                            width: 130,
+                                            render: (value, record) => {
+                                                const idColor = getBookingIdColor(record);
+                                                return (
+                                                    <span
+                                                        className="bqm-id-text"
+                                                        style={{
+                                                            color: idColor.color,
+                                                            background: idColor.background,
+                                                            border: `1px solid ${idColor.borderColor}`,
+                                                            borderRadius: 8,
+                                                            padding: '2px 8px',
+                                                            fontWeight: 600,
+                                                            display: 'inline-block',
+                                                        }}
+                                                    >
+                                                        {safeString(value)}
+                                                    </span>
+                                                );
+                                            },
+                                        },
+                                        {
+                                            title: 'CUSTOMER',
+                                            dataIndex: 'customer_name',
+                                            key: 'customer_name',
+                                            width: 200,
+                                            render: (value, record) => (
+                                                <div className="bqm-customer-cell">
+                                                    <div className="bqm-customer-name">{safeString(value)}</div>
+                                                    <div className="bqm-customer-contact">
+                                                        <MailOutlined /> {safeString(record?.customer_email, 'No email')}
+                                                    </div>
+                                                </div>
+                                            ),
+                                        },
+                                        {
+                                            title: 'EVENT DATE',
+                                            dataIndex: 'event_date',
+                                            key: 'event_date',
+                                            width: 130,
+                                            render: (value) => formatDateSafe(value),
+                                        },
+                                        {
+                                            title: 'VENUE',
+                                            dataIndex: 'venue',
+                                            key: 'venue',
+                                            width: 200,
+                                            ellipsis: true,
+                                            render: (value) => safeString(value, '—'),
+                                        },
+                                        {
+                                            title: 'AMOUNT',
+                                            dataIndex: 'total_amount',
+                                            key: 'total_amount',
+                                            width: 130,
+                                            align: 'right',
+                                            render: (value) => (
+                                                <span className="bqm-amount">{formatCurrency(value)}</span>
+                                            ),
+                                        },
+                                        {
+                                            title: 'REASON',
+                                            dataIndex: 'cancellation_reason',
+                                            key: 'cancellation_reason',
+                                            ellipsis: true,
+                                            render: (value) => safeString(value, '—'),
+                                        },
+                                        {
+                                            title: 'ACTION',
+                                            key: 'action',
+                                            width: 120,
+                                            fixed: 'right',
+                                            render: (_, record) => (
+                                                <div className="bqm-action-group">
+                                                    <Tooltip title="View booking details">
+                                                        <button
+                                                            className="bqm-action-icon view"
+                                                            onClick={() => {
+                                                                openBookingDetails(record);
+                                                            }}
+                                                        >
+                                                            <EyeOutlined />
+                                                        </button>
+                                                    </Tooltip>
+                                                    {canApproveOperations && (
+                                                        <Tooltip title="Restore to Pending Approval">
+                                                            <button
+                                                                className="bqm-action-icon confirm"
+                                                                onClick={() => handleUnrejectBooking(record)}
+                                                                style={{
+                                                                    borderColor: '#10b981',
+                                                                    backgroundColor: '#ecfdf5',
+                                                                }}
+                                                            >
+                                                                <CheckCircleOutlined style={{ color: '#10b981' }} />
+                                                            </button>
+                                                        </Tooltip>
+                                                    )}
+                                                </div>
+                                            ),
+                                        },
+                                    ]}
+                                    dataSource={rejectedBookingsList.filter((b) => {
+                                        const q = rejectedModalSearch.trim().toLowerCase();
+                                        if (!q) return true;
+                                        return [
+                                            b.booking_no,
+                                            b.customer_name,
+                                            b.venue,
+                                            b.cancellation_reason,
+                                        ]
+                                            .filter(Boolean)
+                                            .join(' ')
+                                            .toLowerCase()
+                                            .includes(q);
+                                    })}
+                                    rowKey={(record) => getBookingId(record)}
+                                    className={tableClass}
+                                    scroll={{ x: 1100 }}
+                                    pagination={{ pageSize: 10, showSizeChanger: false }}
+                                    bordered={false}
+                                    size="middle"
+                                    locale={{
+                                        emptyText: (
+                                            <Empty
+                                                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                                description="No rejected bookings"
+                                            />
+                                        ),
+                                    }}
+                                />
                             </div>
                         </div>
                     </Modal>

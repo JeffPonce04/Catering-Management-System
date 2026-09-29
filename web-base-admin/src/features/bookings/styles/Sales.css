@@ -5325,3 +5325,18 @@ body.bqm-dark-mode {
 .bqm-table .ant-table-tbody > tr.bqm-row-alert.bqm-row-warning > td:first-child {
     box-shadow: inset 4px 0 0 0 #dc2626 !important;
 }
+
+.bqm-kpi-card-clickable {
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bqm-kpi-card-clickable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+}
+
+.bqm-kpi-card-clickable:focus-visible {
+    outline: 2px solid #ef4444;
+    outline-offset: 2px;
+}

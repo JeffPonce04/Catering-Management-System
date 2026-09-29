@@ -33,7 +33,7 @@ class BookingController extends Controller
 {
     use Auditable;
 
-      private const SETTINGS_GROUP_DEPOSIT_POLICY  = 'booking_deposit_policy';
+    private const SETTINGS_GROUP_DEPOSIT_POLICY  = 'booking_deposit_policy';
     private const SETTINGS_GROUP_REFUND_REQUESTS = 'booking_refund_requests';
 
     // ============================================================
@@ -90,7 +90,7 @@ class BookingController extends Controller
 
         return $query->whereHas('serviceEvent', function ($eventQuery) use ($start, $end) {
             $eventQuery->whereDate('event_date', '>=', $start->toDateString())
-                       ->whereDate('event_date', '<=', $end->toDateString());
+                ->whereDate('event_date', '<=', $end->toDateString());
         });
     }
 
@@ -177,7 +177,13 @@ class BookingController extends Controller
         $query = $this->query();
 
         if (! $request->boolean('include_history')) {
-            $query->where('booking_no', 'not like', 'HIST-%');
+            // ⭐ Keep the standard exclusion of archived "HIST-" rows, but
+            // always allow rejected bookings through so they appear in
+            // the Booking History tab and the Rejected KPI modal.
+            $query->where(function ($q) {
+                $q->where('booking_no', 'not like', 'HIST-%')
+                    ->orWhere('booking_status', 'rejected');
+            });
         }
 
         if ($request->filled('status_in')) {
@@ -270,7 +276,7 @@ class BookingController extends Controller
             });
         }
 
-              $perPage = $request->integer('per_page', 6);
+        $perPage = $request->integer('per_page', 6);
         $perPage = max(1, min(100, $perPage));
 
         // ⭐ REQUEST #9: Approved bookings always float to the top of the table.
@@ -778,6 +784,61 @@ class BookingController extends Controller
         } catch (\Exception $e) {
             Log::error('Booking reject error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to reject booking: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ REQUEST #4, #5 — Restore a rejected booking back to pending approval.
+     */
+    public function unreject(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $oldData = $booking->toArray();
+
+            if (strtolower((string) $booking->booking_status) !== 'rejected') {
+                return $this->fail('Only rejected bookings can be un-rejected.', 422);
+            }
+
+            DB::transaction(function () use ($booking) {
+                $booking->update([
+                    'booking_status'  => 'pending_approval',
+                    'cancellation_reason' => null,
+                ]);
+                $booking->serviceEvent?->update(['status' => 'pending']);
+            });
+
+            $this->logCustom(
+                'unreject',
+                'bookings',
+                $booking->booking_id,
+                "Booking {$booking->booking_no} UN-REJECTED (restored to pending)",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'customer'   => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                    'old_status' => $oldData['booking_status'] ?? 'rejected',
+                    'new_status' => 'pending_approval',
+                    'unrejected_at' => now()->toDateTimeString(),
+                ]
+            );
+
+            try {
+                app(NotificationService::class)->notifyRole(
+                    'admin',
+                    'booking_unrejected',
+                    '↩️ Booking Restored',
+                    "Booking {$booking->booking_no} has been restored to pending approval.",
+                    \App\Models\Notification::PRIORITY_MEDIUM,
+                    ['booking_id' => $booking->booking_id, 'booking_no' => $booking->booking_no],
+                    "/admin/bookings/{$booking->booking_id}"
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Un-reject notification failed: ' . $e->getMessage());
+            }
+
+            return $this->ok($this->formatBooking($booking->fresh()), 'Booking restored to pending approval.');
+        } catch (\Throwable $e) {
+            Log::error('Un-reject booking error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to restore booking: ' . $e->getMessage(), 500);
         }
     }
 
@@ -2135,18 +2196,53 @@ class BookingController extends Controller
                 $method = 'cash';
             }
 
-            $booking->loadMissing('invoice');
-            if (! $booking->invoice) {
-                return $this->fail('No invoice found for this booking. Please create an invoice first.', 422);
+            $booking->loadMissing(['invoice', 'quotation']);
+
+            // ⭐ Auto-create the invoice the first time a payment is attempted.
+            //    This makes "Pay Deposit" work directly from Order & Events
+            //    without forcing the cashier to visit Billing & Invoicing first.
+            $invoice = $booking->invoice;
+            if (! $invoice) {
+                $invoice = DB::transaction(function () use ($booking) {
+                    return $this->createInvoiceForBooking($booking);
+                });
+                $booking->setRelation('invoice', $invoice);
             }
 
-            $payment = DB::transaction(function () use ($booking, $validated, $method) {
+            // ⭐ Auto-detect the correct payment_type.
+            //    A first payment >= 30% of the total is treated as a DEPOSIT.
+            $invoiceTotal    = (float) ($invoice->total_amount ?? 0);
+            $invoicePaid     = (float) ($invoice->paid_amount ?? 0);
+            $invoiceBalance  = max(0, $invoiceTotal - $invoicePaid);
+            $requiredDeposit = round($invoiceTotal * 0.30, 2);
+
+            $isFirstPayment = ! BookingPayment::where('booking_id', $booking->booking_id)
+                ->where('status', 'completed')
+                ->where('payment_type', '!=', 'refund')
+                ->exists();
+
+            $resolvedPaymentType = $validated['payment_type'] ?? null;
+            if (! $resolvedPaymentType) {
+                if ((float) $validated['amount'] >= $invoiceBalance) {
+                    $resolvedPaymentType = 'full';
+                } elseif (
+                    $isFirstPayment &&
+                    $requiredDeposit > 0 &&
+                    (float) $validated['amount'] >= ($requiredDeposit - 1.00)
+                ) {
+                    $resolvedPaymentType = 'deposit';
+                } else {
+                    $resolvedPaymentType = 'partial';
+                }
+            }
+
+            $payment = DB::transaction(function () use ($booking, $validated, $method, $resolvedPaymentType) {
                 $payment = BookingPayment::create([
                     'booking_id'       => $booking->booking_id,
                     'payment_number'   => 'PAY-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
                     'amount'           => $validated['amount'],
                     'payment_method'   => $method,
-                    'payment_type'     => $validated['payment_type'] ?? 'partial',
+                    'payment_type'     => $resolvedPaymentType,
                     'reference_number' => $validated['reference_number'] ?? $validated['reference'] ?? null,
                     'notes'            => $validated['notes'] ?? null,
                     'status'           => 'completed',
@@ -2158,7 +2254,6 @@ class BookingController extends Controller
                 $this->synchronizeBookingInvoice($booking);
                 return $payment;
             });
-
             $this->logCustom(
                 'payment_recorded',
                 'booking_payments',
@@ -2337,7 +2432,19 @@ class BookingController extends Controller
             });
 
             $confirmedCount = $confirmedRows->count();
-
+            // ⭐ FIX #1 — Pending approvals are NOT part of $operational
+            // (it is filtered to confirmed/approved/rescheduled/ongoing),
+            // so count them from a separate query.
+            //
+            // ⭐ CRITICAL: do NOT apply the period filter here.
+            // A booking is "pending" because it still needs admin action
+            // right now — regardless of when its event is scheduled.
+            // Filtering by period would hide pending bookings whose event
+            // date falls outside the currently selected month/week/year.
+            $pendingApprovalsCount = (int) $this->query()
+                ->where('booking_no', 'not like', 'HIST-%')
+                ->whereIn('booking_status', ['pending', 'pending_approval', 'draft'])
+                ->count();
             // ⭐ Total Revenue KPI — sum of total_amount on the confirmed set.
             $totalRevenue = $confirmedRows->sum('total_amount');
 
@@ -2379,7 +2486,7 @@ class BookingController extends Controller
                 'period_end'               => $end?->toDateString(),
 
                 'total_bookings'           => $operational->count(),
-                'pending_approvals'        => $operational->where('booking_status', 'pending_approval')->count(),
+                'pending_approvals'        => $pendingApprovalsCount,
                 'confirmed_bookings'       => $confirmedCount,
                 'completed_bookings'       => $operational->where('booking_status', 'completed')->count(),
                 'regular_bookings'         => $operational->where('days', '<=', 1)->count(),
@@ -4401,7 +4508,6 @@ class BookingController extends Controller
         $mealMaxDay         = (int) ($eventDayRowsForMax->max('day_number') ?? 1);
         $days               = max($days, $mealMaxDay);
         $isMultiDay         = ($event?->booking_scope === 'multi_day') || $days > 1;
-
         $totalAmount   = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
         $payments      = $this->loadedRelationCollection($booking, 'payments');
         $bookingItems  = $this->loadedRelationCollection($booking, 'items');
@@ -4410,7 +4516,22 @@ class BookingController extends Controller
         $chargeRows    = $this->loadedRelationCollection($booking, 'charges');
         $equipmentRows = $this->loadedRelationCollection($booking, 'equipment');
         $trackingRows  = $this->loadedRelationCollection($booking, 'tracking');
-        $paidAmount    = (float) $payments->where('status', 'completed')->sum('amount');
+
+        // ⭐ Compute NET paid amount (completed non-refund payments MINUS
+        //    completed refunds). This makes the yellow deposit highlight
+        //    clear as soon as ANY completed payment exists, and the
+        //    balance always reflects reality.
+        $grossPaid = (float) $payments
+            ->where('status', 'completed')
+            ->where('payment_type', '!=', 'refund')
+            ->sum('amount');
+
+        $refunded = (float) $payments
+            ->where('status', 'completed')
+            ->where('payment_type', 'refund')
+            ->sum('amount');
+
+        $paidAmount = max(0, $grossPaid - $refunded);
 
         $preparationTracking = $trackingRows->where('stage', 'preparation')->first();
         $preparationMetadata = json_decode((string) ($preparationTracking?->notes ?? '[]'), true);
@@ -4473,7 +4594,7 @@ class BookingController extends Controller
             'day_total_amount' => (float) $day->day_total_amount,
         ])->values();
 
-               $depositPolicyState  = $booking->deposit_policy_state;
+        $depositPolicyState  = $booking->deposit_policy_state;
         $refundRequestState  = $booking->refund_request_state;
 
         // ⭐ REQUEST #11 & #12 & #13: 3-day warning for NON-approved bookings.
@@ -4505,29 +4626,23 @@ class BookingController extends Controller
         }
 
         // ⭐ REQUEST #10: Red highlight when Approved + deposit deadline passed + unpaid.
+        //    ⭐ UPDATED: Uses NET paid amount so ANY completed payment
+        //    (deposit OR partial) clears the red/yellow highlight.
         $depositDeadlinePassed = false;
         if ($isApprovedStatus) {
-            $depositPaidCheck = (float) $payments
-                ->where('status', 'completed')
-                ->where('payment_type', 'deposit')
-                ->sum('amount');
-
-            $anyPaidCheck = (float) $payments
-                ->where('status', 'completed')
-                ->where('payment_type', '!=', 'refund')
-                ->sum('amount');
-
             $decisionStatus = strtolower((string) ($depositPolicyState['decision_status'] ?? ''));
             $isDepositWaivedOrCancelled = in_array($decisionStatus, ['waived', 'cancelled'], true);
 
             $depositDueDateValue = $booking->deposit_due_date
                 ?? ($startDate
                     ? Carbon::parse($startDate)
-                        ->subDays($depositPaymentDays)
-                        ->toDateString()
+                    ->subDays($depositPaymentDays)
+                    ->toDateString()
                     : null);
 
-            $hasAnyPayment = $depositPaidCheck > 0 || $anyPaidCheck > 0;
+            // ⭐ If ANY payment (deposit or partial) is on file, the
+            //    deadline is considered met — no red/yellow highlight.
+            $hasAnyPayment = $paidAmount > 0;
 
             if (
                 ! $isDepositWaivedOrCancelled &&
@@ -4540,8 +4655,6 @@ class BookingController extends Controller
                         ? $depositDueDateValue
                         : Carbon::parse($depositDueDateValue);
 
-                    // ⭐ REQUEST #10: overdue means current date/time has reached
-                    // or passed the deposit deadline (start of that day).
                     $depositDeadlinePassed = now()->startOfDay()->greaterThanOrEqualTo(
                         $dueCarbon->copy()->startOfDay()
                     );
@@ -4551,14 +4664,16 @@ class BookingController extends Controller
             }
         }
 
-        $depositPaid = (float) $payments->where('status', 'completed')->where('payment_type', 'deposit')->sum('amount');
+        // ⭐ deposit_paid now reflects ANY completed payment (not just
+        //    deposit-typed), so the frontend can reliably clear the
+        //    yellow highlight the moment a deposit or partial is paid.
+        $depositPaid = $paidAmount;
         if ($depositPaid <= 0) {
             $depositPaid = (float) ($refundRequestState['deposit_snapshot'] ?? 0);
         }
         if ($depositPaid <= 0) {
             $depositPaid = (float) ($booking->invoice?->down_payment ?? 0);
         }
-
         return [
             'id'             => $booking->booking_id,
             'booking_id'     => $booking->booking_id,
@@ -4755,6 +4870,49 @@ class BookingController extends Controller
             $page,
             ['path' => $request->url(), 'query' => $request->query()]
         );
+    }
+
+    /**
+     * ⭐ Create a base invoice for a booking that doesn't have one yet.
+     * Mirrors the InvoiceController::store defaults so the row looks the
+     * same no matter which endpoint created it.
+     *
+     * The total is derived from, in priority order:
+     *   1. quotation.total_amount
+     *   2. sum of booking_items (unit_price × quantity)
+     *   3. sum of meal_services (pax × price_per_head)
+     */
+    private function createInvoiceForBooking(Booking $booking): \App\Models\Invoice
+    {
+        $booking->loadMissing(['quotation', 'items', 'mealServices']);
+
+        $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
+
+        if ($subtotal <= 0) {
+            $itemsTotal = (float) $booking->items->sum(
+                fn($item) => ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1))
+            );
+            $mealsTotal = (float) $booking->mealServices->sum(
+                fn($meal) => ((int) ($meal->pax ?? 0)) * ((float) ($meal->price_per_head ?? 0))
+            );
+            $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
+        }
+
+        $invoiceNumber = \App\Models\Invoice::nextInvoiceNumber();
+
+        return \App\Models\Invoice::create([
+            'invoice_number'     => $invoiceNumber,
+            'booking_id'         => $booking->booking_id,
+            'subtotal'           => round($subtotal, 2),
+            'discount'           => 0,
+            'discount_type'      => 'fixed',
+            'additional_charges' => 0,
+            'total_amount'       => round($subtotal, 2),
+            'paid_amount'        => 0,
+            'status'             => 'unpaid',
+            'due_date'           => now()->addDays(30)->toDateString(),
+            'notes'              => 'Auto-created on first payment.',
+        ]);
     }
 
     private function synchronizeBookingInvoice(Booking $booking): void

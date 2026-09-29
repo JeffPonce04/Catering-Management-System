@@ -24,9 +24,9 @@ class ReportController extends Controller
     {
         [$startDate, $endDate] = $this->dateRange($request);
 
-        $daily = $this->invoiceSeries($startDate, $endDate, 'DATE(created_at)', 'date');
-        $weekly = $this->invoiceSeries($startDate, $endDate, "DATE_FORMAT(created_at, '%x-W%v')", 'week');
-        $monthly = $this->invoiceSeries($startDate, $endDate, "DATE_FORMAT(created_at, '%Y-%m')", 'month')
+        $daily = $this->invoiceSeries($startDate, $endDate, 'DATE(service_events.event_date)', 'date');
+        $weekly = $this->invoiceSeries($startDate, $endDate, "DATE_FORMAT(service_events.event_date, '%x-W%v')", 'week');
+        $monthly = $this->invoiceSeries($startDate, $endDate, "DATE_FORMAT(service_events.event_date, '%Y-%m')", 'month')
             ->map(function ($row) {
                 $row['month'] = Carbon::parse($row['period'] . '-01')->format('M');
                 return $row;
@@ -38,12 +38,15 @@ class ReportController extends Controller
             ->selectRaw('COUNT(*) payment_count')
             ->first();
 
-        $invoiceTotals = Invoice::whereBetween('created_at', [$startDate, $endDate])
-            ->where('status', '!=', 'cancelled')
-            ->selectRaw('COALESCE(SUM(total_amount), 0) total_sales')
-            ->selectRaw('COALESCE(SUM(paid_amount), 0) total_paid')
-            ->selectRaw('COALESCE(SUM(GREATEST(total_amount - paid_amount, 0)), 0) total_outstanding')
-            ->selectRaw('COUNT(*) invoice_count')
+        $invoiceTotals = Invoice::query()
+            ->join('bookings', 'invoices.booking_id', '=', 'bookings.booking_id')
+            ->join('service_events', 'bookings.service_event_id', '=', 'service_events.service_event_id')
+            ->where('invoices.status', '!=', 'cancelled')
+            ->whereBetween('service_events.event_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->selectRaw('COALESCE(SUM(invoices.total_amount), 0) total_sales')
+            ->selectRaw('COALESCE(SUM(invoices.paid_amount), 0) total_paid')
+            ->selectRaw('COALESCE(SUM(GREATEST(invoices.total_amount - invoices.paid_amount, 0)), 0) total_outstanding')
+            ->selectRaw('COUNT(DISTINCT invoices.invoice_id) invoice_count')
             ->first();
 
         $topPackages = ServiceEvent::leftJoin('packages', 'service_events.package_id', '=', 'packages.package_id')
@@ -58,7 +61,7 @@ class ReportController extends Controller
             ->orderByDesc('revenue')
             ->limit(8)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'name' => $item->name,
                 'orders' => (int) $item->orders,
                 'revenue' => round((float) $item->revenue, 2),
@@ -77,7 +80,7 @@ class ReportController extends Controller
             ->groupBy('name')
             ->orderByDesc('revenue')
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'name' => $item->name,
                 'orders' => (int) $item->orders,
                 'revenue' => round((float) $item->revenue, 2),
@@ -122,7 +125,7 @@ class ReportController extends Controller
             ->orderBy('period')
             ->limit(60)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'period' => Carbon::parse($item->period)->format('M d'),
                 'incoming' => round((float) $item->incoming, 2),
                 'outgoing' => round((float) $item->outgoing, 2),
@@ -185,7 +188,7 @@ class ReportController extends Controller
             ->orderByDesc('used_quantity')
             ->limit(12)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'ingredient_id' => $item->ingredient_id,
                 'name' => $item->ingredient?->name ?? 'Unknown Ingredient',
                 'used_quantity' => round((float) $item->used_quantity, 2),
@@ -194,7 +197,7 @@ class ReportController extends Controller
 
         $stocks = InventoryStock::with('ingredient')->get();
         $totalStocks = max(1, $stocks->count());
-        $healthyStocks = $stocks->filter(fn ($stock) => ! in_array($stock->stock_status, ['out_of_stock', 'low_stock'], true))->count();
+        $healthyStocks = $stocks->filter(fn($stock) => ! in_array($stock->stock_status, ['out_of_stock', 'low_stock'], true))->count();
 
         return $this->ok([
             'usage' => $usage,
@@ -203,12 +206,12 @@ class ReportController extends Controller
             'ingredient_usage' => $ingredientUsage,
             'stock_health' => round(($healthyStocks / $totalStocks) * 100, 2),
             'stocks' => $stocks,
-            'low_stock' => $stocks->filter(fn ($stock) => in_array($stock->stock_status, ['out_of_stock', 'low_stock'], true))->values(),
+            'low_stock' => $stocks->filter(fn($stock) => in_array($stock->stock_status, ['out_of_stock', 'low_stock'], true))->values(),
             'summary' => [
                 'total_items' => $stocks->count(),
-                'low_stock_count' => $stocks->filter(fn ($stock) => $stock->stock_status === 'low_stock')->count(),
-                'out_of_stock_count' => $stocks->filter(fn ($stock) => $stock->stock_status === 'out_of_stock')->count(),
-                'inventory_value' => round($stocks->sum(fn ($stock) => ((float) $stock->current_quantity) * ((float) ($stock->ingredient?->unit_cost ?? 0))), 2),
+                'low_stock_count' => $stocks->filter(fn($stock) => $stock->stock_status === 'low_stock')->count(),
+                'out_of_stock_count' => $stocks->filter(fn($stock) => $stock->stock_status === 'out_of_stock')->count(),
+                'inventory_value' => round($stocks->sum(fn($stock) => ((float) $stock->current_quantity) * ((float) ($stock->ingredient?->unit_cost ?? 0))), 2),
             ],
         ]);
     }
@@ -237,7 +240,7 @@ class ReportController extends Controller
             ->groupBy('employees.employee_id', 'persons.first_name', 'persons.last_name')
             ->orderByDesc('net_pay')
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'employee_id' => $item->employee_id,
                 'employee_name' => $item->employee_name,
                 'gross_pay' => round((float) $item->gross_pay, 2),
@@ -258,7 +261,7 @@ class ReportController extends Controller
             ->groupBy('departments.name')
             ->orderByDesc('total')
             ->get()
-            ->map(fn ($item) => ['name' => $item->name, 'value' => round((float) $item->total, 2), 'total' => round((float) $item->total, 2)]);
+            ->map(fn($item) => ['name' => $item->name, 'value' => round((float) $item->total, 2), 'total' => round((float) $item->total, 2)]);
 
         return $this->ok([
             'summary' => $summary,
@@ -275,10 +278,16 @@ class ReportController extends Controller
     {
         [$startDate, $endDate] = $this->dateRange($request);
 
-        $totalBookings = Booking::count();
-        $completed = Booking::where('booking_status', 'completed')->count();
-        $cancelled = Booking::where('booking_status', 'cancelled')->count();
-        $active = Booking::whereIn('booking_status', ['pending_approval', 'confirmed', 'rescheduled', 'reschedule_requested'])->count();
+        $periodBookingIds = ServiceEvent::whereBetween('event_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->pluck('service_event_id');
+
+        $totalBookings = Booking::whereIn('service_event_id', $periodBookingIds)->count();
+        $completed = Booking::whereIn('service_event_id', $periodBookingIds)
+            ->where('booking_status', 'completed')->count();
+        $cancelled = Booking::whereIn('service_event_id', $periodBookingIds)
+            ->where('booking_status', 'cancelled')->count();
+        $active = Booking::whereIn('service_event_id', $periodBookingIds)
+            ->whereIn('booking_status', ['pending_approval', 'confirmed', 'rescheduled', 'reschedule_requested'])->count();
 
         $trends = ServiceEvent::whereBetween('event_date', [$startDate->toDateString(), $endDate->toDateString()])
             ->selectRaw("DATE_FORMAT(event_date, '%Y-%m') as period")
@@ -288,7 +297,7 @@ class ReportController extends Controller
             ->groupBy('period')
             ->orderBy('period')
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'period' => Carbon::parse($item->period . '-01')->format('M'),
                 'events' => (int) $item->events,
                 'bookings' => (int) $item->events,
@@ -314,7 +323,7 @@ class ReportController extends Controller
             ->get()
             ->map(function ($booking) {
                 $revenue = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
-                $directCost = $booking->items->sum(fn ($item) => ((float) $item->quantity) * ((float) ($item->menuItem?->cost_to_make ?? 0)));
+                $directCost = $booking->items->sum(fn($item) => ((float) $item->quantity) * ((float) ($item->menuItem?->cost_to_make ?? 0)));
                 $profit = $revenue - $directCost;
                 $margin = $revenue > 0 ? ($profit / $revenue) * 100 : 0;
                 return [
@@ -338,7 +347,10 @@ class ReportController extends Controller
             ->first();
 
         return $this->ok([
-            'events' => ServiceEvent::with(['customer.person', 'eventType', 'booking'])->latest()->limit(100)->get(),
+            'events' => ServiceEvent::with(['customer.person', 'eventType', 'booking'])
+                ->whereBetween('event_date', [$startDate->toDateString(), $endDate->toDateString()])
+                ->latest()
+                ->get(),
             'by_status' => $statusSummary,
             'trends' => $trends,
             'event_types' => $eventTypes,
@@ -373,13 +385,17 @@ class ReportController extends Controller
     {
         $year = (int) ($request->input('year') ?: now()->year);
         $expensesByMonth = $this->expensesByMonth($year);
-
-        $invoiceByMonth = Invoice::whereYear('created_at', $year)
+        $invoiceByMonth = Invoice::query()
             ->where('status', '!=', 'cancelled')
-            ->selectRaw('MONTH(created_at) as month')
-            ->selectRaw('COALESCE(SUM(total_amount), 0) as revenue')
-            ->selectRaw('COALESCE(SUM(paid_amount), 0) as collected')
-            ->selectRaw('COALESCE(SUM(GREATEST(total_amount - paid_amount, 0)), 0) as outstanding')
+            ->whereHas('booking.serviceEvent', function ($q) use ($year) {
+                $q->whereYear('event_date', $year);
+            })
+            ->join('bookings', 'invoices.booking_id', '=', 'bookings.booking_id')
+            ->join('service_events', 'bookings.service_event_id', '=', 'service_events.service_event_id')
+            ->selectRaw('MONTH(service_events.event_date) as month')
+            ->selectRaw('COALESCE(SUM(invoices.total_amount), 0) as revenue')
+            ->selectRaw('COALESCE(SUM(invoices.paid_amount), 0) as collected')
+            ->selectRaw('COALESCE(SUM(GREATEST(invoices.total_amount - invoices.paid_amount, 0)), 0) as outstanding')
             ->selectRaw('COUNT(*) as invoice_count')
             ->groupBy('month')
             ->get()
@@ -418,7 +434,7 @@ class ReportController extends Controller
             ->latest('due_date')
             ->limit(25)
             ->get()
-            ->map(fn ($invoice) => [
+            ->map(fn($invoice) => [
                 'invoice_id' => $invoice->invoice_id,
                 'invoice_number' => $invoice->invoice_number,
                 'customer_name' => $invoice->booking?->serviceEvent?->customer?->person
@@ -439,13 +455,13 @@ class ReportController extends Controller
         return $this->ok([
             'monthly' => $monthly,
             'outstanding' => $outstanding,
-            'revenue_vs_expenses' => $monthly->map(fn ($row) => [
+            'revenue_vs_expenses' => $monthly->map(fn($row) => [
                 'month' => $row['month'],
                 'revenue' => $row['revenue'],
                 'expenses' => $row['expenses'],
                 'profit' => $row['profit'],
             ]),
-            'profit_margins' => $monthly->map(fn ($row) => [
+            'profit_margins' => $monthly->map(fn($row) => [
                 'month' => $row['month'],
                 'profit_margin' => $row['profit_margin'],
                 'margin' => $row['profit_margin'],
@@ -478,7 +494,7 @@ class ReportController extends Controller
             ->groupBy('period')
             ->orderBy('period')
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'period' => Carbon::parse($item->period . '-01')->format('M'),
                 'completion_rate' => $item->total > 0 ? round(((float) $item->completed / (float) $item->total) * 100, 2) : 0,
             ]);
@@ -492,7 +508,7 @@ class ReportController extends Controller
             ->groupBy('name')
             ->orderByDesc('revenue')
             ->get()
-            ->map(fn ($item) => ['name' => $item->name, 'revenue' => round((float) $item->revenue, 2), 'value' => round((float) $item->revenue, 2)]);
+            ->map(fn($item) => ['name' => $item->name, 'revenue' => round((float) $item->revenue, 2), 'value' => round((float) $item->revenue, 2)]);
 
         return $this->ok([
             'event_completion' => $eventCompletion,
@@ -502,13 +518,16 @@ class ReportController extends Controller
 
     private function invoiceSeries(Carbon $startDate, Carbon $endDate, string $groupExpression, string $periodKey)
     {
-        return Invoice::whereBetween('created_at', [$startDate, $endDate])
-            ->where('status', '!=', 'cancelled')
-            ->selectRaw("{$groupExpression} as period")
-            ->selectRaw('COUNT(*) as orders')
-            ->selectRaw('COALESCE(SUM(total_amount), 0) as total_sales')
-            ->selectRaw('COALESCE(SUM(paid_amount), 0) as revenue')
-            ->selectRaw('COALESCE(SUM(GREATEST(total_amount - paid_amount, 0)), 0) as outstanding')
+        return Invoice::query()
+            ->join('bookings', 'invoices.booking_id', '=', 'bookings.booking_id')
+            ->join('service_events', 'bookings.service_event_id', '=', 'service_events.service_event_id')
+            ->where('invoices.status', '!=', 'cancelled')
+            ->whereBetween('service_events.event_date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->selectRaw(str_replace('created_at', 'service_events.event_date', $groupExpression) . ' as period')
+            ->selectRaw('COUNT(DISTINCT invoices.invoice_id) as orders')
+            ->selectRaw('COALESCE(SUM(invoices.total_amount), 0) as total_sales')
+            ->selectRaw('COALESCE(SUM(invoices.paid_amount), 0) as revenue')
+            ->selectRaw('COALESCE(SUM(GREATEST(invoices.total_amount - invoices.paid_amount, 0)), 0) as outstanding')
             ->groupBy('period')
             ->orderBy('period')
             ->get()

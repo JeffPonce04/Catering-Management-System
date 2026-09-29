@@ -9,7 +9,9 @@ import {
   getUserRoles,
 } from '../utils/roleRoutes';
 
-const DASHBOARD_STALE_TIME = 30 * 60 * 1000;   // 30 min
+// ⭐ FIX #2 — shorter staleTime so changing the period/anchor triggers an
+// immediate background refetch instead of serving 30-minute-old data.
+const DASHBOARD_STALE_TIME = 60 * 1000;        // ⭐ 1 min — refetch quickly after period change
 const DASHBOARD_GC_TIME = 24 * 60 * 60 * 1000; // 24 h
 
 const unwrap = (response, fallback = {}) => response?.data?.data ?? response?.data ?? fallback;

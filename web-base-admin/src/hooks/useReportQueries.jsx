@@ -13,9 +13,10 @@ export const EMPTY_REPORTS_DATA = {
   additional: {},
   dashboardCharts: {},
   inventoryDashboard: {},
+  profitabilityReport: {},
+  profitabilityMenus: [],
   warning: '',
 };
-
 const normalizeReportsData = (entries, settled) => {
   const nextReports = { ...EMPTY_REPORTS_DATA };
 
@@ -44,7 +45,7 @@ export const useReportsData = (params = {}, options = {}) => useQuery({
   queryFn: async () => {
     const entries = options.salesOnly
       ? [['sales', api.get('/reports/sales', { params })]]
-      : [
+            : [
           ['sales', api.get('/reports/sales', { params })],
           ['inventory', api.get('/reports/inventory')],
           ['payroll', api.get('/reports/payroll', { params })],
@@ -54,6 +55,18 @@ export const useReportsData = (params = {}, options = {}) => useQuery({
           ['additional', api.get('/reports/additional', { params })],
           ['dashboardCharts', api.get('/dashboard/charts', { params: { period: 'year' } })],
           ['inventoryDashboard', api.get('/inventory/dashboard-stats')],
+          ['profitabilityReport', api.get('/profitability/report', {
+            params: {
+              date_from: params.start_date,
+              date_to: params.end_date,
+            },
+          })],
+          ['profitabilityMenus', api.get('/profitability/menus', {
+            params: {
+              date_from: params.start_date,
+              date_to: params.end_date,
+            },
+          })],
         ];
 
     const settled = await Promise.allSettled(entries.map(([, request]) => request));

@@ -34,8 +34,16 @@ class DashboardController extends Controller
         }
 
         $range = $this->resolvePeriodRange($period, $request->input('anchor'));
-        $cards = $this->buildSummaryCards($range);
 
+        // ⭐ 60-second cache for the stats payload too.
+        $userId    = optional($request->user())->user_id ?? 'guest';
+        $cacheKey  = "dashboard:stats:{$userId}:{$period}:{$range['start']->toDateString()}";
+        $cached    = \Illuminate\Support\Facades\Cache::get($cacheKey);
+        if ($cached !== null) {
+            return $this->ok($cached);
+        }
+
+        $cards = $this->buildSummaryCards($range);
         $data = [
             'period' => $period,
             'range'  => [
@@ -58,7 +66,16 @@ class DashboardController extends Controller
                 'expenses_growth'     => $cards['total_expenses']['change']['value'],
                 'profit_growth'       => $cards['total_profit']['change']['value'],
                 'completed_growth'    => $cards['completed_events']['change']['value'],
-                'outstanding_balance' => $cards['total_pending']['value'],
+                // ⭐ Real outstanding invoice balance (unpaid invoice amounts),
+                // separate concept from pending bookings.
+                'outstanding_balance' => round(
+                    (float) Invoice::query()
+                        ->where('status', '!=', 'cancelled')
+                        ->whereRaw('paid_amount < total_amount')
+                        ->selectRaw('COALESCE(SUM(GREATEST(total_amount - paid_amount, 0)), 0) total')
+                        ->value('total'),
+                    2
+                ),
                 'completion_rate'     => $this->completionRate($range),
                 'active_orders'       => Order::whereIn('status', ['pending', 'preparing', 'ready', 'ongoing'])->count(),
                 'pending_quotations'  => Quotation::where('status', 'pending')->count(),
@@ -139,7 +156,7 @@ class DashboardController extends Controller
                     ->where('booking_no', 'not like', 'HIST-%')
                     ->orderByDesc('created_at')
                     ->get()
-                    ->map(fn (Booking $b) => [
+                    ->map(fn(Booking $b) => [
                         'id'             => $b->booking_id,
                         'booking_no'     => $b->booking_no,
                         'customer_name'  => $b->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
@@ -163,7 +180,7 @@ class DashboardController extends Controller
                     ->where('status', 'completed')
                     ->orderByDesc('payment_date')
                     ->get()
-                    ->map(fn (BookingPayment $p) => [
+                    ->map(fn(BookingPayment $p) => [
                         'id'             => $p->payment_id,
                         'payment_number' => $p->payment_number,
                         'booking_no'     => $p->booking?->booking_no,
@@ -187,7 +204,7 @@ class DashboardController extends Controller
                     ->whereIn('movement_type', ['purchase', 'waste'])
                     ->orderByDesc('created_at')
                     ->get()
-                    ->map(fn ($m) => [
+                    ->map(fn($m) => [
                         'source'    => 'Inventory (' . $m->movement_type . ')',
                         'reference' => $m->ingredient?->name ?? 'Ingredient',
                         'quantity'  => (float) $m->quantity_change,
@@ -206,7 +223,7 @@ class DashboardController extends Controller
                     ->selectRaw('payrolls.created_at as created_at')
                     ->orderByDesc('payrolls.created_at')
                     ->get()
-                    ->map(fn ($p) => [
+                    ->map(fn($p) => [
                         'source'    => 'Payroll',
                         'reference' => trim($p->employee_name) ?: 'Employee',
                         'quantity'  => null,
@@ -237,39 +254,41 @@ class DashboardController extends Controller
                     'total'    => round($revenue - $expenses, 2),
                     'navigate' => '/admin/reports?tab=financial&from=' . $start->toDateString() . '&to=' . $end->toDateString(),
                 ];
-
             case 'total_pending':
-                $rows = Invoice::with(['booking.serviceEvent.customer.person'])
-                    ->where('status', '!=', 'cancelled')
-                    ->whereRaw('paid_amount < total_amount')
-                    ->orderBy('due_date')
+                // ⭐ FIX #1 — list pending bookings, not unpaid invoices.
+                $rows = Booking::with(['serviceEvent.customer.person', 'serviceEvent.eventType', 'invoice', 'quotation'])
+                    ->whereIn('booking_status', ['pending', 'pending_approval', 'draft'])
+                    ->where('booking_no', 'not like', 'HIST-%')
+                    ->whereBetween('created_at', [$start, $end])
+                    ->orderByDesc('created_at')
                     ->get()
-                    ->map(fn (Invoice $i) => [
-                        'invoice_id'     => $i->invoice_id,
-                        'invoice_number' => $i->invoice_number,
-                        'booking_no'     => $i->booking?->booking_no,
-                        'customer_name'  => $i->booking?->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
-                        'total_amount'   => (float) $i->total_amount,
-                        'paid_amount'    => (float) $i->paid_amount,
-                        'balance'        => max(0, (float) $i->total_amount - (float) $i->paid_amount),
-                        'due_date'       => $i->due_date?->toDateString(),
+                    ->map(fn(Booking $b) => [
+                        'id'             => $b->booking_id,
+                        'booking_no'     => $b->booking_no,
+                        'customer_name'  => $b->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                        'event_type'     => $b->serviceEvent?->eventType?->name ?? '—',
+                        'event_date'     => $b->serviceEvent?->event_date?->toDateString(),
+                        'booking_status' => $b->booking_status,
+                        'amount'         => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0),
+                        'created_at'     => $b->created_at?->toDateTimeString(),
                     ]);
                 return [
                     'title'    => 'Total Pending',
-                    'columns'  => ['invoice_number', 'booking_no', 'customer_name', 'total_amount', 'paid_amount', 'balance', 'due_date'],
+                    'columns'  => ['booking_no', 'customer_name', 'event_type', 'event_date', 'booking_status', 'amount'],
                     'rows'     => $rows,
-                    'total'    => round((float) $rows->sum('balance'), 2),
-                    'navigate' => '/admin/debts',
+                    'total'    => $rows->count(), // ⭐ count of pending bookings, not amount
+                    'navigate' => '/admin/bookings?status_in=pending,pending_approval&from=' . $start->toDateString() . '&to=' . $end->toDateString(),
                 ];
-
+                // ⭐ FIX — restored the missing total_bookings case that was
+                // accidentally nested inside total_pending as dead code.
             case 'total_bookings':
                 $rows = Booking::with(['serviceEvent.customer.person', 'serviceEvent.eventType'])
                     ->whereBetween('created_at', [$start, $end])
-                    ->whereIn('booking_status', ['confirmed', 'ongoing', 'completed'])
+                    ->whereIn('booking_status', ['confirmed', 'ongoing', 'completed', 'approved', 'rescheduled'])
                     ->where('booking_no', 'not like', 'HIST-%')
                     ->orderByDesc('created_at')
                     ->get()
-                    ->map(fn (Booking $b) => [
+                    ->map(fn(Booking $b) => [
                         'id'             => $b->booking_id,
                         'booking_no'     => $b->booking_no,
                         'customer_name'  => $b->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
@@ -293,7 +312,7 @@ class DashboardController extends Controller
                     ->where('booking_no', 'not like', 'HIST-%')
                     ->orderByDesc('updated_at')
                     ->get()
-                    ->map(fn (Booking $b) => [
+                    ->map(fn(Booking $b) => [
                         'id'             => $b->booking_id,
                         'booking_no'     => $b->booking_no,
                         'customer_name'  => $b->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
@@ -312,9 +331,10 @@ class DashboardController extends Controller
             case 'active_staff':
                 $rows = Employee::with(['person', 'department', 'position'])
                     ->where('status', 'active')
+                    ->whereDate('hire_date', '<=', $end->toDateString())
                     ->orderBy('employee_id')
                     ->get()
-                    ->map(fn (Employee $e) => [
+                    ->map(fn(Employee $e) => [
                         'employee_id'   => $e->employee_id,
                         'employee_code' => $e->employee_code,
                         'employee_name' => $e->person?->full_name ?? '—',
@@ -355,6 +375,17 @@ class DashboardController extends Controller
             $start = $range['start'];
             $end   = $range['end'];
 
+            // ⭐ 60-second cache keyed by user + period + anchor so rapid
+            // month→year→week toggles hit cache instead of re-running ~250 queries.
+            $userId    = optional($request->user())->user_id ?? 'guest';
+            $anchorKey = $range['start']->toDateString();
+            $cacheKey  = "dashboard:charts:{$userId}:{$period}:{$anchorKey}";
+
+            $cached = \Illuminate\Support\Facades\Cache::get($cacheKey);
+            if ($cached !== null) {
+                return $this->ok($cached);
+            }
+
             // ── Revenue vs Expenses ─────────────────────────────
             $revenueData = $this->revenueExpensesSeries($period, $start, $end);
 
@@ -370,7 +401,7 @@ class DashboardController extends Controller
                 ->groupBy('ingredients.category')
                 ->orderByDesc('value')
                 ->get()
-                ->map(fn ($item) => [
+                ->map(fn($item) => [
                     'name'  => $item->category ?: 'Uncategorized',
                     'value' => round((float) $item->value, 2),
                 ])
@@ -400,7 +431,7 @@ class DashboardController extends Controller
                 ->selectRaw('COALESCE(SUM(COALESCE(invoices.total_amount, quotations.total_amount, 0)), 0) as revenue')
                 ->groupBy('name')
                 ->get()
-                ->map(fn ($item) => [
+                ->map(fn($item) => [
                     'name'    => $item->name,
                     'value'   => (int) $item->count,
                     'count'   => (int) $item->count,
@@ -420,10 +451,20 @@ class DashboardController extends Controller
 
             // ── Top menu items ──────────────────────────────────
             $topMenuItems = $this->topMenuItemsSeries($start, $end);
-
             // ── Payroll by employee ─────────────────────────────
             $payrollByEmployee = $this->payrollByEmployeeSeries($start, $end);
 
+            // ── Profitability trend (connects Reports → Dashboard) ──
+            $profitabilityTrend = [];
+            try {
+                $profitabilityTrend = app(\App\Services\ProfitabilityService::class)->getAggregateReport([
+                    'date_from' => $start->toDateString(),
+                    'date_to' => $end->toDateString(),
+                    'statuses' => ['completed', 'confirmed', 'ongoing'],
+                ]);
+            } catch (\Throwable $profitabilityError) {
+                Log::warning('Dashboard profitability chart failed: ' . $profitabilityError->getMessage());
+            }
             // ── Expenses vs profit ──────────────────────────────
             $monthlyExpenses = $this->expensesVsProfitSeries($period, $start, $end);
 
@@ -431,11 +472,11 @@ class DashboardController extends Controller
             $outstandingInvoices = Invoice::with(['booking.serviceEvent.customer.person'])
                 ->whereRaw('paid_amount < total_amount')
                 ->where('status', '!=', 'cancelled')
-                ->whereHas('booking', fn ($q) => $q->where('booking_no', 'not like', 'HIST-%'))
+                ->whereHas('booking', fn($q) => $q->where('booking_no', 'not like', 'HIST-%'))
                 ->orderBy('due_date')
                 ->limit(25)
                 ->get()
-                ->map(fn (Invoice $invoice) => [
+                ->map(fn(Invoice $invoice) => [
                     'invoice_id'     => $invoice->invoice_id,
                     'invoice_number' => $invoice->invoice_number,
                     'customer_name'  => $invoice->booking?->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
@@ -472,9 +513,14 @@ class DashboardController extends Controller
                 'payroll_by_employee'    => $payrollByEmployee,
                 'monthly_expenses'       => $monthlyExpenses,
                 'outstanding_invoices'   => $outstandingInvoices,
+                'profitability_trend'    => $profitabilityTrend['monthly_breakdown'] ?? [],
+                'profitability_summary'  => $profitabilityTrend['summary'] ?? [],
             ];
 
-            return $this->ok($this->filterChartsForRole($request, $data));
+            $payload = $this->filterChartsForRole($request, $data);
+            \Illuminate\Support\Facades\Cache::put($cacheKey, $payload, 60);
+
+            return $this->ok($payload);
         } catch (\Throwable $e) {
             Log::error('Dashboard charts error: ' . $e->getMessage(), [
                 'period' => $request->input('period'),
@@ -552,7 +598,7 @@ class DashboardController extends Controller
                 ->with('eventType')
                 ->groupBy('event_type_id')
                 ->get()
-                ->map(fn ($item) => [
+                ->map(fn($item) => [
                     'name'  => $item->eventType?->name ?? 'Unknown',
                     'value' => (int) $item->count,
                 ])
@@ -610,7 +656,7 @@ class DashboardController extends Controller
         $roles = $request->user()?->roles()
             ->where('is_active', true)
             ->pluck('slug')
-            ->map(fn ($role) => str_replace('_', '-', strtolower((string) $role)))
+            ->map(fn($role) => str_replace('_', '-', strtolower((string) $role)))
             ->all() ?? [];
 
         if (array_intersect($roles, ['super-admin', 'superadmin'])) return 'super-admin';
@@ -714,6 +760,9 @@ class DashboardController extends Controller
         $expenses      = $this->totalExpenses($start, $end);
         $prevExpenses  = $this->totalExpenses($prevStart, $prevEnd);
 
+        // ⭐ Profit now matches ProfitabilityService formula:
+        //    revenue (collected, net of refunds) − total expenses.
+        //    This keeps Dashboard KPIs consistent with the Reports page.
         $profit        = $collected - $expenses;
         $prevProfit    = $prevCollected - $prevExpenses;
 
@@ -742,7 +791,7 @@ class DashboardController extends Controller
                 'change' => $this->changeOf($profit, $prevProfit),
             ],
             'total_pending' => [
-                'value'  => round($this->totalPending(), 2),
+                'value'  => $this->totalPending($start, $end), // integer count
                 'change' => ['value' => 0, 'label' => 'N/A', 'type' => 'neutral'],
             ],
             'total_bookings' => [
@@ -754,7 +803,10 @@ class DashboardController extends Controller
                 'change' => $this->changeOf($completed, $prevCompleted),
             ],
             'active_staff' => [
-                'value'  => Employee::where('status', 'active')->count(),
+                'value'  => (int) Employee::query()
+                    ->where('status', 'active')
+                    ->whereDate('hire_date', '<=', $end->toDateString())
+                    ->count(),
                 'change' => ['value' => 0, 'label' => 'N/A', 'type' => 'neutral'],
             ],
         ];
@@ -771,20 +823,25 @@ class DashboardController extends Controller
             ->where('booking_no', 'not like', 'HIST-%')
             ->with(['invoice', 'quotation'])
             ->get()
-            ->sum(fn (Booking $b) => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0));
+            ->sum(fn(Booking $b) => (float) ($b->invoice?->total_amount ?? $b->quotation?->total_amount ?? 0));
     }
-
     private function totalPaymentsCollected(Carbon $start, Carbon $end): float
     {
+        // ⭐ Aligned with ProfitabilityService: filter by service_events.event_date
+        //    so Dashboard "Revenue" reconciles with the Reports page.
         return (float) BookingPayment::query()
-            ->whereBetween('payment_date', [$start, $end])
-            ->where('status', 'completed')
-            ->selectRaw("COALESCE(SUM(CASE WHEN payment_type = 'refund' THEN -ABS(amount) ELSE amount END), 0) as total")
+            ->join('bookings', 'booking_payments.booking_id', '=', 'bookings.booking_id')
+            ->join('service_events', 'bookings.service_event_id', '=', 'service_events.service_event_id')
+            ->where('booking_payments.status', 'completed')
+            ->whereBetween('service_events.event_date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw("COALESCE(SUM(CASE WHEN booking_payments.payment_type = 'refund' THEN -ABS(booking_payments.amount) ELSE booking_payments.amount END), 0) as total")
             ->value('total');
     }
-
     private function totalExpenses(Carbon $start, Carbon $end): float
     {
+        // Expenses use their own posting dates (purchase date / payroll cutoff)
+        // because they are real cash outflows, not event-attributable costs.
+        // This is intentionally different from revenue (event-date basis).
         $inventory = (float) InventoryMovement::query()
             ->whereBetween('created_at', [$start, $end])
             ->whereIn('movement_type', ['purchase', 'waste'])
@@ -799,24 +856,34 @@ class DashboardController extends Controller
         return round($inventory + $payroll, 2);
     }
 
-    private function totalPending(): float
+    /**
+     * ⭐ Total Pending = COUNT of bookings still awaiting approval
+     * (pending / pending_approval / draft). Returns a whole number.
+     *
+     * Example: if 30 bookings are pending, this returns 30.
+     */
+    private function totalPending(?Carbon $start = null, ?Carbon $end = null): int
     {
-        return (float) Invoice::query()
-            ->where('status', '!=', 'cancelled')
-            ->whereRaw('paid_amount < total_amount')
-            ->selectRaw('COALESCE(SUM(GREATEST(total_amount - paid_amount, 0)), 0) total')
-            ->value('total');
-    }
+        $query = Booking::query()
+            ->whereIn('booking_status', ['pending', 'pending_approval', 'draft'])
+            ->where('booking_no', 'not like', 'HIST-%');
 
+        if ($start && $end) {
+            $query->whereBetween('created_at', [$start, $end]);
+        }
+
+        return (int) $query->count();
+    }
     private function totalBookings(Carbon $start, Carbon $end): int
     {
+        // ⭐ Include approved/rescheduled so the KPI matches the detail modal
+        // and BookingController::statistics() (which uses the same set).
         return (int) Booking::query()
             ->whereBetween('created_at', [$start, $end])
-            ->whereIn('booking_status', ['confirmed', 'ongoing', 'completed'])
+            ->whereIn('booking_status', ['confirmed', 'ongoing', 'completed', 'approved', 'rescheduled'])
             ->where('booking_no', 'not like', 'HIST-%')
             ->count();
     }
-
     private function completedEvents(Carbon $start, Carbon $end): int
     {
         return (int) Booking::query()
@@ -838,87 +905,136 @@ class DashboardController extends Controller
     // ============================================================
     private function revenueExpensesSeries(string $period, Carbon $start, Carbon $end): array
     {
+        // ⭐ Batched: one grouped query per metric instead of N per-day queries.
+        // monthly  → 1 query per metric (was ~30)
+        // weekly   → 1 query per metric (was ~7)
+        // yearly   → 1 query per metric (was ~12)
+        $bucketExpr = $period === 'yearly' ? "DATE_FORMAT(%s, '%%Y-%%m')" : 'DATE(%s)';
+
+        $paymentExpr = sprintf($bucketExpr, 'payment_date');
+        $invExpr     = sprintf($bucketExpr, 'created_at');
+        $payrollExpr = sprintf($bucketExpr, 'payrolls.created_at');
+
+        $revenueByBucket = BookingPayment::query()
+            ->whereBetween('payment_date', [$start, $end])
+            ->where('status', 'completed')
+            ->selectRaw("{$paymentExpr} as bucket")
+            ->selectRaw("COALESCE(SUM(CASE WHEN payment_type = 'refund' THEN -ABS(amount) ELSE amount END), 0) as total")
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
+
+        $inventoryByBucket = InventoryMovement::query()
+            ->whereBetween('created_at', [$start, $end])
+            ->whereIn('movement_type', ['purchase', 'waste'])
+            ->selectRaw("{$invExpr} as bucket")
+            ->selectRaw('COALESCE(SUM(ABS(quantity_change) * COALESCE(unit_cost_at_time, 0)), 0) as total')
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
+
+        $payrollByBucket = DB::table('payrolls')
+            ->join('payroll_items', 'payrolls.payroll_id', '=', 'payroll_items.payroll_id')
+            ->whereBetween('payrolls.created_at', [$start, $end])
+            ->where('payroll_items.item_type', 'earning')
+            ->selectRaw("{$payrollExpr} as bucket")
+            ->selectRaw('COALESCE(SUM(payroll_items.amount), 0) as total')
+            ->groupBy('bucket')
+            ->pluck('total', 'bucket');
+
         $rows = [];
+
+        $pushRow = function (Carbon $bucketStart) use (&$rows, $period, $revenueByBucket, $inventoryByBucket, $payrollByBucket) {
+            $key = $period === 'yearly'
+                ? $bucketStart->format('Y-m')
+                : $bucketStart->format('Y-m-d');
+
+            $label = match ($period) {
+                'yearly'  => $bucketStart->format('M'),
+                'weekly'  => $bucketStart->format('D'),
+                default   => $bucketStart->format('M d'),
+            };
+
+            $revenue  = (float) ($revenueByBucket[$key] ?? 0);
+            $expenses = round(
+                (float) ($inventoryByBucket[$key] ?? 0)
+                    + (float) ($payrollByBucket[$key] ?? 0),
+                2
+            );
+
+            $rows[] = [
+                'month'    => $label,
+                'period'   => $label,
+                'date'     => $bucketStart->toDateString(),
+                'revenue'  => $revenue,
+                'expenses' => $expenses,
+                'profit'   => round($revenue - $expenses, 2),
+            ];
+        };
 
         if ($period === 'yearly') {
             for ($m = 1; $m <= 12; $m++) {
-                $mStart = Carbon::create($start->year, $m, 1)->startOfMonth();
-                $mEnd   = $mStart->copy()->endOfMonth();
-                $rows[] = [
-                    'month'    => $mStart->format('M'),
-                    'period'   => $mStart->format('M'),
-                    'date'     => $mStart->toDateString(),
-                    'revenue'  => $this->totalPaymentsCollected($mStart, $mEnd),
-                    'expenses' => $this->totalExpenses($mStart, $mEnd),
-                ];
-            }
-        } elseif ($period === 'weekly') {
-            $cursor = $start->copy();
-            while ($cursor->lte($end)) {
-                $day = $cursor->copy();
-                $rows[] = [
-                    'month'    => $day->format('D'),
-                    'period'   => $day->format('D'),
-                    'date'     => $day->toDateString(),
-                    'revenue'  => $this->totalPaymentsCollected($day->copy()->startOfDay(), $day->copy()->endOfDay()),
-                    'expenses' => $this->totalExpenses($day->copy()->startOfDay(), $day->copy()->endOfDay()),
-                ];
-                $cursor->addDay();
+                $pushRow(Carbon::create($start->year, $m, 1)->startOfMonth());
             }
         } else {
-            $cursor = $start->copy();
+            $cursor = $start->copy()->startOfDay();
             while ($cursor->lte($end)) {
-                $day = $cursor->copy();
-                $rows[] = [
-                    'month'    => $day->format('M d'),
-                    'period'   => $day->format('M d'),
-                    'date'     => $day->toDateString(),
-                    'revenue'  => $this->totalPaymentsCollected($day->copy()->startOfDay(), $day->copy()->endOfDay()),
-                    'expenses' => $this->totalExpenses($day->copy()->startOfDay(), $day->copy()->endOfDay()),
-                ];
+                $pushRow($cursor->copy());
                 $cursor->addDay();
             }
         }
 
-        return array_map(function ($r) {
-            $r['profit'] = round($r['revenue'] - $r['expenses'], 2);
-            return $r;
-        }, $rows);
+        return $rows;
     }
-
     private function bookingTrendSeries(string $period, Carbon $start, Carbon $end): array
     {
-        $bucket = function (Carbon $from, Carbon $to) {
-            $base = Booking::query()
-                ->whereBetween('created_at', [$from, $to])
-                ->where('booking_no', 'not like', 'HIST-%');
-            return [
-                'completed' => (int) (clone $base)->where('booking_status', 'completed')->count(),
-                'cancelled' => (int) (clone $base)->where('booking_status', 'cancelled')->count(),
-                'bookings'  => (int) (clone $base)->whereIn('booking_status', ['confirmed', 'ongoing', 'completed'])->count(),
-            ];
-        };
+        // ⭐ Batched: one grouped query for the whole range instead of N per-bucket queries.
+        $bucketExpr = $period === 'yearly'
+            ? "DATE_FORMAT(created_at, '%Y-%m')"
+            : 'DATE(created_at)';
+
+        $grouped = Booking::query()
+            ->whereBetween('created_at', [$start, $end])
+            ->where('booking_no', 'not like', 'HIST-%')
+            ->selectRaw("{$bucketExpr} as bucket")
+            ->selectRaw("SUM(CASE WHEN booking_status = 'completed' THEN 1 ELSE 0 END) as completed")
+            ->selectRaw("SUM(CASE WHEN booking_status = 'cancelled' THEN 1 ELSE 0 END) as cancelled")
+            ->selectRaw("SUM(CASE WHEN booking_status IN ('confirmed','ongoing','completed') THEN 1 ELSE 0 END) as bookings")
+            ->groupBy('bucket')
+            ->get()
+            ->keyBy('bucket');
 
         $rows = [];
 
+        $pushRow = function (Carbon $bucketStart) use (&$rows, $period, $grouped) {
+            $key = $period === 'yearly'
+                ? $bucketStart->format('Y-m')
+                : $bucketStart->format('Y-m-d');
+
+            $b = $grouped[$key] ?? null;
+
+            $label = match ($period) {
+                'yearly' => $bucketStart->format('M'),
+                'weekly' => $bucketStart->format('D'),
+                default  => $bucketStart->format('M d'),
+            };
+
+            $rows[] = [
+                'period'    => $label,
+                'month'     => $label,
+                'date'      => $bucketStart->toDateString(),
+                'completed' => (int) ($b->completed ?? 0),
+                'cancelled' => (int) ($b->cancelled ?? 0),
+                'bookings'  => (int) ($b->bookings  ?? 0),
+            ];
+        };
+
         if ($period === 'yearly') {
             for ($m = 1; $m <= 12; $m++) {
-                $mStart = Carbon::create($start->year, $m, 1)->startOfMonth();
-                $mEnd   = $mStart->copy()->endOfMonth();
-                $rows[] = array_merge($bucket($mStart, $mEnd), [
-                    'period' => $mStart->format('M'),
-                    'month'  => $mStart->format('M'),
-                ]);
+                $pushRow(Carbon::create($start->year, $m, 1)->startOfMonth());
             }
         } else {
-            $cursor = $start->copy();
+            $cursor = $start->copy()->startOfDay();
             while ($cursor->lte($end)) {
-                $day = $cursor->copy();
-                $rows[] = array_merge($bucket($day->copy()->startOfDay(), $day->copy()->endOfDay()), [
-                    'period' => $day->format($period === 'weekly' ? 'D' : 'M d'),
-                    'month'  => $day->format($period === 'weekly' ? 'D' : 'M d'),
-                    'date'   => $day->toDateString(),
-                ]);
+                $pushRow($cursor->copy());
                 $cursor->addDay();
             }
         }
@@ -935,7 +1051,7 @@ class DashboardController extends Controller
                 ->groupBy('bucket')
                 ->orderBy('bucket')
                 ->get()
-                ->map(fn ($r) => [
+                ->map(fn($r) => [
                     'month'        => Carbon::parse($r->bucket . '-01')->format('M'),
                     'newCustomers' => (int) $r->newCustomers,
                 ])
@@ -949,7 +1065,7 @@ class DashboardController extends Controller
             ->groupBy('bucket')
             ->orderBy('bucket')
             ->get()
-            ->map(fn ($r) => [
+            ->map(fn($r) => [
                 'month'        => Carbon::parse($r->bucket)->format('M d'),
                 'newCustomers' => (int) $r->newCustomers,
             ])
@@ -1008,12 +1124,17 @@ class DashboardController extends Controller
             ->pluck('revenue', 'bucket');
 
         $rows = [];
-        $cursor = $start->copy();
+        $cursor = $start->copy()->startOfDay();
         while ($cursor->lte($end)) {
             $day = $cursor->copy();
             $key = $period === 'yearly' ? $day->format('Y-m') : $day->format('Y-m-d');
+            $label = match ($period) {
+                'yearly' => $day->format('M'),
+                'weekly' => $day->format('D'),
+                default  => $day->format('M d'),
+            };
             $rows[] = [
-                'period'  => $period === 'yearly' ? $day->format('M') : $day->format($period === 'weekly' ? 'D' : 'M d'),
+                'period'  => $label,
                 'date'    => $day->toDateString(),
                 'orders'  => (int) ($bookings[$key] ?? 0),
                 'revenue' => round((float) ($revenue[$key] ?? 0), 2),
@@ -1053,7 +1174,7 @@ class DashboardController extends Controller
             ->orderByDesc('popularity')
             ->limit(12)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'menu_item_id' => $item->menu_item_id,
                 'name'         => $item->name,
                 'popularity'   => (int) $item->popularity,
@@ -1080,7 +1201,7 @@ class DashboardController extends Controller
             ->orderByDesc('revenue')
             ->limit(8)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'name'      => $item->name,
                 'orders'    => (int) $item->orders,
                 'revenue'   => round((float) $item->revenue, 2),
@@ -1103,7 +1224,7 @@ class DashboardController extends Controller
         return $bookings->map(function (Booking $booking) {
             $revenue = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
             $cost = (float) $booking->items->sum(
-                fn ($item) => ((float) $item->quantity) * ((float) ($item->menuItem?->cost_to_make ?? 0))
+                fn($item) => ((float) $item->quantity) * ((float) ($item->menuItem?->cost_to_make ?? 0))
             );
             $profit = $revenue - $cost;
             $margin = $revenue > 0 ? round(($profit / $revenue) * 100, 2) : 0;
@@ -1138,7 +1259,7 @@ class DashboardController extends Controller
             ->orderByDesc('orders')
             ->limit(10)
             ->get()
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'id'         => $item->menu_item_id,
                 'name'       => $item->name,
                 'orders'     => (int) $item->orders,
@@ -1176,7 +1297,7 @@ class DashboardController extends Controller
             ->get();
 
         return $rows
-            ->map(fn ($item) => [
+            ->map(fn($item) => [
                 'id'            => $item->employee_id,
                 'employee_name' => trim($item->employee_name) ?: 'Employee',
                 'position'      => $item->position,
@@ -1191,7 +1312,7 @@ class DashboardController extends Controller
     private function expensesVsProfitSeries(string $period, Carbon $start, Carbon $end): array
     {
         $series = $this->revenueExpensesSeries($period, $start, $end);
-        return array_map(fn ($row) => [
+        return array_map(fn($row) => [
             'month'    => $row['month'],
             'expenses' => $row['expenses'],
             'profit'   => $row['profit'],

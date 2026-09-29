@@ -124,6 +124,7 @@ import {
     useConfirmBooking,
     useRejectBooking,
     syncBookingInCache,
+    broadcastBookingChanged,
 } from '../../../hooks/useBookingQuotation';
 
 import {
@@ -4825,28 +4826,50 @@ const UnifiedOrderEventsManagement = () => {
             align: 'center',
             render: (v) => <span className="ue-pax-number">{safeNumber(v)}</span>
         },
-        {
+                {
             title: 'AMOUNT',
             key: 'amount',
-            width: 140,
+            width: 160,
             align: 'right',
             render: (_, record) => {
                 const total = safeNumber(record.total_amount);
                 const paid = safeNumber(record.paid_amount || 0);
-                const balance = safeNumber(record.balance || 0);
+                const balance = safeNumber(
+                    record.balance ?? Math.max(0, total - paid)
+                );
+
+                // ⭐ Only show Paid / Balance once the booking is APPROVED.
+                const status = safeString(record?.booking_status).toLowerCase();
+                const isApproved = status === 'confirmed' || status === 'approved';
+
                 return (
-                    <div className="ue-amount-cell">
-                        <div className="ue-amount-total">{formatCurrency(total)}</div>
-                        {balance > 0 && (
-                            <div className="ue-amount-balance" style={{ color: '#ef4444', fontSize: '11px' }}>
+                    <div className="ue-amount-cell" style={{ lineHeight: 1.3 }}>
+                        <div className="ue-amount-total" style={{ fontWeight: 600 }}>
+                            {formatCurrency(total)}
+                        </div>
+                        {isApproved && paid > 0 && (
+                            <div
+                                className="ue-amount-paid"
+                                style={{ color: '#10b981', fontSize: '11px' }}
+                            >
+                                Paid: {formatCurrency(paid)}
+                            </div>
+                        )}
+                        {isApproved && balance > 0 ? (
+                            <div
+                                className="ue-amount-balance"
+                                style={{ color: '#ef4444', fontSize: '11px', fontWeight: 600 }}
+                            >
                                 Balance: {formatCurrency(balance)}
                             </div>
-                        )}
-                        {paid > 0 && balance <= 0 && (
-                            <div className="ue-amount-paid" style={{ color: '#10b981', fontSize: '11px' }}>
+                        ) : isApproved && paid > 0 ? (
+                            <div
+                                className="ue-amount-paid"
+                                style={{ color: '#10b981', fontSize: '11px', fontWeight: 600 }}
+                            >
                                 Fully Paid
                             </div>
-                        )}
+                        ) : null}
                     </div>
                 );
             }
@@ -6872,13 +6895,34 @@ const UnifiedOrderEventsManagement = () => {
                     ...validatedValues,
                     ...values,
                 }, { signal });
-            });
-            message.success('Payment recorded successfully');
+            });            message.success('Payment recorded successfully');
             setPaymentModalVisible(false);
             paymentForm.resetFields();
+
+            // ⭐ REQUEST — Order & Events payments must show up instantly
+            //    in Billing & Invoicing → Payment Tracking. Invalidate the
+            //    billing cache tree so those tabs re-fetch.
+            //
+            // ⭐ UPDATED: Also invalidate the specific booking detail so
+            //    the yellow deposit highlight is cleared and the balance
+            //    is refreshed for THIS booking row immediately.
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'detail', selectedBooking.id], refetchType: 'active' });
             queryClient.invalidateQueries({ queryKey: ['bookings', 'payment-summary', selectedBooking.id], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
             queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'active' });
             queryClient.invalidateQueries({ queryKey: ['payments'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'payments'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'active' });
+
+            // ⭐ Force every open tab / window to refetch this booking
+            //    so the balance updates everywhere at once.
+            broadcastBookingChanged(selectedBooking.id, 'payment_recorded');
+
             Promise.allSettled([
                 refetchActiveBookings(),
                 refetchHistoryBookings(),

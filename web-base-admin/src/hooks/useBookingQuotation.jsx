@@ -531,13 +531,15 @@ export const useBookingStatistics = (period = 'monthly', anchor = null) => {
                 })
             };
         },
-        // ⭐ A new period/anchor is a NEW queryKey — treat it as fresh data
+           // ⭐ A new period/anchor is a NEW queryKey — treat it as fresh data
         //    so it fetches immediately and never serves a stale window.
-        staleTime: 30 * 1000,
-        // ⭐ Refetch whenever the user switches back to this tab.
+        staleTime: 15 * 1000,
+        // ⭐ REQUEST #6 — 20-second poll so pending approvals and revenue
+        //    numbers stay current without any manual refresh.
+        refetchInterval: 20 * 1000,
+        refetchIntervalInBackground: false,
         refetchOnWindowFocus: true,
-        // ⭐ Keep the previous period's numbers on screen while the new
-        //    period loads — prevents a flash of empty cards.
+        refetchOnReconnect: true,
         placeholderData: (previous) => previous,
     });
 };
@@ -693,7 +695,10 @@ export const useRejectBooking = () => {
 
     return useMutation({
         mutationFn: (id) => bookingAPI.rejectBooking(id),
-        onSuccess: (response) => {
+              onSuccess: (response, id) => {
+            // ⭐ REQUEST #6 — Broadcast so every other tab un-highlights
+            // the row immediately without a refresh.
+            broadcastBookingChanged(id, 'rejected');
             message.warning(getResponseMessage(response, 'Booking rejected'));
             invalidateBookingData(queryClient);
         },
@@ -708,7 +713,9 @@ export const useCancelBooking = () => {
 
     return useMutation({
         mutationFn: ({ id, data }) => bookingAPI.cancelBooking(id, data),
-        onSuccess: (response) => {
+              onSuccess: (response, variables) => {
+            const id = variables?.id ?? variables?.booking_id;
+            if (id) broadcastBookingChanged(id, 'cancelled');
             message.success(getResponseMessage(response, 'Booking cancelled successfully'));
             invalidateBookingData(queryClient);
             invalidatePaymentData(queryClient);
@@ -719,8 +726,42 @@ export const useCancelBooking = () => {
     });
 };
 
-export const useCancelBookingWithReason = () => {
+/**
+ * ⭐ REQUEST #4 — Un-reject a booking (restore to pending approval).
+ * Uses syncBookingInCache so the row moves out of history instantly.
+ */
+export const useUnrejectBooking = () => {
     const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: (id) => bookingAPI.unrejectBooking(id),
+        onSuccess: (response, id) => {
+            const restored = normalizeObjectResponse(response, {});
+            if (restored && !restored.booking_status) {
+                restored.booking_status = 'pending_approval';
+            }
+
+            if (restored && restored.booking_id) {
+                syncBookingInCache(queryClient, restored);
+            }
+
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.detail(id), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
+
+            broadcastBookingChanged(id, 'unrejected');
+
+            message.success(
+                getResponseMessage(response, 'Booking restored to pending approval.')
+            );
+        },
+        onError: (error) => {
+            message.error(getErrorMessage(error, 'Failed to restore booking'));
+        },
+    });
+};
+
+export const useCancelBookingWithReason = () => {    const queryClient = useQueryClient();
 
     return useMutation({
         mutationFn: ({ id, reason }) => api.post(`/bookings/${id}/cancel-with-reason`, { reason }),
@@ -740,7 +781,8 @@ export const useCompleteBooking = () => {
 
     return useMutation({
         mutationFn: (id) => api.post(`/bookings/${id}/complete`),
-        onSuccess: (response, id) => {
+             onSuccess: (response, id) => {
+            broadcastBookingChanged(id, 'completed');
             message.success(response.data?.message || 'Booking completed successfully');
             invalidateBookingData(queryClient);
             queryClient.invalidateQueries({ queryKey: bookingKeys.statistics() });
@@ -816,7 +858,12 @@ export const useRecordPayment = () => {
 
     return useMutation({
         mutationFn: ({ id, data }) => bookingAPI.recordPayment(id, data),
-        onSuccess: (response, variables) => {
+             onSuccess: (response, variables) => {
+            // ⭐ REQUEST #2 — A payment just landed. Broadcast so every open
+            // tab re-fetches this booking and the yellow deposit highlight
+            // disappears automatically without a manual refresh.
+            if (variables?.id) broadcastBookingChanged(variables.id, 'payment_recorded');
+
             message.success(getResponseMessage(response, 'Payment recorded successfully'));
             invalidateBookingData(queryClient);
             invalidatePaymentData(queryClient);
@@ -1471,8 +1518,9 @@ export default {
     usePayments,
     usePayment,
     useCalendarAvailability,
-    useConfirmBooking,
+      useConfirmBooking,
     useRejectBooking,
+    useUnrejectBooking,
     useCancelBooking,
     useCancelBookingWithReason,
     useCompleteBooking,

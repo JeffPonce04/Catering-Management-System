@@ -44,4 +44,37 @@ class Invoice extends Model
 
         return (float) $this->paid_amount > 0 ? 'partial' : 'unpaid';
     }
+
+    /**
+     * ⭐ Generate the next invoice number.
+     *
+     * Format:  INV-YYYYMMDD-NNNN
+     * Example: INV-20260929-0001
+     *
+     * Rules:
+     *   • The date part is today's date (YYYYMMDD).
+     *   • The 4-digit sequence restarts at 0001 each day.
+     *   • The counter picks up from the highest sequence already issued
+     *     today (including soft-deleted rows) so deletions never collide.
+     *
+     * Usage:
+     *   $invoiceNumber = Invoice::nextInvoiceNumber();
+     */
+    public static function nextInvoiceNumber(): string
+    {
+        $prefix = 'INV-' . now()->format('Ymd') . '-';
+
+        $lastInvoice = static::withTrashed()
+            ->where('invoice_number', 'like', $prefix . '%')
+            ->orderByDesc('invoice_number')
+            ->first();
+
+        $nextSequence = 1;
+
+        if ($lastInvoice && preg_match('/-(\d+)$/', (string) $lastInvoice->invoice_number, $matches)) {
+            $nextSequence = ((int) $matches[1]) + 1;
+        }
+
+        return $prefix . str_pad((string) $nextSequence, 4, '0', STR_PAD_LEFT);
+    }
 }

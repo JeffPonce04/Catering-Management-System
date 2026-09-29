@@ -1030,24 +1030,35 @@ const BillingInvoicing = () => {
         anchor: dashboardAnchor,
     }), [dashboardPeriod, dashboardAnchor]);
 
-    const invoicesQuery = useQuery({
+      const invoicesQuery = useQuery({
         queryKey: ['billing', 'invoices', invoicePeriodParams],
         queryFn: async () => extractDataFromResponse(await api.get('/invoices', {
             params: { per_page: 100, ...invoicePeriodParams },
         })),
         ...BILLING_QUERY_OPTIONS,
+        // ⭐ REQUEST — A new invoice auto-created by an Order & Events
+        //    payment shows up within 20s.
+        refetchInterval: 20 * 1000,
+        refetchIntervalInBackground: false,
     });
      // Only fire these queries when the user is actually on the tab that
     // needs them. This shrinks the cold-start waterfall from 7 requests
     // to 3 (invoices + confirmed-bookings + settings).
 
-    const paymentTrackingQuery = useQuery({
+      const paymentTrackingQuery = useQuery({
         queryKey: ['billing', 'payments', 'tracking', paymentDateParams],
         queryFn: async () => extractDataFromResponse(await api.get('/payments/tracking', {
             params: { per_page: 100, ...paymentDateParams },
         })),
         ...BILLING_QUERY_OPTIONS,
-        enabled: activeMainTab === 'payments' || activeMainTab === 'invoices',
+        // ⭐ REQUEST — Poll the tracking endpoint every 15s while the tab
+        //    is open. A payment recorded on Order & Events (or another
+        //    browser) appears without a manual refresh.
+        refetchInterval: 15 * 1000,
+        refetchIntervalInBackground: false,
+              // ⭐ REQUEST — Keep this query enabled on every tab so cross-module
+        //    payments show up without waiting for the user to switch tabs.
+        enabled: true,
     });
 
     const paymentHistoryQuery = useQuery({
@@ -1608,12 +1619,18 @@ const BillingInvoicing = () => {
             discount: 0,
             additional_charges: 0,
         });
-        setInvoiceModalVisible(true);
+         setInvoiceModalVisible(true);
 
         // ⭐ Force a fresh fetch every time the modal opens so a booking
         //    approved in another tab (or a new invoice created elsewhere)
         //    shows up immediately without a hard reload.
+        //    Also invalidate so the query actually re-runs instead of
+        //    resolving from cache.
         try {
+            queryClient.invalidateQueries({
+                queryKey: ['billing', 'confirmed-bookings'],
+                refetchType: 'active',
+            });
             confirmedBookingsQuery.refetch();
         } catch (e) {
             // query ref may not exist on first render
@@ -5324,15 +5341,25 @@ const BillingInvoicing = () => {
                                             </div>
                                         }
                                     >
-                                                                               {confirmedBookings
-                                            .filter((booking) => !booking.has_invoice)
-                                            .map(booking => {
-                                            // ⭐ If the booking already has an invoice, still show it
-                                            //    but label it clearly. Selection is allowed when
-                                            //    creating a new invoice is impossible — the backend
-                                            //    will reject duplicates anyway.
+                                                                          {/*
+                                      ⭐ Show EVERY confirmed booking.
+                                      Bookings that already have an invoice are shown
+                                      first (they are the most likely to be selected
+                                      when the operator wants to view/adjust that invoice),
+                                      and they are labelled as already-invoiced so the
+                                      operator is not surprised if the save fails.
+                                    */}
+                                    {[...(confirmedBookings || [])]
+                                        .sort((a, b) => {
+                                            // Already-invoiced on top, then by booking_id desc.
+                                            if (a.has_invoice !== b.has_invoice) {
+                                                return a.has_invoice ? -1 : 1;
+                                            }
+                                            return Number(b.booking_id) - Number(a.booking_id);
+                                        })
+                                        .map((booking) => {
                                             const label = booking.has_invoice
-                                                ? `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})  · Already invoiced: ${booking.invoice_number}`
+                                                ? `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'}) · Already invoiced: ${booking.invoice_number}`
                                                 : `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})`;
 
                                             return (

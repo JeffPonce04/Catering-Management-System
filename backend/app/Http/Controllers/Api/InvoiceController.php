@@ -58,7 +58,7 @@ class InvoiceController extends Controller
             if ($start && $end) {
                 $query->whereHas('booking.serviceEvent', function ($q) use ($start, $end) {
                     $q->whereDate('event_date', '>=', $start->toDateString())
-                      ->whereDate('event_date', '<=', $end->toDateString());
+                        ->whereDate('event_date', '<=', $end->toDateString());
                 });
             }
 
@@ -205,7 +205,11 @@ class InvoiceController extends Controller
             $isAdministrator = $user?->hasAnyRole(['admin', 'administrator', 'owner', 'super-admin', 'super_admin', 'superadmin']) ?? false;
 
             if ($isCashier && ! $isAdministrator && $request->hasAny([
-                'subtotal', 'discount', 'discount_type', 'additional_charges', 'status',
+                'subtotal',
+                'discount',
+                'discount_type',
+                'additional_charges',
+                'status',
             ])) {
                 return $this->fail('Pricing and invoice status adjustments require administrator approval.', 403);
             }
@@ -268,7 +272,7 @@ class InvoiceController extends Controller
     public function getConfirmedBookings(Request $request)
     {
         try {
-                    $bookings = Booking::with([
+            $bookings = Booking::with([
                 'serviceEvent.customer.person',
                 'serviceEvent.eventType',
                 'items.menuItem',
@@ -277,7 +281,9 @@ class InvoiceController extends Controller
             ])
                 ->whereIn('booking_status', ['confirmed', 'approved'])
                 ->where('booking_no', 'not like', 'HIST-%')
-                ->whereDoesntHave('invoice')
+                // ⭐ Removed `whereDoesntHave('invoice')` so bookings that
+                //    already have an invoice still appear in the Select.
+                //    The frontend labels them so the operator knows.
                 ->latest('booking_id')
                 ->paginate(min(500, max(1, $request->integer('per_page', 200))));
 
@@ -741,9 +747,12 @@ class InvoiceController extends Controller
         return $totalDeposits <= 0 ? 100 : round(($paidDeposits / $totalDeposits) * 100, 2);
     }
 
+    /**
+     * ⭐ Delegate to the model helper so the invoice-number format lives
+     * in exactly one place. See Invoice::nextInvoiceNumber().
+     */
     private function generateInvoiceNumber(): string
     {
-        $count = Invoice::count() + 1;
-        return 'INV-' . now()->format('Ymd') . '-' . str_pad($count, 4, '0', STR_PAD_LEFT);
+        return Invoice::nextInvoiceNumber();
     }
 }

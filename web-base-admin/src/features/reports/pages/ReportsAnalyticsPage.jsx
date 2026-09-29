@@ -89,8 +89,9 @@ import * as XLSX from 'xlsx';
 import { useReportsData } from '../../../hooks/useReportQueries';
 import { useAuth } from '../../../contexts/AuthContext';
 import { getUserRoles } from '../../../utils/roleRoutes';
-import api from '../../../services/api';
-import '../../reports/styles/Reports.css';
+import '../styles/Reports.css';
+
+// api import removed — profitability now flows through useReportsDataimport '../../reports/styles/Reports.css';
 
 const { RangePicker } = DatePicker;
 const { Text, Paragraph } = Typography;
@@ -755,11 +756,11 @@ const normalizeMenuProfitability = (menuRaw) => {
 // Aggregate bookings into periods
 // ============================================================
 const aggregateProfitabilityByPeriod = (bookings, granularity = 'month') => {
-  const getKey = (dateStr) => {
+   const getKey = (dateStr) => {
     if (!dateStr) return 'Unknown';
     const d = dayjs(dateStr);
     if (!d.isValid()) return 'Unknown';
-    if (granularity === 'week') return `${d.year()}-W${String(d.week()).padStart(2, '0')}`;
+    if (granularity === 'week') return `${d.isoWeekYear()}-W${String(d.isoWeek()).padStart(2, '0')}`;
     if (granularity === 'year') return String(d.year());
     return d.format('YYYY-MM');
   };
@@ -768,8 +769,8 @@ const aggregateProfitabilityByPeriod = (bookings, granularity = 'month') => {
     const d = dayjs(dateStr);
     if (!d.isValid()) return fallbackKey;
     if (granularity === 'week') {
-      const start = d.startOf('week');
-      const end = d.endOf('week');
+      const start = d.startOf('isoWeek');
+      const end = d.endOf('isoWeek');
       return `${start.format('MMM D')} – ${end.format('MMM D, YYYY')}`;
     }
     if (granularity === 'year') return d.format('YYYY');
@@ -1209,10 +1210,9 @@ const ReportsAnalyticsPage = () => {
   const [isFilterExpanded, setIsFilterExpanded] = useState(false);
   const [activePreset, setActivePreset] = useState('this-month');
 
-  // Profitability data fetched separately from the profitability endpoints
-  const [profitabilityData, setProfitabilityData] = useState({ report: null, menus: null });
-  const [profitabilityLoading, setProfitabilityLoading] = useState(false);
-
+     // ============================================================
+  // LOCAL STATE — declarations must come before any hook that uses them.
+  // ============================================================
   const defaultRange = useMemo(() => [dayjs().startOf('month'), dayjs().endOf('month')], []);
   const emptyFilters = useMemo(() => ({
     dateRange: defaultRange,
@@ -1224,25 +1224,28 @@ const ReportsAnalyticsPage = () => {
     supplier: undefined,
     status: undefined,
   }), [defaultRange]);
+
   const [draftFilters, setDraftFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
 
-  useEffect(() => {
-    if (visibleCategories.length === 0) return;
-    const categoryStillVisible = visibleCategories.some((category) => category.key === selectedCategoryKey);
-    if (!categoryStillVisible) {
-      setSelectedCategoryKey(visibleCategories[0].key);
-      setSelectedReportKey(visibleCategories[0].reports[0].key);
-      setOpenKeys([visibleCategories[0].key]);
-    }
-  }, [selectedCategoryKey, visibleCategories]);
+  // ⭐ Local state for profitability — populated from useReportsData
+  //    so the Reports page and Dashboard share the same dataset.
+  const [profitabilityData, setProfitabilityData] = useState({ report: null, menus: null });
+  const [profitabilityLoading, setProfitabilityLoading] = useState(false);
 
+  // ============================================================
+  // QUERY PARAMS — derived from applied filters.
+  // Must be declared BEFORE useReportsData consumes it.
+  // ============================================================
   const queryParams = useMemo(() => ({
     start_date: appliedFilters.dateRange?.[0]?.format('YYYY-MM-DD'),
     end_date: appliedFilters.dateRange?.[1]?.format('YYYY-MM-DD'),
     year: appliedFilters.dateRange?.[0]?.year() || dayjs().year(),
   }), [appliedFilters.dateRange]);
 
+  // ============================================================
+  // REPORTS DATA — single source of truth for all report categories.
+  // ============================================================
   const {
     data: reports = {},
     isLoading,
@@ -1252,50 +1255,36 @@ const ReportsAnalyticsPage = () => {
   } = useReportsData(queryParams, { salesOnly: !canSeeAll });
 
   // ============================================================
-  // LOAD PROFITABILITY DATA (only when the profitability category is active)
+  // SYNC PROFITABILITY FROM useReportsData
   // ============================================================
   useEffect(() => {
-    if (selectedCategoryKey !== 'profitability') return;
-    if (profitabilityData.report && profitabilityData.menus) return; // cached
+    const report = reports?.profitabilityReport;
+    const menus = reports?.profitabilityMenus;
+    if (report || menus) {
+      setProfitabilityData({
+        report: report || {},
+        menus: menus || [],
+      });
+    }
+  }, [reports?.profitabilityReport, reports?.profitabilityMenus]);
 
-    let cancelled = false;
-    const load = async () => {
-      setProfitabilityLoading(true);
-      try {
-        const params = {
-          date_from: queryParams.start_date,
-          date_to: queryParams.end_date,
-        };
-        const [reportRes, menusRes] = await Promise.all([
-          api.get('/profitability/report', { params }),
-          api.get('/profitability/menus', { params }),
-        ]);
-        const pick = (res) => {
-          if (!res) return null;
-          if (res.success !== undefined) return res.data ?? res;
-          if (res.data?.success !== undefined) return res.data.data ?? res.data;
-          if (res.data?.data !== undefined) return res.data.data ?? res.data;
-          return res.data ?? res;
-        };
-        if (!cancelled) {
-          setProfitabilityData({
-            report: pick(reportRes) || {},
-            menus: pick(menusRes) || [],
-          });
-        }
-      } catch (err) {
-        console.error('Failed to load profitability data', err);
-        if (!cancelled) {
-          message.error(err?.response?.data?.message || 'Failed to load profitability data');
-        }
-      } finally {
-        if (!cancelled) setProfitabilityLoading(false);
-      }
-    };
-    load();
-    return () => { cancelled = true; };
-  }, [selectedCategoryKey, queryParams.start_date, queryParams.end_date, profitabilityData.report, profitabilityData.menus, message]);
+  useEffect(() => {
+    setProfitabilityLoading(Boolean(isFetching && selectedCategoryKey === 'profitability'));
+  }, [isFetching, selectedCategoryKey]);
 
+  // ============================================================
+  // VISIBILITY GUARD — if the selected category is not visible
+  // for the current user's role, fall back to the first one.
+  // ============================================================
+  useEffect(() => {
+    if (visibleCategories.length === 0) return;
+    const categoryStillVisible = visibleCategories.some((category) => category.key === selectedCategoryKey);
+    if (!categoryStillVisible) {
+      setSelectedCategoryKey(visibleCategories[0].key);
+      setSelectedReportKey(visibleCategories[0].reports[0].key);
+      setOpenKeys([visibleCategories[0].key]);
+    }
+  }, [selectedCategoryKey, visibleCategories]);
   const selectedCategory = visibleCategories.find((category) => category.key === selectedCategoryKey) || initialCategory;
   const activeReport = selectedCategory?.reports.find((item) => item.key === selectedReportKey) || selectedCategory?.reports[0];
 
@@ -1411,7 +1400,6 @@ const ReportsAnalyticsPage = () => {
       ),
     })),
   })), [visibleCategories]);
-
   const selectReport = (reportKey) => {
     const category = visibleCategories.find((item) => item.reports.some((reportItem) => reportItem.key === reportKey));
     if (!category) return;
@@ -1421,9 +1409,6 @@ const ReportsAnalyticsPage = () => {
     setSearchText('');
     setDraftFilters(emptyFilters);
     setAppliedFilters(emptyFilters);
-    if (category.key === 'profitability') {
-      setProfitabilityData({ report: null, menus: null });
-    }
   };
 
   const handlePresetClick = (preset) => {
@@ -1431,16 +1416,10 @@ const ReportsAnalyticsPage = () => {
     setActivePreset(preset.key);
     setDraftFilters((prev) => ({ ...prev, dateRange: range }));
     setAppliedFilters((prev) => ({ ...prev, dateRange: range }));
-    if (isProfitability) {
-      setProfitabilityData({ report: null, menus: null });
-    }
   };
 
   const handleGenerate = () => {
     setAppliedFilters({ ...draftFilters });
-    if (isProfitability) {
-      setProfitabilityData({ report: null, menus: null });
-    }
     message.success({
       content: `${activeReport.label} generated successfully.`,
       duration: 2,
@@ -1721,13 +1700,10 @@ const ReportsAnalyticsPage = () => {
                   Email
                 </Button>
                 <Tooltip title="Refresh data">
-                  <Button
+                              <Button
                     icon={<ReloadOutlined spin={isFetching || profitabilityLoading} />}
                     onClick={() => {
                       refetch();
-                      if (isProfitability) {
-                        setProfitabilityData({ report: null, menus: null });
-                      }
                     }}
                     className="rp-btn-icon"
                   />

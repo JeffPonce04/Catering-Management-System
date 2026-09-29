@@ -913,7 +913,7 @@ export const bookingAPI = {
   deleteBooking: (id) => api.delete(`/bookings/${id}`),
   confirmBooking: (id) => api.post(`/bookings/${id}/confirm`),
   rejectBooking: (id) => api.post(`/bookings/${id}/reject`),
-  cancelBooking: (id, data) => api.post(`/bookings/${id}/cancel`, data),
+  unrejectBooking: (id) => api.post(`/bookings/${id}/unreject`),  cancelBooking: (id, data) => api.post(`/bookings/${id}/cancel`, data),
   rescheduleBooking: (id, data) => api.post(`/bookings/${id}/reschedule`, data),
   requestReschedule: (id, data) => api.post(`/bookings/${id}/request-reschedule`, data),
   approveReschedule: (id) => api.post(`/bookings/${id}/approve-reschedule`),
