@@ -44,9 +44,11 @@ const OrdersScreen = ({ navigation }) => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [showOrderDetail, setShowOrderDetail] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
-  const [referenceNumber, setReferenceNumber] = useState('');
+    const [referenceNumber, setReferenceNumber] = useState('');
   const [proofImage, setProofImage] = useState(null);
   const [paymentStep, setPaymentStep] = useState(1);
+  // ⭐ Custom amount the customer wants to pay (defaults to remaining balance)
+  const [customPaymentAmount, setCustomPaymentAmount] = useState('');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -416,14 +418,26 @@ const OrdersScreen = ({ navigation }) => {
 
   const handleMakePayment = (order) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // ⭐ Prevent opening the payment modal when the balance is zero.
+    const remaining = Number(order?.remainingBalance || 0);
+    if (remaining <= 0.01) {
+      Alert.alert(
+        'Fully Paid',
+        'This booking is already fully paid. Additional payment is not allowed.',
+        [{ text: 'OK' }]
+      );
+      return;
+    }
+
     setSelectedOrderForPayment(order);
     setPaymentMethod('');
     setReferenceNumber('');
     setProofImage(null);
+    setCustomPaymentAmount(String(remaining)); // ⭐ Pre-fill with full balance
     setPaymentStep(1);
     setShowPaymentModal(true);
   };
-
   const handleSelectPaymentMethod = (methodId) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setPaymentMethod(methodId);
@@ -463,7 +477,44 @@ const OrdersScreen = ({ navigation }) => {
     if (!result.canceled) setProofImage(result.assets[0].uri);
   };
 
+   // ⭐ Validates the custom amount against the remaining balance
+  const validatePaymentAmount = (rawAmount) => {
+    const amount = Number(rawAmount);
+
+    if (!amount || amount <= 0) {
+      return { valid: false, message: 'Please enter a valid payment amount.' };
+    }
+
+    const remaining = Number(selectedOrderForPayment?.remainingBalance || 0);
+
+    if (remaining <= 0.01) {
+      return {
+        valid: false,
+        message:
+          'This booking is already fully paid. Additional payment is not allowed.',
+      };
+    }
+
+    if (amount > remaining + 0.01) {
+      return {
+        valid: false,
+        message: 'Payment amount cannot exceed the remaining balance.',
+      };
+    }
+
+    return { valid: true, amount, remaining };
+  };
+
   const handleSubmitPayment = async () => {
+    const validation = validatePaymentAmount(customPaymentAmount);
+    if (!validation.valid) {
+      Alert.alert('Invalid Amount', validation.message);
+      return;
+    }
+
+    const payAmount = validation.amount;
+    const isFullPayment = Math.abs(payAmount - validation.remaining) < 0.01;
+
     if (paymentMethod === 'cash') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       Vibration.vibrate(10);
@@ -472,12 +523,9 @@ const OrdersScreen = ({ navigation }) => {
       try {
         const response = await paymentService.createPayment({
           booking_id: selectedOrderForPayment.booking_id,
-          amount: selectedOrderForPayment.remainingBalance,
+          amount: payAmount,
           payment_method: 'cash',
-          payment_type:
-            selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total
-              ? 'full'
-              : 'partial',
+          payment_type: isFullPayment ? 'full' : 'partial',
         });
 
         if (response.success) {
@@ -488,7 +536,7 @@ const OrdersScreen = ({ navigation }) => {
             refreshNotifications();
             Alert.alert(
               'Payment Confirmed!',
-              `Your cash payment of ₱${selectedOrderForPayment?.remainingBalance?.toLocaleString()} has been confirmed.`,
+              `Your cash payment of ₱${payAmount.toLocaleString()} has been confirmed.`,
               [{ text: 'OK', onPress: () => loadOrders(true) }]
             );
           }, 1500);
@@ -518,14 +566,9 @@ const OrdersScreen = ({ navigation }) => {
     try {
       const formData = new FormData();
       formData.append('booking_id', selectedOrderForPayment.booking_id);
-      formData.append('amount', selectedOrderForPayment.remainingBalance);
+      formData.append('amount', String(payAmount));
       formData.append('payment_method', paymentMethod);
-      formData.append(
-        'payment_type',
-        selectedOrderForPayment.remainingBalance === selectedOrderForPayment.total
-          ? 'full'
-          : 'partial'
-      );
+      formData.append('payment_type', isFullPayment ? 'full' : 'partial');
       formData.append('reference_number', referenceNumber);
       formData.append('receipt_file', {
         uri: proofImage,
@@ -543,6 +586,7 @@ const OrdersScreen = ({ navigation }) => {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           setReferenceNumber('');
           setProofImage(null);
+          setCustomPaymentAmount('');
           setPaymentMethod('');
           setPaymentStep(1);
           refreshNotifications();
@@ -1357,8 +1401,73 @@ const OrdersScreen = ({ navigation }) => {
                     </View>
                   </View>
 
-                  <View style={styles.paymentForm}>
+                                  <View style={styles.paymentForm}>
                     <Text style={styles.paymentFormTitle}>Payment Confirmation</Text>
+
+                    {/* ⭐ Custom payment amount — customer can pay less than the full balance */}
+                    <View style={styles.paymentInputGroup}>
+                      <Text style={styles.paymentInputLabel}>Payment Amount</Text>
+                      <View style={styles.amountInputRow}>
+                        <Text style={styles.amountCurrency}>₱</Text>
+                        <TextInput
+                          style={styles.amountInput}
+                          placeholder="0.00"
+                          placeholderTextColor="#B0B0B0"
+                          keyboardType="decimal-pad"
+                          value={customPaymentAmount}
+                          onChangeText={(text) => {
+                            // Keep only digits and a single decimal point
+                            const cleaned = text.replace(/[^0-9.]/g, '');
+                            setCustomPaymentAmount(cleaned);
+                          }}
+                          editable={!isProcessing}
+                        />
+                      </View>
+                      <Text style={styles.amountHint}>
+                        Remaining balance: ₱
+                        {selectedOrderForPayment?.remainingBalance?.toLocaleString()}
+                      </Text>
+                      <View style={styles.quickAmountRow}>
+                        <TouchableOpacity
+                          style={styles.quickAmountChip}
+                          onPress={() =>
+                            setCustomPaymentAmount(
+                              String(selectedOrderForPayment?.remainingBalance || 0)
+                            )
+                          }
+                        >
+                          <Text style={styles.quickAmountChipText}>Full Balance</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.quickAmountChip}
+                          onPress={() =>
+                            setCustomPaymentAmount(
+                              String(
+                                Math.round(
+                                  (selectedOrderForPayment?.remainingBalance || 0) / 2
+                                )
+                              )
+                            )
+                          }
+                        >
+                          <Text style={styles.quickAmountChipText}>50%</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.quickAmountChip}
+                          onPress={() =>
+                            setCustomPaymentAmount(
+                              String(
+                                Math.round(
+                                  (selectedOrderForPayment?.remainingBalance || 0) * 0.3
+                                )
+                              )
+                            )
+                          }
+                        >
+                          <Text style={styles.quickAmountChipText}>30%</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
 
                     <View style={styles.paymentInputGroup}>
                       <Text style={styles.paymentInputLabel}>Reference Number</Text>
@@ -2676,6 +2785,54 @@ const styles = StyleSheet.create({
   cancelFooterBtnDisabled: {
     opacity: 0.6,
   },
+    // ⭐ Custom amount input styles
+  amountInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#F0F0F0',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  amountCurrency: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FF6B9D',
+    marginRight: 6,
+  },
+  amountInput: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1C1C1E',
+    paddingVertical: 10,
+  },
+  amountHint: {
+    fontSize: 11,
+    color: '#8E8E93',
+    marginTop: 6,
+  },
+  quickAmountRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  quickAmountChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: '#FFF0F5',
+    borderWidth: 1,
+    borderColor: '#FFD6E5',
+  },
+  quickAmountChipText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#FF6B9D',
+  },
+  
 });
 
 export default OrdersScreen;

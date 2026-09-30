@@ -1224,10 +1224,9 @@ class BookingService
                 $booking->setRelation('quotation', $quotation);
                 $order = $this->createOrderFromBooking($booking);
 
-                // ⭐ REQUEST — Auto-create the invoice on approval so the
-                // cashier can pay the deposit straight from Order & Events
-                // without visiting Billing first.
-                $this->ensureInvoiceForBooking($booking);
+                // ⭐ Invoices are NOT created here. The cashier creates them
+                //    manually via Billing → Invoices → Create Invoice.
+                //    See InvoiceController::store().
 
                 $this->saveProfitabilitySnapshot($booking, 'projected', true);
                 $bookingId = $booking->booking_id;
@@ -1388,56 +1387,8 @@ class BookingService
     // BACKGROUND JOB METHODS
     // ============================================================
 
-    /**
-     * ⭐ Create the invoice for a booking if it doesn't have one yet.
-     * Called automatically on approval so the deposit can be paid from
-     * Order & Events without first visiting the Billing module.
-     */
-    private function ensureInvoiceForBooking(Booking $booking): ?Invoice
-    {
-        try {
-            $booking->loadMissing(['invoice', 'quotation', 'items', 'mealServices']);
-
-            if ($booking->invoice) {
-                return $booking->invoice;
-            }
-
-            $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
-
-            if ($subtotal <= 0) {
-                $itemsTotal = (float) $booking->items->sum(
-                    fn($item) => ((float) ($item->unit_price ?? 0)) * ((int) ($item->quantity ?? 1))
-                );
-                $mealsTotal = (float) $booking->mealServices->sum(
-                    fn($meal) => ((int) ($meal->pax ?? 0)) * ((float) ($meal->price_per_head ?? 0))
-                );
-                $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
-            }
-
-            $invoice = Invoice::create([
-                'invoice_number'     => Invoice::nextInvoiceNumber(),
-                'booking_id'         => $booking->booking_id,
-                'subtotal'           => round($subtotal, 2),
-                'discount'           => 0,
-                'discount_type'      => 'fixed',
-                'additional_charges' => 0,
-                'total_amount'       => round($subtotal, 2),
-                'paid_amount'        => 0,
-                'status'             => 'unpaid',
-                'due_date'           => now()->addDays(30)->toDateString(),
-                'notes'              => 'Auto-created on approval.',
-            ]);
-
-            $booking->setRelation('invoice', $invoice);
-
-            return $invoice;
-        } catch (\Throwable $e) {
-            Log::warning('Auto-invoice creation failed: ' . $e->getMessage(), [
-                'booking_id' => $booking->booking_id,
-            ]);
-            return null;
-        }
-    }
+    // ⭐ Removed — invoices are created manually via
+    //    Billing → Invoices → Create Invoice (InvoiceController::store).
 
     public function createKitchenPreparation(Booking $booking, Order $order): void
     {

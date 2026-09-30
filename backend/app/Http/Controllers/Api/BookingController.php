@@ -2216,11 +2216,19 @@ class BookingController extends Controller
             $invoiceBalance  = max(0, $invoiceTotal - $invoicePaid);
             $requiredDeposit = round($invoiceTotal * 0.30, 2);
 
+            // ⭐ Reject payments on a fully settled invoice.
+            if ($invoiceBalance <= 0.01 && $invoiceTotal > 0) {
+                return $this->fail(
+                    'This booking is already fully paid. Additional payment is not allowed.',
+                    422,
+                    ['code' => 'fully_paid']
+                );
+            }
+
             $isFirstPayment = ! BookingPayment::where('booking_id', $booking->booking_id)
                 ->where('status', 'completed')
                 ->where('payment_type', '!=', 'refund')
                 ->exists();
-
             $resolvedPaymentType = $validated['payment_type'] ?? null;
             if (! $resolvedPaymentType) {
                 if ((float) $validated['amount'] >= $invoiceBalance) {
@@ -2236,10 +2244,24 @@ class BookingController extends Controller
                 }
             }
 
+            // ⭐ Reject any payment above the remaining balance.
+            if ((float) $validated['amount'] > $invoiceBalance + 0.01) {
+                return $this->fail(
+                    'Payment amount cannot exceed the remaining balance.',
+                    422,
+                    [
+                        'code' => 'overpayment',
+                        'remaining_balance' => $invoiceBalance,
+                        'submitted_amount'  => (float) $validated['amount'],
+                    ]
+                );
+            }
+
             $payment = DB::transaction(function () use ($booking, $validated, $method, $resolvedPaymentType) {
-                $payment = BookingPayment::create([
+                return BookingPayment::create([
                     'booking_id'       => $booking->booking_id,
-                    'payment_number'   => 'PAY-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999),
+                    // ⭐ 4-digit sequential format — same as Invoice & Mobile payment.
+                    'payment_number'   => $this->nextPaymentNumber(),
                     'amount'           => $validated['amount'],
                     'payment_method'   => $method,
                     'payment_type'     => $resolvedPaymentType,
@@ -2250,10 +2272,19 @@ class BookingController extends Controller
                     'verified_by'      => auth()->id(),
                     'verified_at'      => now(),
                 ]);
-
-                $this->synchronizeBookingInvoice($booking);
-                return $payment;
             });
+
+            // ⭐ Sync AFTER commit so the just-inserted row is visible to the
+            //    aggregation and any sync failure does NOT roll back the payment.
+            try {
+                $this->synchronizeBookingInvoice($booking);
+            } catch (\Throwable $e) {
+                Log::error('synchronizeBookingInvoice failed after commit', [
+                    'payment_id' => $payment->payment_id,
+                    'booking_id' => $booking->booking_id,
+                    'error'      => $e->getMessage(),
+                ]);
+            }
             $this->logCustom(
                 'payment_recorded',
                 'booking_payments',
@@ -4884,8 +4915,9 @@ class BookingController extends Controller
      */
     private function createInvoiceForBooking(Booking $booking): \App\Models\Invoice
     {
-        $booking->loadMissing(['quotation', 'items', 'mealServices']);
+        $booking->loadMissing(['quotation', 'items', 'mealServices', 'charges']);
 
+        // ── 1. Subtotal.
         $subtotal = (float) ($booking->quotation?->total_amount ?? 0);
 
         if ($subtotal <= 0) {
@@ -4898,23 +4930,51 @@ class BookingController extends Controller
             $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
         }
 
+        // ── 2. Additional charges.
+        $additionalCharges = 0.0;
+        if ($booking->relationLoaded('charges')) {
+            $additionalCharges = (float) $booking->charges
+                ->where('charge_kind', 'charge')
+                ->sum('amount');
+        } elseif (Schema::hasTable('booking_charges')) {
+            $additionalCharges = (float) DB::table('booking_charges')
+                ->where('booking_id', $booking->booking_id)
+                ->where('charge_kind', 'charge')
+                ->sum('amount');
+        }
+
+        // ── 3. Discounts.
+        $discount = 0.0;
+        if ($booking->relationLoaded('charges')) {
+            $discount = (float) $booking->charges
+                ->where('charge_kind', 'discount')
+                ->sum('amount');
+        } elseif (Schema::hasTable('booking_charges')) {
+            $discount = (float) DB::table('booking_charges')
+                ->where('booking_id', $booking->booking_id)
+                ->where('charge_kind', 'discount')
+                ->sum('amount');
+        }
+
+        // ── 4. Grand total.
+        $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
+
         $invoiceNumber = \App\Models\Invoice::nextInvoiceNumber();
 
         return \App\Models\Invoice::create([
             'invoice_number'     => $invoiceNumber,
             'booking_id'         => $booking->booking_id,
             'subtotal'           => round($subtotal, 2),
-            'discount'           => 0,
+            'discount'           => round($discount, 2),
             'discount_type'      => 'fixed',
-            'additional_charges' => 0,
-            'total_amount'       => round($subtotal, 2),
+            'additional_charges' => round($additionalCharges, 2),
+            'total_amount'       => round($totalAmount, 2),
             'paid_amount'        => 0,
             'status'             => 'unpaid',
             'due_date'           => now()->addDays(30)->toDateString(),
             'notes'              => 'Auto-created on first payment.',
         ]);
     }
-
     private function synchronizeBookingInvoice(Booking $booking): void
     {
         $booking->loadMissing('invoice');

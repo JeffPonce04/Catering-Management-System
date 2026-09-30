@@ -106,9 +106,9 @@ const settleDashboardRequests = async (period, anchor, access) => {
       summary: eventReport?.payroll || [],
     },
     reports: { financial, events: eventReport, inventory: inventoryReport },
-    warning: failedCount > 0
-      ? 'Some permitted dashboard sections could not be loaded, but available database records are shown.'
-      : '',
+    // warning: failedCount > 0
+    // //   ? 'Some permitted dashboard sections could not be loaded, but available database records are shown.'
+    // //   : '',
   };
 };
 

@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
 use Carbon\Carbon;
 
 class InvoiceController extends Controller
@@ -51,6 +52,22 @@ class InvoiceController extends Controller
                 'booking.payments',
             ]);
 
+            // ⭐ TEMP DEBUG — remove after the invoice table is verified.
+            \Log::info('Invoices index called', [
+                'user_id'   => $request->user()?->user_id,
+                'roles'     => $request->user()?->roles?->pluck('slug')->all(),
+                'params'    => $request->only([
+                    'per_page',
+                    'include_history',
+                    'include_paid',
+                    'status',
+                    'search',
+                    'booking_id',
+                ]),
+                'total_in_invoices_table' => Invoice::count(),
+                'total_with_balance'      => Invoice::whereColumn('paid_amount', '<', 'total_amount')->count(),
+            ]);
+
             $period = $request->input('period', 'monthly');
             $anchor = $request->input('anchor', now()->toDateString());
             [$start, $end] = $this->resolveBillingPeriod($period, $anchor);
@@ -66,9 +83,15 @@ class InvoiceController extends Controller
                 $query->whereHas('booking', fn($q) => $q->where('booking_no', 'not like', 'HIST-%'));
             }
 
+            // ⭐ RULE #1 + #2:
+            //    – Cancelled invoices are always excluded.
+            //    – Unless `include_paid=1` is explicitly requested (for
+            //      reports and PDF Overview), fully-paid invoices are
+            //      excluded — they belong in Payment History instead.
+            $query->where('status', '!=', 'cancelled');
+
             if (! $request->boolean('include_paid')) {
-                $query->whereColumn('paid_amount', '<', 'total_amount')
-                    ->where('status', '!=', 'cancelled');
+                $query->whereColumn('paid_amount', '<', 'total_amount');
             }
 
             if ($request->filled('status')) {
@@ -93,6 +116,9 @@ class InvoiceController extends Controller
             $perPage = min(500, max(1, $request->integer('per_page', 20)));
             $rows = $query->latest('invoice_id')->paginate($perPage);
 
+            // ⭐ Eager-load every relation the formatter needs so we don't
+            //    trigger N+1 queries and so missing relations resolve to
+            //    empty collections instead of throwing.
             $rows->getCollection()->transform(function ($invoice) {
                 return $this->formatInvoice($invoice);
             });
@@ -138,6 +164,12 @@ class InvoiceController extends Controller
                 'total_amount'       => ['nullable', 'numeric', 'min:0'],
                 'due_date'           => ['nullable', 'date'],
                 'notes'              => ['nullable', 'string'],
+                // ⭐ Per-fee line items sent from the Create Invoice modal.
+                'charges'                    => ['nullable', 'array'],
+                'charges.*.charge_kind'      => ['required_with:charges', 'in:charge,discount'],
+                'charges.*.charge_type'      => ['required_with:charges', 'string', 'max:60'],
+                'charges.*.description'      => ['nullable', 'string', 'max:255'],
+                'charges.*.amount'           => ['required_with:charges', 'numeric', 'min:0'],
             ]);
 
             $booking = Booking::with([
@@ -147,8 +179,17 @@ class InvoiceController extends Controller
                 'quotation',
             ])->findOrFail($data['booking_id']);
 
-            if ($booking->invoice) {
-                return $this->fail('Invoice already exists for this booking.', 422);
+            // ⭐ Query the DB directly — do NOT trust the Eloquent relation,
+            //    which can be stale in memory after a prior service call.
+            $existingInvoice = Invoice::query()
+                ->where('booking_id', $booking->booking_id)
+                ->first();
+
+            if ($existingInvoice) {
+                return $this->fail(
+                    'Invoice already exists for this booking: ' . $existingInvoice->invoice_number,
+                    422
+                );
             }
 
             $user = $request->user();
@@ -168,7 +209,7 @@ class InvoiceController extends Controller
             $totalAmount = $this->calculateTotalAmount($subtotal, $discount, $discountType, $additionalCharges);
 
             $invoice = DB::transaction(function () use ($booking, $data, $subtotal, $discount, $discountType, $additionalCharges, $totalAmount) {
-                return Invoice::create([
+                $invoice = Invoice::create([
                     'invoice_number'     => $this->generateInvoiceNumber(),
                     'booking_id'         => $booking->booking_id,
                     'subtotal'           => $subtotal,
@@ -181,6 +222,35 @@ class InvoiceController extends Controller
                     'due_date'           => $data['due_date'] ?? now()->addDays(30)->toDateString(),
                     'notes'              => $data['notes'] ?? null,
                 ]);
+
+                // ⭐ Persist the per-fee line items into booking_charges
+                //    so they show up in the Invoice Details modal and
+                //    stay in sync with the invoice total.
+                if (!empty($data['charges']) && Schema::hasTable('booking_charges')) {
+                    // Replace any pre-existing charges for this booking.
+                    \App\Models\BookingCharge::where('booking_id', $booking->booking_id)->delete();
+
+                    $rows = [];
+                    foreach ($data['charges'] as $charge) {
+                        $amount = (float) ($charge['amount'] ?? 0);
+                        if ($amount <= 0) continue;
+
+                        $rows[] = [
+                            'booking_id'  => $booking->booking_id,
+                            'charge_kind' => $charge['charge_kind'] ?? 'charge',
+                            'charge_type' => $charge['charge_type'],
+                            'description' => $charge['description'] ?? null,
+                            'amount'      => $amount,
+                            'created_at'  => now(),
+                            'updated_at'  => now(),
+                        ];
+                    }
+                    if (!empty($rows)) {
+                        \App\Models\BookingCharge::insert($rows);
+                    }
+                }
+
+                return $invoice;
             });
 
             return $this->ok(
@@ -222,6 +292,12 @@ class InvoiceController extends Controller
                 'due_date'           => ['nullable', 'date'],
                 'status'             => ['nullable', 'in:unpaid,partial,paid,overdue,cancelled'],
                 'notes'              => ['nullable', 'string'],
+                // ⭐ Per-fee line items sent from the Edit Invoice modal.
+                'charges'                    => ['nullable', 'array'],
+                'charges.*.charge_kind'      => ['required_with:charges', 'in:charge,discount'],
+                'charges.*.charge_type'      => ['required_with:charges', 'string', 'max:60'],
+                'charges.*.description'      => ['nullable', 'string', 'max:255'],
+                'charges.*.amount'           => ['required_with:charges', 'numeric', 'min:0'],
             ]);
 
             $subtotal = $data['subtotal'] ?? $invoice->subtotal;
@@ -231,16 +307,43 @@ class InvoiceController extends Controller
 
             $totalAmount = $this->calculateTotalAmount($subtotal, $discount, $discountType, $additionalCharges);
 
-            $invoice->update([
-                'subtotal'           => $subtotal,
-                'discount'           => $discount,
-                'discount_type'      => $discountType,
-                'additional_charges' => $additionalCharges,
-                'total_amount'       => $totalAmount,
-                'due_date'           => $data['due_date'] ?? $invoice->due_date,
-                'status'             => $data['status'] ?? $invoice->status,
-                'notes'              => $data['notes'] ?? $invoice->notes,
-            ]);
+            DB::transaction(function () use ($invoice, $data, $subtotal, $discount, $discountType, $additionalCharges, $totalAmount) {
+                $invoice->update([
+                    'subtotal'           => $subtotal,
+                    'discount'           => $discount,
+                    'discount_type'      => $discountType,
+                    'additional_charges' => $additionalCharges,
+                    'total_amount'       => $totalAmount,
+                    'due_date'           => $data['due_date'] ?? $invoice->due_date,
+                    'status'             => $data['status'] ?? $invoice->status,
+                    'notes'              => $data['notes'] ?? $invoice->notes,
+                ]);
+
+                // ⭐ Re-sync the per-fee line items when the Edit Invoice
+                //    modal sends a fresh charges array.
+                if (!empty($data['charges']) && Schema::hasTable('booking_charges')) {
+                    \App\Models\BookingCharge::where('booking_id', $invoice->booking_id)->delete();
+
+                    $rows = [];
+                    foreach ($data['charges'] as $charge) {
+                        $amount = (float) ($charge['amount'] ?? 0);
+                        if ($amount <= 0) continue;
+
+                        $rows[] = [
+                            'booking_id'  => $invoice->booking_id,
+                            'charge_kind' => $charge['charge_kind'] ?? 'charge',
+                            'charge_type' => $charge['charge_type'],
+                            'description' => $charge['description'] ?? null,
+                            'amount'      => $amount,
+                            'created_at'  => now(),
+                            'updated_at'  => now(),
+                        ];
+                    }
+                    if (!empty($rows)) {
+                        \App\Models\BookingCharge::insert($rows);
+                    }
+                }
+            });
 
             return $this->ok(
                 $this->formatInvoice($invoice->fresh('booking')),
@@ -281,12 +384,11 @@ class InvoiceController extends Controller
             ])
                 ->whereIn('booking_status', ['confirmed', 'approved'])
                 ->where('booking_no', 'not like', 'HIST-%')
-                // ⭐ Removed `whereDoesntHave('invoice')` so bookings that
-                //    already have an invoice still appear in the Select.
-                //    The frontend labels them so the operator knows.
+                // ⭐ Only list bookings that do NOT yet have an invoice —
+                //    this is exactly what the Create Invoice dropdown needs.
+                ->whereDoesntHave('invoice')
                 ->latest('booking_id')
                 ->paginate(min(500, max(1, $request->integer('per_page', 200))));
-
             $bookings->getCollection()->transform(function ($booking) {
                 $person   = $booking->serviceEvent?->customer?->person;
                 $subtotal = $this->calculateSubtotalFromBooking($booking);
@@ -572,8 +674,9 @@ class InvoiceController extends Controller
             'booking.serviceEvent.customer.person',
             'booking.serviceEvent.eventType',
             'booking.items.menuItem',
+            'booking.charges',
+            'booking.payments',
         ]);
-
         $booking = $invoice->booking;
         $event   = $booking?->serviceEvent;
         $person  = $event?->customer?->person;
@@ -643,6 +746,23 @@ class InvoiceController extends Controller
                     'total'       => (float) $item->unit_price * (int) $item->quantity,
                 ];
             })->values(),
+            // ⭐ Charge + discount rows so the Billing UI can render the
+            //    breakdown beneath the invoice total.
+            //    Guarded against a missing booking_charges table.
+            'charges'            => Schema::hasTable('booking_charges')
+                ? ($booking->relationLoaded('charges')
+                    ? $booking->charges
+                    : ($booking->charges()->get() ?? collect()))
+                ->map(function ($charge) {
+                    return [
+                        'id'          => $charge->booking_charge_id,
+                        'kind'        => $charge->charge_kind,
+                        'type'        => $charge->charge_type,
+                        'description' => $charge->description,
+                        'amount'      => (float) $charge->amount,
+                    ];
+                })->values()
+                : collect(),
             'payments' => ($booking->relationLoaded('payments')
                 ? $booking->payments
                 : ($booking->payments()->get() ?? collect()))

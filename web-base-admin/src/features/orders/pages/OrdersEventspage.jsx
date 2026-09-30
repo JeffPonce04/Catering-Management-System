@@ -6887,8 +6887,44 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    const handleRecordPayment = async (values) => {
+       const handleRecordPayment = async (values) => {
         try {
+            // ⭐ CHECK IF INVOICE EXISTS BEFORE RECORDING PAYMENT
+            const bookingNo = formatBookingId(selectedBooking?.booking_no);
+            const hasInvoice = selectedBooking?.invoice?.invoice_id
+                || selectedBooking?.invoice_id
+                || selectedBooking?.invoice_number;
+
+            if (!hasInvoice) {
+                Modal.confirm({
+                    title: 'Invoice Required',
+                    icon: <WarningOutlined style={{ color: '#faad14' }} />,
+                    content: (
+                        <div>
+                            <p><strong>This {bookingNo} is not yet created invoice.</strong></p>
+                            <p>Do you want to create invoice?</p>
+                        </div>
+                    ),
+                    okText: 'Yes',
+                    cancelText: 'No',
+                    onOk: () => {
+                        setPaymentModalVisible(false);
+                        paymentForm.resetFields();
+
+                        // Stash the booking so Billing can auto-select it
+                        sessionStorage.setItem('pendingInvoiceBookingId', String(selectedBooking.id));
+                        sessionStorage.setItem('openCreateInvoiceModal', 'true');
+
+                        // Navigate to Billing → Invoices → Create Invoice
+                        window.location.href = '/billing?view=invoices&create=true';
+                    },
+                    onCancel: () => {
+                        message.info('Payment cancelled. Invoice must be created first.');
+                    },
+                });
+                return;
+            }
+
             const validatedValues = await paymentForm.validateFields();
             await runWithLoadingLine('payment', selectedBooking, async (signal) => {
                 await api.post(`/bookings/${selectedBooking.id}/record-payment`, {

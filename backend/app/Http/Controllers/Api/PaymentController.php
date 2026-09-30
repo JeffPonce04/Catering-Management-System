@@ -13,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Illuminate\Validation\ValidationException;
 
@@ -209,15 +210,22 @@ class PaymentController extends Controller
     }
 
     /**
-     * Generate sequential payment number (PAY-0013 format)
+     * Generate sequential payment number in 4-digit format (PAY-0001).
+     *
+     * ⭐ Used by every payment entry point: Invoice Payment,
+     *    Order & Events Payment, and Mobile Payment.
      */
     private function generatePaymentNumber(): string
     {
-        return $this->generateSequentialNumber('PAY-', BookingPayment::class, 'payment_number');
+        return $this->generateSequentialNumber('PAY-', BookingPayment::class, 'payment_number', 4);
     }
 
     /**
-     * Generic sequential number generator
+     * Generic sequential number generator.
+     *
+     * ⭐ Format: PREFIX-0001, PREFIX-0002, … PREFIX-9999 (then expands).
+     *    The counter resets whenever the prefix changes, so PAY- and
+     *    REF- keep independent sequences.
      */
     private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
     {
@@ -226,29 +234,33 @@ class PaymentController extends Controller
                 throw new \Exception("Model class {$modelClass} not found");
             }
 
-            // Create a new instance to get the key name
             $instance = new $modelClass();
             $keyName = $instance->getKeyName();
 
+            // ⭐ Include soft-deleted rows so a deleted payment number is
+            //    never reused.
             $lastRecord = $modelClass::withTrashed()
                 ->where($column, 'LIKE', $prefix . '%')
                 ->orderBy($keyName, 'desc')
                 ->first();
 
+            $nextNumber = 1;
+
             if ($lastRecord && isset($lastRecord->$column)) {
-                $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
-                $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
-            } else {
-                $newNumber = str_repeat('0', $padding - 1) . '1';
+                // Extract the numeric portion after the prefix.
+                $numericPart = preg_replace('/[^0-9]/', '', substr($lastRecord->$column, strlen($prefix)));
+                if ($numericPart !== '') {
+                    $nextNumber = ((int) $numericPart) + 1;
+                }
             }
 
-            return $prefix . $newNumber;
+            return $prefix . str_pad((string) $nextNumber, $padding, '0', STR_PAD_LEFT);
         } catch (\Exception $e) {
             Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
-            return $prefix . now()->format('YmdHis') . '-' . random_int(1000, 9999);
+            // ⭐ Fallback also honours the 4-digit format.
+            return $prefix . str_pad((string) random_int(1, 9999), $padding, '0', STR_PAD_LEFT);
         }
     }
-
     /**
      * Store a new payment
      */
@@ -286,25 +298,59 @@ class PaymentController extends Controller
                     $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
                 }
 
-                $prefix = 'INV-' . now()->format('Ymd') . '-';
+                // ⭐ Delegate to the model helper so the invoice-number
+                //    format lives in exactly one place and does not depend
+                //    on the SoftDeletes trait being present.
+                $invoiceNumber = Invoice::nextInvoiceNumber();
+                // ⭐ Pull additional charges + discount from the booking
+                //    so the invoice total matches what the operator entered
+                //    in the Create Booking → Additional Charges step.
+                $additionalCharges = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $additionalCharges = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'charge')
+                        ->sum('amount');
+                }
 
-                $lastInvoice = Invoice::withTrashed()
-                    ->where('invoice_number', 'like', $prefix . '%')
-                    ->orderByDesc('invoice_number')
-                    ->first();
+                $discount = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $discount = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'discount')
+                        ->sum('amount');
+                }
 
-                $nextSequence = $lastInvoice && preg_match('/-(\d+)$/', $lastInvoice->invoice_number, $m)
-                    ? ((int) $m[1] + 1)
-                    : 1;
+                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
+
+                // ⭐ Pull charges + discount from booking_charges so the
+                //    invoice total matches the booking form.
+                $additionalCharges = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $additionalCharges = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'charge')
+                        ->sum('amount');
+                }
+
+                $discount = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $discount = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'discount')
+                        ->sum('amount');
+                }
+
+                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
 
                 $invoice = Invoice::create([
-                    'invoice_number'     => $prefix . str_pad((string) $nextSequence, 4, '0', STR_PAD_LEFT),
+                    'invoice_number'     => $invoiceNumber,
                     'booking_id'         => $booking->booking_id,
                     'subtotal'           => round($subtotal, 2),
-                    'discount'           => 0,
+                    'discount'           => round($discount, 2),
                     'discount_type'      => 'fixed',
-                    'additional_charges' => 0,
-                    'total_amount'       => round($subtotal, 2),
+                    'additional_charges' => round($additionalCharges, 2),
+                    'total_amount'       => round($totalAmount, 2),
                     'paid_amount'        => 0,
                     'status'             => 'unpaid',
                     'due_date'           => now()->addDays(30)->toDateString(),
@@ -318,6 +364,28 @@ class PaymentController extends Controller
                 ->where('status', 'completed')
                 ->where('payment_type', '!=', 'refund')
                 ->exists();
+
+            // ⭐ Block additional mobile payments when the invoice is settled.
+            if ($balance <= 0.01 && (float) $invoice->total_amount > 0) {
+                return $this->fail(
+                    'This booking is already fully paid. Additional payment is not allowed.',
+                    422,
+                    ['code' => 'fully_paid']
+                );
+            }
+
+            // ⭐ Reject any payment above the remaining balance.
+            if ((float) $data['amount'] > $balance + 0.01) {
+                return $this->fail(
+                    'Payment amount cannot exceed the remaining balance.',
+                    422,
+                    [
+                        'code' => 'overpayment',
+                        'remaining_balance' => $balance,
+                        'submitted_amount'  => (float) $data['amount'],
+                    ]
+                );
+            }
 
             // ⭐ Deposit detection — more lenient so a 30% payment is
             //    always classified as a deposit, even if the amount is
@@ -392,22 +460,46 @@ class PaymentController extends Controller
                     $paymentData['account_number'] = $data['account_number'];
                 }
 
-                $payment = BookingPayment::create($paymentData);
-
-                if ($verifyImmediately) {
-                    $this->syncInvoicePayment($booking);
-                    $this->createPaymentNotification($payment);
-                }
-
-                return $payment;
+                return BookingPayment::create($paymentData);
             });
 
-            if (!$verifyImmediately) {
+            // ⭐ CRITICAL FIX: Sync the invoice AFTER the transaction commits.
+            //    If syncInvoicePayment throws inside the transaction, the
+            //    payment row is rolled back — which is exactly what was
+            //    happening before (payments vanishing from the DB).
+            try {
                 $this->syncInvoicePayment($booking);
+            } catch (\Throwable $e) {
+                Log::error('syncInvoicePayment failed after commit', [
+                    'payment_id' => $payment->payment_id,
+                    'booking_id' => $booking->booking_id,
+                    'error'      => $e->getMessage(),
+                    'trace'      => $e->getTraceAsString(),
+                ]);
+                // Do not rethrow — the payment is already saved. The invoice
+                // will be re-synced on the next payment or manual refresh.
             }
 
+            // ⭐ Notifications are non-critical — never let them roll back the payment.
+            if ($verifyImmediately) {
+                try {
+                    $this->createPaymentNotification($payment);
+                } catch (\Throwable $e) {
+                    Log::warning('Payment notification failed (payment already saved)', [
+                        'payment_id' => $payment->payment_id,
+                        'error'      => $e->getMessage(),
+                    ]);
+                }
+            }
+
+            // ⭐ Reload the invoice + booking so the response reflects the new balance.
+            $booking->unsetRelation('invoice');
+            $booking->load('invoice');
+            $payment->refresh();
+            $payment->load(['booking.invoice', 'booking.serviceEvent.customer.person', 'verifier.person']);
+
             return $this->ok(
-                $this->formatPaymentWithFullDetails($payment->fresh()),
+                $this->formatPaymentWithFullDetails($payment),
                 $verifyImmediately ? 'Payment recorded and verified successfully.' : 'Payment recorded successfully.'
             );
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -729,14 +821,51 @@ class PaymentController extends Controller
                     $subtotal = $itemsTotal > 0 ? $itemsTotal : $mealsTotal;
                 }
 
+                // ⭐ Pull additional charges + discount from the booking.
+                $additionalCharges = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $additionalCharges = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'charge')
+                        ->sum('amount');
+                }
+
+                $discount = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $discount = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'discount')
+                        ->sum('amount');
+                }
+
+                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
+
+                $additionalCharges = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $additionalCharges = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'charge')
+                        ->sum('amount');
+                }
+
+                $discount = 0.0;
+                if (Schema::hasTable('booking_charges')) {
+                    $discount = (float) DB::table('booking_charges')
+                        ->where('booking_id', $booking->booking_id)
+                        ->where('charge_kind', 'discount')
+                        ->sum('amount');
+                }
+
+                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
+
                 $invoice = Invoice::create([
                     'invoice_number'     => Invoice::nextInvoiceNumber(),
                     'booking_id'         => $booking->booking_id,
                     'subtotal'           => round($subtotal, 2),
-                    'discount'           => 0,
+                    'discount'           => round($discount, 2),
                     'discount_type'      => 'fixed',
-                    'additional_charges' => 0,
-                    'total_amount'       => round($subtotal, 2),
+                    'additional_charges' => round($additionalCharges, 2),
+                    'total_amount'       => round($totalAmount, 2),
                     'paid_amount'        => 0,
                     'status'             => 'unpaid',
                     'due_date'           => now()->addDays(30)->toDateString(),
@@ -750,6 +879,19 @@ class PaymentController extends Controller
                 ->where('status', 'completed')
                 ->where('payment_type', '!=', 'refund')
                 ->exists();
+
+            // ⭐ Reject overpayment on the mobile path too.
+            if ((float) $data['amount'] > $balance + 0.01) {
+                return $this->fail(
+                    'Payment amount cannot exceed the remaining balance.',
+                    422,
+                    [
+                        'code' => 'overpayment',
+                        'remaining_balance' => $balance,
+                        'submitted_amount'  => (float) $data['amount'],
+                    ]
+                );
+            }
 
             // ⭐ Deposit detection — more lenient so a 30% payment is
             //    always classified as a deposit.
@@ -773,7 +915,6 @@ class PaymentController extends Controller
             $receiptPath = $request->hasFile('proof_of_payment')
                 ? $request->file('proof_of_payment')->store('mobile-payments', 'public')
                 : null;
-
             $payment = DB::transaction(function () use ($booking, $data, $receiptPath) {
                 $paymentData = [
                     'payment_number' => $this->generatePaymentNumber(),
@@ -798,10 +939,23 @@ class PaymentController extends Controller
                 return BookingPayment::create($paymentData);
             });
 
-            $this->syncInvoicePayment($booking);
+            // ⭐ Sync AFTER commit so the pending row is visible and any
+            //    sync failure does NOT roll back the payment.
+            try {
+                $this->syncInvoicePayment($booking);
+            } catch (\Throwable $e) {
+                Log::error('Mobile payment sync failed after commit', [
+                    'payment_id' => $payment->payment_id,
+                    'error'      => $e->getMessage(),
+                ]);
+            }
+
+            $booking->unsetRelation('invoice');
+            $booking->load('invoice');
+            $payment->refresh();
 
             return $this->ok(
-                $this->formatPaymentWithFullDetails($payment->fresh()),
+                $this->formatPaymentWithFullDetails($payment),
                 'Mobile payment recorded. Please wait for verification.'
             );
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -826,20 +980,29 @@ class PaymentController extends Controller
 
             $amountToVerify = $data['amount_verified'] ?? $payment->amount;
 
-            $payment->update([
-                'status' => 'completed',
-                'verified_by' => auth()->id(),
-                'verified_at' => now(),
-                'notes' => $data['notes'] ?? $payment->notes,
-                'amount' => $amountToVerify,
-            ]);
+            $balance = max(0, (float) $invoice->total_amount - (float) $invoice->paid_amount);
+            $requiredDeposit = round((float) $invoice->total_amount * 0.30, 2);
+            $isFirstPayment = ! BookingPayment::where('booking_id', $booking->booking_id)
+                ->where('status', 'completed')
+                ->where('payment_type', '!=', 'refund')
+                ->exists();
 
-            $this->syncInvoicePayment($payment->booking);
+            // ⭐ Create notification for customer
             $this->createPaymentNotification($payment);
 
+            Log::info('Mobile payment received — invoice synced', [
+                'payment_id'     => $payment->payment_id,
+                'booking_id'     => $payment->booking_id,
+                'amount'         => $amountToVerify,
+                'invoice_balance' => $payment->booking?->invoice?->balance,
+            ]);
+
+            $payment->refresh();
+            $payment->load(['booking.invoice', 'booking.serviceEvent.customer.person', 'verifier.person']);
+
             return $this->ok(
-                $this->formatPaymentWithFullDetails($payment->fresh()),
-                'Mobile payment verified successfully.'
+                $this->formatPaymentWithFullDetails($payment),
+                'Mobile payment received. Balance updated.'
             );
         } catch (\Illuminate\Validation\ValidationException $e) {
             return $this->fail('Validation failed', 422, $e->errors());
@@ -950,7 +1113,12 @@ class PaymentController extends Controller
             'date_time' => $payment->payment_date?->toDateTimeString(),
             'notes' => $payment->notes,
             'receipt_file' => $payment->receipt_file,
-            'receipt_url' => $payment->receipt_file ? Storage::disk('public')->url($payment->receipt_file) : null,
+            // ⭐ Storage::disk('public')->url() returns a full URL when
+            //    APP_URL is set; otherwise it returns `/storage/<path>`.
+            //    The frontend's resolveBackendUrl() handles both shapes.
+            'receipt_url' => $payment->receipt_file
+                ? Storage::disk('public')->url($payment->receipt_file)
+                : null,
             'verified_by_id' => $payment->verified_by,
             'verified_by' => $payment->verifier?->person?->full_name,
             'verified_at' => $payment->verified_at?->toDateTimeString(),
@@ -966,17 +1134,23 @@ class PaymentController extends Controller
     private function syncInvoicePayment(?Booking $booking): void
     {
         if (!$booking) {
+            Log::warning('syncInvoicePayment called with null booking');
             return;
         }
 
-        if (!$booking->relationLoaded('invoice')) {
-            $booking->load('invoice');
-        }
+        // ⭐ Always fetch fresh — never trust a stale relation cache.
+        $booking->unsetRelation('invoice');
+        $booking->load('invoice');
 
-        $invoice = $booking->invoice;
+        // ⭐ Fallback: query directly if the relation is missing.
+        $invoice = $booking->invoice
+            ?: \App\Models\Invoice::where('booking_id', $booking->booking_id)->first();
 
         if (!$invoice) {
-            Log::warning('No invoice found for booking: ' . $booking->booking_id);
+            Log::warning('No invoice found for booking — skipping sync', [
+                'booking_id' => $booking->booking_id,
+                'booking_no' => $booking->booking_no,
+            ]);
             return;
         }
 
@@ -991,13 +1165,11 @@ class PaymentController extends Controller
             ->sum('amount');
 
         $netPaid = max(0, $totalPaid - $totalRefunded);
+        $total = (float) $invoice->total_amount;
 
-        $invoice->update([
-            'paid_amount' => $netPaid,
-        ]);
-
+        // ⭐ Recompute status — never mark 'paid' when total is 0.
         $status = 'unpaid';
-        if ($netPaid >= (float) $invoice->total_amount && (float) $invoice->total_amount > 0) {
+        if ($total > 0 && $netPaid >= $total - 0.01) {
             $status = 'paid';
         } elseif ($netPaid > 0) {
             $status = 'partial';
@@ -1007,12 +1179,32 @@ class PaymentController extends Controller
             $status = 'overdue';
         }
 
-        $invoice->update(['status' => $status]);
+        // ⭐ Skip the write if nothing actually changed.
+        $currentPaid = (float) $invoice->paid_amount;
+        $currentStatus = (string) $invoice->status;
+
+        if (abs($currentPaid - $netPaid) < 0.01 && $currentStatus === $status) {
+            Log::info('Invoice sync skipped — no change', [
+                'invoice_id' => $invoice->invoice_id,
+                'paid_amount' => $netPaid,
+                'status' => $status,
+            ]);
+            return;
+        }
+
+        $invoice->update([
+            'paid_amount' => $netPaid,
+            'status'      => $status,
+        ]);
 
         Log::info('Invoice synced', [
-            'invoice_id' => $invoice->invoice_id,
-            'paid_amount' => $netPaid,
-            'status' => $status
+            'invoice_id'     => $invoice->invoice_id,
+            'invoice_number' => $invoice->invoice_number,
+            'booking_id'     => $booking->booking_id,
+            'total_amount'   => $total,
+            'net_paid'       => $netPaid,
+            'balance'        => max(0, $total - $netPaid),
+            'status'         => $status,
         ]);
     }
 

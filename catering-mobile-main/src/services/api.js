@@ -18,7 +18,7 @@ export const getBaseUrl = () => {
     if (Platform.OS === 'android') {
       // Android emulator reaches the host computer through 10.0.2.2.
       // For a real Android phone, set EXPO_PUBLIC_API_URL in mobile/.env.
-      return 'http://10.121.221.219:8000/api';
+      return 'http://10.121.221.155:8000/api';
     }
 
 

@@ -3,13 +3,15 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Invoice extends Model
 {
+    use SoftDeletes;
+
     protected $table = 'invoices';
     protected $primaryKey = 'invoice_id';
     protected $guarded = [];
-
     protected $casts = [
         'subtotal' => 'float',
         'discount' => 'float',
@@ -64,7 +66,9 @@ class Invoice extends Model
     {
         $prefix = 'INV-' . now()->format('Ymd') . '-';
 
-        $lastInvoice = static::withTrashed()
+        // ⭐ No withTrashed() — this model does not use SoftDeletes.
+        //    Look at the highest sequence already issued today.
+        $lastInvoice = static::query()
             ->where('invoice_number', 'like', $prefix . '%')
             ->orderByDesc('invoice_number')
             ->first();
@@ -75,6 +79,8 @@ class Invoice extends Model
             $nextSequence = ((int) $matches[1]) + 1;
         }
 
+        // ⭐ Always 4 digits — INV-YYYYMMDD-0001 … INV-YYYYMMDD-9999
+        //    (numbers above 9999 naturally expand beyond 4 digits).
         return $prefix . str_pad((string) $nextSequence, 4, '0', STR_PAD_LEFT);
     }
 }

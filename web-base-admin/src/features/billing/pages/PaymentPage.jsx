@@ -130,16 +130,29 @@ const safeNumber = (value, defaultValue = 0) => {
 };
 
 const extractDataFromResponse = (response) => {
-    const data = response?.data?.data || response?.data || response;
-    if (Array.isArray(data)) return data;
-    if (data?.data && Array.isArray(data.data)) return data.data;
-    if (data?.data?.data && Array.isArray(data.data.data)) return data.data.data;
-    if (data?.data && typeof data.data === 'object' && data.data.data && Array.isArray(data.data.data)) {
-        return data.data.data;
+    // Axios wraps the JSON body in response.data.
+    const body = response?.data ?? response;
+
+    // Case 1 — body is already an array
+    if (Array.isArray(body)) return body;
+
+    // Case 2 — your backend's flat shape:
+    //   { success: true, message: 'OK', data: [...], pagination: {...} }
+    if (Array.isArray(body?.data)) return body.data;
+
+    // Case 3 — standard Laravel paginator:
+    //   { success: true, data: { current_page, data: [...] } }
+    if (body?.data && Array.isArray(body.data.data)) return body.data.data;
+
+    // Case 4 — double-wrapped:
+    //   { success: true, data: { data: { data: [...] } } }
+    if (body?.data?.data && Array.isArray(body.data.data.data)) {
+        return body.data.data.data;
     }
+
+    // Fallback
     return [];
 };
-
 const extractObjectFromResponse = (response) => response?.data?.data || response?.data || {};
 
 const isSameAmount = (left, right) => Math.abs(Number(left || 0) - Number(right || 0)) < 0.01;
@@ -147,7 +160,16 @@ const isSameAmount = (left, right) => Math.abs(Number(left || 0) - Number(right 
 const resolveBackendUrl = (url) => {
     if (!url) return null;
     if (/^https?:\/\//i.test(url)) return url;
-    return `${API_ORIGIN}${url.startsWith('/') ? '' : '/'}${url}`;
+
+    // ⭐ PaymentController stores receipts on the `public` disk, so the
+    //    DB holds a relative path like `receipts/abc.jpg`.
+    //    We need to prepend `/storage/` when the path does not already
+    //    include it.
+    const cleanPath = String(url).replace(/^\/+/, '');
+    const hasStoragePrefix = cleanPath.startsWith('storage/');
+    const fullPath = hasStoragePrefix ? cleanPath : `storage/${cleanPath}`;
+
+    return `${API_ORIGIN}/${fullPath}`;
 };
 
 const getPaymentId = (payment) => payment?.payment_id
@@ -703,8 +725,9 @@ const BillingInvoicing = () => {
     const [refundHistoryStatus, setRefundHistoryStatus] = useState('all');
     const [refundHistoryDateRange, setRefundHistoryDateRange] = useState([]);
 
-    useEffect(() => {
-        const requestedView = new URLSearchParams(location.search).get('view');
+       useEffect(() => {
+        const params = new URLSearchParams(location.search);
+        const requestedView = params.get('view');
         const viewMap = { receipts: 'payment_history' };
         const resolvedView = viewMap[requestedView] || requestedView;
         if (['invoices', 'payments', 'payment_history', 'mobile', 'debts', 'pdf_overview', 'refunds'].includes(resolvedView)) {
@@ -716,6 +739,32 @@ const BillingInvoicing = () => {
             setActiveMainTab(resolvedView);
         }
     }, [location.search, canProcessRefunds]);
+
+    // ⭐ Auto-open Create Invoice modal when navigated from Order & Events
+    //    after the operator was told "this booking has no invoice".
+    useEffect(() => {
+        const shouldOpenModal = sessionStorage.getItem('openCreateInvoiceModal');
+        const pendingBookingId = sessionStorage.getItem('pendingInvoiceBookingId');
+
+        if (shouldOpenModal !== 'true') return;
+        if (activeMainTab !== 'invoices') return;
+
+        sessionStorage.removeItem('openCreateInvoiceModal');
+
+        const timer = setTimeout(async () => {
+            await handleCreateInvoice();
+
+            if (pendingBookingId) {
+                sessionStorage.removeItem('pendingInvoiceBookingId');
+                setTimeout(() => {
+                    handleSelectBooking(Number(pendingBookingId));
+                }, 400);
+            }
+        }, 300);
+
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeMainTab]);
 
     const [isDarkMode, setIsDarkMode] = useState(() => {
         const savedTheme = localStorage.getItem('theme');
@@ -740,6 +789,14 @@ const BillingInvoicing = () => {
     const [paymentMethod, setPaymentMethod] = useState('cash');
     const [createInvoiceBookingId, setCreateInvoiceBookingId] = useState(null);
 
+    // ⭐ Per-fee line items for the Create / Edit Invoice modal.
+    const [invoiceCharges, setInvoiceCharges] = useState({
+        transportation_fee: 0,
+        setup_fee: 0,
+        service_crew_fee: 0,
+        equipment_rental: 0,
+        extra_food_fee: 0,
+    });
     // Refund modal states
     const [refundModalVisible, setRefundModalVisible] = useState(false);
     const [refundApprovalModalVisible, setRefundApprovalModalVisible] = useState(false);
@@ -1025,42 +1082,49 @@ const BillingInvoicing = () => {
             : undefined,
     }), [paymentTrackingDateRange]);
 
-        const invoicePeriodParams = useMemo(() => ({
-        period: dashboardPeriod,
-        anchor: dashboardAnchor,
-    }), [dashboardPeriod, dashboardAnchor]);
-
-      const invoicesQuery = useQuery({
-        queryKey: ['billing', 'invoices', invoicePeriodParams],
-        queryFn: async () => extractDataFromResponse(await api.get('/invoices', {
-            params: { per_page: 100, ...invoicePeriodParams },
-        })),
+              // ⭐ The Invoices tab lists every invoice the operator still needs
+      //    to collect on — no period filter, no paid-invoice filter.
+      //    Once an invoice is fully paid it disappears from this list
+      //    and appears in Payment History instead.
+      //
+      // ⭐ NOTE: `extractDataFromResponse` handles Laravel's
+      //    `{ success, data: { data: [...] } }` shape from paginate(),
+      //    so the invoice rows are pulled from the right place.
+           const invoicesQuery = useQuery({
+        queryKey: ['billing', 'invoices'],
+        queryFn: async () => {
+            const res = await api.get('/invoices', {
+                params: {
+                    per_page: 500,
+                    include_history: 1,
+                    // ⭐ `period=all` disables the calendar-month filter so
+                    //    every invoice with an outstanding balance shows up
+                    //    regardless of when its event date falls.
+                    period: 'all',
+                    // ⚠️ NO include_paid here — the server filters to
+                    //    invoices that still have an outstanding balance.
+                },
+            });
+            return extractDataFromResponse(res);
+        },
         ...BILLING_QUERY_OPTIONS,
-        // ⭐ REQUEST — A new invoice auto-created by an Order & Events
-        //    payment shows up within 20s.
-        refetchInterval: 20 * 1000,
+        refetchInterval: 60 * 1000,
         refetchIntervalInBackground: false,
-    });
+      });
      // Only fire these queries when the user is actually on the tab that
     // needs them. This shrinks the cold-start waterfall from 7 requests
     // to 3 (invoices + confirmed-bookings + settings).
 
-      const paymentTrackingQuery = useQuery({
+       const paymentTrackingQuery = useQuery({
         queryKey: ['billing', 'payments', 'tracking', paymentDateParams],
         queryFn: async () => extractDataFromResponse(await api.get('/payments/tracking', {
             params: { per_page: 100, ...paymentDateParams },
         })),
         ...BILLING_QUERY_OPTIONS,
-        // ⭐ REQUEST — Poll the tracking endpoint every 15s while the tab
-        //    is open. A payment recorded on Order & Events (or another
-        //    browser) appears without a manual refresh.
         refetchInterval: 15 * 1000,
         refetchIntervalInBackground: false,
-              // ⭐ REQUEST — Keep this query enabled on every tab so cross-module
-        //    payments show up without waiting for the user to switch tabs.
         enabled: true,
     });
-
     const paymentHistoryQuery = useQuery({
         queryKey: ['billing', 'payments', 'history'],
         queryFn: async () => extractDataFromResponse(await api.get('/payments/history', { params: { per_page: 100 } })),
@@ -1075,9 +1139,11 @@ const BillingInvoicing = () => {
         enabled: activeMainTab === 'mobile',
     });
 
-    const debtsQuery = useQuery({
+       const debtsQuery = useQuery({
         queryKey: ['billing', 'debts'],
-        queryFn: async () => extractDataFromResponse(await api.get('/debts', { params: { per_page: 100 } })),
+        queryFn: async () => extractDataFromResponse(await api.get('/debts', {
+            params: { per_page: 100, period: 'all' },
+        })),
         ...BILLING_QUERY_OPTIONS,
         enabled: activeMainTab === 'debts',
     });
@@ -1117,9 +1183,9 @@ const BillingInvoicing = () => {
     //    calls — the backend blocks them at RoleAccessMiddleware anyway, but
     //    avoiding the request prevents 403 noise in the console.
     const refundsQuery = useQuery({
-        queryKey: ['billing', 'refunds', invoicePeriodParams],
+        queryKey: ['billing', 'refunds'],
         queryFn: async () => extractDataFromResponse(await api.get('/refunds', {
-            params: { per_page: 1000, ...invoicePeriodParams },
+            params: { per_page: 1000 },
         })),
         ...BILLING_QUERY_OPTIONS,
         enabled: canProcessRefunds && activeMainTab === 'refunds',
@@ -1179,17 +1245,39 @@ const BillingInvoicing = () => {
         }
     }, [primaryQueriesSettled, showSkeleton]);
 
-    useEffect(() => {
+               useEffect(() => {
         const invoiceData = invoicesQuery.data || [];
-        setAllInvoices(invoiceData);
-        setInvoices(invoiceData
-            .map(inv => ({
-                ...inv,
-                balance: Math.max(0, Number(inv.balance ?? (Number(inv.total_amount || 0) - Number(inv.paid_amount || 0)))),
-            }))
-            .filter(inv => inv.balance > 0 && String(inv.status || '').toLowerCase() !== 'paid'));
-    }, [invoicesQuery.data]);
 
+        // ⭐ Keep the full list around for other tabs (PDF Overview,
+        //    Debt Management, cross-references).
+        setAllInvoices(invoiceData);
+
+        // ⭐ RULE #1 + #2: The Invoices tab shows ONLY invoices that
+        //    still have an outstanding balance. Once an invoice is
+        //    fully paid (balance === 0) it moves to Payment History.
+        const activeInvoices = invoiceData
+            .map((inv) => {
+                const totalAmount = Number(inv.total_amount || 0);
+                const paidAmount = Number(inv.paid_amount || 0);
+                const computedBalance = Math.max(0, totalAmount - paidAmount);
+
+                return {
+                    ...inv,
+                    balance: inv.balance !== undefined && inv.balance !== null
+                        ? Math.max(0, Number(inv.balance))
+                        : computedBalance,
+                    is_fully_paid: totalAmount > 0 && computedBalance <= 0.01,
+                };
+            })
+            .filter((inv) => {
+                if (String(inv.status || '').toLowerCase() === 'cancelled') return false;
+                if (inv.is_fully_paid) return false;
+                if (String(inv.status || '').toLowerCase() === 'paid') return false;
+                return Number(inv.balance || 0) > 0.01;
+            });
+
+        setInvoices(activeInvoices);
+    }, [invoicesQuery.data]);
     useEffect(() => {
         const trackingData = paymentTrackingQuery.data || [];
         setPayments(trackingData.map(payment => ({
@@ -1337,17 +1425,25 @@ const BillingInvoicing = () => {
         mutationFn: ({ refundId, payload }) => api.post(`/refunds/${refundId}/reject`, payload),
     });
 
-    const invalidateInvoiceData = useCallback(() => {
+       const invalidateInvoiceData = useCallback(() => {
+        // ⭐ Invalidate every possible cache key shape — otherwise
+        //    the Invoices tab silently serves an empty cached list.
+        queryClient.invalidateQueries({ queryKey: ['billing'] });
+        queryClient.invalidateQueries({ queryKey: ['invoices'] });
         queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
         queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings'] });
         queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'] });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'] });
     }, [queryClient]);
 
-    const invalidatePaymentData = useCallback(() => {
-        queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'] });
+       const invalidatePaymentData = useCallback(() => {
+        // ⭐ `refetchType: 'all'` forces an immediate refetch even for
+        //    queries with staleTime: Infinity (which the billing queries use).
+        queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'all' });
     }, [queryClient]);
 
     const invalidateRefundData = useCallback(() => {
@@ -1609,36 +1705,64 @@ const BillingInvoicing = () => {
         }
     };
 
-    const handleCreateInvoice = () => {
+          const handleCreateInvoice = useCallback(async () => {
         invoiceForm.resetFields();
         setEditingInvoice(null);
         setCreateInvoiceBookingId(null);
+
+        // ⭐ Reset the per-fee breakdown.
+        setInvoiceCharges({
+            transportation_fee: 0,
+            setup_fee: 0,
+            service_crew_fee: 0,
+            equipment_rental: 0,
+            extra_food_fee: 0,
+        });
+
         invoiceForm.setFieldsValue({
             due_date: dayjs().add(30, 'days'),
             discount_type: 'fixed',
             discount: 0,
             additional_charges: 0,
         });
-         setInvoiceModalVisible(true);
 
-        // ⭐ Force a fresh fetch every time the modal opens so a booking
-        //    approved in another tab (or a new invoice created elsewhere)
-        //    shows up immediately without a hard reload.
-        //    Also invalidate so the query actually re-runs instead of
-        //    resolving from cache.
+        // ⭐ Always fetch fresh approved bookings before opening the modal
+        //    so newly approved bookings appear without a manual refresh.
         try {
-            queryClient.invalidateQueries({
-                queryKey: ['billing', 'confirmed-bookings'],
-                refetchType: 'active',
+            await queryClient.refetchQueries({
+                queryKey: ['billing', 'confirmed-bookings', 'v2'],
+                type: 'active',
             });
-            confirmedBookingsQuery.refetch();
         } catch (e) {
-            // query ref may not exist on first render
+            console.warn('Failed to refetch confirmed bookings:', e);
         }
-    };
+
+        setInvoiceModalVisible(true);
+    }, [invoiceForm, queryClient]);
     const handleEditInvoice = (record) => {
         setEditingInvoice(record);
         setCreateInvoiceBookingId(record.booking_id);
+
+        // ⭐ Prefill the per-fee breakdown from the record's `charges` array
+        //    (returned by InvoiceController::formatInvoice).
+        const chargesFromRecord = {
+            transportation_fee: 0,
+            setup_fee: 0,
+            service_crew_fee: 0,
+            equipment_rental: 0,
+            extra_food_fee: 0,
+        };
+
+        if (Array.isArray(record.charges)) {
+            record.charges.forEach((c) => {
+                if (c.kind === 'charge' && chargesFromRecord[c.type] !== undefined) {
+                    chargesFromRecord[c.type] = Number(c.amount || 0);
+                }
+            });
+        }
+
+        setInvoiceCharges(chargesFromRecord);
+
         invoiceForm.setFieldsValue({
             booking_id: record.booking_id,
             booking_no: record.booking_no,
@@ -1659,19 +1783,20 @@ const BillingInvoicing = () => {
         setInvoiceModalVisible(true);
     };
 
-        const handleSelectBooking = (bookingId) => {
+              const handleSelectBooking = (bookingId) => {
         setCreateInvoiceBookingId(bookingId);
         const booking = confirmedBookings.find(b => b.booking_id === bookingId);
         if (!booking) return;
 
-        // ⭐ Warn (but don't block) if this booking already has an invoice.
-        //    The backend will reject the duplicate anyway, but we surface the
-        //    reason up front so the operator is not confused.
-        if (booking.has_invoice) {
-            message.warning(
-                `Booking ${booking.booking_no} already has invoice ${booking.invoice_number}. ` +
-                'Creating a new invoice will be rejected by the server.'
+        // ⭐ BLOCK selection if the booking already has an invoice.
+        if (booking.has_invoice || booking.invoice_id || booking.invoice_number) {
+            message.error(
+                `Booking ${booking.booking_no} already has invoice ${booking.invoice_number || 'N/A'}. ` +
+                'Duplicate invoices are not allowed.'
             );
+            setCreateInvoiceBookingId(null);
+            invoiceForm.setFieldValue('booking_id', undefined);
+            return;
         }
 
         invoiceForm.setFieldsValue({
@@ -1689,9 +1814,16 @@ const BillingInvoicing = () => {
             venue: booking.venue,
         });
     };
-
     const handleSaveInvoice = async (values) => {
         try {
+            // ⭐ Sum the per-fee rows so the total matches what the operator entered.
+            const additionalChargesTotal =
+                Number(invoiceCharges.transportation_fee || 0) +
+                Number(invoiceCharges.setup_fee || 0) +
+                Number(invoiceCharges.service_crew_fee || 0) +
+                Number(invoiceCharges.equipment_rental || 0) +
+                Number(invoiceCharges.extra_food_fee || 0);
+
             let totalAmount = values.subtotal;
             let discountAmount = values.discount || 0;
 
@@ -1702,7 +1834,7 @@ const BillingInvoicing = () => {
                 totalAmount = values.subtotal - (values.discount || 0);
             }
 
-            totalAmount = totalAmount + (values.additional_charges || 0);
+            totalAmount = totalAmount + additionalChargesTotal;
 
             const invoiceData = canApproveFinancialAdjustments
                 ? {
@@ -1710,10 +1842,19 @@ const BillingInvoicing = () => {
                     subtotal: values.subtotal,
                     discount: values.discount || 0,
                     discount_type: values.discount_type || 'fixed',
-                    additional_charges: values.additional_charges || 0,
+                    additional_charges: additionalChargesTotal,
                     total_amount: totalAmount,
                     due_date: values.due_date ? values.due_date.format('YYYY-MM-DD') : null,
-                    notes: values.notes
+                    notes: values.notes,
+                    // ⭐ Send the per-fee breakdown so the backend can persist
+                    //    each row into booking_charges.
+                    charges: [
+                        { charge_kind: 'charge', charge_type: 'transportation_fee', description: 'Transportation Fee', amount: Number(invoiceCharges.transportation_fee || 0) },
+                        { charge_kind: 'charge', charge_type: 'setup_fee',          description: 'Setup Fee',          amount: Number(invoiceCharges.setup_fee || 0) },
+                        { charge_kind: 'charge', charge_type: 'service_crew_fee',   description: 'Service Crew Fee',   amount: Number(invoiceCharges.service_crew_fee || 0) },
+                        { charge_kind: 'charge', charge_type: 'equipment_rental',   description: 'Equipment Rental',   amount: Number(invoiceCharges.equipment_rental || 0) },
+                        { charge_kind: 'charge', charge_type: 'extra_food_fee',     description: 'Extra Food Request', amount: Number(invoiceCharges.extra_food_fee || 0) },
+                    ].filter((c) => c.amount > 0),
                 }
                 : {
                     booking_id: values.booking_id,
@@ -1726,12 +1867,23 @@ const BillingInvoicing = () => {
                 payload: invoiceData,
             });
 
-            message.success(editingInvoice ? 'Invoice updated successfully' : 'Invoice created successfully');
+                      message.success(editingInvoice ? 'Invoice updated successfully' : 'Invoice created successfully');
 
             setInvoiceModalVisible(false);
             invoiceForm.resetFields();
             setEditingInvoice(null);
-            invalidateInvoiceData();
+
+                    invalidateInvoiceData();
+
+            // ⭐ Refetch both lists immediately so:
+            //    • the new invoice row appears in the table
+            //    • the just-invoiced booking disappears from the dropdown
+            try {
+                await Promise.all([
+                    invoicesQuery.refetch(),
+                    confirmedBookingsQuery.refetch(),
+                ]);
+            } catch (_) { /* non-blocking */ }
         } catch (error) {
             message.error(error.response?.data?.message || 'Failed to save invoice');
         }
@@ -1844,8 +1996,11 @@ const BillingInvoicing = () => {
                 force_duplicate: forceDuplicate,
             });
 
+                        let savedPayment = null;
+
             try {
-                await savePayment(false);
+                const res = await savePayment(false);
+                savedPayment = res?.data?.data || res?.data;
             } catch (error) {
                 const duplicate = error.response?.status === 409
                     ? error.response?.data?.errors?.payment
@@ -1864,13 +2019,31 @@ const BillingInvoicing = () => {
                 });
 
                 if (!continueDuplicate) return;
-                await savePayment(true);
+
+                const res = await savePayment(true);
+                savedPayment = res?.data?.data || res?.data;
             }
 
-            message.success('Payment recorded successfully.');
+            // ⭐ Confirm the backend actually saved a payment row before
+            //    showing "success" — otherwise surface the real error.
+            if (!savedPayment || (!savedPayment.payment_id && !savedPayment.id)) {
+                throw new Error('Payment was not saved by the server. Check the backend logs.');
+            }
+
+                    message.success('Payment recorded successfully.');
             setPaymentModalVisible(false);
             paymentForm.resetFields();
             setPaymentMethod('cash');
+
+            // ⭐ Force immediate refetch so the new paid_amount/balance
+            //    reflects in the Invoices tab without a manual refresh.
+            await Promise.allSettled([
+                queryClient.refetchQueries({ queryKey: ['billing', 'invoices'], type: 'active' }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'payments', 'tracking'], type: 'active' }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'payments', 'history'], type: 'active' }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'debts'], type: 'active' }),
+            ]);
+
             invalidatePaymentData();
         } catch (error) {
             console.error('Payment error:', error);
@@ -2637,31 +2810,85 @@ const BillingInvoicing = () => {
     };
 
     // ==================== MOBILE PAYMENT FUNCTIONS ====================
-    const handleVerifyMobilePayment = async (payment) => {
+      const handleVerifyMobilePayment = async (payment) => {
+        // Legacy alias → "Receive Payment"
+        return handleReceiveMobilePayment(payment);
+    };
+
+    // ⭐ Receive Payment — deduct balance, sync invoice, push to Payment Tracking
+    const handleReceiveMobilePayment = async (payment) => {
         confirm({
-            title: 'Verify Mobile Payment',
-            content: `Verify payment of ${formatCurrency(payment.amount)} from ${payment.customer_name}?`,
-            okText: 'Verify',
+            title: 'Receive Mobile Payment',
+            icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+            content: (
+                <div>
+                    <p>Confirm receiving <strong>{formatCurrency(payment.amount)}</strong> from <strong>{payment.customer_name}</strong>?</p>
+                    <p style={{ marginTop: 8, color: '#52c41a' }}><CheckCircleOutlined /> This will automatically:</p>
+                    <ul style={{ paddingLeft: 20, marginTop: 4 }}>
+                        <li>Deduct the amount from the booking balance</li>
+                        <li>Update the invoice balance</li>
+                        <li>Add the payment to Payment Tracking</li>
+                    </ul>
+                </div>
+            ),
+            okText: 'Receive Payment',
+            okButtonProps: { style: { background: '#52c41a', borderColor: '#52c41a' } },
             cancelText: 'Cancel',
             onOk: async () => {
                 try {
                     await api.post(`/payments/mobile/${payment.payment_id}/verify`, {
-                        notes: 'Verified via admin'
+                        notes: 'Payment received via admin confirmation'
                     });
-                    message.success('Mobile payment verified successfully');
+                    message.success(`Payment of ${formatCurrency(payment.amount)} received. Balance updated.`);
+
                     invalidatePaymentData();
                     queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'mobile'] });
+                    queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
+                    queryClient.invalidateQueries({ queryKey: ['billing', 'debts'] });
+                    queryClient.invalidateQueries({ queryKey: ['billing', 'payments'] });
+                    queryClient.invalidateQueries({ queryKey: ['bookings'] });
+
+                    await Promise.all([
+                        invoicesQuery.refetch(),
+                        mobilePaymentsQuery.refetch(),
+                        paymentTrackingQuery.refetch(),
+                    ]);
                 } catch (error) {
-                    message.error('Failed to verify payment');
+                    message.error(error.response?.data?.message || 'Failed to receive payment');
                 }
             }
         });
     };
 
+    // ⭐ Not Receive Payment — reject without touching the balance
     const handleRejectMobilePayment = (payment) => {
-        setSelectedPayment(payment);
-        setRejectReason('');
-        setRejectPaymentModalVisible(true);
+        confirm({
+            title: 'Not Receive Payment',
+            icon: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
+            content: (
+                <div>
+                    <p>Mark payment of <strong>{formatCurrency(payment.amount)}</strong> from <strong>{payment.customer_name}</strong> as <strong style={{ color: '#ff4d4f' }}>Not Received</strong>?</p>
+                    <p style={{ marginTop: 8, color: '#8b93a8' }}>The balance will NOT be affected.</p>
+                </div>
+            ),
+            okText: 'Not Receive',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            onOk: async () => {
+                try {
+                    await api.post(`/payments/mobile/${payment.payment_id}/reject`, {
+                        reason: 'Payment not received — rejected by admin'
+                    });
+                    message.success('Payment marked as Not Received');
+
+                    invalidatePaymentData();
+                    queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'mobile'] });
+                    await mobilePaymentsQuery.refetch();
+                } catch (error) {
+                    message.error(error.response?.data?.message || 'Failed to reject payment');
+                }
+            }
+        });
     };
 
     const handleConfirmReject = async () => {
@@ -2810,17 +3037,27 @@ const BillingInvoicing = () => {
         return icons[method] || <BankOutlined />;
     };
 
-    // ==================== STATS ====================
+     // ==================== STATS ====================
+    // ⭐ Total Revenue / Collected reflect the entire business — use
+    //    `allInvoices` (the unfiltered list) so paid invoices are counted.
     const totalRevenue = useMemo(() =>
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0) : 0,
-    [invoices]);
+        Array.isArray(allInvoices)
+            ? allInvoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0)
+            : 0,
+    [allInvoices]);
 
     const totalPaid = useMemo(() =>
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0) : 0,
-    [invoices]);
+        Array.isArray(allInvoices)
+            ? allInvoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0)
+            : 0,
+    [allInvoices]);
 
+    // ⭐ Outstanding Balance only counts invoices that still owe money —
+    //    it matches exactly what the Invoices tab shows.
     const totalOutstanding = useMemo(() =>
-        Array.isArray(invoices) ? invoices.reduce((sum, inv) => sum + (inv.balance || 0), 0) : 0,
+        Array.isArray(invoices)
+            ? invoices.reduce((sum, inv) => sum + (inv.balance || 0), 0)
+            : 0,
     [invoices]);
 
     const totalDebt = useMemo(() =>
@@ -2840,13 +3077,16 @@ const BillingInvoicing = () => {
     [totalRevenue, totalPaid]);
 
     // ==================== FILTERED DATA ====================
-    const filteredInvoices = useMemo(() => {
+         const filteredInvoices = useMemo(() => {
         if (!Array.isArray(invoices)) return [];
-        return invoices.filter(inv => {
-            if (Number(inv.balance || 0) <= 0 || String(inv.status || '').toLowerCase() === 'paid') return false;
+        return invoices.filter((inv) => {
+            // ⭐ Balance filter is already applied in setInvoices().
+            //    What remains here: search, status dropdown, and date range.
             if (searchText && !inv.customer_name?.toLowerCase().includes(searchText.toLowerCase()) &&
                 !inv.invoice_number?.toLowerCase().includes(searchText.toLowerCase())) return false;
+
             if (filterStatus !== 'all' && inv.status !== filterStatus) return false;
+
             if (filterDate && filterDate[0] && filterDate[1]) {
                 const invDate = dayjs(inv.issue_date);
                 if (invDate.isBefore(filterDate[0]) || invDate.isAfter(filterDate[1])) return false;
@@ -3248,29 +3488,7 @@ const BillingInvoicing = () => {
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-        {
-            title: 'STATUS',
-            dataIndex: 'status',
-            key: 'status',
-            width: 110,
-            align: 'center',
-            render: (s) => {
-                const config = getStatusConfig(s);
-                return (
-                    <span className="bi-status-badge" style={{
-                        color: config.color,
-                        background: config.bg,
-                        padding: '2px 10px',
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        fontWeight: 500
-                    }}>
-                        {config.icon} {config.text}
-                    </span>
-                );
-            }
-        },
-        {
+               {
             title: 'ACTION',
             key: 'action',
             width: 160,
@@ -3290,7 +3508,7 @@ const BillingInvoicing = () => {
         }
     ], [isDarkMode]);
 
-    const mobilePaymentColumns = useMemo(() => [
+      const mobilePaymentColumns = useMemo(() => [
         {
             title: 'CUSTOMER',
             dataIndex: 'customer_name',
@@ -3344,6 +3562,27 @@ const BillingInvoicing = () => {
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
         {
+            title: 'PROOF OF PAYMENT',
+            dataIndex: 'receipt_url',
+            key: 'receipt_url',
+            width: 130,
+            align: 'center',
+            render: (url) => (
+                url ? (
+                    <Image
+                        src={resolveBackendUrl(url)}
+                        alt="Proof"
+                        width={50}
+                        height={50}
+                        style={{ objectFit: 'cover', borderRadius: 8, cursor: 'pointer' }}
+                        preview={{ mask: <EyeOutlined /> }}
+                    />
+                ) : (
+                    <Text type="secondary">No proof</Text>
+                )
+            )
+        },
+        {
             title: 'ACCOUNT',
             key: 'account',
             width: 150,
@@ -3365,10 +3604,15 @@ const BillingInvoicing = () => {
             title: 'STATUS',
             dataIndex: 'status',
             key: 'status',
-            width: 110,
+            width: 120,
             align: 'center',
             render: (s) => {
-                const config = getStatusConfig(s);
+                const map = {
+                    pending:   { color: '#faad14', text: 'Pending',      bg: 'rgba(250,173,20,0.1)', icon: <ClockCircleOutlined /> },
+                    completed: { color: '#52c41a', text: 'Received',     bg: 'rgba(82,196,26,0.1)',  icon: <CheckCircleOutlined /> },
+                    failed:    { color: '#ff4d4f', text: 'Not Received', bg: 'rgba(255,77,79,0.1)',  icon: <CloseCircleOutlined /> },
+                };
+                const config = map[s] || map.pending;
                 return (
                     <span className="bi-status-badge" style={{
                         color: config.color,
@@ -3376,7 +3620,10 @@ const BillingInvoicing = () => {
                         padding: '2px 10px',
                         borderRadius: '12px',
                         fontSize: '12px',
-                        fontWeight: 500
+                        fontWeight: 500,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
                     }}>
                         {config.icon} {config.text}
                     </span>
@@ -3386,22 +3633,33 @@ const BillingInvoicing = () => {
         {
             title: 'ACTIONS',
             key: 'actions',
-            width: 200,
+            width: 220,
             render: (_, record) => (
                 <Space size={4}>
                     <Tooltip title="View Payment Details">
                         <Button type="text" className="bi-action-btn" icon={<EyeOutlined />} onClick={() => handleViewReceipt(record)} />
                     </Tooltip>
-                    {canApproveFinancialAdjustments && record.status === 'pending' && (
+                                        {canApproveFinancialAdjustments && record.status === 'pending' && (
                         <>
-                            <Tooltip title="Verify Payment">
-                                <Button type="primary" size="small" className="bi-verify-btn" icon={<CheckCircleOutlined />} onClick={() => handleVerifyMobilePayment(record)}>
-                                    Verify
+                            <Tooltip title="Receive Payment — deduct from balance and add to Payment Tracking">
+                                <Button
+                                    type="primary"
+                                    size="small"
+                                    icon={<CheckCircleOutlined />}
+                                    style={{ background: '#52c41a', borderColor: '#52c41a' }}
+                                    onClick={() => handleReceiveMobilePayment(record)}
+                                >
+                                    Receive
                                 </Button>
                             </Tooltip>
-                            <Tooltip title="Reject Payment">
-                                <Button danger size="small" className="bi-reject-btn" icon={<CloseCircleOutlined />} onClick={() => handleRejectMobilePayment(record)}>
-                                    Reject
+                            <Tooltip title="Not Receive Payment — mark as rejected">
+                                <Button
+                                    danger
+                                    size="small"
+                                    icon={<CloseCircleOutlined />}
+                                    onClick={() => handleRejectMobilePayment(record)}
+                                >
+                                    Not Receive
                                 </Button>
                             </Tooltip>
                         </>
@@ -3412,14 +3670,14 @@ const BillingInvoicing = () => {
                         </Tooltip>
                     )}
                     {record.status === 'failed' && (
-                        <Tooltip title="Rejected">
-                            <Tag color="red">Rejected</Tag>
+                        <Tooltip title="Not Received">
+                            <Tag color="red">Not Received</Tag>
                         </Tooltip>
                     )}
                 </Space>
             )
         }
-    ], [canApproveFinancialAdjustments]);
+    ], [canApproveFinancialAdjustments, handleViewReceipt, handleReceiveMobilePayment, handleRejectMobilePayment, handlePrintReceipt]);
 
     const debtColumns = useMemo(() => [
         {
@@ -4052,8 +4310,19 @@ const BillingInvoicing = () => {
 
                     {/* Main Card */}
                     <Card className={mainCardClass} variant="borderless">
-                        <Tabs activeKey={activeMainTab} onChange={setActiveMainTab} className="bi-tabs">
-                            {/* Invoices Tab */}
+                        <Tabs
+                            activeKey={activeMainTab}
+                            onChange={(key) => {
+                                setActiveMainTab(key);
+                                // ⭐ Entering the Invoices tab always shows
+                                //    the newest data — no manual refresh needed.
+                                if (key === 'invoices') {
+                                    queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
+                                    invoicesQuery.refetch().catch(() => {});
+                                }
+                            }}
+                            className="bi-tabs"
+                        >                            {/* Invoices Tab */}
                             <TabPane tab={<span><FileTextOutlined /> Invoices</span>} key="invoices">
                                 <div className={filtersClass}>
                                     <div className={filterGroupClass}>
@@ -4777,6 +5046,64 @@ const BillingInvoicing = () => {
                                     </div>
                                 </div>
                             </div>
+                            {/* Additional Charges Breakdown */}
+                            {Array.isArray(selectedInvoice.charges) && selectedInvoice.charges.length > 0 && (
+                                <div className="bi-info-section">
+                                    <div className="bi-section-header">
+                                        <PercentageOutlined style={{ color: '#1a7ab5' }} />
+                                        <span className="bi-section-title-text">Additional Charges</span>
+                                    </div>
+                                    <Table
+                                        dataSource={selectedInvoice.charges}
+                                        rowKey={(r) => `${r.kind}-${r.type}-${r.id}`}
+                                        pagination={false}
+                                        size="small"
+                                        className={`${tableClass} bi-charges-table`}
+                                        columns={[
+                                            {
+                                                title: 'Description',
+                                                dataIndex: 'description',
+                                                render: (text, row) => (
+                                                    <Text className="bi-plain-text">
+                                                        {text || row.type || 'Charge'}
+                                                    </Text>
+                                                ),
+                                            },
+                                            {
+                                                title: 'Type',
+                                                dataIndex: 'kind',
+                                                width: 120,
+                                                align: 'center',
+                                                render: (kind) => (
+                                                    <Tag color={kind === 'discount' ? 'red' : 'blue'}>
+                                                        {kind === 'discount' ? 'Discount' : 'Charge'}
+                                                    </Tag>
+                                                ),
+                                            },
+                                            {
+                                                title: 'Amount',
+                                                dataIndex: 'amount',
+                                                width: 140,
+                                                align: 'right',
+                                                render: (v, row) => (
+                                                    <Text
+                                                        strong
+                                                        className={
+                                                            row.kind === 'discount'
+                                                                ? 'bi-amount-balance'
+                                                                : 'bi-amount-total'
+                                                        }
+                                                    >
+                                                        {row.kind === 'discount' ? '-' : ''}
+                                                        ₱{Number(v || 0).toLocaleString()}
+                                                    </Text>
+                                                ),
+                                            },
+                                        ]}
+                                        locale={{ emptyText: renderEmptyTable() }}
+                                    />
+                                </div>
+                            )}
 
                             {/* Notes */}
                             {selectedInvoice.notes && (
@@ -5337,41 +5664,34 @@ const BillingInvoicing = () => {
                                         allowClear
                                         notFoundContent={
                                             <div style={{ padding: 12, textAlign: 'center', color: '#8b93a8' }}>
-                                                No approved bookings available
+                                                All approved bookings already have invoices.
                                             </div>
                                         }
                                     >
-                                                                          {/*
-                                      ⭐ Show EVERY confirmed booking.
-                                      Bookings that already have an invoice are shown
-                                      first (they are the most likely to be selected
-                                      when the operator wants to view/adjust that invoice),
-                                      and they are labelled as already-invoiced so the
-                                      operator is not surprised if the save fails.
-                                    */}
-                                    {[...(confirmedBookings || [])]
-                                        .sort((a, b) => {
-                                            // Already-invoiced on top, then by booking_id desc.
-                                            if (a.has_invoice !== b.has_invoice) {
-                                                return a.has_invoice ? -1 : 1;
-                                            }
-                                            return Number(b.booking_id) - Number(a.booking_id);
-                                        })
-                                        .map((booking) => {
-                                            const label = booking.has_invoice
-                                                ? `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'}) · Already invoiced: ${booking.invoice_number}`
-                                                : `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})`;
+                                        {[...(confirmedBookings || [])]
+                                            // ⭐ HARD FILTER: Exclude bookings that already have an invoice
+                                            .filter((booking) => {
+                                                if (booking.has_invoice) return false;
+                                                if (booking.invoice_id) return false;
+                                                if (booking.invoice_number) return false;
+                                                return true;
+                                            })
+                                            .sort((a, b) =>
+                                                Number(b.booking_id) - Number(a.booking_id)
+                                            )
+                                            .map((booking) => {
+                                                const label = `${booking.booking_no} — ${booking.customer_name} (${booking.event_date || '—'})`;
 
-                                            return (
-                                                <Option
-                                                    key={booking.booking_id}
-                                                    value={booking.booking_id}
-                                                    label={label}
-                                                >
-                                                    {label}
-                                                </Option>
-                                            );
-                                        })}
+                                                return (
+                                                    <Option
+                                                        key={booking.booking_id}
+                                                        value={booking.booking_id}
+                                                        label={label}
+                                                    >
+                                                        {label}
+                                                    </Option>
+                                                );
+                                            })}
                                     </Select>
                                 </Form.Item>
                             </div>
@@ -5433,7 +5753,7 @@ const BillingInvoicing = () => {
 
                             <Divider className="bi-form-divider" />
 
-                            <div className="bi-form-section">
+                                                    <div className="bi-form-section">
                                 <div className="bi-form-section-title">Financial Details</div>
                                 <Row gutter={16}>
                                     <Col xs={24} sm={8}>
@@ -5461,11 +5781,73 @@ const BillingInvoicing = () => {
                                         </Form.Item>
                                     </Col>
                                     <Col xs={24} sm={8}>
-                                        <Form.Item name="additional_charges" label="Additional Charges">
-                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" placeholder="0" className="bi-form-input" />
+                                        <Form.Item name="due_date" label="Due Date">
+                                            <DatePicker style={{ width: '100%' }} className="bi-form-input" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
+                            </div>
+
+                            {/* ⭐ Additional Charges breakdown — one input per fee */}
+                            <div className="bi-form-section">
+                                <div className="bi-form-section-title">Additional Charges</div>
+                                <Row gutter={16}>
+                                    {[
+                                        ['transportation_fee', 'Transportation Fee'],
+                                        ['setup_fee', 'Setup Fee'],
+                                        ['service_crew_fee', 'Service Crew Fee'],
+                                        ['equipment_rental', 'Equipment Rental'],
+                                        ['extra_food_fee', 'Extra Food Request'],
+                                    ].map(([key, label]) => (
+                                        <Col xs={24} sm={8} key={key}>
+                                            <Form.Item label={label}>
+                                                <InputNumber
+                                                    min={0}
+                                                    style={{ width: '100%' }}
+                                                    prefix="₱"
+                                                    placeholder="0.00"
+                                                    className="bi-form-input"
+                                                    value={invoiceCharges[key]}
+                                                    onChange={(value) =>
+                                                        setInvoiceCharges((prev) => ({
+                                                            ...prev,
+                                                            [key]: Number(value || 0),
+                                                        }))
+                                                    }
+                                                />
+                                            </Form.Item>
+                                        </Col>
+                                    ))}
+                                </Row>
+
+                                {/* Live subtotal of the extra fees */}
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'flex-end',
+                                        padding: '8px 12px',
+                                        background: isDarkMode ? '#1a1f3a' : '#f8fafc',
+                                        borderRadius: 8,
+                                        marginTop: 4,
+                                    }}
+                                >
+                                    <Text type="secondary" style={{ marginRight: 12 }}>
+                                        Total Additional Charges:
+                                    </Text>
+                                    <Text strong style={{ color: '#1a7ab5' }}>
+                                        ₱
+                                        {Number(
+                                            (invoiceCharges.transportation_fee || 0) +
+                                            (invoiceCharges.setup_fee || 0) +
+                                            (invoiceCharges.service_crew_fee || 0) +
+                                            (invoiceCharges.equipment_rental || 0) +
+                                            (invoiceCharges.extra_food_fee || 0)
+                                        ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </Text>
+                                </div>
+                            </div>
+
+                            <div className="bi-form-section">
                                 <Row gutter={16}>
                                     <Col xs={24} sm={12}>
                                         <Form.Item name="total_amount" label="Total Amount" rules={[{ required: true }]}>
@@ -5477,11 +5859,6 @@ const BillingInvoicing = () => {
                                                 disabled
                                                 className="bi-form-input-disabled bi-total-amount"
                                             />
-                                        </Form.Item>
-                                    </Col>
-                                    <Col xs={24} sm={12}>
-                                        <Form.Item name="due_date" label="Due Date">
-                                            <DatePicker style={{ width: '100%' }} className="bi-form-input" />
                                         </Form.Item>
                                     </Col>
                                 </Row>
