@@ -1957,12 +1957,23 @@ const BillingInvoicing = () => {
 
         paymentSubmitLock.current = true;
         try {
-            const amount = Number(values.amount || 0);
+                 const amount = Number(values.amount || 0);
             const currentPaid = Number(selectedInvoice.paid_amount || 0);
+            const balance = Number(selectedInvoice.balance || 0);
             const requiredDeposit = Number(selectedInvoice.required_deposit ?? (Number(selectedInvoice.total_amount || 0) * 0.30));
             const paymentType = getAutomaticPaymentType(selectedInvoice, amount);
 
-            if (currentPaid < requiredDeposit && (currentPaid + amount) < requiredDeposit) {
+            // ⭐ Overpayment is allowed. When the tendered amount exceeds the
+            //    balance, the excess is CHANGE — not a larger payment.
+            //    The stored payment is capped at the balance.
+            const isOverpayment = amount > balance + 0.01;
+            const changeAmount = isOverpayment ? (amount - balance) : 0;
+
+            // ⭐ When overpaid, the amount recorded = the balance (exact cash).
+            //    When not overpaid, the amount recorded = the entered amount.
+            const recordedAmount = isOverpayment ? balance : amount;
+
+            if (currentPaid < requiredDeposit && (currentPaid + recordedAmount) < requiredDeposit) {
                 const continueBelowDeposit = await confirmAction({
                     title: '30% Deposit Reminder',
                     content: (
@@ -1978,19 +1989,31 @@ const BillingInvoicing = () => {
             }
 
             const referenceNumber = values.reference_number || generateReferenceNumber();
+
+            // ⭐ Build a descriptive note that records the change amount so
+            //    the receipt and audit trail show exactly what happened.
+            let notesText = values.notes || '';
+            if (isOverpayment) {
+                const changeLine = `Change given: ₱${changeAmount.toFixed(2)} (tendered ₱${amount.toFixed(2)}, exact cash applied ₱${recordedAmount.toFixed(2)})`;
+                notesText = notesText ? `${notesText}\n${changeLine}` : changeLine;
+            }
+
             const paymentData = {
                 booking_id: selectedInvoice.booking_id,
-                amount,
+                // ⭐ Cap at the balance — never store more than what settles the invoice.
+                amount: recordedAmount,
                 payment_method: values.payment_method,
-                payment_type: paymentType,
+                payment_type: isOverpayment ? 'full' : paymentType,
                 reference_number: referenceNumber,
-                notes: values.notes,
+                notes: notesText,
                 verify_immediately: true,
+                // ⭐ Signal to the backend so it can record the tendered amount.
+                tendered_amount: amount,
+                change_amount: changeAmount,
             };
 
             if (values.account_name) paymentData.account_name = values.account_name;
             if (values.account_number) paymentData.account_number = values.account_number;
-
             const savePayment = async (forceDuplicate = false) => paymentSaveMutation.mutateAsync({
                 ...paymentData,
                 force_duplicate: forceDuplicate,
@@ -2030,7 +2053,11 @@ const BillingInvoicing = () => {
                 throw new Error('Payment was not saved by the server. Check the backend logs.');
             }
 
-                    message.success('Payment recorded successfully.');
+                                   message.success(
+                isOverpayment
+                    ? `Payment recorded. Change: ₱${changeAmount.toFixed(2)}`
+                    : 'Payment recorded successfully.'
+            );
             setPaymentModalVisible(false);
             paymentForm.resetFields();
             setPaymentMethod('cash');
@@ -2642,12 +2669,26 @@ const BillingInvoicing = () => {
         }
     };
 
-    const handleViewPDF = async (booking) => {
+        // ⭐ Booking PDF — full Booking Details document with menu items.
+    //    Now used from BOTH the PDF Overview tab AND the Invoices tab.
+    const handleViewPDF = async (record) => {
         try {
-            setPdfViewerBooking(booking);
+            // ⭐ Invoices table rows carry `booking_id` inside the row,
+            //    so extract it defensively from either shape.
+            const bookingId =
+                record?.booking_id
+                || record?.id
+                || record?.booking?.booking_id;
+
+            if (!bookingId) {
+                message.error('Booking ID is missing for this record.');
+                return;
+            }
+
+            setPdfViewerBooking(record);
             setPdfViewerZoom(100);
 
-            const response = await api.get(`/bookings/${booking.booking_id}`);
+            const response = await api.get(`/bookings/${bookingId}`);
             const fullBooking = response.data?.data || response.data;
 
             const html = generatePDFHTML(fullBooking);
@@ -2656,6 +2697,75 @@ const BillingInvoicing = () => {
         } catch (error) {
             console.error('Failed to load PDF:', error);
             message.error('Failed to load PDF');
+        }
+    };
+
+    // ⭐ NEW — Invoice "View PDF" handler.
+    //    Always renders a Payment Receipt (PAY-####, amount, method,
+    //    reference, change) — never the Booking Details document.
+    const handleViewInvoiceReceiptPDF = async (invoice) => {
+        try {
+            setPdfViewerBooking(invoice);
+            setPdfViewerZoom(100);
+
+            // Prefer the actual payment row for this invoice/booking.
+            const matchedPayment =
+                payments.find(
+                    (p) =>
+                        String(p.invoice_id) === String(invoice.invoice_id)
+                        || String(p.booking_id) === String(invoice.booking_id)
+                ) || null;
+            // Build a receipt payload from the invoice itself if no payment
+            // row exists yet (e.g. invoice with zero payments, or the
+            // Payment Tracking tab hasn't loaded yet).
+            const receiptPayment = matchedPayment || {
+                payment_id: null,
+                // ⭐ The receipt still needs a human-readable number.
+                payment_number: invoice.invoice_number || 'N/A',
+                booking_id: invoice.booking_id,
+                booking_no: invoice.booking_no,
+                customer_name: invoice.customer_name,
+                customer_email: invoice.customer_email,
+                customer_phone: invoice.customer_phone,
+                invoice_number: invoice.invoice_number,
+                // ⭐ Fall back to paid_amount so a settled invoice still
+                //    shows the money that was collected.
+                amount: Number(invoice.paid_amount || 0),
+                tendered_amount: Number(invoice.paid_amount || 0),
+                change_amount: 0,
+                payment_method: 'N/A',
+                payment_type: invoice.status || 'partial',
+                reference_number: 'N/A',
+                status: invoice.status || 'unpaid',
+                date: invoice.issue_date || invoice.created_at || dayjs().toISOString(),
+                notes: invoice.notes,
+            };
+
+            // ⭐ ALWAYS render the Payment Receipt layout — never the
+            //    booking details layout.
+            let html;
+
+            if (matchedPayment?.payment_id) {
+                // Best path — the backend already has a receipt renderer
+                // that matches the format used by Payment Tracking.
+                try {
+                    const res = await api.get(`/payments/${matchedPayment.payment_id}/receipt`);
+                    const data = res.data?.data || res.data;
+                    html = applyReceiptWatermark(
+                        data?.receipt_html || generateReceiptHTML(data?.payment || receiptPayment)
+                    );
+                } catch (_) {
+                    html = generateReceiptHTML(receiptPayment);
+                }
+            } else {
+                html = generateReceiptHTML(receiptPayment);
+            }
+
+            setPdfViewerHtml(html);
+            setPdfViewerVisible(true);
+        } catch (error) {
+            console.error('Failed to load invoice receipt PDF:', error);
+            message.error('Failed to load receipt');
         }
     };
 
@@ -2681,17 +2791,17 @@ const BillingInvoicing = () => {
         }, 500);
     };
 
-    const handleDownloadPDF = async () => {
+            const handleDownloadPDF = async () => {
         if (!pdfViewerHtml) {
             message.warning('No PDF to download');
             return;
         }
 
+        // ⭐ Every PDF from the modal is now a Booking Details document.
+        const filename = `booking-${pdfViewerBooking?.booking_no || 'N-A'}.pdf`;
+
         try {
-            await downloadHtmlAsPdf(
-                pdfViewerHtml,
-                `booking-${pdfViewerBooking?.booking_no || 'N-A'}.pdf`
-            );
+            await downloadHtmlAsPdf(pdfViewerHtml, filename);
             message.success('PDF downloaded successfully.');
         } catch (error) {
             console.error('PDF download error:', error);
@@ -2723,7 +2833,28 @@ const BillingInvoicing = () => {
         }
     };
 
-    const generateReceiptHTML = (payment) => {
+      const generateReceiptHTML = (payment) => {
+        // ⭐ Read tendered/change from the backend payload first, then
+        //    fall back to parsing the notes.
+        let tenderedAmount = Number(payment?.tendered_amount ?? payment?.amount ?? 0);
+        let changeAmount   = Number(payment?.change_amount ?? 0);
+
+        if (!changeAmount && payment?.notes) {
+            const match = String(payment.notes).match(/Change given:\s*₱([\d,]+(?:\.\d+)?)/i);
+            if (match) changeAmount = Number(String(match[1]).replace(/,/g, ''));
+        }
+        if (!payment?.tendered_amount && payment?.notes) {
+            const match = String(payment.notes).match(/tendered\s*₱([\d,]+(?:\.\d+)?)/i);
+            if (match) tenderedAmount = Number(String(match[1]).replace(/,/g, ''));
+        }
+
+        const changeRow = changeAmount > 0.01
+            ? `
+                <tr><td><strong>Cash Tendered:</strong></td><td>${formatCurrency(tenderedAmount)}</td></tr>
+                <tr style="color:#52c41a;"><td><strong>Change:</strong></td><td><strong>${formatCurrency(changeAmount)}</strong></td></tr>
+              `
+            : '';
+
         const receiptHtml = `
             <!DOCTYPE html>
             <html>
@@ -2752,6 +2883,7 @@ const BillingInvoicing = () => {
                         <table>
                             <tr><td><strong>Customer:</strong></td><td>${payment?.customer_name || 'N/A'}</td></tr>
                             <tr><td><strong>Amount:</strong></td><td>${formatCurrency(payment?.amount || 0)}</td></tr>
+                            ${changeRow}
                             <tr><td><strong>Payment Method:</strong></td><td>${(payment?.payment_method || 'N/A').toUpperCase()}</td></tr>
                             <tr><td><strong>Reference #:</strong></td><td>${payment?.reference_number || 'N/A'}</td></tr>
                             <tr><td><strong>Status:</strong></td><td>${(payment?.status || 'pending').toUpperCase()}</td></tr>
@@ -3281,9 +3413,9 @@ const BillingInvoicing = () => {
                         icon: <EyeOutlined />,
                         onClick: () => handleViewInvoice(record)
                     },
-                    {
+                                                             {
                         key: 'pdf',
-                        label: 'View PDF',
+                        label: 'View Booking Details PDF',
                         icon: <FilePdfOutlined />,
                         onClick: () => handleViewPDF(record)
                     },
@@ -3373,8 +3505,13 @@ const BillingInvoicing = () => {
                         <Tooltip title="View Invoice">
                             <Button type="text" className="bi-action-btn" icon={<EyeOutlined />} onClick={() => handleViewInvoice(record)} />
                         </Tooltip>
-                        <Tooltip title="View PDF">
-                            <Button type="text" className="bi-action-btn" icon={<FilePdfOutlined />} onClick={() => handleViewPDF(record)} />
+                                                                     <Tooltip title="View Booking Details PDF">
+                            <Button
+                                type="text"
+                                className="bi-action-btn"
+                                icon={<FilePdfOutlined />}
+                                onClick={() => handleViewPDF(record)}
+                            />
                         </Tooltip>
                         {canApproveFinancialAdjustments && (
                             <Tooltip title="Edit">
@@ -3910,21 +4047,23 @@ const BillingInvoicing = () => {
                 );
             }
         },
-        {
+               {
             title: 'ACTION',
             key: 'action',
-            width: 120,
+            width: 150,
             render: (_, record) => (
-                <Button
-                    type="primary"
-                    size="small"
-                    icon={<FilePdfOutlined />}
-                    onClick={() => handlePDFOverviewSelectBooking(record.booking_id)}
-                    loading={pdfOverviewLoading && pdfOverviewBooking?.booking_id === record.booking_id}
-                    className="bi-pdf-select-btn"
-                >
-                    View PDF
-                </Button>
+                <Tooltip title="View full Booking Details PDF (menu, schedule, charges)">
+                    <Button
+                        type="primary"
+                        size="small"
+                        icon={<FilePdfOutlined />}
+                        onClick={() => handlePDFOverviewSelectBooking(record.booking_id)}
+                        loading={pdfOverviewLoading && pdfOverviewBooking?.booking_id === record.booking_id}
+                        className="bi-pdf-select-btn"
+                    >
+                        Booking PDF
+                    </Button>
+                </Tooltip>
             )
         }
     ], [isDarkMode, pdfOverviewLoading, pdfOverviewBooking]);
@@ -4723,10 +4862,12 @@ const BillingInvoicing = () => {
                                     {/* PDF Preview Section */}
                                     {pdfOverviewHtml && pdfOverviewBooking && (
                                         <div style={{ marginTop: 24 }}>
-                                            <Divider>
+                                                                                   <Divider>
                                                 <Space>
                                                     <FilePdfOutlined style={{ color: '#ff4d4f' }} />
-                                                    <Text strong>PDF Preview - {pdfOverviewBooking.booking_no || 'Booking'}</Text>
+                                                    <Text strong>
+                                                        Booking Details PDF — {pdfOverviewBooking.booking_no || 'Booking'}
+                                                    </Text>
                                                 </Space>
                                             </Divider>
                                             <div style={{
@@ -4848,22 +4989,59 @@ const BillingInvoicing = () => {
                     footer={
                         <div className="bi-modal-footer-enhanced">
                             <Space size={8}>
-                                <Button
+                                                               <Button
                                     icon={<FilePdfOutlined />}
                                     onClick={() => handleViewPDF(selectedInvoice)}
                                     className="bi-footer-btn bi-footer-btn-pdf"
                                 >
-                                    View PDF
+                                    View Booking PDF
                                 </Button>
-                                <Button
+                                                              <Button
                                     icon={<PrinterOutlined />}
                                     onClick={() => {
-                                        const payment = payments.find(p => p.invoice_id === selectedInvoice?.invoice_id);
-                                        if (payment) {
+                                        // ⭐ Prefer the exact payment row for this invoice,
+                                        //    fall back to any payment on the same booking.
+                                        const payment =
+                                            payments.find((p) => String(p.invoice_id) === String(selectedInvoice?.invoice_id))
+                                            || payments.find((p) => String(p.booking_id) === String(selectedInvoice?.booking_id));
+
+                                        if (payment?.payment_id) {
                                             handlePrintReceipt(payment);
-                                        } else {
-                                            message.warning('No payment record found for this invoice');
+                                            return;
                                         }
+
+                                        // ⭐ No payment row exists yet (invoice with zero payments) —
+                                        //    still render a Payment Receipt using the invoice data.
+                                        setSelectedPayment({
+                                            payment_number: selectedInvoice?.invoice_number || 'N/A',
+                                            customer_name: selectedInvoice?.customer_name,
+                                            booking_no: selectedInvoice?.booking_no,
+                                            invoice_number: selectedInvoice?.invoice_number,
+                                            amount: Number(selectedInvoice?.paid_amount || 0),
+                                            payment_method: 'N/A',
+                                            payment_type: selectedInvoice?.status || 'partial',
+                                            reference_number: 'N/A',
+                                            status: selectedInvoice?.status || 'unpaid',
+                                            date: selectedInvoice?.issue_date || dayjs().toISOString(),
+                                        });
+                                        setReceiptPreviewHtml(
+                                            applyReceiptWatermark(
+                                                generateReceiptHTML({
+                                                    payment_number: selectedInvoice?.invoice_number || 'N/A',
+                                                    customer_name: selectedInvoice?.customer_name,
+                                                    booking_no: selectedInvoice?.booking_no,
+                                                    invoice_number: selectedInvoice?.invoice_number,
+                                                    amount: Number(selectedInvoice?.paid_amount || 0),
+                                                    payment_method: 'N/A',
+                                                    payment_type: selectedInvoice?.status || 'partial',
+                                                    reference_number: 'N/A',
+                                                    status: selectedInvoice?.status || 'unpaid',
+                                                    date: selectedInvoice?.issue_date || dayjs().toISOString(),
+                                                })
+                                            )
+                                        );
+                                        setReceiptPreviewZoom(100);
+                                        setReceiptPreviewVisible(true);
                                     }}
                                     className="bi-footer-btn bi-footer-btn-print"
                                 >
@@ -5243,12 +5421,15 @@ const BillingInvoicing = () => {
                                 />
                             </Form.Item>
 
-                            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.amount !== cur.amount}>
+                                                        <Form.Item noStyle shouldUpdate={(prev, cur) => prev.amount !== cur.amount}>
                                 {({ getFieldValue }) => {
                                     const entered = Number(getFieldValue('amount') || 0);
                                     const balance = Number(selectedInvoice?.balance || 0);
                                     const change = Math.max(0, entered - balance);
-                                    return change > 0 ? (
+
+                                    if (change <= 0) return null;
+
+                                    return (
                                         <Alert
                                             type="success"
                                             showIcon
@@ -5256,12 +5437,21 @@ const BillingInvoicing = () => {
                                             message={
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                     <span>Change to return</span>
-                                                    <span style={{ fontWeight: 700, fontSize: '16px', color: '#52c41a' }}>₱{change.toFixed(2)}</span>
+                                                    <span style={{ fontWeight: 700, fontSize: '16px', color: '#52c41a' }}>
+                                                        ₱{change.toFixed(2)}
+                                                    </span>
                                                 </div>
+                                            }
+                                            description={
+                                                <span style={{ fontSize: 12, color: '#64748b' }}>
+                                                    The payment will be recorded as <strong>exact cash</strong>{' '}
+                                                    (₱{balance.toFixed(2)}). The change (₱{change.toFixed(2)}) is not
+                                                    counted as payment.
+                                                </span>
                                             }
                                             className={isDarkMode ? 'bi-alert-dark' : ''}
                                         />
-                                    ) : null;
+                                    );
                                 }}
                             </Form.Item>
 
@@ -6034,9 +6224,11 @@ const BillingInvoicing = () => {
                 {/* ==================== PDF VIEWER MODAL ==================== */}
                 <Modal
                     title={
-                        <div className="bi-modal-header-enhanced bi-pdf-header">
+                                               <div className="bi-modal-header-enhanced bi-pdf-header">
                             <div className="bi-modal-icon" style={{ background: '#ff4d4f' }}><FilePdfOutlined /></div>
-                            <span className="bi-modal-title">Booking PDF - {pdfViewerBooking?.booking_no || 'N/A'}</span>
+                                                       <span className="bi-modal-title">
+                                Booking PDF - {pdfViewerBooking?.booking_no || 'N/A'}
+                            </span>
                             <div className="bi-pdf-controls">
                                 <Button size="small" icon={<ZoomOutOutlined />} onClick={() => setPdfViewerZoom(Math.max(50, pdfViewerZoom - 10))} />
                                 <span style={{ fontSize: 12, minWidth: 50, textAlign: 'center' }}>{pdfViewerZoom}%</span>

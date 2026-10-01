@@ -371,8 +371,16 @@ export const useUpdateAttendanceStatus = () => {
   return useMutation({
     mutationFn: ({ attendanceId, status, notes }) =>
       unwrapMutation(attendanceAPI.updateStatus(attendanceId, status, notes)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async ({ attendanceId, status, notes }) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, attendanceId, status, notes);
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -398,8 +406,16 @@ export const useApproveStatusPanelRecord = () => {
           approved_overtime_hours: approvedOvertimeHours,
         })
       ),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async ({ recordId, notes }) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, recordId, 'approved', notes);
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -410,8 +426,16 @@ export const useDeclineStatusPanelRecord = () => {
   return useMutation({
     mutationFn: ({ recordId, reason }) =>
       unwrapMutation(attendanceAPI.updateStatus(recordId, 'rejected', reason)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async ({ recordId, reason }) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, recordId, 'rejected', reason);
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -421,8 +445,16 @@ export const useUndeclineRecord = () => {
 
   return useMutation({
     mutationFn: (recordId) => unwrapMutation(attendanceAPI.updateStatus(recordId, 'pending')),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async (recordId) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, recordId, 'pending');
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -432,8 +464,16 @@ export const useUnapproveRecord = () => {
 
   return useMutation({
     mutationFn: (recordId) => unwrapMutation(attendanceAPI.unverify(recordId)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async (recordId) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, recordId, 'pending');
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -443,8 +483,16 @@ export const useUnverifyAttendance = () => {
 
   return useMutation({
     mutationFn: (attendanceId) => unwrapMutation(attendanceAPI.unverify(attendanceId)),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: attendanceKeys.all });
+    onMutate: async (attendanceId) => {
+      const snapshot = queryClient.getQueriesData({ queryKey: attendanceKeys.all });
+      patchAttendanceStatusInCache(queryClient, attendanceId, 'pending');
+      return { snapshot };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshot?.forEach(([key, value]) => queryClient.setQueryData(key, value));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: attendanceKeys.all, refetchType: 'none' });
     },
   });
 };

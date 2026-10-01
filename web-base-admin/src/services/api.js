@@ -90,7 +90,12 @@ export const extractData = (response, fallback = []) => {
 const cleanData = (data = {}) => {
   return Object.fromEntries(
     Object.entries(data).filter(([, value]) => {
-      return value !== null && value !== undefined && value !== '';
+      // ⭐ FIX: Preserve explicit `null` for keys that carry semantic
+      //    meaning (e.g. `deductions: null` = "no deductions").
+      //    Only drop `undefined` and empty strings.
+      if (value === undefined) return false;
+      if (value === '') return false;
+      return true;
     })
   );
 };
@@ -528,8 +533,12 @@ export const payrollAPI = {
   getStats: (params = {}) => api.get('/payroll/stats', { params }),
   getHistoryStats: (params = {}) => api.get('/payroll/history-stats', { params }),
   preview: (data) => api.post('/payroll/preview', cleanData(data)),
-  process: (data) => api.post('/payroll/process', cleanData(data)),
-  update: (id, data) => api.put(`/payroll/${id}`, cleanData(data)),
+  process: (data) => {
+    if (import.meta.env.DEV && import.meta.env.VITE_API_DEBUG === 'true') {
+      console.log('📤 payroll.process payload:', JSON.stringify(data, null, 2));
+    }
+    return api.post('/payroll/process', cleanData(data));
+  },  update: (id, data) => api.put(`/payroll/${id}`, cleanData(data)),
   approve: (id) => api.post(`/payroll/${id}/approve`),
   markAsPaid: (id, data) => api.post(`/payroll/${id}/mark-paid`, cleanData(data)),
   delete: (id) => api.delete(`/payroll/${id}`),
@@ -538,7 +547,12 @@ export const payrollAPI = {
   bulkUpdateDeductions: (data) => api.post('/payroll/bulk-deductions', cleanData(data)),
   summary: (params = {}) => api.get('/payroll/summary', { params }),
   processSelected: (data) => api.post('/payroll/process', cleanData(data)),
-  previewPayroll: (data) => api.post('/payroll/preview', cleanData(data)),
+   previewPayroll: (data) => {
+    if (import.meta.env.DEV && import.meta.env.VITE_API_DEBUG === 'true') {
+      console.log('📤 payroll.preview payload:', JSON.stringify(data, null, 2));
+    }
+    return api.post('/payroll/preview', cleanData(data));
+  },
   export: (params = {}) =>
     api.get('/payroll/export', { params, responseType: 'blob' }),
 };

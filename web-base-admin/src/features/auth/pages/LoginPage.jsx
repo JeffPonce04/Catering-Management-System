@@ -22,7 +22,7 @@ import {
 } from '../../../utils/lockoutStorage';
 import RememberedAccounts from '../../../components/RememberedAccounts';
 import posterImage from '../../../assets/images/poster2.png';
-import logoImage from '../../../assets/images/logo.png';
+import logoImage from '../../../assets/images/index-logo.png';
 import '../styles/LoginPage.css';
 
 const OTP_LENGTH = 6;

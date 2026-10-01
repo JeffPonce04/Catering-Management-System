@@ -559,6 +559,13 @@ const getFlagStyle = (flag) => {
   }
 };
 
+// ⭐ Per-side selfie resolver (mobile uploads → API returns URLs)
+const getSelfieForSide = (record, side) => {
+  if (!record) return null;
+  const key = side === 'in' ? 'time_in_selfie_url' : 'time_out_selfie_url';
+  return record[key] || record.selfie_url || null;
+};
+
 // ==================== PRINT HELPERS ====================
 const escapeHtml = (value) => String(value ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -3006,13 +3013,29 @@ const Staff_Attendance = () => {
                               <td><strong>{record.day || 'N/A'}</strong><br /><span style={{ fontSize: '11px', color: '#6b7280' }}>{formatEmployeeOverviewDate(record.date)}</span></td>
                               <td>{record.assigned_schedule || 'Unscheduled'}</td>
 
-                              <td>
+                                                     <td>
                                 {isInline ? (
                                   <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeIn} onChange={(e) => setInlineEditTimeIn(e.target.value)} />
                                 ) : (
-                                  <span className={missingTimeIn ? 'time-missing' : ''}>
-                                    {record.formatted_time_in || 'No Time In'}
-                                  </span>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    <span className={missingTimeIn ? 'time-missing' : ''}>
+                                      {record.formatted_time_in || 'No Time In'}
+                                    </span>
+                                    {getSelfieForSide(record, 'in') && (
+                                      <button
+                                        type="button"
+                                        className="selfie-view-btn"
+                                        style={{ padding: '2px 6px', fontSize: 10 }}
+                                        onClick={() => {
+                                          setSelectedSelfie(getSelfieForSide(record, 'in'));
+                                          setShowSelfieModal(true);
+                                        }}
+                                        title="View Time In selfie"
+                                      >
+                                        <BsCameraFill size={10} /> In
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                               </td>
                               <td>
@@ -3038,14 +3061,29 @@ const Staff_Attendance = () => {
                                   </div>
                                 )}
                               </td>
-
                               <td>
                                 {isInline ? (
                                   <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeOut} onChange={(e) => setInlineEditTimeOut(e.target.value)} />
                                 ) : (
-                                  <span className={missingTimeOut ? 'time-missing' : ''}>
-                                    {record.formatted_time_out || 'No Time Out'}
-                                  </span>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                    <span className={missingTimeOut ? 'time-missing' : ''}>
+                                      {record.formatted_time_out || 'No Time Out'}
+                                    </span>
+                                    {getSelfieForSide(record, 'out') && (
+                                      <button
+                                        type="button"
+                                        className="selfie-view-btn"
+                                        style={{ padding: '2px 6px', fontSize: 10 }}
+                                        onClick={() => {
+                                          setSelectedSelfie(getSelfieForSide(record, 'out'));
+                                          setShowSelfieModal(true);
+                                        }}
+                                        title="View Time Out selfie"
+                                      >
+                                        <BsCameraFill size={10} /> Out
+                                      </button>
+                                    )}
+                                  </div>
                                 )}
                               </td>
                               <td>

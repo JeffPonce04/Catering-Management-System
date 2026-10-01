@@ -7,8 +7,7 @@
 // - All other behaviour preserved
 
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';import {
   TeamOutlined, SearchOutlined, DownloadOutlined,
   ClockCircleOutlined, CalendarOutlined, EditOutlined,
   DeleteOutlined, EyeOutlined, PlusOutlined,
@@ -390,40 +389,171 @@ const payrollQueryKeys = {
 };
 
 /* ============================================================
+   OPTIMISTIC CACHE PATCH HELPERS
+   ============================================================
+   Every mutation below patches every cached payroll list in
+   place BEFORE the server responds, so the UI updates within
+   one animation frame (~16ms) instead of waiting for a refetch.
+   On settle, the caches are silently reconciled with the server.
+   ============================================================ */
+
+/** Patch one row inside every cached payroll list + history list. */
+const patchPayrollRowInCache = (queryClient, payrollId, patch) => {
+  if (!payrollId) return;
+  const targets = queryClient.getQueriesData({ queryKey: payrollQueryKeys.all });
+
+  targets.forEach(([key, value]) => {
+    if (!value) return;
+
+    const patchArray = (arr) => {
+      if (!Array.isArray(arr)) return arr;
+      return arr.map((row) => {
+        const id = row?.id ?? row?.payroll_id;
+        if (String(id) !== String(payrollId)) return row;
+        return { ...row, ...patch };
+      });
+    };
+
+    const body = value?.data ?? value;
+
+    // shape: [...]
+    if (Array.isArray(value)) {
+      queryClient.setQueryData(key, patchArray(value));
+      return;
+    }
+
+    // shape: { data: [...] }
+    if (Array.isArray(body)) {
+      queryClient.setQueryData(key, { ...value, data: patchArray(body) });
+      return;
+    }
+
+    // shape: { data: { data: [...] } }
+    if (Array.isArray(body?.data)) {
+      queryClient.setQueryData(key, {
+        ...value,
+        data: { ...body, data: patchArray(body.data) },
+      });
+    }
+  });
+};
+
+/** Patch one payroll row inside the History tab list. */
+const patchHistoryRowInCache = (queryClient, payrollId, patch) => {
+  if (!payrollId) return;
+  const targets = queryClient.getQueriesData({ queryKey: [...payrollQueryKeys.all, 'history'] });
+
+  targets.forEach(([key, value]) => {
+    if (!value) return;
+    const body = value?.data ?? value;
+
+    const patchArray = (arr) =>
+      Array.isArray(arr)
+        ? arr.map((row) => {
+            const id = row?.id ?? row?.payroll_id;
+            return String(id) === String(payrollId) ? { ...row, ...patch } : row;
+          })
+        : arr;
+
+    if (Array.isArray(body)) {
+      queryClient.setQueryData(key, { ...value, data: patchArray(body) });
+    } else if (Array.isArray(body?.data)) {
+      queryClient.setQueryData(key, {
+        ...value,
+        data: { ...body, data: patchArray(body.data) },
+      });
+    }
+  });
+};
+
+/** Remove one payroll row from every active list (used by delete). */
+const removePayrollRowFromCache = (queryClient, payrollId) => {
+  if (!payrollId) return;
+  const targets = queryClient.getQueriesData({ queryKey: payrollQueryKeys.all });
+
+  targets.forEach(([key, value]) => {
+    if (!value) return;
+    const body = value?.data ?? value;
+    const filterArray = (arr) =>
+      Array.isArray(arr)
+        ? arr.filter((row) => String(row?.id ?? row?.payroll_id) !== String(payrollId))
+        : arr;
+
+    if (Array.isArray(value)) {
+      queryClient.setQueryData(key, filterArray(value));
+    } else if (Array.isArray(body)) {
+      queryClient.setQueryData(key, { ...value, data: filterArray(body) });
+    } else if (Array.isArray(body?.data)) {
+      queryClient.setQueryData(key, {
+        ...value,
+        data: { ...body, data: filterArray(body.data) },
+      });
+    }
+  });
+};
+
+/** Patch one row inside the "saved attendance employees" list. */
+const patchSavedEmployeeInCache = (queryClient, employeeId, patch) => {
+  if (!employeeId) return;
+  const targets = queryClient.getQueriesData({ queryKey: payrollQueryKeys.savedEmployees() });
+
+  targets.forEach(([key, value]) => {
+    if (!Array.isArray(value)) return;
+    queryClient.setQueryData(
+      key,
+      value.map((row) =>
+        String(row.employee_id) === String(employeeId) ? { ...row, ...patch } : row
+      )
+    );
+  });
+};
+/* ============================================================
    QUERIES
    ============================================================ */
+// ⭐ PERF: `keepPreviousData` keeps the previous cutoff's rows on screen
+//    while the new cutoff's request is in flight, so switching cutoffs
+//    never blanks the table or flashes the loading spinner.
 const usePayrollList = (params) => useQuery({
   queryKey: payrollQueryKeys.list(params),
-  queryFn: () => payrollAPI.getAll(params),
-  staleTime: 2 * 60 * 1000,
-  gcTime: 5 * 60 * 1000,
+  queryFn: () => payrollAPI.getAll({ ...params, per_page: 1000 }),
+  staleTime: 30 * 1000,
+  gcTime: 10 * 60 * 1000,
   refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
 
 const usePayrollHistory = (params) => useQuery({
   queryKey: payrollQueryKeys.history(params),
-  queryFn: () => payrollAPI.getHistory(params),
-  staleTime: 2 * 60 * 1000,
-  gcTime: 5 * 60 * 1000,
+  queryFn: () => payrollAPI.getHistory({ ...params, per_page: 1000 }),
+  staleTime: 30 * 1000,
+  gcTime: 10 * 60 * 1000,
   refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
 
 const usePayrollStats = (params) => useQuery({
   queryKey: payrollQueryKeys.stats(params),
   queryFn: () => payrollAPI.getStats(params),
-  staleTime: 2 * 60 * 1000,
+  staleTime: 30 * 1000,
+  gcTime: 10 * 60 * 1000,
+  refetchOnWindowFocus: false,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
 
 const usePayrollHistoryStats = (params) => useQuery({
   queryKey: payrollQueryKeys.historyStats(params),
   queryFn: () => payrollAPI.getHistoryStats(params),
-  staleTime: 2 * 60 * 1000,
+  staleTime: 30 * 1000,
+  gcTime: 10 * 60 * 1000,
+  refetchOnWindowFocus: false,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
-
 const useSavedAttendanceEmployees = (params) => useQuery({
   queryKey: payrollQueryKeys.savedEmployees(params),
   queryFn: async () => {
@@ -448,12 +578,15 @@ const useSavedAttendanceEmployees = (params) => useQuery({
       rateMap.set(Number(id), rate);
     });
 
+    // ⭐ FIX: The backend employeeOverview() now sets saved_to_payroll from
+    //    payroll_ready_at. Trust that flag exclusively. If it is missing
+    //    (older backend), fall back to unsaved_count === 0.
+    // ⭐ FIX: Include an employee whenever ANY row in the cutoff has been
+    //    saved as payroll ready. Partial saves must not hide the employee.
     const saved = employees.filter((emp) => {
       if (emp.saved_to_payroll === true) return true;
-      if (emp.saved_to_payroll === false) return false;
-      const unsavedCount = safeNumber(emp.unsaved_count, -1);
-      if (unsavedCount === 0 && emp.all_approved === true) return true;
-      if (unsavedCount === 0 && emp.unsaved_count !== undefined) return true;
+      if (safeNumber(emp.saved_count, 0) > 0) return true;
+      if (safeNumber(emp.unsaved_count, -1) === 0) return true;
       if (emp.payroll_status) return true;
       return false;
     });
@@ -473,8 +606,12 @@ const useSavedAttendanceEmployees = (params) => useQuery({
         (regularPay + overtimePay)
       );
 
-      const payrollStatus = String(emp.payroll_status || '').toLowerCase();
+           const payrollStatus = String(emp.payroll_status || '').toLowerCase();
+      // ⭐ FIX: "calculated" / "draft" means the row EXISTS but is not yet
+      //    approved. It must still be selectable for re-processing and must
+      //    NOT disappear from the modal.
       const isFinalized = ['approved', 'paid'].includes(payrollStatus);
+      const hasPayrollRow = Boolean(emp.payroll_id || emp.payroll_number) || isFinalized;
       const lastProcessedAt = emp.payroll_updated_at || emp.last_processed_at || emp.payroll_calculated_at || null;
 
       return {
@@ -493,7 +630,12 @@ const useSavedAttendanceEmployees = (params) => useQuery({
         overtime_pay: overtimePay,
         estimated_gross_pay: estimatedGross,
         late_undertime: emp.late_undertime || '',
-        has_payroll: isFinalized,
+        // ⭐ FIX: has_payroll must be true whenever a payroll row exists for
+        //    this cutoff, regardless of status. Otherwise the modal lets the
+        //    user select an employee who already has a calculated payroll,
+        //    and the backend rejects the whole batch.
+             has_payroll: hasPayrollRow,
+        payroll_finalized: isFinalized,
         payroll_status: emp.payroll_status || null,
         payroll_archived: !!emp.payroll_archived,
         employee_type: emp.employee_type || emp.employment_type || 'regular',
@@ -504,15 +646,18 @@ const useSavedAttendanceEmployees = (params) => useQuery({
       };
     });
   },
-  staleTime: 30 * 1000,
-  gcTime: 3 * 60 * 1000,
+  staleTime: 15 * 1000,
+  gcTime: 5 * 60 * 1000,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
-
 const useAttendanceForPayroll = (params) => useQuery({
   queryKey: payrollQueryKeys.attendance(params),
   queryFn: () => attendanceAPI.getDateRange(params),
   staleTime: 2 * 60 * 1000,
+  placeholderData: keepPreviousData,
   enabled: !!params?.start_date && !!params?.end_date,
 });
 
@@ -527,29 +672,72 @@ const useDepartmentsList = () => useQuery({
    ============================================================ */
 const useProcessPayroll = () => {
   const queryClient = useQueryClient();
+
   return useMutation({
     mutationFn: (data) => payrollAPI.processSelected(data),
+
+       // ⭐ OPTIMISTIC: mark the affected employee rows as calculated
+    //    BEFORE the server responds so the modal updates instantly.
+    //    Also patch the main `payroll` list so the Active Payroll table
+    //    picks up the new status in the same frame.
+    onMutate: async (variables) => {
+      const employeeIds = Array.isArray(variables?.employee_ids) ? variables.employee_ids : [];
+      const savedSnapshot = queryClient.getQueriesData({ queryKey: payrollQueryKeys.savedEmployees() });
+      const listSnapshot = queryClient.getQueriesData({ queryKey: payrollQueryKeys.all });
+
+      employeeIds.forEach((employeeId) => {
+        patchSavedEmployeeInCache(queryClient, employeeId, {
+          payroll_status: 'calculated',
+          payroll_finalized: false,
+          saved_to_payroll: true,
+          last_processed_at: new Date().toISOString(),
+        });
+
+        // Mark any existing Active Payroll row for this employee as
+        // "calculated" so the status pill flips immediately.
+        patchPayrollRowInCache(queryClient, employeeId, {
+          status: 'calculated',
+        });
+      });
+
+      return { savedSnapshot, listSnapshot };
+    },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.stats() });
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.savedEmployees() });
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.preview() });
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.attendance() });
       const payload = safeObject(response, {});
       const processed = safeNumber(payload.processed_count, 0);
       const skipped = safeNumber(payload.skipped_count, 0);
       const alreadyProcessed = safeNumber(payload.already_processed_count, 0);
 
       if (processed > 0) {
-        message.success(`${processed} payroll record(s) processed${skipped ? `; ${skipped} skipped` : ''}${alreadyProcessed ? `; ${alreadyProcessed} already processed` : ''}.`);
+        message.success(
+          `${processed} payroll record(s) processed${skipped ? `; ${skipped} skipped` : ''}${alreadyProcessed ? `; ${alreadyProcessed} already processed` : ''}.`
+        );
       } else if (alreadyProcessed > 0) {
         message.warning(`${alreadyProcessed} payroll record(s) already exist for this period.`);
       } else {
         message.warning('No payroll records were ready.');
       }
     },
-    onError: (error) => {
+
+    onError: (error, _variables, context) => {
+      // Roll the optimistic patch back.
+      if (context?.snapshot) {
+        context.snapshot.forEach(([key, value]) => {
+          queryClient.setQueryData(key, value);
+        });
+      }
       message.error(error.response?.data?.message || 'Failed to process payroll');
+    },
+
+    // ⭐ Reconcile: because a brand-new payroll row cannot be invented
+    //    optimistically (the server assigns its payroll_number / id),
+    //    the Active Payroll list and the KPI stats MUST be refetched
+    //    after the mutation settles. Use the default refetch type
+    //    ("active") so mounted queries re-run immediately.
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.stats() });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.savedEmployees() });
     },
   });
 };
@@ -565,13 +753,29 @@ const useUpdatePayroll = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }) => payrollAPI.update(id, data),
+
+    onMutate: async ({ id, data }) => {
+      // Patch the visible row immediately.
+      patchPayrollRowInCache(queryClient, id, {
+        ...data,
+        // optimistic values so the totals look right until the server replies
+        sss_deduction: safeNumber(data?.sss_deduction),
+        pagibig_deduction: safeNumber(data?.pagibig_deduction),
+        philhealth_deduction: safeNumber(data?.philhealth_deduction),
+        other_deductions: safeNumber(data?.other_deduction),
+        manual_deductions: safeNumber(data?.manual_deductions),
+      });
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.stats() });
       message.success('Payroll updated successfully');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to update payroll');
+    },
+     onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.stats() });
     },
   });
 };
@@ -580,12 +784,22 @@ const useApprovePayroll = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => payrollAPI.approve(id),
+
+    onMutate: async (id) => {
+      patchPayrollRowInCache(queryClient, id, {
+        status: 'approved',
+        approved_at: new Date().toISOString(),
+      });
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
       message.success('Payroll approved successfully');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to approve payroll');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all, refetchType: 'none' });
     },
   });
 };
@@ -594,12 +808,21 @@ const useMarkAsPaid = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, data }) => payrollAPI.markAsPaid(id, data),
+
+    onMutate: async ({ id }) => {
+      // Approved → Paid: remove from Active, add to History.
+      removePayrollRowFromCache(queryClient, id);
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
       message.success('Payroll marked as paid and moved to history');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to mark as paid');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all, refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.history(), refetchType: 'none' });
     },
   });
 };
@@ -608,12 +831,20 @@ const useDeletePayroll = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => payrollAPI.delete(id),
+
+    onMutate: async (id) => {
+      removePayrollRowFromCache(queryClient, id);
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
       message.success('Payroll moved to history archive');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to delete payroll');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all, refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.history(), refetchType: 'none' });
     },
   });
 };
@@ -622,12 +853,23 @@ const useRestorePayroll = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => payrollAPI.restore(id),
+
+    onMutate: async (id) => {
+      patchHistoryRowInCache(queryClient, id, {
+        deleted_at: null,
+        restored_at: new Date().toISOString(),
+      });
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
       message.success('Payroll restored from history');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to restore payroll');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all, refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.history(), refetchType: 'none' });
     },
   });
 };
@@ -636,12 +878,19 @@ const usePermanentDeletePayroll = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => payrollAPI.permanentDelete(id),
+
+    onMutate: async (id) => {
+      removePayrollRowFromCache(queryClient, id);
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.history() });
       message.success('Payroll permanently deleted');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to permanently delete');
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.history(), refetchType: 'none' });
     },
   });
 };
@@ -650,12 +899,26 @@ const useBulkUpdateDeductions = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (data) => payrollAPI.bulkUpdateDeductions(data),
+
+    onMutate: async (data) => {
+      const ids = Array.isArray(data?.payroll_ids) ? data.payroll_ids : [];
+      ids.forEach((id) => {
+        patchPayrollRowInCache(queryClient, id, {
+          manual_deductions: safeNumber(data?.manual_deductions),
+          manual_deduction_notes: data?.manual_deduction_notes,
+        });
+      });
+    },
+
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
       message.success('Bulk deductions applied successfully');
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to apply bulk deductions');
+    },
+      onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.all });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.stats() });
     },
   });
 };
@@ -665,7 +928,8 @@ const useGeneratePayslip = () => {
   return useMutation({
     mutationFn: (data) => payslipAPI.generate(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.payslips });
+      // No UI cache to patch — payslip is fetched on demand.
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.payslips, refetchType: 'none' });
     },
     onError: (error) => {
       message.error(error.response?.data?.message || 'Failed to generate payslip');
@@ -678,7 +942,7 @@ const useBulkGeneratePayslips = () => {
   return useMutation({
     mutationFn: (payrollIds) => payslipAPI.bulkGenerate(payrollIds),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.payslips });
+      queryClient.invalidateQueries({ queryKey: payrollQueryKeys.payslips, refetchType: 'none' });
       message.success('Payslips generated successfully');
     },
     onError: (error) => {
@@ -694,7 +958,6 @@ const useDownloadPayslip = () => useMutation({
 const usePreviewPayslip = () => useMutation({
   mutationFn: (payrollId) => payslipAPI.preview(payrollId),
 });
-
 /* ============================================================
    PAYSLIP DOCUMENT (LANDSCAPE, SOFT BLUE THEME)
    ============================================================ */
@@ -1078,6 +1341,19 @@ const Staff_Payroll_Formal = () => {
     };
   }, []);
 
+   // ⭐ FIX: Format a Date using LOCAL components, never toISOString().
+  //    toISOString() converts to UTC, which shifts the calendar day
+  //    backwards in timezones ahead of UTC (e.g. UTC+8 Philippines),
+  //    pushing a Sept 16 cutoff start back to Sept 15 and causing the
+  //    saved Payroll row to land in the wrong cutoff / month.
+  const toLocalDateString = useCallback((date) => {
+    if (!date || isNaN(date.getTime())) return null;
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }, []);
+
   const getCutoffDates = useCallback((year, month, cutoff) => {
     const startDate = new Date(year, month, 1);
     const endDate = new Date(year, month + 1, 0);
@@ -1106,11 +1382,11 @@ const Staff_Payroll_Formal = () => {
 
     return {
       start, end, label, shortLabel,
-      startDate: start.toISOString().split('T')[0],
-      endDate: end.toISOString().split('T')[0],
+      // ⭐ FIX: Use local date components, NOT toISOString().
+      startDate: toLocalDateString(start),
+      endDate: toLocalDateString(end),
     };
-  }, []);
-
+  }, [toLocalDateString]);
   const currentCutoff = useMemo(() => {
     try {
       return getCutoffDates(selectedYear, selectedMonth, cutoffType);
@@ -1170,26 +1446,19 @@ const Staff_Payroll_Formal = () => {
     return t === 'regular' || t === 'full_time' || t === 'full-time';
   };
 
+    // ⭐ PERF: The query key is derived ONLY from the cutoff dates. Pagination
+  //    and filters are applied client-side. This means switching cutoffs
+  //    reuses the prefetched cache entry (no spinner, no blank table),
+  //    and prefetch in the mount effect above actually warms the right key.
   const payrollParams = useMemo(() => ({
-    page: currentPage,
-    per_page: pageSize,
     start_date: currentCutoff.startDate,
     end_date: currentCutoff.endDate,
-    // Do NOT send the raw frontend status — the backend only understands
-    // 'pending' | 'calculated' | 'approved' | 'paid' | 'processing'.
-    // We filter client-side instead, so we omit `status` here.
-    department_id: selectedDepartment !== 'all' ? selectedDepartment : undefined,
-    search: searchQuery || undefined,
-  }), [currentPage, currentCutoff, selectedDepartment, searchQuery, pageSize]);
+  }), [currentCutoff]);
 
   const historyParams = useMemo(() => ({
-    page: historyCurrentPage,
-    per_page: pageSize,
     start_date: currentCutoff.startDate,
     end_date: currentCutoff.endDate,
-    department_id: selectedDepartment !== 'all' ? selectedDepartment : undefined,
-    search: searchQuery || undefined,
-  }), [historyCurrentPage, currentCutoff, selectedDepartment, searchQuery, pageSize]);
+  }), [currentCutoff]);
 
   const statsParams = useMemo(() => ({
     start_date: currentCutoff.startDate,
@@ -1276,7 +1545,7 @@ const Staff_Payroll_Formal = () => {
     if (historyCurrentPage > totalHistoryPages) setHistoryCurrentPage(totalHistoryPages);
   }, [totalHistoryPages, historyCurrentPage]);
 
-  const filteredEligibleEmployees = useMemo(() => {
+    const filteredEligibleEmployees = useMemo(() => {
     const normalizedSearch = employeeSearchQuery.trim().toLowerCase();
     return (eligibleEmployees || []).filter((emp) => {
       const matchesSearch = !normalizedSearch
@@ -1285,28 +1554,60 @@ const Staff_Payroll_Formal = () => {
         || safeString(emp.employee_id).toLowerCase().includes(normalizedSearch)
         || safeString(emp.position).toLowerCase().includes(normalizedSearch)
         || safeString(emp.department).toLowerCase().includes(normalizedSearch);
+
       const matchesDepartment = employeeDepartmentFilter === 'all'
         || String(emp.department_id) === String(employeeDepartmentFilter);
-      const matchesStatus = employeeStatusFilter === 'all'
-        || (employeeStatusFilter === 'eligible' && !emp.has_payroll)
-        || (employeeStatusFilter === 'processed' && emp.has_payroll);
+
+      const s = String(emp.payroll_status || '').toLowerCase();
+      const isCalculated = s === 'calculated' || s === 'draft';
+      const isFinalized = Boolean(emp.payroll_finalized);
+
+      // ⭐ FIX: "Ready" must mean "not yet finalized". Anything that is
+      //    pending OR calculated (but not approved/paid) still needs admin
+      //    action, so it belongs under "Ready". Previously a calculated row
+      //    was excluded from BOTH "Ready" and "Finalized", making the table
+      //    empty even though the stat strip said "2 Ready to Process".
+      const isReady = !isFinalized;
+
+      const matchesStatus =
+        employeeStatusFilter === 'all'
+        || (employeeStatusFilter === 'eligible' && isReady)
+        || (employeeStatusFilter === 'calculated' && isCalculated)
+        || (employeeStatusFilter === 'processed' && isFinalized);
+
       return matchesSearch && matchesDepartment && matchesStatus;
     });
   }, [eligibleEmployees, employeeSearchQuery, employeeDepartmentFilter, employeeStatusFilter]);
 
   const eligibleStats = useMemo(() => {
     const total = eligibleEmployees.length;
-    const saved = eligibleEmployees.filter((e) => {
+
+    // ⭐ FIX: "Processed" = approved OR paid (true finalization).
+    //    "Calculated" = has a payroll row but not yet approved — still
+    //    actionable, so it counts toward "Ready to Process".
+    const finalized = eligibleEmployees.filter((e) => e.payroll_finalized).length;
+    const calculated = eligibleEmployees.filter((e) => {
       const s = String(e.payroll_status || '').toLowerCase();
       return s === 'calculated' || s === 'draft';
     }).length;
-    const finalized = eligibleEmployees.filter((e) => e.has_payroll).length;
-    const readyToProcess = total - finalized;
-    return { total, pending: readyToProcess, processed: finalized, saved };
-  }, [eligibleEmployees]);
 
+    // Ready = anything not finalized (pending + calculated).
+    const readyToProcess = total - finalized;
+
+    return {
+      total,
+      pending: readyToProcess,
+      processed: finalized,
+      saved: calculated,
+      calculated,
+    };
+  }, [eligibleEmployees]);
+  
   const selectableEligibleEmployees = useMemo(
-    () => filteredEligibleEmployees.filter((emp) => !emp.has_payroll),
+    // ⭐ FIX: Only approved/paid rows are locked. Calculated rows must remain
+    //    selectable so the admin can reprocess them, and they now appear
+    //    under the "Ready" tab.
+    () => filteredEligibleEmployees.filter((emp) => !emp.payroll_finalized),
     [filteredEligibleEmployees]
   );
 
@@ -1567,11 +1868,15 @@ const Staff_Payroll_Formal = () => {
     setSavedRecordsFilterYear(selectedYear);
     setSavedRecordsFilterCutoff(cutoffType);
     try {
+          // ⭐ FIX: Always send the cutoff currently shown in the header, not the
+      //    Saved Records filter state (which the user may have changed).
       const response = await attendanceAPI.getEmployeeSavedRecords({
         employee_id: employee.employee_id || employee.id,
         month: selectedMonth + 1,
         year: selectedYear,
         cutoff: cutoffType,
+        start_date: currentCutoff.startDate,
+        end_date: currentCutoff.endDate,
       });
       const body = safeObject(response, {});
       setSavedRecordsList(safeArray(body?.records));
@@ -1588,12 +1893,29 @@ const Staff_Payroll_Formal = () => {
     if (!savedRecordsEmployee) return;
     setSavedRecordsLoading(true);
     try {
-      const response = await attendanceAPI.getEmployeeSavedRecords({
-        employee_id: savedRecordsEmployee.employee_id || savedRecordsEmployee.id,
-        month: savedRecordsFilterMonth + 1,
-        year: savedRecordsFilterYear,
-        cutoff: savedRecordsFilterCutoff,
-      });
+        // ⭐ FIX: Use dayjs with explicit local date components.
+        //    `new Date(y, m, 0)` = last day of month `m` (0-indexed),
+        //    which dayjs formats in LOCAL time — safe for UTC+8.
+        const savedCutoffStart = dayjs(
+          new Date(
+            savedRecordsFilterYear,
+            savedRecordsFilterMonth,
+            savedRecordsFilterCutoff === 'second' ? 16 : 1
+          )
+        ).format('YYYY-MM-DD');
+
+        const savedCutoffEnd = savedRecordsFilterCutoff === 'second'
+          ? dayjs(new Date(savedRecordsFilterYear, savedRecordsFilterMonth + 1, 0)).format('YYYY-MM-DD')
+          : dayjs(new Date(savedRecordsFilterYear, savedRecordsFilterMonth, 15)).format('YYYY-MM-DD');
+
+        const response = await attendanceAPI.getEmployeeSavedRecords({
+          employee_id: savedRecordsEmployee.employee_id || savedRecordsEmployee.id,
+          month: savedRecordsFilterMonth + 1,
+          year: savedRecordsFilterYear,
+          cutoff: savedRecordsFilterCutoff,
+          start_date: savedCutoffStart,
+          end_date: savedCutoffEnd,
+        });
       const body = safeObject(response, {});
       setSavedRecordsList(safeArray(body?.records));
       setSavedRecordsSummary(body?.summary || null);
@@ -1626,6 +1948,8 @@ const Staff_Payroll_Formal = () => {
       message.warning('Cannot process payroll for a cutoff that has not started yet.');
       return;
     }
+    // ⭐ FIX: Always start the deductions modal from a clean zero state.
+    //    Auto-deductions default OFF so the admin must explicitly opt in.
     setProcessDeductions({ sss: 0, pagibig: 0, philhealth: 0, tax: 0, other: 0 });
     setProcessDeductionNotes('');
     setDeductionAutoEnabled(false);
@@ -1646,6 +1970,26 @@ const Staff_Payroll_Formal = () => {
     const startDate = currentCutoff.startDate;
     const endDate = currentCutoff.endDate;
 
+       // ⭐ FIX: Zero means "no deduction". Only send the deductions object
+    //    when the user actually entered a non-zero amount OR enabled
+    //    auto government deductions. Otherwise the backend treats the
+    //    presence of the keys as "apply deductions" and silently
+    //    deducts even when the admin typed 0.
+    const sssAmount = safeNumber(processDeductions.sss);
+    const pagibigAmount = safeNumber(processDeductions.pagibig);
+    const philhealthAmount = safeNumber(processDeductions.philhealth);
+    const taxAmount = safeNumber(processDeductions.tax);
+    const otherAmount = safeNumber(processDeductions.other);
+
+    const hasAnyManualDeduction =
+      sssAmount > 0 ||
+      pagibigAmount > 0 ||
+      philhealthAmount > 0 ||
+      taxAmount > 0 ||
+      otherAmount > 0;
+
+    const shouldSendDeductions = deductionAutoEnabled || hasAnyManualDeduction;
+
     const data = {
       period_start: startDate,
       period_end: endDate,
@@ -1657,16 +2001,26 @@ const Staff_Payroll_Formal = () => {
       auto_government_deductions: deductionAutoEnabled,
       force_reprocess: forceReprocessFlag,
       force_reason: forceReasonText,
-      deductions: {
-        sss: safeNumber(processDeductions.sss),
-        pagibig: safeNumber(processDeductions.pagibig),
-        philhealth: safeNumber(processDeductions.philhealth),
-        tax: safeNumber(processDeductions.tax),
-        other: safeNumber(processDeductions.other),
-        other_type: otherDeductionType || null,
-        other_notes: otherDeductionNotes || null,
-        notes: processDeductionNotes || null,
-      },
+      // ⭐ FIX: Only include `deductions` when something is actually applied.
+      //    When it is omitted, the backend must produce zero deductions.
+      ...(shouldSendDeductions
+        ? {
+            deductions: {
+              sss: sssAmount,
+              pagibig: pagibigAmount,
+              philhealth: philhealthAmount,
+              tax: taxAmount,
+              other: otherAmount,
+              other_type: otherDeductionType || null,
+              other_notes: otherDeductionNotes || null,
+              notes: processDeductionNotes || null,
+            },
+          }
+        : {
+            // Explicit signal so the backend cannot fall back to defaults.
+            deductions: null,
+            skip_deductions: true,
+          }),
     };
 
     try {
@@ -1689,7 +2043,19 @@ const Staff_Payroll_Formal = () => {
         setProcessNotes('');
         setOtherDeductionType('');
         setOtherDeductionNotes('');
-        await Promise.all([refetchPayroll(), refetchStats(), refetchSaved(), refetchAttendance()]);
+                // ⭐ PERF: Fire the refetches in the background. The optimistic
+        //    onMutate patch already updated the visible cache, so the modal
+        //    can close immediately instead of waiting for the server.
+        Promise.allSettled([
+          refetchPayroll(),
+          refetchStats(),
+          refetchSaved(),
+          refetchAttendance(),
+        ]);
+        // ⭐ Move the modal to the Calculated tab so the user can see the
+        //    row that was just produced, instead of watching it vanish from
+        //    the "Ready" tab.
+        setEmployeeStatusFilter('calculated');
       } else {
         message.error(result?.data?.message || 'Failed to process payroll');
       }
@@ -1733,8 +2099,10 @@ const Staff_Payroll_Formal = () => {
       return;
     }
 
+    // ⭐ FIX: Only finalized (approved/paid) rows are true duplicates.
+    //    A calculated row that is re-selected is a reprocess, not a duplicate.
     const alreadyProcessedEmployees = eligibleEmployees.filter(
-      (emp) => selectedEmployeesForPayroll.includes(emp.id) && emp.has_payroll
+      (emp) => selectedEmployeesForPayroll.includes(emp.id) && emp.payroll_finalized
     );
 
     if (alreadyProcessedEmployees.length > 0 && !forceReprocess) {
@@ -1768,13 +2136,31 @@ const Staff_Payroll_Formal = () => {
     await executeProcessPayroll(forceReprocess, forceReason);
   }, [forceReason, forceReprocess, executeProcessPayroll]);
 
-  const handlePreviewPayroll = useCallback(async () => {
+    const handlePreviewPayroll = useCallback(async () => {
     if (selectedEmployeesForPayroll.length === 0) {
       message.warning('Please select at least one employee');
       return;
     }
     const startDate = currentCutoff.startDate;
     const endDate = currentCutoff.endDate;
+
+    // ⭐ FIX: Mirror the same deduction intent the Process Payroll flow
+    //    sends, so the preview shows exactly what the admin will get.
+    const sssAmount = safeNumber(processDeductions.sss);
+    const pagibigAmount = safeNumber(processDeductions.pagibig);
+    const philhealthAmount = safeNumber(processDeductions.philhealth);
+    const taxAmount = safeNumber(processDeductions.tax);
+    const otherAmount = safeNumber(processDeductions.other);
+
+    const hasAnyManualDeduction =
+      sssAmount > 0 ||
+      pagibigAmount > 0 ||
+      philhealthAmount > 0 ||
+      taxAmount > 0 ||
+      otherAmount > 0;
+
+    const shouldSendDeductions = deductionAutoEnabled || hasAnyManualDeduction;
+
     const data = {
       employee_ids: selectedEmployeesForPayroll,
       period_start: startDate,
@@ -1782,6 +2168,21 @@ const Staff_Payroll_Formal = () => {
       start_date: startDate,
       end_date: endDate,
       cutoff_type: cutoffType,
+      auto_government_deductions: deductionAutoEnabled,
+      ...(shouldSendDeductions
+        ? {
+            deductions: {
+              sss: sssAmount,
+              pagibig: pagibigAmount,
+              philhealth: philhealthAmount,
+              tax: taxAmount,
+              other: otherAmount,
+            },
+          }
+        : {
+            deductions: null,
+            skip_deductions: true,
+          }),
     };
     try {
       const result = await previewPayrollMutation.mutateAsync(data);
@@ -1795,7 +2196,14 @@ const Staff_Payroll_Formal = () => {
       const errorMessage = error?.response?.data?.message || error?.message || 'Failed to preview payroll';
       message.error(errorMessage);
     }
-  }, [selectedEmployeesForPayroll, currentCutoff, cutoffType, previewPayrollMutation]);
+  }, [
+    selectedEmployeesForPayroll,
+    currentCutoff,
+    cutoffType,
+    previewPayrollMutation,
+    deductionAutoEnabled,
+    processDeductions,
+  ]);
 
   const handleExport = useCallback(async () => {
     try {
@@ -1829,7 +2237,17 @@ const Staff_Payroll_Formal = () => {
     message.success('Data refreshed successfully');
   }, [refetchPayroll, refetchStats, refetchHistory, refetchHistoryStats, refetchSaved, refetchAttendance]);
 
-  const changeCutoff = useCallback((direction) => {
+    const changeCutoff = useCallback((direction) => {
+    // ⭐ PERF: Reset pagination and selection BEFORE the new cutoff is
+    //    applied, so the table renders the new cutoff's first page in the
+    //    same frame the state changes.
+    setCurrentPage(1);
+    setHistoryCurrentPage(1);
+    setSelectedPayrollIds([]);
+    setSelectedEmployeesForPayroll([]);
+    setSearchQuery('');
+    setSelectedStatus('all');
+
     if (direction === 'prev') {
       if (cutoffType === 'first') {
         setCutoffType('second');
@@ -1853,21 +2271,167 @@ const Staff_Payroll_Formal = () => {
         setCutoffType('second');
       }
     }
-    setCurrentPage(1);
-    setHistoryCurrentPage(1);
-    setSelectedPayrollIds([]);
   }, [cutoffType, selectedMonth, selectedYear]);
+
+  // ⭐ FIX: Warm the React Query cache for a cutoff the user is *about to*
+  //    navigate to (hover on the cutoff/month buttons). Uses the same query
+  //    keys as the live hooks so the click hits a warm cache — no spinner,
+  //    no blank table, no flash.
+  const prefetchCutoff = useCallback(
+    (year, month, cutoff) => {
+      try {
+        const target = getCutoffDates(year, month, cutoff);
+        if (!target?.startDate || !target?.endDate) return;
+
+        const listParams = {
+          start_date: target.startDate,
+          end_date: target.endDate,
+        };
+        const savedParams = {
+          start_date: target.startDate,
+          end_date: target.endDate,
+          department_id:
+            employeeDepartmentFilter !== 'all' ? employeeDepartmentFilter : undefined,
+        };
+
+        // Payroll list
+        queryClient.prefetchQuery({
+          queryKey: payrollQueryKeys.list(listParams),
+          queryFn: () => payrollAPI.getAll({ ...listParams, per_page: 1000 }),
+          staleTime: 30 * 1000,
+        });
+
+        // Payroll history
+        queryClient.prefetchQuery({
+          queryKey: payrollQueryKeys.history(listParams),
+          queryFn: () => payrollAPI.getHistory({ ...listParams, per_page: 1000 }),
+          staleTime: 30 * 1000,
+        });
+
+        // Payroll stats
+        queryClient.prefetchQuery({
+          queryKey: payrollQueryKeys.stats(listParams),
+          queryFn: () => payrollAPI.getStats(listParams),
+          staleTime: 30 * 1000,
+        });
+
+        // History stats
+        queryClient.prefetchQuery({
+          queryKey: payrollQueryKeys.historyStats(listParams),
+          queryFn: () => payrollAPI.getHistoryStats(listParams),
+          staleTime: 30 * 1000,
+        });
+
+        // Saved attendance employees (used by the Process Payroll modal)
+        queryClient.prefetchQuery({
+          queryKey: payrollQueryKeys.savedEmployees(savedParams),
+          queryFn: async () => {
+            const [overviewRes, employeesRes] = await Promise.all([
+              attendanceAPI.getEmployeeOverview(savedParams),
+              employeeAPI.getAllEmployeesList({ per_page: 1000 }),
+            ]);
+
+            const body = safeObject(overviewRes, {});
+            const employees = safeArray(body?.employees || overviewRes);
+            const allEmployees = safeArray(employeesRes);
+
+            const rateMap = new Map();
+            allEmployees.forEach((e) => {
+              const id = e.employee_id || e.id;
+              const rate = safeNumber(
+                e.calculated_hourly_rate ||
+                  e.hourly_rate ||
+                  e.position?.salary_grade?.default_hourly_rate ||
+                  e.position?.salaryGrade?.default_hourly_rate
+              );
+              rateMap.set(Number(id), rate);
+            });
+
+            const saved = employees.filter((emp) => {
+              if (emp.saved_to_payroll === true) return true;
+              if (safeNumber(emp.saved_count, 0) > 0) return true;
+              if (safeNumber(emp.unsaved_count, -1) === 0) return true;
+              if (emp.payroll_status) return true;
+              return false;
+            });
+
+            return saved.map((emp) => {
+              const regularHours = safeNumber(emp.regular_hours);
+              const overtimeHours = safeNumber(emp.overtime_hours);
+              const hourlyRate = safeNumber(
+                emp.hourly_rate ||
+                  emp.calculated_hourly_rate ||
+                  rateMap.get(Number(emp.employee_id))
+              );
+              const regularPay = regularHours * hourlyRate;
+              const overtimePay = overtimeHours * hourlyRate * 1.25;
+              const estimatedGross = safeNumber(
+                emp.estimated_gross_pay || regularPay + overtimePay
+              );
+
+              const payrollStatus = String(emp.payroll_status || '').toLowerCase();
+              const isFinalized = ['approved', 'paid'].includes(payrollStatus);
+              const hasPayrollRow =
+                Boolean(emp.payroll_id || emp.payroll_number) || isFinalized;
+              const lastProcessedAt =
+                emp.payroll_updated_at ||
+                emp.last_processed_at ||
+                emp.payroll_calculated_at ||
+                null;
+
+              return {
+                id: emp.employee_id,
+                employee_id: emp.employee_id,
+                employee_code: emp.employee_code,
+                full_name: emp.employee_name,
+                position: emp.position,
+                department: emp.department,
+                department_id: emp.department_id,
+                regular_hours: regularHours,
+                overtime_hours: overtimeHours,
+                total_hours:
+                  safeNumber(emp.total_hours) || regularHours + overtimeHours,
+                hourly_rate: hourlyRate,
+                regular_pay: regularPay,
+                overtime_pay: overtimePay,
+                estimated_gross_pay: estimatedGross,
+                late_undertime: emp.late_undertime || '',
+                has_payroll: hasPayrollRow,
+                payroll_finalized: isFinalized,
+                payroll_status: emp.payroll_status || null,
+                payroll_archived: !!emp.payroll_archived,
+                employee_type:
+                  emp.employee_type || emp.employment_type || 'regular',
+                saved_to_payroll: true,
+                payroll_id: emp.payroll_id || null,
+                payroll_number: emp.payroll_number || null,
+                last_processed_at: lastProcessedAt,
+              };
+            });
+          },
+          staleTime: 15 * 1000,
+        });
+      } catch (e) {
+        // Prefetch must never break the UI.
+        if (import.meta.env.DEV && import.meta.env.VITE_API_DEBUG === 'true') {
+          console.warn('prefetchCutoff failed:', e);
+        }
+      }
+    },
+    [queryClient, getCutoffDates, employeeDepartmentFilter]
+  );
 
   const openEmployeeSelectionModal = useCallback(() => {
     setEmployeeSearchQuery('');
     setEmployeeDepartmentFilter('all');
-    setEmployeeStatusFilter('all');
+    // ⭐ FIX: Default to "Ready" so the user lands on rows that actually
+    //    need action. Calculated / finalized rows are one tab away.
+    setEmployeeStatusFilter('eligible');
     setSelectedEmployeesForPayroll([]);
     setSelectAllEmployees(false);
     setShowEmployeeSelectionModal(true);
     refetchSaved();
   }, [refetchSaved]);
-
   const resetDeductionForm = useCallback(() => {
     setEnableManualDeduction(false);
     setManualDeductionAmount(0);
@@ -2328,7 +2892,11 @@ const Staff_Payroll_Formal = () => {
   const filtersClass = `prf-filters ${isDarkMode ? 'prf-filters-dark' : ''}`;
   const tableClass = `prf-table-wrapper ${isDarkMode ? 'prf-table-wrapper-dark' : ''}`;
   const isLoading = payrollLoading || historyLoading;
-  const showFullSkeleton = isLoading && payrollData.length === 0 && payrollHistory.length === 0;
+  // ⭐ PERF: Only show the full-page skeleton on the very first load.
+  //    When switching cutoffs, `keepPreviousData` keeps the old rows
+  //    visible, so we must not swap the whole page for a skeleton.
+  const hasEverLoaded = payrollData.length > 0 || payrollHistory.length > 0;
+  const showFullSkeleton = isLoading && !hasEverLoaded;
   const endOfMonth = isEndOfMonthCutoff(cutoffType);
   const totalProcessDeductions = safeNumber(processDeductions.sss)
     + safeNumber(processDeductions.pagibig)
@@ -2465,10 +3033,19 @@ const Staff_Payroll_Formal = () => {
 
                         <div className="prf-period-controls">
                           <div className="prf-cutoff-selector">
-                            <button
+                                                       <button
                               type="button"
                               className={`prf-cutoff-btn ${cutoffType === 'first' ? 'active' : ''}`}
-                              onClick={() => { setCutoffType('first'); setCurrentPage(1); }}
+                              onMouseEnter={() => prefetchCutoff(selectedYear, selectedMonth, 'first')}
+                              onClick={() => {
+                                setCurrentPage(1);
+                                setHistoryCurrentPage(1);
+                                setSelectedPayrollIds([]);
+                                setSelectedEmployeesForPayroll([]);
+                                setSearchQuery('');
+                                setSelectedStatus('all');
+                                setCutoffType('first');
+                              }}
                             >
                               <CalendarOutlined className="prf-cutoff-btn-icon" />
                               <span>1st - 15th</span>
@@ -2476,7 +3053,16 @@ const Staff_Payroll_Formal = () => {
                             <button
                               type="button"
                               className={`prf-cutoff-btn ${cutoffType === 'second' ? 'active' : ''}`}
-                              onClick={() => { setCutoffType('second'); setCurrentPage(1); }}
+                              onMouseEnter={() => prefetchCutoff(selectedYear, selectedMonth, 'second')}
+                              onClick={() => {
+                                setCurrentPage(1);
+                                setHistoryCurrentPage(1);
+                                setSelectedPayrollIds([]);
+                                setSelectedEmployeesForPayroll([]);
+                                setSearchQuery('');
+                                setSelectedStatus('all');
+                                setCutoffType('second');
+                              }}
                             >
                               <CalendarOutlined className="prf-cutoff-btn-icon" />
                               <span>16th - End</span>
@@ -2484,9 +3070,17 @@ const Staff_Payroll_Formal = () => {
                           </div>
 
                           <div className="prf-month-navigator">
-                            <button
+                                                        <button
                               type="button"
                               className="prf-month-nav-btn"
+                              onMouseEnter={() => {
+                                const prevMonth = cutoffType === 'first' ? selectedMonth - 1 : selectedMonth;
+                                const prevCutoff = cutoffType === 'first' ? 'second' : 'first';
+                                let y = selectedYear;
+                                let m = prevMonth;
+                                if (m < 0) { m = 11; y -= 1; }
+                                prefetchCutoff(y, m, prevCutoff);
+                              }}
                               onClick={() => changeCutoff('prev')}
                               aria-label="Previous period"
                             >
@@ -2498,6 +3092,14 @@ const Staff_Payroll_Formal = () => {
                             <button
                               type="button"
                               className="prf-month-nav-btn"
+                              onMouseEnter={() => {
+                                const nextMonth = cutoffType === 'second' ? selectedMonth + 1 : selectedMonth;
+                                const nextCutoff = cutoffType === 'second' ? 'first' : 'second';
+                                let y = selectedYear;
+                                let m = nextMonth;
+                                if (m > 11) { m = 0; y += 1; }
+                                prefetchCutoff(y, m, nextCutoff);
+                              }}
                               onClick={() => changeCutoff('next')}
                               aria-label="Next period"
                             >
@@ -2578,7 +3180,10 @@ const Staff_Payroll_Formal = () => {
                         </div>
                       )}
 
-                      <Spin spinning={isLoading} indicator={<LoadingOutlined spin />}>
+                                 <Spin
+                        spinning={isLoading && !hasEverLoaded}
+                        indicator={<LoadingOutlined spin />}
+                      >
                         <div className="prf-table-wrapper">
                           <div className="prf-table-scroll">
                             <Table
@@ -2829,13 +3434,15 @@ const Staff_Payroll_Formal = () => {
                   </div>
                 </div>
 
-                {eligibleStats.total === 0 && (
+                         {eligibleStats.total === 0 && (
                   <div className="pp-info-banner">
                     <InfoCircleOutlined />
                     <span>
-                      No attendance has been saved to payroll for {periodLabel}. Go to
-                      <strong> Attendance → Employee Overview → Save All to Payroll</strong> first,
-                      then come back here.
+                      {isFutureCutoff
+                        ? `This cutoff (${periodLabel}) has not started yet. There is nothing to process.`
+                        : <>No attendance has been saved to payroll for <strong>{periodLabel}</strong>. Go to
+                          <strong> Attendance → Employee Overview → Save All to Payroll</strong> first,
+                          then come back here.</>}
                     </span>
                   </div>
                 )}
@@ -2883,10 +3490,11 @@ const Staff_Payroll_Formal = () => {
                     ))}
                   </select>
 
-                  <div className="pp-filter-tabs">
+                                   <div className="pp-filter-tabs">
                     {[
                       { key: 'all', label: 'All' },
                       { key: 'eligible', label: 'Ready' },
+                      { key: 'calculated', label: 'Calculated' },
                       { key: 'processed', label: 'Finalized' },
                     ].map((tab) => (
                       <button
@@ -2959,8 +3567,11 @@ const Staff_Payroll_Formal = () => {
                             empType === EMPLOYEE_TYPES.CONTRACT ? 'Contract' :
                             empType === EMPLOYEE_TYPES.PART_TIME ? 'Part-Time' : 'Regular';
                           const typeClass = getEmployeeTypeClass(typeLabel);
-                          const isSelected = selectedEmployeesForPayroll.includes(emp.id);
-                          const isDisabled = !!emp.has_payroll;
+                                                  const isSelected = selectedEmployeesForPayroll.includes(emp.id);
+                          // ⭐ FIX: A calculated / draft payroll is NOT final.
+                          //    The admin must be able to select it and reprocess.
+                          //    Only approved / paid rows are locked.
+                          const isDisabled = Boolean(emp.payroll_finalized);
 
                           const payrollStatus = String(emp.payroll_status || '').toLowerCase();
                           let statusClass = 'eligible';
@@ -2979,14 +3590,16 @@ const Staff_Payroll_Formal = () => {
                             statusSub = emp.last_processed_at
                               ? `on ${formatDateSafe(emp.last_processed_at, 'MMM DD, YYYY')}`
                               : '';
-                          } else if (payrollStatus === 'calculated' || payrollStatus === 'draft') {
+                                             } else if (payrollStatus === 'calculated' || payrollStatus === 'draft') {
+                            // ⭐ FIX: Calculated rows still need admin action,
+                            //    so keep them visually under "Ready" but label
+                            //    them clearly as Calculated / reprocessable.
                             statusClass = 'eligible';
                             statusLabel = 'Calculated';
                             statusSub = emp.last_processed_at
-                              ? `on ${formatDateSafe(emp.last_processed_at, 'MMM DD, YYYY')}`
-                              : '';
+                              ? `Reprocess · ${formatDateSafe(emp.last_processed_at, 'MMM DD, YYYY')}`
+                              : 'Reprocess available';
                           }
-
                           return (
                             <tr
                               key={emp.id}
