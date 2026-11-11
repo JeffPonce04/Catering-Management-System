@@ -1849,18 +1849,19 @@ body {
 /* ============================================================
    MODALS - MATCHING BOOKING PAGE
    ============================================================ */
+/* Full-viewport overlay — must beat the sidebar (z-index 100) */
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
   background: rgba(0, 0, 0, 0.5);
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 2000;
+  z-index: 99999;
   animation: fadeIn 0.25s ease;
 }
 
@@ -2707,6 +2708,16 @@ body {
 .status-badge.declined {
   background: var(--bqm-danger-soft);
   color: var(--bqm-danger);
+}
+
+/* ============================================================
+   Sidebar dim while an attendance modal is open
+   ============================================================ */
+body:has(.modal-overlay) .navigation-container,
+body:has(.attendance-notification) .navigation-container {
+  pointer-events: none;
+  filter: blur(3px);
+  transition: filter 0.25s ease;
 }
 
 /* ============================================================

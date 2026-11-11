@@ -1,9 +1,15 @@
+// ⭐ Single source of truth for the Booking & Quotation page.
+//    The router MUST mount BookingQuotationManagement at this path,
+//    and CustomerManagement.jsx uses this constant to navigate here.
+export const BOOKING_QUOTATION_PATH = '/booking';
+// Alias kept so the URL `?rebook=<id>` old link still works.
+export const BOOKING_QUOTATION_PATH_ALIASES = ['/booking', '/admin/bookings', '/admin/bookings-quotation'];
+
 export const SUPER_ADMIN_ROLES = [
   'super_admin',
   'superadmin',
   'super-admin',
 ];
-
 export const OPERATIONAL_ADMIN_ROLES = [
   'admin',
   'administrator',
@@ -61,7 +67,7 @@ export const ROLE_HOME = {
   staff_manager: '/dashboard',
   people_manager: '/dashboard',
   head_chef: '/menu',
-  employee: '/staff/schedule',
+  employee: '/attendance/face-clock',
   staff: '/staff/schedule',
   customer: '/booking',
 };
@@ -99,7 +105,17 @@ const PATH_ROLE_RULES = [
   { test: (path) => path === '/customer-feedback', roles: CUSTOMER_ROLES },
   { test: (path) => path === '/cashierpage', roles: BOOKING_ROLES },
   { test: (path) => path === '/booking', roles: BOOKING_ROLES },
-  // ⭐ Cashiers get read-only access to Orders & Events.
+  // ⭐ Ensure every alias of the Booking & Quotation page is gated
+  //    the same way. Without these rules, a redirect-to-dashboard
+  //    guard would fall through to "no access".
+  {
+    test: (path) => path === '/admin/bookings' || path.startsWith('/admin/bookings/'),
+    roles: BOOKING_ROLES,
+  },
+  {
+    test: (path) => path === '/admin/bookings-quotation' || path.startsWith('/admin/bookings-quotation/'),
+    roles: BOOKING_ROLES,
+  },  // ⭐ Cashiers get read-only access to Orders & Events.
   //    Write actions (approve, complete, profitability) are still blocked
   //    at the API layer by RoleAccessMiddleware.
   {
@@ -108,6 +124,7 @@ const PATH_ROLE_RULES = [
   },  { test: (path) => path === '/menu', roles: [...ADMIN_ROLES, ...HEAD_CHEF_ROLES] },
   { test: inventoryPath, roles: INVENTORY_ROLES },
   { test: (path) => path === '/staff/payroll', roles: PAYROLL_PREPARATION_ROLES },
+  { test: (path) => path === '/attendance/face-clock', roles: ['employee'] },
   { test: (path) => path === '/staff' || path.startsWith('/staff/'), roles: STAFF_ROLES },
   { test: (path) => path === '/notifications', roles: SYSTEM_ROLES },
 ];

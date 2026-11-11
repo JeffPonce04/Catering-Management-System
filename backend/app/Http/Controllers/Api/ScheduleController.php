@@ -151,7 +151,7 @@ class ScheduleController extends Controller
     public function store(Request $request)
     {
         $payload = $this->validatedDatabasePayload($request);
-        $this->assertAvailable($payload['employee_id'], $payload['work_date']);
+        $this->assertAvailable($payload['employee_id'], $payload['work_date'], null, $payload['start_time'], $payload['end_time']);
         if ($warning = $this->approvedRequestWarning($payload['employee_id'], $payload['work_date'], $request)) {
             return $warning;
         }
@@ -175,10 +175,10 @@ class ScheduleController extends Controller
             'schedules.*' => 'required|array',
         ]);
 
-        $created = DB::transaction(fn () => collect($validated['schedules'])->map(function (array $row) {
+        $created = DB::transaction(fn() => collect($validated['schedules'])->map(function (array $row) {
             $rowRequest = Request::create('/', 'POST', $row);
             $payload = $this->validatedDatabasePayload($rowRequest);
-            $this->assertAvailable($payload['employee_id'], $payload['work_date']);
+            $this->assertAvailable($payload['employee_id'], $payload['work_date'], null, $payload['start_time'], $payload['end_time']);
 
             $schedule = Schedule::create($payload);
             AuditLog::log('schedule_created', AuditLog::MODULE_SCHEDULES, $schedule->schedule_id, null, $schedule->getAttributes());
@@ -203,7 +203,7 @@ class ScheduleController extends Controller
         $oldValues = $schedule->getAttributes();
 
         $payload = $this->validatedDatabasePayload($request, $schedule);
-        $this->assertAvailable($payload['employee_id'], $payload['work_date'], $schedule->schedule_id);
+        $this->assertAvailable($payload['employee_id'], $payload['work_date'], $schedule->schedule_id, $payload['start_time'], $payload['end_time']);
         if ($warning = $this->approvedRequestWarning($payload['employee_id'], $payload['work_date'], $request)) {
             return $warning;
         }
@@ -449,17 +449,51 @@ class ScheduleController extends Controller
         });
     }
 
-    private function assertAvailable(int $employeeId, string $workDate, ?int $ignoreScheduleId = null): void
-    {
-        $query = Schedule::where('employee_id', $employeeId)->whereDate('work_date', $workDate);
+    private function assertAvailable(
+        int $employeeId,
+        string $workDate,
+        ?int $ignoreScheduleId = null,
+        ?string $startTime = null,
+        ?string $endTime = null
+    ): void {
+        // Keep the existing "one shift per employee per day" data rule only
+        // where intervals actually overlap; non-overlapping split shifts are valid.
+        $startTime = $startTime ?: '00:00:00';
+        $endTime = $endTime ?: '23:59:59';
+
+        $newStart = \Carbon\Carbon::parse($workDate . ' ' . $startTime);
+        $newEnd = \Carbon\Carbon::parse($workDate . ' ' . $endTime);
+        if ($newEnd->lessThanOrEqualTo($newStart)) {
+            $newEnd->addDay();
+        }
+
+        $query = Schedule::where('employee_id', $employeeId)
+            ->whereDate('work_date', $workDate)
+            ->whereNotIn('status', ['cancelled']);
 
         if ($ignoreScheduleId) {
             $query->where('schedule_id', '!=', $ignoreScheduleId);
         }
 
-        if ($query->exists()) {
+        $conflict = $query->get(['schedule_id', 'work_date', 'start_time', 'end_time'])
+            ->first(function (Schedule $existing) use ($workDate, $newStart, $newEnd) {
+                $existingStart = \Carbon\Carbon::parse(
+                    $workDate . ' ' . $existing->start_time
+                );
+                $existingEnd = \Carbon\Carbon::parse(
+                    $workDate . ' ' . $existing->end_time
+                );
+
+                if ($existingEnd->lessThanOrEqualTo($existingStart)) {
+                    $existingEnd->addDay();
+                }
+
+                return $newStart->lt($existingEnd) && $newEnd->gt($existingStart);
+            });
+
+        if ($conflict) {
             throw ValidationException::withMessages([
-                'work_date' => 'This employee already has a schedule for the selected date.',
+                'work_date' => 'This employee already has an overlapping schedule for the selected date.',
             ]);
         }
     }

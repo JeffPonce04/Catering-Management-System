@@ -26,35 +26,35 @@ class InventoryService
     /**
      * Generic sequential number generator
      */
-  private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
-{
-    try {
-        if (!class_exists($modelClass)) {
-            throw new \Exception("Model class {$modelClass} not found");
-        }
+    private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
+    {
+        try {
+            if (!class_exists($modelClass)) {
+                throw new \Exception("Model class {$modelClass} not found");
+            }
 
-        // Create a new instance to get the key name
-        $instance = new $modelClass();
-        $keyName = $instance->getKeyName();
+            // Create a new instance to get the key name
+            $instance = new $modelClass();
+            $keyName = $instance->getKeyName();
 
-        $lastRecord = $modelClass::withTrashed()
-            ->where($column, 'LIKE', $prefix . '%')
-            ->orderBy($keyName, 'desc')
-            ->first();
-        
-        if ($lastRecord && isset($lastRecord->$column)) {
-            $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
-            $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
-        } else {
-            $newNumber = str_repeat('0', $padding - 1) . '1';
+            $lastRecord = $modelClass::withTrashed()
+                ->where($column, 'LIKE', $prefix . '%')
+                ->orderBy($keyName, 'desc')
+                ->first();
+
+            if ($lastRecord && isset($lastRecord->$column)) {
+                $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
+                $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
+            } else {
+                $newNumber = str_repeat('0', $padding - 1) . '1';
+            }
+
+            return $prefix . $newNumber;
+        } catch (\Exception $e) {
+            Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
+            return $prefix . now()->format('YmdHis') . '-' . random_int(100, 999);
         }
-        
-        return $prefix . $newNumber;
-    } catch (\Exception $e) {
-        Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
-        return $prefix . now()->format('YmdHis') . '-' . random_int(100, 999);
     }
-}
     public function move(int $ingredientId, float $quantityChange, string $movementType, string $reason = ''): InventoryMovement
     {
         return DB::transaction(function () use ($ingredientId, $quantityChange, $movementType, $reason) {
@@ -106,11 +106,11 @@ class InventoryService
 
             $this->logInventoryMovement($movement, $stock, $movementType);
             $this->notifyStockStatus($stock);
-            
+
             if ($quantityAfter <= $stock->reorder_point && $movementType !== 'purchase') {
                 $this->checkAndCreatePurchaseRequest($ingredientId, $stock);
             }
-            
+
             return $movement;
         });
     }
@@ -121,20 +121,20 @@ class InventoryService
 
         foreach ($booking->items as $item) {
             if (!$item->menu_item_id) continue;
-            
+
             $meal = $item->mealService;
 
             foreach ($item->menuItem->recipeIngredients as $recipe) {
                 $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
-                
+
                 if ($stock) {
                     $requiredQty = $recipe->quantity_per_pax * $item->quantity;
                     $availableStock = $stock->current_quantity - $stock->reserved_quantity;
-                    
+
                     if ($availableStock < $requiredQty) {
                         $shortage = $requiredQty - $availableStock;
                         $this->createPurchaseRequest($recipe->ingredient_id, $shortage, 'insufficient_stock');
-                        
+
                         Log::warning("Insufficient stock for ingredient {$recipe->ingredient->name}", [
                             'booking_id' => $booking->booking_id,
                             'required' => $requiredQty,
@@ -142,7 +142,7 @@ class InventoryService
                             'shortage' => $shortage,
                         ]);
                     }
-                    
+
                     $stock->increment('reserved_quantity', $requiredQty);
                 } else {
                     $requiredQty = $recipe->quantity_per_pax * $item->quantity;
@@ -154,7 +154,7 @@ class InventoryService
                         'maximum_quantity' => 100,
                         'reorder_point' => 15,
                     ]);
-                    
+
                     $this->createPurchaseRequest($recipe->ingredient_id, $requiredQty, 'no_stock');
                 }
             }
@@ -282,18 +282,18 @@ class InventoryService
     public function getPendingDeductions(Booking $booking): array
     {
         $deductions = [];
-        
+
         $booking->loadMissing(['items.menuItem.recipeIngredients.ingredient', 'items.mealService.eventDay']);
 
         foreach ($booking->items as $item) {
             if (!$item->menu_item_id) continue;
-            
+
             $meal = $item->mealService;
 
             foreach ($item->menuItem->recipeIngredients as $recipe) {
                 $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
                 $usedQty = $recipe->quantity_per_pax * $item->quantity;
-                
+
                 $deductions[] = [
                     'ingredient_id' => $recipe->ingredient_id,
                     'ingredient_name' => $recipe->ingredient->name,
@@ -306,7 +306,7 @@ class InventoryService
                 ];
             }
         }
-        
+
         return $deductions;
     }
 
@@ -315,10 +315,10 @@ class InventoryService
         $existingRequest = PurchaseRequest::where('ingredient_id', $ingredientId)
             ->whereIn('status', ['pending', 'approved'])
             ->first();
-            
+
         if (!$existingRequest) {
             $quantityToOrder = $stock->maximum_quantity - $stock->current_quantity;
-            
+
             if ($quantityToOrder > 0) {
                 $this->createPurchaseRequest($ingredientId, $quantityToOrder, 'auto_reorder');
             }
@@ -328,7 +328,7 @@ class InventoryService
     private function createPurchaseRequest(int $ingredientId, float $quantity, string $reason): PurchaseRequest
     {
         $ingredient = Ingredient::find($ingredientId);
-        
+
         $purchaseRequest = PurchaseRequest::create([
             'pr_number' => $this->generatePurchaseRequestNumber(),
             'ingredient_id' => $ingredientId,
@@ -423,12 +423,12 @@ class InventoryService
     public function getInventoryAlerts(): array
     {
         $alerts = [];
-        
+
         $stocks = InventoryStock::with('ingredient')->get();
-        
+
         foreach ($stocks as $stock) {
             $availableStock = $stock->current_quantity - $stock->reserved_quantity;
-            
+
             if ($availableStock <= 0) {
                 $alerts[] = [
                     'type' => 'critical',
@@ -451,7 +451,7 @@ class InventoryService
                     'needs_purchase' => true,
                 ];
             }
-            
+
             if ($stock->expiry_date && $stock->expiry_date->isPast()) {
                 $alerts[] = [
                     'type' => 'expired',
@@ -470,26 +470,26 @@ class InventoryService
                 ];
             }
         }
-        
+
         return $alerts;
     }
 
     public function getIngredientRequirements(Booking $booking): array
     {
         $requirements = [];
-        
+
         $booking->loadMissing(['items.menuItem.recipeIngredients.ingredient', 'items.mealService.eventDay']);
 
         foreach ($booking->items as $item) {
             if (!$item->menu_item_id) continue;
-            
+
             $meal = $item->mealService;
 
             foreach ($item->menuItem->recipeIngredients as $recipe) {
                 $requiredQty = $recipe->quantity_per_pax * $item->quantity;
                 $stock = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
                 $availableStock = $stock ? $stock->current_quantity - $stock->reserved_quantity : 0;
-                
+
                 if (!isset($requirements[$recipe->ingredient_id])) {
                     $requirements[$recipe->ingredient_id] = [
                         'ingredient_id' => $recipe->ingredient_id,
@@ -503,7 +503,7 @@ class InventoryService
                         'menu_items' => [],
                     ];
                 }
-                
+
                 $requirements[$recipe->ingredient_id]['required_total'] += $requiredQty;
                 $requirements[$recipe->ingredient_id]['menu_items'][] = [
                     'menu_item' => $item->menuItem->name,
@@ -518,14 +518,76 @@ class InventoryService
                 ];
             }
         }
-        
+
         foreach ($requirements as &$req) {
             $req['shortage'] = max(0, $req['required_total'] - $req['available']);
             $req['need_to_buy'] = $req['shortage'] > 0;
             $req['status'] = $req['shortage'] > 0 ? 'insufficient' : ($req['available'] < $req['required_total'] * 1.2 ? 'low' : 'sufficient');
         }
-        
+
         return array_values($requirements);
+    }
+
+    /**
+     * ⭐ Required (recipe qty_per_pax × booked quantity) vs Available (live stock)
+     *    for ONE meal service (preferred) or ONE menu item. Fully DB-driven.
+     */
+    public function getKitchenTaskRequirements(Booking $booking, ?int $mealServiceId = null, ?int $menuItemId = null): array
+    {
+        $booking->loadMissing(['items.menuItem.recipeIngredients.ingredient']);
+
+        $items = $booking->items->filter(fn($item) => $item->menu_item_id && $item->menuItem);
+        if ($mealServiceId) {
+            $items = $items->filter(fn($item) => (int) ($item->meal_service_id ?? 0) === $mealServiceId);
+        } elseif ($menuItemId) {
+            $items = $items->filter(fn($item) => (int) $item->menu_item_id === $menuItemId);
+        }
+
+        $rows = [];
+        foreach ($items as $item) {
+            foreach ($item->menuItem->recipeIngredients as $recipe) {
+                $ingredientId = (int) $recipe->ingredient_id;
+                $perPax       = (float) $recipe->quantity_per_pax;
+                $required     = $perPax * (float) $item->quantity;
+
+                if (! isset($rows[$ingredientId])) {
+                    $stock   = InventoryStock::where('ingredient_id', $ingredientId)->first();
+                    $current = (float) ($stock?->current_quantity ?? 0);
+                    $rows[$ingredientId] = [
+                        'ingredient_id'     => $ingredientId,
+                        'name'              => $recipe->ingredient?->name ?? 'Unknown',
+                        'unit'              => $recipe->unit ?? $recipe->ingredient?->unit ?? 'kg',
+                        'per_pax'           => 0.0,
+                        'quantity_needed'   => 0.0,
+                        'current_stock'     => $current,
+                        'reserved_quantity' => (float) ($stock?->reserved_quantity ?? 0),
+                        'available_stock'   => $current,
+                        'unit_cost'         => (float) ($recipe->ingredient?->unit_cost ?? 0),
+                        'menu_items'        => [],
+                    ];
+                }
+
+                $rows[$ingredientId]['per_pax']         += $perPax;
+                $rows[$ingredientId]['quantity_needed'] += $required;
+                $rows[$ingredientId]['menu_items'][] = [
+                    'name'     => $item->menuItem->name,
+                    'quantity' => (float) $item->quantity,
+                    'per_pax'  => $perPax,
+                    'required' => $required,
+                ];
+            }
+        }
+
+        foreach ($rows as &$row) {
+            $row['per_pax']         = round($row['per_pax'], 4);
+            $row['quantity_needed'] = round($row['quantity_needed'], 3);
+            $row['shortage']        = round(max(0, $row['quantity_needed'] - $row['available_stock']), 3);
+            $row['need_to_buy']     = $row['shortage'] > 0;
+            $row['purchased']       = false;
+        }
+        unset($row);
+
+        return array_values($rows);
     }
 
     public function getEquipmentAvailabilityByDate(int $equipmentId, string $date): array

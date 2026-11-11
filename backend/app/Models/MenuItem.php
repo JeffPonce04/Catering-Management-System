@@ -120,6 +120,14 @@ class MenuItem extends Model
     {
         return in_array($this->pricing_type, ['per_tray', 'both']) && $this->tray_price > 0;
     }
+    /**
+     * Accessor for the `has_tray_pricing` appended attribute.
+     * Laravel resolves $appends entries via get{StudlyName}Attribute().
+     */
+    public function getHasTrayPricingAttribute(): bool
+    {
+        return $this->hasTrayPricing();
+    }
 
     /**
      * Check if item has per pax pricing
@@ -129,6 +137,14 @@ class MenuItem extends Model
         return in_array($this->pricing_type, ['per_pax', 'both']) && $this->price > 0;
     }
 
+    /**
+     * Accessor for the `has_per_pax_pricing` appended attribute.
+     * Laravel resolves $appends entries via get{StudlyName}Attribute().
+     */
+    public function getHasPerPaxPricingAttribute(): bool
+    {
+        return $this->hasPerPaxPricing();
+    }
     /**
      * Get tray description with pax range
      */

@@ -120,10 +120,17 @@ const getMealOrderIndex = (mealType) => {
 // HELPER FUNCTIONS
 // ============================================================
 const formatCurrency = (value) => {
-    if (!value && value !== 0) return '₱0.00';
-    return `₱${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const n = Number(value);
+    const safe = Number.isFinite(n) ? n : 0;
+    return `₱${safe.toLocaleString('en-PH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
 };
 
+// ⭐ Alias used throughout the file so every money value goes through
+//    the SAME formatter. Keep the name short for inline JSX usage.
+const money = formatCurrency;
 const safeNumber = (value, defaultValue = 0) => {
     const num = Number(value);
     return isNaN(num) ? defaultValue : num;
@@ -253,21 +260,21 @@ const applyReceiptWatermark = (html) => {
         : `${watermarkMarkup}${htmlWithStyles}`;
 };
 
-const downloadHtmlAsPdf = async (html, filename) => {
+const downloadHtmlAsPdf = async (html, filename, options = {}) => {
     const html2pdfModule = await import('html2pdf.js');
     const html2pdf = html2pdfModule.default || html2pdfModule;
+    const orientation = options.orientation === 'landscape' ? 'landscape' : 'portrait';
     return html2pdf()
         .set({
             margin: 8,
             filename,
             image: { type: 'jpeg', quality: 0.98 },
             html2canvas: { scale: 2, useCORS: true },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+            jsPDF: { unit: 'mm', format: 'a4', orientation },
         })
         .from(html, 'string')
         .save();
 };
-
 // ============================================================
 // REFUND STATUS CONFIG
 // ============================================================
@@ -655,7 +662,8 @@ const BillingInvoicing = () => {
     const [filterStatus, setFilterStatus] = useState('all');
     const [filterDate, setFilterDate] = useState(null);
     const [paymentTrackingDateRange, setPaymentTrackingDateRange] = useState([]);
-    const [paymentHistorySearch, setPaymentHistorySearch] = useState('');
+    // ⭐ Filter payments by who physically paid (payer ≠ booked customer is common).
+    const [paymentTrackingPayerSearch, setPaymentTrackingPayerSearch] = useState('');    const [paymentHistorySearch, setPaymentHistorySearch] = useState('');
     const [paymentHistoryCustomer, setPaymentHistoryCustomer] = useState('');
     const [paymentHistoryInvoice, setPaymentHistoryInvoice] = useState('');
     const [paymentHistoryMethod, setPaymentHistoryMethod] = useState('all');
@@ -685,21 +693,23 @@ const BillingInvoicing = () => {
     const [billingVisibility, setBillingVisibility] = useState(readCachedBillingVisibility);
     const effectiveBillingVisibility = billingVisibility;
 
-    // ⭐ Period Behavior — Weekly / Monthly / Yearly + anchor
+         // ⭐ Period Behavior — Weekly / Monthly / Yearly (defaults to Monthly)
     const [dashboardPeriod, setDashboardPeriod] = useState(
         () => sessionStorage.getItem('bi_dashboardPeriod') || 'monthly'
     );
     const [dashboardAnchor, setDashboardAnchor] = useState(
         () => sessionStorage.getItem('bi_dashboardAnchor') || dayjs().format('YYYY-MM-DD')
     );
-    const [periodToolbarHidden, setPeriodToolbarHidden] = useState(
-        () => sessionStorage.getItem('bi_periodToolbarHidden') === 'true'
-    );
+    // ⭐ Auto-hide the Reporting Period toolbar by default
+    const [periodToolbarHidden, setPeriodToolbarHidden] = useState(() => {
+        const saved = sessionStorage.getItem('bi_periodToolbarHidden');
+        return saved === null ? true : saved === 'true';
+    });
 
     useEffect(() => {
+        // ⭐ Persist the selected period (weekly / monthly / yearly)
         sessionStorage.setItem('bi_dashboardPeriod', dashboardPeriod);
     }, [dashboardPeriod]);
-
     useEffect(() => {
         sessionStorage.setItem('bi_dashboardAnchor', dashboardAnchor);
     }, [dashboardAnchor]);
@@ -774,9 +784,14 @@ const BillingInvoicing = () => {
     });
 
     // Modal states
-    const [invoiceModalVisible, setInvoiceModalVisible] = useState(false);
+       const [invoiceModalVisible, setInvoiceModalVisible] = useState(false);
     const [invoiceDetailsModalVisible, setInvoiceDetailsModalVisible] = useState(false);
-    const [invoiceDetailsLoading, setInvoiceDetailsLoading] = useState(false);    const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+    const [invoiceDetailsLoading, setInvoiceDetailsLoading] = useState(false);
+    const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+    
+    // ⭐ NEW: State for the Dedicated Additional Charges Modal
+    const [chargesModalVisible, setChargesModalVisible] = useState(false);
+    const [chargesForm] = Form.useForm();
     const [reminderModalVisible, setReminderModalVisible] = useState(false);
     const [discountModalVisible, setDiscountModalVisible] = useState(false);
     const [selectedInvoice, setSelectedInvoice] = useState(null);
@@ -786,9 +801,9 @@ const BillingInvoicing = () => {
     const [receiptData, setReceiptData] = useState(null);
     const [rejectPaymentModalVisible, setRejectPaymentModalVisible] = useState(false);
     const [rejectReason, setRejectReason] = useState('');
-    const [paymentMethod, setPaymentMethod] = useState('cash');
+       const [paymentMethod, setPaymentMethod] = useState('cash');
+    const [paymentPercent, setPaymentPercent] = useState(null); // ⭐ Tracks the percent input
     const [createInvoiceBookingId, setCreateInvoiceBookingId] = useState(null);
-
     // ⭐ Per-fee line items for the Create / Edit Invoice modal.
     const [invoiceCharges, setInvoiceCharges] = useState({
         transportation_fee: 0,
@@ -797,6 +812,8 @@ const BillingInvoicing = () => {
         equipment_rental: 0,
         extra_food_fee: 0,
     });
+    // ⭐ NEW: Dynamic custom charges (e.g., "Glass damage" +57)
+    const [customCharges, setCustomCharges] = useState([]);
     // Refund modal states
     const [refundModalVisible, setRefundModalVisible] = useState(false);
     const [refundApprovalModalVisible, setRefundApprovalModalVisible] = useState(false);
@@ -830,6 +847,12 @@ const BillingInvoicing = () => {
     const [pdfOverviewLoading, setPdfOverviewLoading] = useState(false);
     const [pdfOverviewAllBookings, setPdfOverviewAllBookings] = useState([]);
 
+    // ⭐ Master List state
+    const [masterListModalVisible, setMasterListModalVisible] = useState(false);
+    const [masterListHtml, setMasterListHtml] = useState('');
+    const [masterListType, setMasterListType] = useState('invoices'); // 'invoices' | 'payments' | 'refunds'
+    const [masterListDateRange, setMasterListDateRange] = useState([]);
+    const [masterListZoom, setMasterListZoom] = useState(100);
     // Forms
     const [invoiceForm] = Form.useForm();
     const [paymentForm] = Form.useForm();
@@ -910,6 +933,41 @@ const BillingInvoicing = () => {
             window.removeEventListener('storage', handleStorage);
         };
     }, []);
+    // ⭐ GLOBAL BROADCAST LISTENER — the axios interceptor (api.js) fires
+    //    `billing:refresh` on EVERY successful write to invoices, payments,
+    //    refunds, bookings, orders, or events. This effect catches that
+    //    event and refetches ALL billing queries immediately — no polling
+    //    delay, no stale cache, no manual refresh button.
+    useEffect(() => {
+        const handleBillingRefresh = () => {
+            queryClient.refetchQueries({ queryKey: ['billing', 'invoices'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'payments', 'tracking'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'payments', 'history'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'debts'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'refunds'] });
+            queryClient.refetchQueries({ queryKey: ['billing', 'refunds', 'statistics'] });
+        };
+
+        const handleStorageOrChannel = (e) => {
+            if (e?.data?.type === 'refresh') handleBillingRefresh();
+        };
+
+        window.addEventListener('billing:refresh', handleBillingRefresh);
+
+        let channel = null;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel('billing_sync');
+                channel.onmessage = handleStorageOrChannel;
+            }
+        } catch { /* ignore */ }
+
+        return () => {
+            window.removeEventListener('billing:refresh', handleBillingRefresh);
+            if (channel) channel.close();
+        };
+    }, [queryClient]);
 
     // ── Poll every 10s so other devices see the toggle ───────────
     useEffect(() => {
@@ -963,36 +1021,42 @@ const BillingInvoicing = () => {
         }
     }, [billingVisibility, canProcessRefunds]);
 
-    const maskMatchingValue = (visibleValue) => {
+     const maskMatchingValue = (visibleValue) => {
         const str = String(visibleValue ?? '');
-        if (!str) return '**********';
+        if (!str) return '₱**********';
+        // Always keep the peso prefix so the masked value looks like money.
         const hasCurrency = str.startsWith('₱');
         const digits = str.replace(/[^\d.,]/g, '').length;
-        return (hasCurrency ? '₱' : '') + '*'.repeat(Math.max(3, digits));
+        return (hasCurrency ? '₱' : '₱') + '*'.repeat(Math.max(3, digits));
     };
 
-    // ⭐ Period helpers
+      // ⭐ Period helpers — Weekly / Monthly / Yearly
     const periodRange = useMemo(() => {
         const anchor = dayjs(dashboardAnchor);
-        switch (dashboardPeriod) {
-            case 'weekly': {
-                const start = anchor.startOf('isoWeek');
-                const end   = anchor.endOf('isoWeek');
-                return { start, end, label: `${start.format('MMM D')} – ${end.format('MMM D, YYYY')}`, navUnit: 'week' };
-            }
-            case 'yearly': {
-                const start = anchor.startOf('year');
-                const end   = anchor.endOf('year');
-                return { start, end, label: start.format('YYYY'), navUnit: 'year' };
-            }
-            case 'monthly':
-            default: {
-                const start = anchor.startOf('month');
-                const end   = anchor.endOf('month');
-                return { start, end, label: start.format('MMMM YYYY'), navUnit: 'month' };
-            }
+
+        if (dashboardPeriod === 'weekly') {
+            // Week starts Monday (ISO). Adjust `weekStart` if you prefer Sunday.
+            const start = anchor.startOf('isoWeek');
+            const end   = anchor.endOf('isoWeek');
+            return {
+                start,
+                end,
+                label: `${start.format('MMM DD')} – ${end.format('MMM DD, YYYY')}`,
+                navUnit: 'week',
+            };
         }
-    }, [dashboardPeriod, dashboardAnchor]);
+
+        if (dashboardPeriod === 'yearly') {
+            const start = anchor.startOf('year');
+            const end   = anchor.endOf('year');
+            return { start, end, label: start.format('YYYY'), navUnit: 'year' };
+        }
+
+        // default: monthly
+        const start = anchor.startOf('month');
+        const end   = anchor.endOf('month');
+        return { start, end, label: start.format('MMMM YYYY'), navUnit: 'month' };
+    }, [dashboardAnchor, dashboardPeriod]);
 
     const handleShiftPeriod = useCallback((direction) => {
         const unit = periodRange.navUnit;
@@ -1006,14 +1070,13 @@ const BillingInvoicing = () => {
         setDashboardAnchor(dayjs().format('YYYY-MM-DD'));
     }, []);
 
-    const handleTogglePeriodToolbar = useCallback(() => {
+       const handleTogglePeriodToolbar = useCallback(() => {
         setPeriodToolbarHidden((prev) => {
             const next = !prev;
             message.success(next ? 'Period selector hidden' : 'Period selector shown');
             return next;
         });
     }, []);
-
     useEffect(() => {
         if (paymentModalVisible) {
             paymentForm.setFieldValue('payment_type', automaticPaymentType);
@@ -1062,12 +1125,17 @@ const BillingInvoicing = () => {
     //   • data stays fresh for the whole session
     //   • back-navigation resolves instantly from cache
     //   • only mutations invalidate
+     // ⭐ FIX: `staleTime: Infinity` made every mutation invalidation a no-op —
+    //    the data was marked stale but NEVER refetched, so the Billing page
+    //    sat on 10-minute-old data until a hard refresh. Short TTL + eager
+    //    refetch on mutation makes EVERY transaction from Orders & Events
+    //    appear instantly.
     const BILLING_QUERY_OPTIONS = {
-        staleTime: Infinity,
+        staleTime: 30 * 1000,          // 30s — refreshed automatically
         gcTime: 24 * 60 * 60 * 1000,
-        refetchOnWindowFocus: false,
-        refetchOnMount: false,
-        refetchOnReconnect: false,  
+        refetchOnWindowFocus: true,    // ← catches changes made in another tab
+        refetchOnMount: true,          // ← new invoice → visible on remount
+        refetchOnReconnect: true,
         refetchInterval: false,
         placeholderData: (prev) => prev,
         retry: 1,
@@ -1090,39 +1158,42 @@ const BillingInvoicing = () => {
       // ⭐ NOTE: `extractDataFromResponse` handles Laravel's
       //    `{ success, data: { data: [...] } }` shape from paginate(),
       //    so the invoice rows are pulled from the right place.
-           const invoicesQuery = useQuery({
+                 const invoicesQuery = useQuery({
         queryKey: ['billing', 'invoices'],
         queryFn: async () => {
             const res = await api.get('/invoices', {
                 params: {
                     per_page: 500,
                     include_history: 1,
-                    // ⭐ `period=all` disables the calendar-month filter so
-                    //    every invoice with an outstanding balance shows up
-                    //    regardless of when its event date falls.
                     period: 'all',
-                    // ⚠️ NO include_paid here — the server filters to
-                    //    invoices that still have an outstanding balance.
                 },
             });
             return extractDataFromResponse(res);
         },
         ...BILLING_QUERY_OPTIONS,
-        refetchInterval: 60 * 1000,
+        // ⭐ Shrink the poll from 60s → 15s so an invoice created in Orders
+        //    & Events appears in Billing within one tick even when the user
+        //    never switches tabs.
+        refetchInterval: 15 * 1000,
         refetchIntervalInBackground: false,
+        refetchOnWindowFocus: true,
       });
      // Only fire these queries when the user is actually on the tab that
     // needs them. This shrinks the cold-start waterfall from 7 requests
     // to 3 (invoices + confirmed-bookings + settings).
 
-       const paymentTrackingQuery = useQuery({
+            const paymentTrackingQuery = useQuery({
         queryKey: ['billing', 'payments', 'tracking', paymentDateParams],
         queryFn: async () => extractDataFromResponse(await api.get('/payments/tracking', {
             params: { per_page: 100, ...paymentDateParams },
         })),
         ...BILLING_QUERY_OPTIONS,
+        // ⭐ Keep the 15s poll — it catches payments made from Orders & Events
+        //    AND the customer mobile app. But ALSO refetch when this tab
+        //    regains focus so switching tabs gives fresh data immediately.
         refetchInterval: 15 * 1000,
         refetchIntervalInBackground: false,
+        refetchOnWindowFocus: true,
         enabled: true,
     });
     const paymentHistoryQuery = useQuery({
@@ -1239,11 +1310,39 @@ const BillingInvoicing = () => {
 
     // Hide the skeleton as soon as the initial load settles on the first mount.
     // On back-navigation, `showSkeleton` is already `false`, so we skip it entirely.
-    useEffect(() => {
+       useEffect(() => {
         if (showSkeleton && primaryQueriesSettled) {
             setShowSkeleton(false);
         }
     }, [primaryQueriesSettled, showSkeleton]);
+
+    // ⭐ GLOBAL EVENT BUS: Orders & Events, Payments, and Refunds pages
+    //    broadcast a browser event whenever they commit a write. Listening
+    //    here means Billing refetches within ~1 network round-trip even if
+    //    React Query's `invalidateQueries` was called in another module.
+    useEffect(() => {
+        const handleRefresh = () => {
+            queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'all' });
+            queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'all' });
+        };
+        window.addEventListener('billing:refresh', handleRefresh);
+
+        // Also listen to BroadcastChannel if available — cross-tab sync.
+        let channel = null;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel('billing_sync');
+                channel.onmessage = (e) => {
+                    if (e?.data?.type === 'refresh') handleRefresh();
+                };
+            }
+        } catch { /* ignore */ }
+
+        return () => {
+            window.removeEventListener('billing:refresh', handleRefresh);
+            if (channel) channel.close();
+        };
+    }, [queryClient]);
 
                useEffect(() => {
         const invoiceData = invoicesQuery.data || [];
@@ -1278,7 +1377,8 @@ const BillingInvoicing = () => {
 
         setInvoices(activeInvoices);
     }, [invoicesQuery.data]);
-    useEffect(() => {
+
+      useEffect(() => {
         const trackingData = paymentTrackingQuery.data || [];
         setPayments(trackingData.map(payment => ({
             ...payment,
@@ -1292,6 +1392,11 @@ const BillingInvoicing = () => {
             date: payment.date || payment.payment_date || payment.created_at,
             date_time: payment.date_time || payment.payment_date || payment.created_at,
             status: payment.status || 'pending',
+
+            // ⭐ Payer fields
+            payer_name: payment.payer_name || payment.customer_name || 'Unknown',
+            payer_relation: payment.payer_relation || null,
+            is_third_party_payer: Boolean(payment.is_third_party_payer),
         })));
     }, [paymentTrackingQuery.data]);
 
@@ -1425,25 +1530,40 @@ const BillingInvoicing = () => {
         mutationFn: ({ refundId, payload }) => api.post(`/refunds/${refundId}/reject`, payload),
     });
 
-       const invalidateInvoiceData = useCallback(() => {
-        // ⭐ Invalidate every possible cache key shape — otherwise
-        //    the Invoices tab silently serves an empty cached list.
-        queryClient.invalidateQueries({ queryKey: ['billing'] });
-        queryClient.invalidateQueries({ queryKey: ['invoices'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'] });
-        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'] });
-    }, [queryClient]);
-
-       const invalidatePaymentData = useCallback(() => {
-        // ⭐ `refetchType: 'all'` forces an immediate refetch even for
-        //    queries with staleTime: Infinity (which the billing queries use).
+           const invalidateInvoiceData = useCallback(() => {
+        // ⭐ FIX: `refetchType: 'all'` forces an immediate refetch even for
+        //    queries with a long `staleTime`. Without it, invalidate marks
+        //    the cache stale but React Query never actually hits the server
+        //    while the tab is focused — leading to the "10 minute delay".
         queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'tracking'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'history'], refetchType: 'all' });
+        // ⭐ Cross-module: orders/events also show booking balances.
+        queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'all' });
+    }, [queryClient]);
+           const invalidatePaymentData = useCallback(() => {
+        queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'tracking'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'history'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'], refetchType: 'all' });
         queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'all' });
         queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'all' });
         queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'all' });
+        queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'all' });
     }, [queryClient]);
 
     const invalidateRefundData = useCallback(() => {
@@ -1587,7 +1707,7 @@ const BillingInvoicing = () => {
                     cancel_booking: true,
                 },
             });
-            message.success(`Refund of ₱${Number(values.released_amount).toLocaleString()} released successfully.`);
+                        message.success(`Refund of ${money(values.released_amount)} released successfully.`);
             setRefundReleaseModalVisible(false);
             refundReleaseForm.resetFields();
             setSelectedRefund(null);
@@ -1670,9 +1790,9 @@ const BillingInvoicing = () => {
                 notes: values.notes || '',
                 cancel_booking: values.cancel_booking !== false,
             });
-            message.success(
+                     message.success(
                 refundAmount > 0
-                    ? `Refund of ₱${refundAmount.toLocaleString()} processed successfully.`
+                    ? `Refund of ${money(refundAmount)} processed successfully.`
                     : 'Booking cancelled without refund.'
             );
             setRefundDirectModalVisible(false);
@@ -1711,13 +1831,14 @@ const BillingInvoicing = () => {
         setCreateInvoiceBookingId(null);
 
         // ⭐ Reset the per-fee breakdown.
-        setInvoiceCharges({
+             setInvoiceCharges({
             transportation_fee: 0,
             setup_fee: 0,
             service_crew_fee: 0,
             equipment_rental: 0,
             extra_food_fee: 0,
         });
+        setCustomCharges([]); // ⭐ Reset custom items
 
         invoiceForm.setFieldsValue({
             due_date: dayjs().add(30, 'days'),
@@ -1739,6 +1860,97 @@ const BillingInvoicing = () => {
 
         setInvoiceModalVisible(true);
     }, [invoiceForm, queryClient]);
+    // ⭐ NEW: Open the dedicated Additional Charges modal
+    const handleOpenChargesModal = (record) => {
+        setSelectedInvoice(record);
+        
+        const standardCharges = {
+            transportation_fee: 0,
+            setup_fee: 0,
+            service_crew_fee: 0,
+            equipment_rental: 0,
+            extra_food_fee: 0,
+        };
+        const otherCharges = [];
+
+        if (Array.isArray(record.charges)) {
+            record.charges.forEach((c) => {
+                if (c.kind === 'charge') {
+                    if (standardCharges[c.type] !== undefined) {
+                        standardCharges[c.type] = Number(c.amount || 0);
+                    } else {
+                        otherCharges.push({
+                            id: c.id || Date.now() + Math.random(),
+                            description: c.description || 'Custom charge',
+                            amount: Number(c.amount || 0)
+                        });
+                    }
+                }
+            });
+        }
+
+        chargesForm.setFieldsValue({
+            standardCharges,
+            otherCharges
+        });
+        
+        setChargesModalVisible(true);
+    };
+
+    // ⭐ NEW: Save the Additional Charges
+    const handleSaveCharges = async (values) => {
+        if (!selectedInvoice) return;
+
+        try {
+            const std = values.standardCharges || {};
+            const other = values.otherCharges || [];
+            
+            // Build the new charges array for the backend
+            const newCharges = [
+                { charge_kind: 'charge', charge_type: 'transportation_fee', description: 'Transportation Fee', amount: Number(std.transportation_fee || 0) },
+                { charge_kind: 'charge', charge_type: 'setup_fee',          description: 'Setup Fee',          amount: Number(std.setup_fee || 0) },
+                { charge_kind: 'charge', charge_type: 'service_crew_fee',   description: 'Service Crew Fee',   amount: Number(std.service_crew_fee || 0) },
+                { charge_kind: 'charge', charge_type: 'equipment_rental',   description: 'Equipment Rental',   amount: Number(std.equipment_rental || 0) },
+                { charge_kind: 'charge', charge_type: 'extra_food_fee',     description: 'Extra Food Request', amount: Number(std.extra_food_fee || 0) },
+                ...other.map(c => ({
+                    charge_kind: 'charge',
+                    charge_type: 'other',
+                    description: c.description || 'Custom charge',
+                    amount: Number(c.amount || 0)
+                }))
+            ].filter(c => c.amount > 0);
+
+            // Calculate the new total additional charges amount
+            const totalAdditional = newCharges.reduce((sum, c) => sum + c.amount, 0);
+            
+            // Recalculate the grand total
+            // The new total = (Old Total - Old Additional Charges) + New Additional Charges
+            const oldAdditional = Number(selectedInvoice.additional_charges || 0);
+            const currentSubtotal = Number(selectedInvoice.subtotal || 0);
+            const currentDiscount = Number(selectedInvoice.discount || 0);
+            
+            const newTotalAmount = currentSubtotal - currentDiscount + totalAdditional;
+
+            // Send update to backend
+            await api.put(`/invoices/${selectedInvoice.invoice_id}`, {
+                subtotal: currentSubtotal,
+                discount: currentDiscount,
+                discount_type: selectedInvoice.discount_type || 'fixed',
+                additional_charges: totalAdditional,
+                total_amount: newTotalAmount,
+                charges: newCharges
+            });
+
+            message.success('Additional charges updated successfully.');
+            setChargesModalVisible(false);
+            invalidateInvoiceData();
+            
+        } catch (error) {
+            console.error(error);
+            message.error(error.response?.data?.message || 'Failed to update charges');
+        }
+    };
+
     const handleEditInvoice = (record) => {
         setEditingInvoice(record);
         setCreateInvoiceBookingId(record.booking_id);
@@ -1752,16 +1964,27 @@ const BillingInvoicing = () => {
             equipment_rental: 0,
             extra_food_fee: 0,
         };
+        const newCustomCharges = [];
 
         if (Array.isArray(record.charges)) {
             record.charges.forEach((c) => {
-                if (c.kind === 'charge' && chargesFromRecord[c.type] !== undefined) {
-                    chargesFromRecord[c.type] = Number(c.amount || 0);
+                if (c.kind === 'charge') {
+                    if (chargesFromRecord[c.type] !== undefined) {
+                        chargesFromRecord[c.type] = Number(c.amount || 0);
+                    } else {
+                        // ⭐ Load existing custom items (like "Glass damage")
+                        newCustomCharges.push({
+                            id: c.id || Date.now() + Math.random(),
+                            description: c.description || 'Custom charge',
+                            amount: Number(c.amount || 0)
+                        });
+                    }
                 }
             });
         }
 
         setInvoiceCharges(chargesFromRecord);
+        setCustomCharges(newCustomCharges);
 
         invoiceForm.setFieldsValue({
             booking_id: record.booking_id,
@@ -1816,14 +2039,16 @@ const BillingInvoicing = () => {
     };
     const handleSaveInvoice = async (values) => {
         try {
-            // ⭐ Sum the per-fee rows so the total matches what the operator entered.
-            const additionalChargesTotal =
+                      // ⭐ Sum the per-fee rows + custom items so the total matches.
+            const standardChargesTotal =
                 Number(invoiceCharges.transportation_fee || 0) +
                 Number(invoiceCharges.setup_fee || 0) +
                 Number(invoiceCharges.service_crew_fee || 0) +
                 Number(invoiceCharges.equipment_rental || 0) +
                 Number(invoiceCharges.extra_food_fee || 0);
 
+            const customChargesTotal = customCharges.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+            const additionalChargesTotal = standardChargesTotal + customChargesTotal;
             let totalAmount = values.subtotal;
             let discountAmount = values.discount || 0;
 
@@ -1848,12 +2073,19 @@ const BillingInvoicing = () => {
                     notes: values.notes,
                     // ⭐ Send the per-fee breakdown so the backend can persist
                     //    each row into booking_charges.
-                    charges: [
+                                       charges: [
                         { charge_kind: 'charge', charge_type: 'transportation_fee', description: 'Transportation Fee', amount: Number(invoiceCharges.transportation_fee || 0) },
                         { charge_kind: 'charge', charge_type: 'setup_fee',          description: 'Setup Fee',          amount: Number(invoiceCharges.setup_fee || 0) },
                         { charge_kind: 'charge', charge_type: 'service_crew_fee',   description: 'Service Crew Fee',   amount: Number(invoiceCharges.service_crew_fee || 0) },
                         { charge_kind: 'charge', charge_type: 'equipment_rental',   description: 'Equipment Rental',   amount: Number(invoiceCharges.equipment_rental || 0) },
                         { charge_kind: 'charge', charge_type: 'extra_food_fee',     description: 'Extra Food Request', amount: Number(invoiceCharges.extra_food_fee || 0) },
+                        // ⭐ Map custom charges
+                        ...customCharges.map(c => ({
+                            charge_kind: 'charge',
+                            charge_type: 'other',
+                            description: c.description || 'Custom charge',
+                            amount: Number(c.amount || 0)
+                        }))
                     ].filter((c) => c.amount > 0),
                 }
                 : {
@@ -1867,23 +2099,95 @@ const BillingInvoicing = () => {
                 payload: invoiceData,
             });
 
-                      message.success(editingInvoice ? 'Invoice updated successfully' : 'Invoice created successfully');
+                                 message.success(editingInvoice ? 'Invoice updated successfully' : 'Invoice created successfully');
 
             setInvoiceModalVisible(false);
             invoiceForm.resetFields();
             setEditingInvoice(null);
 
                     invalidateInvoiceData();
-
-            // ⭐ Refetch both lists immediately so:
-            //    • the new invoice row appears in the table
-            //    • the just-invoiced booking disappears from the dropdown
+            // ⭐ MIRROR THE INVOICE INTO THE ORDERS CACHE.
+            //    UnifiedOrderEventsManagement reads `booking.invoice` from
+            //    the ['bookings', ...] caches. Without this invalidation,
+            //    the Orders page would still show "Create Invoice to Continue
+            //    Payment" even after the cashier just created the invoice
+            //    here in Billing.
+            //
+            //    We ALSO surgically patch any cached booking whose
+            //    booking_id matches — so the Orders page shows the new
+            //    invoice WITHOUT even needing to refetch (instant on the
+            //    same tab in another window).
             try {
-                await Promise.all([
-                    invoicesQuery.refetch(),
-                    confirmedBookingsQuery.refetch(),
-                ]);
-            } catch (_) { /* non-blocking */ }
+                const invoicePayloadForBooking = {
+                    invoice_id: editingInvoice?.invoice_id || values.booking_id ? undefined : undefined,
+                    invoice_number: values.invoice_number || values.invoice_number,
+                    total_amount: totalAmount,
+                    paid_amount: 0,
+                    balance: totalAmount,
+                };
+                // Patch every cached 'bookings' query's data collection.
+                queryClient.setQueriesData(
+                    { queryKey: ['bookings'] },
+                    (old) => {
+                        if (!old) return old;
+                        const list = old?.data?.data || old?.data || old;
+                        if (!Array.isArray(list)) return old;
+
+                        const patched = list.map((b) => {
+                            const bId = b?.booking_id ?? b?.id;
+                            if (String(bId) !== String(values.booking_id)) return b;
+                            return {
+                                ...b,
+                                invoice: b?.invoice || {
+                                    invoice_id: undefined,
+                                    invoice_number: values.invoice_number,
+                                    total_amount: totalAmount,
+                                    paid_amount: 0,
+                                    balance: totalAmount,
+                                    status: 'unpaid',
+                                },
+                                // Keep existing if already populated.
+                                invoice_id: b?.invoice_id || undefined,
+                                invoice_number: b?.invoice_number || values.invoice_number,
+                            };
+                        });
+
+                        if (old?.data?.data) {
+                            return { ...old, data: { ...old.data, data: patched } };
+                        }
+                        if (Array.isArray(old?.data)) {
+                            return { ...old, data: patched };
+                        }
+                        return patched;
+                    }
+                );
+            } catch (patchErr) {
+                console.warn('Booking cache patch failed:', patchErr);
+            }
+
+                     // ⭐ EAGER REFETCH — every list affected by the new invoice.
+            await Promise.allSettled([
+                queryClient.refetchQueries({ queryKey: ['billing', 'invoices'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'debts'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'pdf-bookings'] }),
+                queryClient.refetchQueries({ queryKey: ['bookings'] }),
+                queryClient.refetchQueries({ queryKey: ['orders'] }),
+                queryClient.refetchQueries({ queryKey: ['events'] }),
+            ]);
+
+            // Cross-module broadcast — Orders & Events tab, another Billing
+            // tab, and any listening component refetch instantly.
+            try {
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('billing:refresh'));
+                }
+                if (typeof BroadcastChannel !== 'undefined') {
+                    const ch = new BroadcastChannel('billing_sync');
+                    ch.postMessage({ type: 'refresh' });
+                    ch.close();
+                }
+            } catch { /* ignore */ }
         } catch (error) {
             message.error(error.response?.data?.message || 'Failed to save invoice');
         }
@@ -1992,11 +2296,18 @@ const BillingInvoicing = () => {
 
             // ⭐ Build a descriptive note that records the change amount so
             //    the receipt and audit trail show exactly what happened.
-            let notesText = values.notes || '';
+                 let notesText = values.notes || '';
             if (isOverpayment) {
-                const changeLine = `Change given: ₱${changeAmount.toFixed(2)} (tendered ₱${amount.toFixed(2)}, exact cash applied ₱${recordedAmount.toFixed(2)})`;
+                const changeLine = `Change given: ${money(changeAmount)} (tendered ${money(amount)}, exact cash applied ${money(recordedAmount)})`;
                 notesText = notesText ? `${notesText}\n${changeLine}` : changeLine;
             }
+                       // ⭐ PAYER — only send when different from the customer, so the
+            //    backend can store NULL for the common case.
+            const payerNameTrimmed = (values.payer_name || '').trim();
+            const payerRelationTrimmed = (values.payer_relation || '').trim();
+            const customerNameTrimmed = (selectedInvoice?.customer_name || '').trim();
+            const payerIsDifferent = payerNameTrimmed !== ''
+                && payerNameTrimmed.toLowerCase() !== customerNameTrimmed.toLowerCase();
 
             const paymentData = {
                 booking_id: selectedInvoice.booking_id,
@@ -2010,6 +2321,12 @@ const BillingInvoicing = () => {
                 // ⭐ Signal to the backend so it can record the tendered amount.
                 tendered_amount: amount,
                 change_amount: changeAmount,
+                // ⭐ Payer — only sent when different from the customer.
+                payer_name: payerIsDifferent ? payerNameTrimmed : null,
+                payer_relation:
+                    payerIsDifferent && payerRelationTrimmed !== '' && payerRelationTrimmed !== 'Self'
+                        ? payerRelationTrimmed
+                        : null,
             };
 
             if (values.account_name) paymentData.account_name = values.account_name;
@@ -2019,11 +2336,44 @@ const BillingInvoicing = () => {
                 force_duplicate: forceDuplicate,
             });
 
-                        let savedPayment = null;
+                                      let savedPayment = null;
 
             try {
                 const res = await savePayment(false);
-                savedPayment = res?.data?.data || res?.data;
+                const rawPayload = res?.data?.data || res?.data;
+
+                // ⭐ The PaymentController now returns
+                //    { payment, invoice, booking }. Normalise both shapes
+                //    so this works with old & new backends.
+                savedPayment = rawPayload?.payment || rawPayload;
+
+                // ⭐ If the backend sent the enriched shape, patch the
+                //    bookings cache immediately so Orders & Events shows
+                //    the new PAID / BALANCE without a refetch tick.
+                if (rawPayload?.booking) {
+                    queryClient.setQueriesData(
+                        { queryKey: ['bookings'] },
+                        (old) => {
+                            if (!old) return old;
+                            const list = old?.data?.data || old?.data || old;
+                            if (!Array.isArray(list)) return old;
+                            const patched = list.map((b) =>
+                                String(b?.booking_id ?? b?.id) === String(rawPayload.booking.booking_id)
+                                    ? {
+                                        ...b,
+                                        paid_amount: rawPayload.booking.paid_amount,
+                                        balance: rawPayload.booking.balance,
+                                        invoice: rawPayload.booking.invoice || b.invoice,
+                                        payments: rawPayload.booking.payments || b.payments,
+                                    }
+                                    : b
+                            );
+                            if (old?.data?.data) return { ...old, data: { ...old.data, data: patched } };
+                            if (Array.isArray(old?.data)) return { ...old, data: patched };
+                            return patched;
+                        }
+                    );
+                }
             } catch (error) {
                 const duplicate = error.response?.status === 409
                     ? error.response?.data?.errors?.payment
@@ -2053,9 +2403,9 @@ const BillingInvoicing = () => {
                 throw new Error('Payment was not saved by the server. Check the backend logs.');
             }
 
-                                   message.success(
+                               message.success(
                 isOverpayment
-                    ? `Payment recorded. Change: ₱${changeAmount.toFixed(2)}`
+                    ? `Payment recorded. Change: ${money(changeAmount)}`
                     : 'Payment recorded successfully.'
             );
             setPaymentModalVisible(false);
@@ -2071,7 +2421,30 @@ const BillingInvoicing = () => {
                 queryClient.refetchQueries({ queryKey: ['billing', 'debts'], type: 'active' }),
             ]);
 
-            invalidatePaymentData();
+                             invalidatePaymentData();
+
+            // ⭐ EAGER REFETCH — don't wait on the poll, don't wait on focus.
+            //    Fire all four queries in parallel so PAID / BALANCE updates
+            //    land on screen within ~200ms of the mutation.
+            await Promise.allSettled([
+                queryClient.refetchQueries({ queryKey: ['billing', 'invoices'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'payments', 'tracking'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'debts'] }),
+                queryClient.refetchQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'] }),
+                queryClient.refetchQueries({ queryKey: ['bookings'] }),
+            ]);
+
+            // Cross-module broadcast so any other open tab updates too.
+            try {
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('billing:refresh'));
+                }
+                if (typeof BroadcastChannel !== 'undefined') {
+                    const ch = new BroadcastChannel('billing_sync');
+                    ch.postMessage({ type: 'refresh' });
+                    ch.close();
+                }
+            } catch { /* ignore */ }
         } catch (error) {
             console.error('Payment error:', error);
             message.error(error.response?.data?.message || 'Failed to record payment');
@@ -2122,7 +2495,6 @@ const BillingInvoicing = () => {
             message.error(error.response?.data?.message || 'Failed to download receipt');
         }
     };
-
     const handleViewReceipt = async (payment) => {
         try {
             const paymentId = getPaymentId(payment);
@@ -2135,10 +2507,37 @@ const BillingInvoicing = () => {
             setReceiptData(null); // show skeleton while fetching
             const response = await api.get(`/payments/${paymentId}/receipt`);
             const data = response.data?.data || response.data;
+
+            // ⭐ Merge the enriched tracking row (which has total_amount,
+            //    balance_after_payment, cashier_name) with the server's
+            //    receipt payload — so the modal shows the same numbers as
+            //    the receipt even if the server formatter omits a field.
+                                       const serverPayment = data?.payment || {};
+            const enriched = {
+                ...payment,
+                ...serverPayment,
+                total_amount: serverPayment.total_amount ?? payment.total_amount,
+                paid_amount: serverPayment.paid_amount ?? payment.paid_amount,
+                balance_after_payment:
+                    serverPayment.balance_after_payment ?? payment.balance_after_payment,
+                payment_category:
+                    serverPayment.payment_category ?? payment.payment_category,
+                payment_category_label:
+                    serverPayment.payment_category_label ?? payment.payment_category_label,
+                cashier_name: serverPayment.cashier_name ?? payment.cashier_name,
+                // ⭐ Payer fields — merged so the receipt modal shows them.
+                payer_name: serverPayment.payer_name ?? payment.payer_name,
+                payer_relation: serverPayment.payer_relation ?? payment.payer_relation,
+                is_third_party_payer:
+                    serverPayment.is_third_party_payer ?? payment.is_third_party_payer ?? false,
+                // ⭐ Pass the charges explicitly so the receipt generator can use them
+                charges: serverPayment.charges || payment.charges || [],
+            };
             setReceiptData({
                 ...data,
+                payment: enriched,
                 receipt_html: applyReceiptWatermark(
-                    data?.receipt_html || generateReceiptHTML(data?.payment || payment)
+                    data?.receipt_html || generateReceiptHTML(enriched)
                 ),
             });
         } catch (error) {
@@ -2176,9 +2575,12 @@ const BillingInvoicing = () => {
             ...(nestedServiceEvent?.eventType || nestedServiceEvent?.event_type || {}),
             name: booking?.event_type_name || booking?.event_type || nestedServiceEvent?.eventType?.name || nestedServiceEvent?.event_type?.name,
         };
-        const menuItems = booking?.menu_items || [];
+              const menuItems = booking?.menu_items || [];
         const payments = booking?.payments || [];
-        const charges = booking?.charges || [];
+        // ⭐ Priority: 1. Invoice Charges, 2. Booking Charges, 3. Empty Array
+        const charges = booking?.invoice?.charges?.length > 0 
+            ? booking.invoice.charges 
+            : (booking?.charges || []);
         const mealServices = booking?.meal_services || [];
         const totalAmount = booking?.total_amount || 0;
         const paidAmount = booking?.paid_amount || 0;
@@ -2303,20 +2705,26 @@ const BillingInvoicing = () => {
         if (!menuItemsHTML) {
             menuItemsHTML = `<p style="text-align: center; color: #94a3b8; padding: 10px;">No menu items recorded for this booking.</p>`;
         }
-
-        let chargesHTML = '';
+                let chargesHTML = '';
         if (charges && charges.length > 0) {
             charges.forEach(charge => {
-                if (charge.amount > 0) {
+                const amt = Number(charge.amount || 0);
+                if (amt > 0) {
+                    const label = charge.description || charge.charge_type || charge.type || 'Additional Charge';
+                    const isDiscount = charge.kind === 'discount' || charge.charge_kind === 'discount';
+                    const color = isDiscount ? '#059669' : '#1e293b';
+                    const prefix = isDiscount ? '-' : '';
+                    
                     chargesHTML += `
                         <tr>
-                            <td style="text-align:left;">${charge.description || charge.charge_type}</td>
-                            <td style="text-align:right;">${formatCurrency(charge.amount)}</td>
+                            <td style="text-align:left; color: #475569;">${label}</td>
+                            <td style="text-align:right; font-weight: 600; color: ${color};">${prefix}${formatCurrency(amt)}</td>
                         </tr>
                     `;
                 }
             });
         }
+
         if (!chargesHTML) {
             chargesHTML = `<tr><td colspan="2" style="text-align:center;color:#94a3b8;">No additional charges or adjustments recorded.</td></tr>`;
         }
@@ -2600,9 +3008,318 @@ const BillingInvoicing = () => {
         `;
     };
 
+    // ==================== MASTER LIST GENERATOR ====================
+    const generateMasterListHTML = (type = 'invoices', dateRange = []) => {
+        const now = dayjs();
+        const currentDate = now.format('MMMM DD, YYYY h:mm A');
+        const logoBase64 = resolveBackendUrl(
+            businessSettings.logo_url || businessSettings.company_logo || businessSettings.logo || ''
+        );
+
+        // ── Date filter helper ──────────────────────────────────
+        const inRange = (dateStr) => {
+            if (!dateRange || dateRange.length !== 2) return true;
+            const d = dayjs(dateStr);
+            if (!d.isValid()) return true;
+            return !d.isBefore(dateRange[0], 'day') && !d.isAfter(dateRange[1], 'day');
+        };
+
+        // ── Build rows per report type ──────────────────────────
+        let title = '';
+        let subtitle = '';
+        let tableHead = '';
+        let tableBody = '';
+        let totalsRow = '';
+
+        if (type === 'invoices') {
+            const rows = (allInvoices || []).filter((inv) => inRange(inv.issue_date || inv.created_at));
+            title = 'MASTER LIST — INVOICES';
+            subtitle = `Total invoices: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + Number(r.total_amount || 0), 0);
+            const totalPaid   = rows.reduce((s, r) => s + Number(r.paid_amount || 0), 0);
+            const totalBal    = rows.reduce((s, r) => s + Number(r.balance || 0), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:6%;">#</th>
+                    <th style="width:14%;">Booking #</th>
+                    <th style="width:14%;">Invoice #</th>
+                    <th style="width:20%;">Customer</th>
+                    <th style="width:12%;">Event</th>
+                    <th style="width:10%;">Status</th>
+                    <th style="width:11%; text-align:right;">Total</th>
+                    <th style="width:11%; text-align:right;">Paid</th>
+                    <th style="width:12%; text-align:right;">Balance</th>
+                </tr>
+            `;
+
+            tableBody = rows.map((r, i) => `
+                <tr>
+                    <td style="text-align:center;">${i + 1}</td>
+                    <td>${r.booking_no || '—'}</td>
+                    <td>${r.invoice_number || '—'}</td>
+                    <td>${r.customer_name || 'Unknown'}</td>
+                    <td>${r.event_type || '—'}</td>
+                    <td style="text-align:center;">${(r.status || 'unpaid').toUpperCase()}</td>
+                    <td style="text-align:right;">${formatCurrency(r.total_amount)}</td>
+                    <td style="text-align:right; color:#059669;">${formatCurrency(r.paid_amount)}</td>
+                    <td style="text-align:right; color:${Number(r.balance || 0) > 0 ? '#dc2626' : '#059669'}; font-weight:600;">${formatCurrency(r.balance)}</td>
+                </tr>
+            `).join('');
+
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="6" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right;">${formatCurrency(totalAmount)}</td>
+                    <td style="text-align:right; color:#059669;">${formatCurrency(totalPaid)}</td>
+                    <td style="text-align:right; color:#dc2626;">${formatCurrency(totalBal)}</td>
+                </tr>
+            `;
+        }
+
+        if (type === 'payments') {
+            const rows = (payments || []).filter((p) => inRange(p.date || p.created_at));
+            title = 'MASTER LIST — PAYMENTS';
+            subtitle = `Total payments: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:6%;">#</th>
+                    <th style="width:16%;">Payment #</th>
+                    <th style="width:20%;">Customer</th>
+                    <th style="width:14%;">Invoice #</th>
+                    <th style="width:12%;">Method</th>
+                    <th style="width:10%;">Type</th>
+                    <th style="width:14%;">Date</th>
+                    <th style="width:14%; text-align:right;">Amount</th>
+                </tr>
+            `;
+
+            tableBody = rows.map((r, i) => `
+                <tr>
+                    <td style="text-align:center;">${i + 1}</td>
+                    <td>${r.payment_number || '—'}</td>
+                    <td>${r.customer_name || 'Unknown'}</td>
+                    <td>${r.invoice_number || '—'}</td>
+                    <td>${(r.payment_method || '—').replace('_', ' ').toUpperCase()}</td>
+                    <td>${(r.payment_type || 'partial').toUpperCase()}</td>
+                    <td>${r.date ? dayjs(r.date).format('YYYY-MM-DD') : '—'}</td>
+                    <td style="text-align:right; font-weight:600;">${formatCurrency(r.amount)}</td>
+                </tr>
+            `).join('');
+
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="7" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right; color:#059669;">${formatCurrency(totalAmount)}</td>
+                </tr>
+            `;
+        }
+
+        if (type === 'refunds') {
+            const rows = (refunds || []).filter((r) => inRange(r.requested_at));
+            title = 'MASTER LIST — REFUNDS';
+            subtitle = `Total refunds: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+            const totalReleased = rows.reduce((s, r) => s + Number(r.released_amount || 0), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:6%;">#</th>
+                    <th style="width:16%;">Refund #</th>
+                    <th style="width:20%;">Customer</th>
+                    <th style="width:14%;">Invoice #</th>
+                    <th style="width:12%;">Status</th>
+                    <th style="width:14%;">Requested</th>
+                    <th style="width:14%; text-align:right;">Amount</th>
+                    <th style="width:14%; text-align:right;">Released</th>
+                </tr>
+            `;
+
+            tableBody = rows.map((r, i) => {
+                const person = r.booking?.serviceEvent?.customer?.person
+                    || r.invoice?.booking?.serviceEvent?.customer?.person;
+                const customerName = person ? `${person.first_name || ''} ${person.last_name || ''}`.trim() || 'Unknown' : 'Unknown';
+                return `
+                    <tr>
+                        <td style="text-align:center;">${i + 1}</td>
+                        <td>${r.refund_number || '—'}</td>
+                        <td>${customerName}</td>
+                        <td>${r.invoice?.invoice_number || '—'}</td>
+                        <td style="text-align:center;">${(r.status || 'pending').toUpperCase()}</td>
+                        <td>${r.requested_at ? dayjs(r.requested_at).format('YYYY-MM-DD') : '—'}</td>
+                        <td style="text-align:right; font-weight:600;">${formatCurrency(r.amount)}</td>
+                        <td style="text-align:right; color:#059669;">${formatCurrency(r.released_amount)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="6" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right;">${formatCurrency(totalAmount)}</td>
+                    <td style="text-align:right; color:#059669;">${formatCurrency(totalReleased)}</td>
+                </tr>
+            `;
+        }
+
+        const dateLabel = (dateRange && dateRange.length === 2)
+            ? `${dateRange[0].format('MMM DD, YYYY')} – ${dateRange[1].format('MMM DD, YYYY')}`
+            : 'All dates';
+
+        return `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <title>${title}</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    @page { size: A4 landscape; margin: 12mm 10mm; }
+                    body {
+                        font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+                        background: #f8fafc;
+                        color: #1e293b;
+                        font-size: 10px;
+                        line-height: 1.4;
+                        padding: 16px;
+                    }
+                    .container {
+                        max-width: 297mm;
+                        margin: 0 auto;
+                        background: #ffffff;
+                        padding: 10mm 8mm;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+                    }
+                    .header {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        border-bottom: 2px solid #1a7ab5;
+                        padding-bottom: 12px;
+                        margin-bottom: 12px;
+                    }
+                    .header .logo-block { display: flex; align-items: center; gap: 10px; }
+                    .header .logo-block img { height: 48px; width: 48px; border-radius: 6px; object-fit: cover; }
+                    .header h1 { font-size: 16px; font-weight: 700; color: #1a7ab5; letter-spacing: 0.5px; }
+                    .header .sub { font-size: 9px; color: #64748b; letter-spacing: 1px; text-transform: uppercase; }
+                    .header .meta { text-align: right; font-size: 9px; color: #64748b; }
+                    .header .meta strong { color: #1e293b; font-size: 11px; display: block; }
+                    .title {
+                        text-align: center;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: #1a7ab5;
+                        letter-spacing: 1.5px;
+                        text-transform: uppercase;
+                        margin: 6px 0;
+                    }
+                    .subtitle { text-align: center; font-size: 9px; color: #64748b; margin-bottom: 12px; }
+                    table { width: 100%; border-collapse: collapse; font-size: 9.5px; }
+                    thead th {
+                        background: #1a7ab5;
+                        color: #fff;
+                        font-weight: 600;
+                        padding: 6px 8px;
+                        text-align: left;
+                        font-size: 9px;
+                        letter-spacing: 0.3px;
+                        text-transform: uppercase;
+                    }
+                    tbody td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+                    tbody tr:nth-child(even) { background: #f8fafc; }
+                    .footer {
+                        text-align: center;
+                        border-top: 1px solid #e2e8f0;
+                        padding-top: 10px;
+                        margin-top: 12px;
+                        font-size: 8.5px;
+                        color: #94a3b8;
+                    }
+                    @media print {
+                        body { background: white; padding: 0; margin: 0; }
+                        .container { box-shadow: none; border-radius: 0; padding: 8mm 6mm; max-width: 100%; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <div class="logo-block">
+                            ${logoBase64 ? `<img src="${logoBase64}" alt="Logo" />` : ''}
+                            <div>
+                                <h1>Dear Bab's</h1>
+                                <div class="sub">Fastfood and Catering Services</div>
+                            </div>
+                        </div>
+                        <div class="meta">
+                            <strong>${currentDate}</strong>
+                            Period: ${dateLabel}
+                        </div>
+                    </div>
+                    <div class="title">${title}</div>
+                    <div class="subtitle">${subtitle}</div>
+                    <table>
+                        <thead>${tableHead}</thead>
+                        <tbody>
+                            ${tableBody || `<tr><td colspan="9" style="text-align:center; padding:20px; color:#94a3b8;">No records found for this period.</td></tr>`}
+                            ${totalsRow}
+                        </tbody>
+                    </table>
+                    <div class="footer">
+                        <div>This is a system-generated document.</div>
+                        <div>Generated on: ${currentDate}</div>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+    };
+
+    const openMasterList = (type = 'invoices') => {
+        setMasterListType(type);
+        const html = generateMasterListHTML(type, masterListDateRange);
+        setMasterListHtml(html);
+        setMasterListZoom(100);
+        setMasterListModalVisible(true);
+    };
+
+    const handlePrintMasterList = () => {
+        if (!masterListHtml) return;
+        const w = window.open('', '_blank', 'width=1000,height=900');
+        if (!w) { message.error('Please allow popups to print'); return; }
+        w.document.open(); w.document.write(masterListHtml); w.document.close();
+        w.focus();
+        setTimeout(() => w.print(), 500);
+    };
+
+    const handleDownloadMasterList = async () => {
+        if (!masterListHtml) return;
+        try {
+            await downloadHtmlAsPdf(
+                masterListHtml,
+                `master-list-${masterListType}-${dayjs().format('YYYY-MM-DD')}.pdf`,
+                { orientation: 'landscape' }   // ⭐ master list is landscape
+            );
+            message.success('Master List downloaded successfully.');
+        } catch (e) {
+            message.error('Failed to download Master List');
+        }
+    };
+     const handleRegenerateMasterList = (rangeOverride) => {
+        const range = rangeOverride !== undefined ? rangeOverride : masterListDateRange;
+        const html = generateMasterListHTML(masterListType, range);
+        setMasterListHtml(html);
+        message.success('Master List regenerated.');
+    };
+
     // ==================== PDF OVERVIEW FUNCTIONS ====================
-    const handlePDFOverviewSelectBooking = async (bookingId) => {
-        setPdfOverviewLoading(true);
+    const handlePDFOverviewSelectBooking = async (bookingId) => {        setPdfOverviewLoading(true);
         try {
             const booking = pdfOverviewAllBookings.find(b => b.booking_id === bookingId);
             if (!booking) {
@@ -2671,10 +3388,8 @@ const BillingInvoicing = () => {
 
         // ⭐ Booking PDF — full Booking Details document with menu items.
     //    Now used from BOTH the PDF Overview tab AND the Invoices tab.
-    const handleViewPDF = async (record) => {
+       const handleViewPDF = async (record) => {
         try {
-            // ⭐ Invoices table rows carry `booking_id` inside the row,
-            //    so extract it defensively from either shape.
             const bookingId =
                 record?.booking_id
                 || record?.id
@@ -2687,16 +3402,30 @@ const BillingInvoicing = () => {
 
             setPdfViewerBooking(record);
             setPdfViewerZoom(100);
+            
+            // Show a temporary loading message
+            message.loading({ content: 'Generating PDF...', key: 'pdfGen' });
 
+            // ⭐ Fetch the full booking data from the backend
             const response = await api.get(`/bookings/${bookingId}`);
             const fullBooking = response.data?.data || response.data;
+
+            // ⭐ If the record passed in has an invoice, attach its charges to the fullBooking
+            // This ensures the PDF has access to the specific charges (Transportation, Glass, etc.)
+            if (record.invoice?.charges) {
+                fullBooking.invoice = record.invoice;
+            } else if (record.charges) {
+                fullBooking.invoice = { ...fullBooking.invoice, charges: record.charges };
+            }
 
             const html = generatePDFHTML(fullBooking);
             setPdfViewerHtml(html);
             setPdfViewerVisible(true);
+            
+            message.success({ content: 'PDF Ready', key: 'pdfGen', duration: 1 });
         } catch (error) {
             console.error('Failed to load PDF:', error);
-            message.error('Failed to load PDF');
+            message.error({ content: 'Failed to load PDF', key: 'pdfGen' });
         }
     };
 
@@ -2833,7 +3562,7 @@ const BillingInvoicing = () => {
         }
     };
 
-      const generateReceiptHTML = (payment) => {
+            const generateReceiptHTML = (payment) => {
         // ⭐ Read tendered/change from the backend payload first, then
         //    fall back to parsing the notes.
         let tenderedAmount = Number(payment?.tendered_amount ?? payment?.amount ?? 0);
@@ -2847,6 +3576,21 @@ const BillingInvoicing = () => {
             const match = String(payment.notes).match(/tendered\s*₱([\d,]+(?:\.\d+)?)/i);
             if (match) tenderedAmount = Number(String(match[1]).replace(/,/g, ''));
         }
+
+        // ⭐ NEW: pull the receipt context from the enriched payload.
+        const totalAmount       = Number(payment?.total_amount ?? 0);
+        const balanceAfter      = Number(payment?.balance_after_payment ?? 0);
+        const paidAfter         = Number(payment?.paid_amount ?? 0);
+        const cashierName       = payment?.cashier_name || payment?.verified_by || 'System';
+        const categoryLabel     = payment?.payment_category_label || 'Standard Payment';
+        const isFullyPaid       = Boolean(payment?.is_fully_paid) || balanceAfter <= 0.01;
+
+        const paidDate = payment?.date
+            ? dayjs(payment.date).format('MMMM DD, YYYY')
+            : dayjs().format('MMMM DD, YYYY');
+        const paidTime = payment?.date_time
+            ? dayjs(payment.date_time).format('h:mm A')
+            : dayjs().format('h:mm A');
 
         const changeRow = changeAmount > 0.01
             ? `
@@ -2862,36 +3606,158 @@ const BillingInvoicing = () => {
                 <meta charset="UTF-8">
                 <title>Payment Receipt</title>
                 <style>
-                    body { font-family: Arial, sans-serif; padding: 40px; }
-                    .receipt { max-width: 600px; margin: 0 auto; }
-                    .header { text-align: center; border-bottom: 2px solid #1a7ab5; padding-bottom: 16px; }
-                    .header h1 { color: #1a7ab5; }
-                    .details { margin: 20px 0; }
-                    .details table { width: 100%; }
-                    .details td { padding: 4px 0; }
-                    .footer { text-align: center; border-top: 1px solid #ddd; padding-top: 16px; margin-top: 20px; }
+                    body { font-family: 'Segoe UI', Arial, sans-serif; padding: 32px; color: #1e293b; background: #f8fafc; }
+                    .receipt { max-width: 620px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 28px; border: 1px solid #e2e8f0; }
+                    .header { text-align: center; border-bottom: 2px solid #1a7ab5; padding-bottom: 14px; margin-bottom: 18px; }
+                    .header h1 { color: #1a7ab5; margin: 0 0 4px; font-size: 22px; }
+                    .header .subtitle { color: #64748b; font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase; }
+                    .header .receipt-id { font-family: 'Courier New', monospace; font-weight: 700; color: #1e293b; font-size: 14px; margin-top: 6px; }
+                    .category { display: flex; justify-content: space-between; padding: 9px 14px; border-radius: 8px; background: #eff6ff; border: 1px solid #bfdbfe; margin-bottom: 16px; font-size: 12px; }
+                    .category span:first-child { color: #64748b; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; }
+                    .category span:last-child { color: #1a7ab5; font-weight: 700; }
+                    .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b; margin: 16px 0 8px; padding-bottom: 5px; border-bottom: 1px solid #e2e8f0; }
+                    .details table { width: 100%; border-collapse: collapse; font-size: 13px; }
+                    .details td { padding: 7px 10px; border-bottom: 1px solid #f1f5f9; }
+                    .details td:first-child { color: #64748b; font-weight: 500; width: 45%; }
+                    .details td:last-child { color: #1e293b; font-weight: 600; text-align: right; }
+                    .summary { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px 20px; margin-top: 8px; }
+                    .summary .row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px dashed #bfdbfe; font-size: 13px; }
+                    .summary .row:last-child { border-bottom: none; }
+                    .summary .row span { color: #475569; font-weight: 500; }
+                    .summary .row strong { color: #1e293b; font-weight: 700; }
+                    .summary .row.grand strong { font-size: 20px; color: #1a7ab5; }
+                    .summary .row.balance { padding: 12px; margin-top: 6px; border-radius: 8px; background: #fff; border: 1px solid ${isFullyPaid ? '#a7f3d0' : '#fecaca'}; }
+                    .summary .row.balance strong { font-size: 18px; color: ${isFullyPaid ? '#059669' : '#dc2626'}; }
+                    .summary .row.balance span { color: ${isFullyPaid ? '#059669' : '#dc2626'}; font-weight: 700; }
+                    .cashier { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; padding: 12px 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+                    .cashier .label { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b; }
+                    .cashier .value { font-size: 14px; font-weight: 700; color: #1e293b; }
+                    .cashier .time { font-size: 11.5px; color: #64748b; margin-top: 2px; }
+                    .footer { text-align: center; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 20px; color: #94a3b8; font-size: 11px; }
                 </style>
             </head>
             <body>
                 <div class="receipt">
                     <div class="header">
-                        <h1>Payment Receipt</h1>
-                        <p>Receipt #: ${payment?.payment_number || 'N/A'}</p>
-                        <p>Date: ${dayjs(payment?.date || new Date()).format('MMMM DD, YYYY h:mm A')}</p>
+                        <h1>PAYMENT RECEIPT</h1>
+                        <div class="subtitle">Dear Bab's Catering Services</div>
+                        <div class="receipt-id">${payment?.payment_number || 'N/A'}</div>
                     </div>
+
+                               <div class="category">
+                        <span>Payment Category</span>
+                        <span>${categoryLabel}</span>
+                    </div>
+
+                    <div class="section-title">Customer</div>
                     <div class="details">
                         <table>
-                            <tr><td><strong>Customer:</strong></td><td>${payment?.customer_name || 'N/A'}</td></tr>
-                            <tr><td><strong>Amount:</strong></td><td>${formatCurrency(payment?.amount || 0)}</td></tr>
-                            ${changeRow}
-                            <tr><td><strong>Payment Method:</strong></td><td>${(payment?.payment_method || 'N/A').toUpperCase()}</td></tr>
-                            <tr><td><strong>Reference #:</strong></td><td>${payment?.reference_number || 'N/A'}</td></tr>
-                            <tr><td><strong>Status:</strong></td><td>${(payment?.status || 'pending').toUpperCase()}</td></tr>
+                            <tr><td>Customer Name</td><td>${payment?.customer_name || 'N/A'}</td></tr>
+                            <tr><td>Contact</td><td>${payment?.customer_phone || 'N/A'}</td></tr>
+                            <tr><td>Email</td><td>${payment?.customer_email || 'N/A'}</td></tr>
                         </table>
                     </div>
+
+                    ${(() => {
+                        // ⭐ PAID BY block — only shown when a third party paid.
+                        const payerNameRaw = String(payment?.payer_name || '').trim();
+                        const payerRelation = String(payment?.payer_relation || '').trim();
+                        const customerName = String(payment?.customer_name || '').trim();
+                        const isThirdParty = Boolean(payment?.is_third_party_payer)
+                            || (payerNameRaw && payerNameRaw.toLowerCase() !== customerName.toLowerCase());
+                        if (!isThirdParty) return '';
+                        return `
+                            <div class="section-title">Paid By</div>
+                            <div style="padding: 10px 14px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; margin-bottom: 14px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline;">
+                                <div>
+                                    <div style="font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b;">Received From</div>
+                                    <div style="font-size: 14px; font-weight: 700; color: #1e293b; margin-top: 2px;">${payerNameRaw}</div>
+                                </div>
+                                ${payerRelation ? `
+                                    <div style="text-align: right;">
+                                        <div style="font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b;">Relationship</div>
+                                        <div style="font-size: 12px; font-weight: 600; color: #7c3aed; margin-top: 2px;">${payerRelation}</div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    })()}
+                    <div class="section-title">Payment Details</div>
+                    <div class="details">
+                        <table>
+                            <tr><td>Receipt #</td><td>${payment?.payment_number || 'N/A'}</td></tr>
+                            <tr><td>Payment Date</td><td>${paidDate}</td></tr>
+                            <tr><td>Payment Time</td><td>${paidTime}</td></tr>
+                            <tr><td>Payment Method</td><td>${(payment?.payment_method || 'N/A').replace('_', ' ').toUpperCase()}</td></tr>
+                            <tr><td>Payment Type</td><td>${(payment?.payment_type || 'partial').toUpperCase()}</td></tr>
+                            <tr><td>Reference #</td><td>${payment?.reference_number || 'N/A'}</td></tr>
+                            <tr><td>Status</td><td>${(payment?.status || 'completed').toUpperCase()}</td></tr>
+                        </table>
+                    </div>
+
+                                      <div class="section-title">Amount Summary</div>
+                    <div class="summary">
+                        <div class="row">
+                            <span>Grand Total (Event)</span>
+                            <strong>${formatCurrency(totalAmount)}</strong>
+                        </div>
+                        
+                        <!-- ⭐ Frontend Charges Breakdown -->
+                        ${(() => {
+                            let charges = payment?.charges || [];
+                            // Fallback: If no charges array is present, calculate the difference
+                            // between Grand Total and base items to show a generic "Additional Charges" row.
+                            if (charges.length === 0) {
+                                const baseSubtotal = payment?.subtotal || payment?.items_total || 0;
+                                // If we don't have a direct subtotal, we just show the total to balance it.
+                                // But normally, the backend now passes `charges`, so this fallback is just a safety net.
+                                const difference = Number(totalAmount) - Number(baseSubtotal);
+                                if (difference > 0.01 && !payment?.is_fully_paid) {
+                                    charges = [{ description: 'Additional Charges', amount: difference, kind: 'charge' }];
+                                }
+                            }
+                            return charges.map(c => {
+                                const label = c.description || c.type || 'Charge';
+                                const prefix = c.kind === 'discount' ? '-' : '';
+                                const color = c.kind === 'discount' ? '#059669' : '#1e293b';
+                                return `
+                                    <div class="row" style="border-bottom: 1px dashed #bfdbfe; padding: 6px 0; font-size: 12px;">
+                                        <span style="color: #64748b;">${label}</span>
+                                        <strong style="color: ${color};">${prefix}${formatCurrency(c.amount)}</strong>
+                                    </div>
+                                `;
+                            }).join('');
+                        })()}
+
+                        <div class="row grand">
+                            <span>Amount Paid (This Payment)</span>
+                            <strong>${formatCurrency(payment?.amount || 0)}</strong>
+                        </div>
+                        <div class="row">
+                            <span>Total Paid to Date</span>
+                            <strong>${formatCurrency(paidAfter)}</strong>
+                        </div>
+                        <div class="row balance">
+                            <span>${isFullyPaid ? 'FULLY PAID' : 'BALANCE'}</span>
+                            <strong>${formatCurrency(balanceAfter)}</strong>
+                        </div>
+                        ${changeRow}
+                    </div>
+
+                    <div class="cashier">
+                        <div>
+                            <div class="label">Cashier / Recorded By</div>
+                            <div class="value">${cashierName}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div class="label">Payment Date & Time</div>
+                            <div class="time">${paidDate} · ${paidTime}</div>
+                        </div>
+                    </div>
+
                     <div class="footer">
-                        <p>Thank you for your business.</p>
-                        <p style="font-size: 10px; color: #94a3b8;">This is a system-generated receipt.</p>
+                        <p>Thank you for your business. This is a system-generated receipt.</p>
+                        <p style="font-size: 10px;">Generated on: ${dayjs().format('MMMM DD, YYYY h:mm A')}</p>
                     </div>
                 </div>
             </body>
@@ -2900,7 +3766,6 @@ const BillingInvoicing = () => {
 
         return applyReceiptWatermark(receiptHtml);
     };
-
     const handlePrintReceiptDirect = () => {
         if (!receiptPreviewHtml) {
             message.warning('No receipt to print');
@@ -2967,7 +3832,7 @@ const BillingInvoicing = () => {
             okButtonProps: { style: { background: '#52c41a', borderColor: '#52c41a' } },
             cancelText: 'Cancel',
             onOk: async () => {
-                try {
+                                try {
                     await api.post(`/payments/mobile/${payment.payment_id}/verify`, {
                         notes: 'Payment received via admin confirmation'
                     });
@@ -3052,11 +3917,16 @@ const BillingInvoicing = () => {
         const worksheetData = data.map(row => {
             const exportRow = {};
             columns.forEach(col => {
-                if (col.dataIndex) {
+                               if (col.dataIndex) {
                     let value = row[col.dataIndex];
-                    if (col.dataIndex === 'total_amount' || col.dataIndex === 'amount' ||
-                        col.dataIndex === 'paid_amount' || col.dataIndex === 'balance') {
-                        value = `₱${Number(value || 0).toLocaleString()}`;
+                    const MONEY_COLUMNS = new Set([
+                        'total_amount', 'amount', 'paid_amount', 'balance',
+                        'remaining_debt', 'total_debt', 'total_paid', 'paid_debt',
+                        'subtotal', 'discount', 'additional_charges',
+                        'deposit_paid', 'deposit_snapshot', 'released_amount',
+                    ]);
+                    if (MONEY_COLUMNS.has(col.dataIndex)) {
+                        value = money(value);
                     }
                     exportRow[col.title] = value || '';
                 } else if (col.key === 'status') {
@@ -3329,7 +4199,7 @@ const BillingInvoicing = () => {
             key: 'total_amount',
             width: 130,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>
         },
         {
             title: 'PAID',
@@ -3337,7 +4207,7 @@ const BillingInvoicing = () => {
             key: 'paid_amount',
             width: 130,
             align: 'right',
-            render: (v) => <Text className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text className="bi-amount-paid">{money(v)}</Text>
         },
         {
             title: 'BALANCE',
@@ -3347,7 +4217,7 @@ const BillingInvoicing = () => {
             align: 'right',
             render: (v) => (
                 <Text strong className={Number(v || 0) > 0 ? 'bi-amount-balance' : 'bi-amount-paid'}>
-                    ₱{Number(v || 0).toLocaleString()}
+                    {money(v)}
                 </Text>
             )
         },
@@ -3406,51 +4276,7 @@ const BillingInvoicing = () => {
             key: 'actions',
             width: canProcessRefunds ? 300 : 260,
             render: (_, record) => {
-                const actionItems = [
-                    {
-                        key: 'view',
-                        label: 'View Invoice',
-                        icon: <EyeOutlined />,
-                        onClick: () => handleViewInvoice(record)
-                    },
-                                                             {
-                        key: 'pdf',
-                        label: 'View Booking Details PDF',
-                        icon: <FilePdfOutlined />,
-                        onClick: () => handleViewPDF(record)
-                    },
-                    {
-                        key: 'edit',
-                        label: 'Edit',
-                        icon: <EditOutlined />,
-                        onClick: () => handleEditInvoice(record)
-                    },
-                    {
-                        key: 'payment',
-                        label: 'Record Payment',
-                        icon: <DollarOutlined />,
-                        onClick: () => {
-                            setSelectedInvoice(record);
-                            paymentForm.setFieldsValue({
-                                amount: null,
-                                payment_method: 'cash',
-                                payment_type: (record.balance || 0) >= (record.total_amount || 0) ? 'full' : 'partial',
-                                reference_number: '',
-                                account_name: '',
-                                account_number: ''
-                            });
-                            setPaymentMethod('cash');
-                            setPaymentModalVisible(true);
-                        }
-                    },
-                    { type: 'divider' },
-                                     ...(canProcessRefunds ? [{
-                        key: 'refund-direct',
-                        label: 'Direct Refund',
-                        icon: <RollbackOutlined />,
-                        onClick: () => openRefundDirectModal(record),
-                        disabled: record.refund_status && !['rejected', 'cancelled'].includes(record.refund_status),
-                    }] : []),
+                                   const actionItems = [
                     {
                         key: 'discount',
                         label: 'Apply Discount',
@@ -3470,9 +4296,9 @@ const BillingInvoicing = () => {
                         icon: <MailOutlined />,
                         onClick: () => {
                             setSelectedInvoice(record);
-                            reminderForm.setFieldsValue({
+                                                       reminderForm.setFieldsValue({
                                 subject: `Payment Reminder - ${record.invoice_number}`,
-                                message: `Dear ${record.customer_name},\n\nThis is a friendly reminder that your payment of ₱${(record.balance || 0).toLocaleString()} for invoice ${record.invoice_number} is due on ${record.due_date}.\n\nPlease process the payment at your earliest convenience.\n\nThank you for your business.`
+                                message: `Dear ${record.customer_name},\n\nThis is a friendly reminder that your payment of ${money(record.balance)} for invoice ${record.invoice_number} is due on ${record.due_date}.\n\nPlease process the payment at your earliest convenience.\n\nThank you for your business.`
                             });
                             setReminderModalVisible(true);
                         }
@@ -3518,7 +4344,7 @@ const BillingInvoicing = () => {
                                 <Button type="text" className="bi-action-btn" icon={<EditOutlined />} onClick={() => handleEditInvoice(record)} />
                             </Tooltip>
                         )}
-                        <Tooltip title="Record Payment">
+                                               <Tooltip title="Record Payment">
                             <Button
                                 type="text"
                                 className="bi-action-btn bi-action-btn-payment"
@@ -3531,26 +4357,41 @@ const BillingInvoicing = () => {
                                         payment_type: (record.balance || 0) >= (record.total_amount || 0) ? 'full' : 'partial',
                                         reference_number: '',
                                         account_name: '',
-                                        account_number: ''
+                                        account_number: '',
+                                        // ⭐ Pre-fill payer fields with the customer
+                                        payer_name: record.customer_name || '',
+                                        payer_relation: 'Self',
                                     });
                                     setPaymentMethod('cash');
                                     setPaymentModalVisible(true);
                                 }}
                             />
                         </Tooltip>
-                                           {canProcessRefunds && (
-                            <Tooltip title="Direct Refund (no request required)">
-                                <Button
-                                    type="text"
-                                    className="bi-action-btn"
-                                    icon={<RollbackOutlined />}
-                                    style={{ color: '#faad14' }}
-                                    disabled={record.refund_status && !['rejected', 'cancelled'].includes(record.refund_status)}
-                                    onClick={() => openRefundDirectModal(record)}
-                                />
-                            </Tooltip>
-                        )}
-                        <Dropdown
+                                                    {canProcessRefunds && (
+                        <Tooltip title="Direct Refund (no request required)">
+                            <Button
+                                type="text"
+                                className="bi-action-btn"
+                                icon={<RollbackOutlined />}
+                                style={{ color: '#faad14' }}
+                                disabled={record.refund_status && !['rejected', 'cancelled'].includes(record.refund_status)}
+                                onClick={() => openRefundDirectModal(record)}
+                            />
+                        </Tooltip>
+                    )}
+                    {/* ⭐ Dedicated button to open the NEW Additional Charges Modal */}
+                    <Tooltip title="Manage Additional Charges">
+                        <Button 
+                            type="text" 
+                            className="bi-action-btn" 
+                            icon={<PercentageOutlined />} 
+                            onClick={() => handleOpenChargesModal(record)} 
+                        />
+                    </Tooltip>
+                    <Dropdown
+
+
+
                             menu={{ items: actionItems }}
                             placement="bottomRight"
                             trigger={['click']}
@@ -3563,7 +4404,21 @@ const BillingInvoicing = () => {
         }
     ], [isDarkMode, payments, discountForm, reminderForm, paymentForm, canApproveFinancialAdjustments, canProcessRefunds]);
 
-    const paymentColumns = useMemo(() => [
+       const paymentColumns = useMemo(() => {
+        // ⭐ Category pill — visually distinguishes standard / partial
+        //    payments from additional charges (extra order, damage) so the
+        //    cashier can spot them at a glance in Payment Tracking.
+        const CATEGORY_STYLES = {
+            standard:   { color: '#1a7ab5', bg: 'rgba(26,122,181,0.1)',  label: 'Standard' },
+            deposit:    { color: '#2563eb', bg: 'rgba(37,99,235,0.1)',   label: 'Deposit' },
+            partial:    { color: '#d97706', bg: 'rgba(217,119,6,0.1)',   label: 'Partial' },
+            full:       { color: '#059669', bg: 'rgba(5,150,105,0.1)',   label: 'Full' },
+            additional: { color: '#7c3aed', bg: 'rgba(124,58,237,0.1)',  label: 'Additional' },
+            damage:     { color: '#dc2626', bg: 'rgba(220,38,38,0.1)',   label: 'Damage' },
+            refund:     { color: '#d97706', bg: 'rgba(217,119,6,0.1)',   label: 'Refund' },
+        };
+
+        return [
         {
             title: 'PAYMENT #',
             dataIndex: 'payment_number',
@@ -3571,12 +4426,47 @@ const BillingInvoicing = () => {
             width: 150,
             render: (text) => <Text className="bi-plain-text">{text || 'N/A'}</Text>
         },
-        {
+               {
             title: 'CUSTOMER',
             dataIndex: 'customer_name',
             key: 'customer_name',
             width: 200,
             render: (text) => <Text className={isDarkMode ? 'bi-text-dark-primary' : ''}>{text || 'Unknown'}</Text>
+        },
+        {
+            // ⭐ PAID BY — who physically handed over the cash.
+            //    Hidden ("Same as customer") when identical to the customer.
+            title: 'PAID BY',
+            key: 'paid_by',
+            width: 180,
+            render: (_, record) => {
+                const booked = String(record.customer_name || '').trim();
+                const payer = String(record.payer_name || '').trim();
+                const relation = String(record.payer_relation || '').trim();
+                const isThirdParty = Boolean(record.is_third_party_payer)
+                    || (payer && payer.toLowerCase() !== booked.toLowerCase());
+
+                if (!isThirdParty) {
+                    return (
+                        <Text type="secondary" style={{ fontSize: 11.5, fontStyle: 'italic' }}>
+                            Same as customer
+                        </Text>
+                    );
+                }
+
+                return (
+                    <div style={{ lineHeight: 1.35 }}>
+                        <div style={{ fontWeight: 600, color: '#7c3aed', fontSize: 13 }}>
+                            {payer || '—'}
+                        </div>
+                        {relation && (
+                            <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+                                {relation}
+                            </div>
+                        )}
+                    </div>
+                );
+            },
         },
         {
             title: 'INVOICE',
@@ -3597,19 +4487,80 @@ const BillingInvoicing = () => {
             )
         },
         {
-            title: 'TYPE',
-            dataIndex: 'payment_type',
-            key: 'payment_type',
-            width: 100,
-            render: (text) => <Text className="bi-plain-text">{text?.toUpperCase() || 'PARTIAL'}</Text>
+            title: 'TYPE / CATEGORY',
+            key: 'payment_type_category',
+            width: 180,
+            render: (_, record) => {
+                const cat = String(record.payment_category || record.payment_type || 'partial').toLowerCase();
+                const cfg = CATEGORY_STYLES[cat] || CATEGORY_STYLES.partial;
+                return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '3px 10px',
+                            borderRadius: 12,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: 0.2,
+                            color: cfg.color,
+                            background: cfg.bg,
+                            width: 'fit-content',
+                        }}>
+                            {cfg.label}
+                        </span>
+                        {record.payment_category_label && record.payment_category !== 'standard' && (
+                            <span style={{ fontSize: 10.5, color: '#64748b', fontWeight: 500 }}>
+                                {record.payment_category_label}
+                            </span>
+                        )}
+                    </div>
+                );
+            }
         },
         {
-            title: 'AMOUNT',
+            title: 'TOTAL',
+            key: 'total_amount',
+            width: 120,
+            align: 'right',
+            render: (_, record) => (
+                <Text className="bi-plain-text">
+                    {record.total_amount !== undefined ? money(record.total_amount) : '—'}
+                </Text>
+            )
+        },
+        {
+            title: 'AMOUNT PAID',
             dataIndex: 'amount',
             key: 'amount',
             width: 130,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text strong className="bi-amount-paid">{money(v)}</Text>
+        },
+        {
+            title: 'BALANCE',
+            key: 'balance_after_payment',
+            width: 130,
+            align: 'right',
+            render: (_, record) => {
+                const bal = Number(record.balance_after_payment ?? 0);
+                const isFullyPaid = Boolean(record.is_fully_paid) || bal <= 0.01;
+                return (
+                    <Text
+                        strong
+                        style={{
+                            color: isFullyPaid ? '#059669' : '#dc2626',
+                            fontWeight: 700,
+                            fontVariantNumeric: 'tabular-nums',
+                        }}
+                    >
+                        {record.balance_after_payment !== undefined
+                            ? money(bal)
+                            : '—'}
+                    </Text>
+                );
+            }
         },
         {
             title: 'REFERENCE #',
@@ -3625,7 +4576,7 @@ const BillingInvoicing = () => {
             width: 120,
             render: (d) => d ? dayjs(d).format('YYYY-MM-DD') : 'N/A'
         },
-               {
+        {
             title: 'ACTION',
             key: 'action',
             width: 160,
@@ -3643,7 +4594,8 @@ const BillingInvoicing = () => {
                 </Space>
             )
         }
-    ], [isDarkMode]);
+        ];
+    }, [isDarkMode]);
 
       const mobilePaymentColumns = useMemo(() => [
         {
@@ -3678,7 +4630,7 @@ const BillingInvoicing = () => {
             key: 'amount',
             width: 130,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>
         },
         {
             title: 'METHOD',
@@ -3842,7 +4794,7 @@ const BillingInvoicing = () => {
             key: 'total_debt',
             width: 140,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>
         },
         {
             title: 'TOTAL PAID',
@@ -3850,7 +4802,7 @@ const BillingInvoicing = () => {
             key: 'total_paid',
             width: 140,
             align: 'right',
-            render: (v) => <Text className="bi-amount-paid">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text className="bi-amount-paid">{money(v)}</Text>
         },
         {
             title: 'BALANCE',
@@ -3860,7 +4812,7 @@ const BillingInvoicing = () => {
             align: 'right',
             render: (v) => (
                 <Text strong className={Number(v || 0) > 0 ? 'bi-amount-balance' : 'bi-amount-paid'}>
-                    ₱{Number(v || 0).toLocaleString()}
+                    {money(v)}
                 </Text>
             )
         },
@@ -3936,8 +4888,7 @@ const BillingInvoicing = () => {
                         <Tag color="red" className="bi-deposit-unpaid">Unpaid</Tag>
                     }
                     <div style={{ fontSize: 11, color: '#8b93a8' }}>
-                        ₱{Number(record.deposit_paid || 0).toLocaleString()} / ₱{Number(record.total_amount * 0.3 || 0).toLocaleString()}
-                    </div>
+{money(record.deposit_paid)} / {money((record.total_amount || 0) * 0.3)}                    </div>
                 </div>
             )
         },
@@ -4023,7 +4974,7 @@ const BillingInvoicing = () => {
             key: 'total_amount',
             width: 140,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
+            render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>
         },
         {
             title: 'STATUS',
@@ -4110,7 +5061,7 @@ const BillingInvoicing = () => {
             key: 'amount',
             width: 130,
             align: 'right',
-            render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>,
+            render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>,
         },
         {
             title: 'DEPOSIT SNAPSHOT',
@@ -4118,7 +5069,7 @@ const BillingInvoicing = () => {
             key: 'deposit_snapshot',
             width: 140,
             align: 'right',
-            render: (v) => <Text className="bi-plain-text">₱{Number(v || 0).toLocaleString()}</Text>,
+            render: (v) => <Text className="bi-plain-text">{money(v)}</Text>,
         },
         {
             title: 'STATUS',
@@ -4308,8 +5259,38 @@ const BillingInvoicing = () => {
                             </button>
                         </Tooltip>
 
-                        <Divider type="vertical" />
+                                              <Divider type="vertical" />
                         <Button icon={<ReloadOutlined />} onClick={loadInvoices}>Refresh</Button>
+                        {/* ⭐ MASTER LIST — generate a consolidated report */}
+                        <Dropdown
+                            menu={{
+                                items: [
+                                    {
+                                        key: 'invoices',
+                                        label: 'Invoices Master List',
+                                        icon: <FileTextOutlined />,
+                                        onClick: () => openMasterList('invoices'),
+                                    },
+                                    {
+                                        key: 'payments',
+                                        label: 'Payments Master List',
+                                        icon: <CreditCardOutlined />,
+                                        onClick: () => openMasterList('payments'),
+                                    },
+                                    ...(canProcessRefunds ? [{
+                                        key: 'refunds',
+                                        label: 'Refunds Master List',
+                                        icon: <RollbackOutlined />,
+                                        onClick: () => openMasterList('refunds'),
+                                    }] : []),
+                                ],
+                            }}
+                            trigger={['click']}
+                        >
+                            <Button icon={<UnorderedListOutlined />} type="primary" ghost>
+                                Master List
+                            </Button>
+                        </Dropdown>
                         <Button icon={<ExportOutlined />} onClick={() => {
                             if (activeMainTab === 'refunds' && canProcessRefunds) {
                                 exportRefunds();
@@ -4324,23 +5305,25 @@ const BillingInvoicing = () => {
                 {/* MAIN CONTENT */}
                 <div className="bi-main-content">
                                       {/* ⭐ Period Behavior toolbar */}
-                    {!periodToolbarHidden && (
+                                             {!periodToolbarHidden && (
                     <div className="bi-period-bar">
                         <div className="bi-period-bar-left">
                             <span className="bi-period-bar-label">Reporting Period</span>
-                            <div className="bi-period-segmented" role="tablist">
+                                                       <div className="bi-period-segmented" role="tablist">
                                 {[
-                                    { value: 'weekly',  label: 'Weekly'  },
-                                    { value: 'monthly', label: 'Monthly' },
-                                    { value: 'yearly',  label: 'Yearly'  },
-                                ].map((opt) => (
+                                    { key: 'weekly',   label: 'Weekly' },
+                                    { key: 'monthly',  label: 'Monthly' },
+                                    { key: 'yearly',   label: 'Yearly' },
+                                ].map(({ key, label }) => (
                                     <button
-                                        key={opt.value}
+                                        key={key}
                                         type="button"
-                                        className={`bi-period-seg-btn ${dashboardPeriod === opt.value ? 'active' : ''}`}
-                                        onClick={() => setDashboardPeriod(opt.value)}
+                                        role="tab"
+                                        aria-selected={dashboardPeriod === key}
+                                        className={`bi-period-seg-btn ${dashboardPeriod === key ? 'active' : ''}`}
+                                        onClick={() => setDashboardPeriod(key)}
                                     >
-                                        {opt.label}
+                                        {label}
                                     </button>
                                 ))}
                             </div>
@@ -4371,10 +5354,10 @@ const BillingInvoicing = () => {
                                 )}
                                 <div className="bi-kpi-icon blue"><FileTextOutlined /></div>
                                 <div>
-                                    <div className="bi-kpi-value">
+                                                                       <div className="bi-kpi-value">
                                         {effectiveBillingVisibility.total_revenue
-                                            ? maskMatchingValue(`₱${Number(totalRevenue).toLocaleString()}`)
-                                            : `₱${Number(totalRevenue).toLocaleString()}`}
+                                            ? maskMatchingValue(money(totalRevenue))
+                                            : money(totalRevenue)}
                                     </div>
                                     <div className="bi-kpi-label">Total Revenue</div>
                                 </div>
@@ -4390,10 +5373,10 @@ const BillingInvoicing = () => {
                                 )}
                                 <div className="bi-kpi-icon green"><CheckCircleOutlined /></div>
                                 <div>
-                                    <div className="bi-kpi-value">
+                                                                        <div className="bi-kpi-value">
                                         {effectiveBillingVisibility.total_collected
-                                            ? maskMatchingValue(`₱${Number(totalPaid).toLocaleString()}`)
-                                            : `₱${Number(totalPaid).toLocaleString()}`}
+                                            ? maskMatchingValue(money(totalPaid))
+                                            : money(totalPaid)}
                                     </div>
                                     <div className="bi-kpi-label">Total Collected</div>
                                 </div>
@@ -4409,10 +5392,10 @@ const BillingInvoicing = () => {
                                 )}
                                 <div className="bi-kpi-icon orange"><WarningOutlined /></div>
                                 <div>
-                                    <div className="bi-kpi-value">
+                                                                       <div className="bi-kpi-value">
                                         {effectiveBillingVisibility.outstanding_balance
-                                            ? maskMatchingValue(`₱${Number(totalOutstanding).toLocaleString()}`)
-                                            : `₱${Number(totalOutstanding).toLocaleString()}`}
+                                            ? maskMatchingValue(money(totalOutstanding))
+                                            : money(totalOutstanding)}
                                     </div>
                                     <div className="bi-kpi-label">Outstanding Balance</div>
                                 </div>
@@ -4506,18 +5489,22 @@ const BillingInvoicing = () => {
                                     />
                                 </div>
                             </TabPane>
-
                             {/* Payments Tab */}
                             <TabPane tab={<span><CreditCardOutlined /> Payment Tracking</span>} key="payments">
                                 <div className={tabContentClass}>
                                     <Alert
                                         message="Payment Tracking"
-                                        description="Every down payment, partial payment, installment, pending verification, and completed payment log appears here."
+                                        description="Every down payment, partial payment, installment, pending verification, and completed payment log appears here. Use 'Paid By' search to find payments made by someone other than the booking owner."
                                         type="info"
                                         showIcon
-                                        style={{ marginBottom: 20 }}
+                                        style={{ marginBottom: 16 }}
                                         className={isDarkMode ? 'bi-alert-dark' : ''}
                                     />
+
+                                    {/* ⭐ SINGLE FILTER BAR — date range + payer search +
+                                        clear buttons. The previous version had a
+                                        duplicate filter bar and no <Table>, which
+                                        is why this tab appeared empty. */}
                                     <div className={filtersClass} style={{ marginBottom: 16 }}>
                                         <div className={filterGroupClass}>
                                             <CalendarOutlined />
@@ -4530,28 +5517,58 @@ const BillingInvoicing = () => {
                                                 size="small"
                                             />
                                         </div>
+
+                                        {/* ⭐ PAID BY SEARCH — find all payments
+                                            made by a specific person, even if
+                                            they aren't the booking owner. */}
+                                        <div className="bi-search-wrapper" style={{ minWidth: 240 }}>
+                                            <UserOutlined style={{ color: 'var(--bi-muted)', fontSize: '14px' }} />
+                                            <Input
+                                                placeholder="Search by payer name..."
+                                                value={paymentTrackingPayerSearch}
+                                                onChange={(e) => setPaymentTrackingPayerSearch(e.target.value)}
+                                                allowClear
+                                                size="small"
+                                                style={{ border: 'none', boxShadow: 'none', padding: '4px 0', background: 'transparent', width: 200 }}
+                                            />
+                                        </div>
+
                                         <Button
                                             size="small"
-                                            onClick={() => setPaymentTrackingDateRange([])}
-                                            disabled={!paymentTrackingDateRange?.length}
+                                            onClick={() => {
+                                                setPaymentTrackingDateRange([]);
+                                                setPaymentTrackingPayerSearch('');
+                                            }}
+                                            disabled={!paymentTrackingDateRange?.length && !paymentTrackingPayerSearch}
                                         >
-                                            Clear Date Filter
+                                            Clear All Filters
                                         </Button>
                                     </div>
+
+                                    {/* ⭐ THE PAYMENT TRACKING TABLE */}
                                     <div className="bi-table-scroll-container">
                                         <Table
                                             columns={paymentColumns}
-                                            dataSource={payments}
+                                            dataSource={
+                                                (paymentTrackingPayerSearch || '').trim()
+                                                    ? payments.filter((p) => {
+                                                        const q = paymentTrackingPayerSearch.trim().toLowerCase();
+                                                        const payer = String(p.payer_name || '').toLowerCase();
+                                                        const customer = String(p.customer_name || '').toLowerCase();
+                                                        const relation = String(p.payer_relation || '').toLowerCase();
+                                                        return payer.includes(q) || customer.includes(q) || relation.includes(q);
+                                                    })
+                                                    : payments
+                                            }
                                             rowKey="payment_id"
                                             locale={{ emptyText: renderEmptyTable() }}
                                             pagination={false}
                                             className={tableClass}
-                                            scroll={{ x: 1200, y: 'calc(100vh - 480px)' }}
+                                            scroll={{ x: 1730, y: 'calc(100vh - 480px)' }}
                                         />
                                     </div>
                                 </div>
                             </TabPane>
-
                             {/* Payment History Tab */}
                             <TabPane tab={<span><CheckCircleOutlined /> Payment History</span>} key="payment_history">
                                 <div className={tabContentClass}>
@@ -4671,14 +5688,14 @@ const BillingInvoicing = () => {
                                         <Row gutter={16} style={{ marginBottom: 20 }}>
                                             <Col xs={12} sm={6}>
                                                 <div className={debtCardClass}>
-                                                    <Text type="secondary">Total Outstanding Debt</Text>
-                                                    <div className="bi-debt-value">₱{Number(totalDebt).toLocaleString()}</div>
+                                                                                                        <Text type="secondary">Total Outstanding Debt</Text>
+                                                    <div className="bi-debt-value">{money(totalDebt)}</div>
                                                 </div>
                                             </Col>
                                             <Col xs={12} sm={6}>
                                                 <div className={debtCardClass}>
-                                                    <Text type="secondary">Overdue Debt</Text>
-                                                    <div className="bi-debt-value">₱{Number(overdueDebt).toLocaleString()}</div>
+                                                     <Text type="secondary">Overdue Debt</Text>
+                                                    <div className="bi-debt-value">{money(overdueDebt)}</div>
                                                 </div>
                                             </Col>
                                             <Col xs={12} sm={6}>
@@ -4760,9 +5777,9 @@ const BillingInvoicing = () => {
                                             </Col>
                                             <Col xs={12} sm={6}>
                                                 <div className={debtCardClass}>
-                                                    <Text type="secondary">Total Refunded</Text>
+                                                                                                        <Text type="secondary">Total Refunded</Text>
                                                     <div className="bi-debt-value" style={{ color: '#52c41a' }}>
-                                                        ₱{Number(refundStatistics.total_released_amount || 0).toLocaleString()}
+                                                        {money(refundStatistics.total_released_amount)}
                                                     </div>
                                                 </div>
                                             </Col>
@@ -5049,10 +6066,10 @@ const BillingInvoicing = () => {
                                 </Button>
                                 <Button
                                     icon={<MailOutlined />}
-                                    onClick={() => {
+                                                                      onClick={() => {
                                         reminderForm.setFieldsValue({
                                             subject: `Invoice ${selectedInvoice?.invoice_number}`,
-                                            message: `Dear ${selectedInvoice?.customer_name},\n\nPlease find attached your invoice ${selectedInvoice?.invoice_number} for ₱${(selectedInvoice?.total_amount || 0).toLocaleString()}.\n\nThank you for your business.`
+                                            message: `Dear ${selectedInvoice?.customer_name},\n\nPlease find attached your invoice ${selectedInvoice?.invoice_number} for ${money(selectedInvoice?.total_amount)}.\n\nThank you for your business.`
                                         });
                                         setReminderModalVisible(true);
                                         setInvoiceDetailsModalVisible(false);
@@ -5099,8 +6116,8 @@ const BillingInvoicing = () => {
                                         <DollarOutlined />
                                     </div>
                                     <div>
-                                        <div className="bi-summary-label">Total Amount</div>
-                                        <div className="bi-summary-value">₱{Number(selectedInvoice.total_amount || 0).toLocaleString()}</div>
+                                                                             <div className="bi-summary-label">Total Amount</div>
+                                        <div className="bi-summary-value">{money(selectedInvoice.total_amount)}</div>
                                     </div>
                                 </div>
                                 <div className="bi-summary-card">
@@ -5109,7 +6126,7 @@ const BillingInvoicing = () => {
                                     </div>
                                     <div>
                                         <div className="bi-summary-label">Paid Amount</div>
-                                        <div className="bi-summary-value" style={{ color: '#52c41a' }}>₱{Number(selectedInvoice.paid_amount || 0).toLocaleString()}</div>
+                                        <div className="bi-summary-value" style={{ color: '#52c41a' }}>{money(selectedInvoice.paid_amount)}</div>
                                     </div>
                                 </div>
                                 <div className="bi-summary-card">
@@ -5119,7 +6136,7 @@ const BillingInvoicing = () => {
                                     <div>
                                         <div className="bi-summary-label">Balance</div>
                                         <div className="bi-summary-value" style={{ color: Number(selectedInvoice.balance || 0) > 0 ? '#ff4d4f' : '#52c41a' }}>
-                                            ₱{Number(selectedInvoice.balance || 0).toLocaleString()}
+                                            {money(selectedInvoice.balance)}
                                         </div>
                                     </div>
                                 </div>
@@ -5149,9 +6166,9 @@ const BillingInvoicing = () => {
                                             <div style={{ fontWeight: 600, color: getRefundStatusConfig(selectedInvoice.refund_status).color }}>
                                                 {getRefundStatusConfig(selectedInvoice.refund_status).text}
                                             </div>
-                                            {selectedInvoice.refund_amount > 0 && (
+                                                                                       {selectedInvoice.refund_amount > 0 && (
                                                 <div style={{ fontSize: 12, color: '#64748b' }}>
-                                                    Amount: ₱{Number(selectedInvoice.refund_amount || 0).toLocaleString()}
+                                                    Amount: {money(selectedInvoice.refund_amount)}
                                                 </div>
                                             )}
                                         </div>
@@ -5202,24 +6219,24 @@ const BillingInvoicing = () => {
                                 <div className="bi-financial-grid">
                                     <div className="bi-financial-item">
                                         <span className="bi-financial-label">Subtotal</span>
-                                        <span className="bi-financial-value">₱{Number(selectedInvoice.subtotal || 0).toLocaleString()}</span>
+                                        <span className="bi-financial-value">{money(selectedInvoice.subtotal)}</span>
                                     </div>
                                     {selectedInvoice.discount > 0 && (
                                         <div className="bi-financial-item bi-financial-discount">
                                             <span className="bi-financial-label">Discount ({selectedInvoice.discount_type === 'percentage' ? `${selectedInvoice.discount}%` : 'Fixed'})</span>
-                                            <span className="bi-financial-value" style={{ color: '#ff4d4f' }}>-₱{Number(selectedInvoice.discount || 0).toLocaleString()}</span>
+                                            <span className="bi-financial-value" style={{ color: '#ff4d4f' }}>-{money(selectedInvoice.discount)}</span>
                                         </div>
                                     )}
                                     {selectedInvoice.additional_charges > 0 && (
                                         <div className="bi-financial-item">
                                             <span className="bi-financial-label">Additional Charges</span>
-                                            <span className="bi-financial-value">₱{Number(selectedInvoice.additional_charges || 0).toLocaleString()}</span>
+                                            <span className="bi-financial-value">{money(selectedInvoice.additional_charges)}</span>
                                         </div>
                                     )}
                                     <div className="bi-financial-item bi-financial-total">
                                         <span className="bi-financial-label">Total Amount</span>
                                         <span className="bi-financial-value" style={{ fontWeight: 700, fontSize: '18px', color: '#1a7ab5' }}>
-                                            ₱{Number(selectedInvoice.total_amount || 0).toLocaleString()}
+                                           {money(selectedInvoice.total_amount)}
                                         </span>
                                     </div>
                                 </div>
@@ -5273,7 +6290,7 @@ const BillingInvoicing = () => {
                                                         }
                                                     >
                                                         {row.kind === 'discount' ? '-' : ''}
-                                                        ₱{Number(v || 0).toLocaleString()}
+                                                       {money(v)}
                                                     </Text>
                                                 ),
                                             },
@@ -5321,14 +6338,14 @@ const BillingInvoicing = () => {
                                                 dataIndex: 'unit_price',
                                                 align: 'right',
                                                 width: 130,
-                                                render: (v) => <Text className="bi-plain-text">₱{Number(v || 0).toLocaleString()}</Text>
+                                                render: (v) => <Text className="bi-plain-text">{money(v)}</Text>
                                             },
                                             {
                                                 title: 'Total',
                                                 dataIndex: 'total',
                                                 align: 'right',
                                                 width: 130,
-                                                render: (v) => <Text strong className="bi-amount-total">₱{Number(v || 0).toLocaleString()}</Text>
+                                                render: (v) => <Text strong className="bi-amount-total">{money(v)}</Text>
                                             }
                                         ]}
                                         pagination={false}
@@ -5350,7 +6367,7 @@ const BillingInvoicing = () => {
                                 <DollarOutlined />
                             </div>
                             <div className="bi-modal-title-group">
-                                <span className="bi-modal-title">Record Payment</span>
+                                <span className="bi-modal-title">Record Payment</span>  
                                 <span className="bi-modal-subtitle">Process customer payment</span>
                             </div>
                             <div className="bi-modal-badge-group">
@@ -5358,43 +6375,48 @@ const BillingInvoicing = () => {
                             </div>
                         </div>
                     }
-                    open={paymentModalVisible}
+                                       open={paymentModalVisible}
                     onCancel={() => {
                         setPaymentModalVisible(false);
                         paymentForm.resetFields();
                         setPaymentMethod('cash');
+                        setPaymentPercent(null);
+                        // ⭐ Explicit reset — `resetFields()` doesn't always
+                        //    clear these when they were set imperatively.
+                        paymentForm.setFieldValue('payer_name', '');
+                        paymentForm.setFieldValue('payer_relation', '');
                     }}
-                    width={580}
+                    width={640}
                     footer={null}
                     className={`${modalClass} bi-payment-modal`}
+                    centered={true}
+                    styles={{ body: { maxHeight: '75vh', overflowY: 'auto' } }}
                     destroyOnClose
                 >
                     <div className="bi-modal-body-enhanced">
-                        {/* Payment Summary Card */}
-                        <div className="bi-payment-summary-card">
-                            <div className="bi-payment-summary-grid">
+                                              <div className="bi-payment-summary-card">
+                            <div className="bi-payment-summary-grid" style={{ gridTemplateColumns: '1fr 1.2fr 1fr 1fr' }}>
                                 <div className="bi-payment-summary-item">
                                     <span className="bi-payment-summary-label">Customer</span>
                                     <span className="bi-payment-summary-value">{selectedInvoice?.customer_name || 'N/A'}</span>
                                 </div>
                                 <div className="bi-payment-summary-item">
                                     <span className="bi-payment-summary-label">Invoice #</span>
-                                    <span className="bi-payment-summary-value">{selectedInvoice?.invoice_number || 'N/A'}</span>
+                                    <span className="bi-payment-summary-value" style={{ wordBreak: 'break-all', fontSize: 13 }}>{selectedInvoice?.invoice_number || 'N/A'}</span>
                                 </div>
                                 <div className="bi-payment-summary-item">
                                     <span className="bi-payment-summary-label">Total Amount</span>
-                                    <span className="bi-payment-summary-value">₱{Number(selectedInvoice?.total_amount || 0).toLocaleString()}</span>
+                                    <span className="bi-payment-summary-value">{money(selectedInvoice?.total_amount)}</span>
                                 </div>
                                 <div className="bi-payment-summary-item bi-payment-summary-balance">
                                     <span className="bi-payment-summary-label">Remaining Balance</span>
                                     <span className="bi-payment-summary-value" style={{ color: '#ff4d4f', fontWeight: 700 }}>
-                                        ₱{Number(selectedInvoice?.balance || 0).toLocaleString()}
+                                        {money(selectedInvoice?.balance)}
                                     </span>
                                 </div>
                             </div>
                         </div>
-
-                        <Form
+                                               <Form
                             form={paymentForm}
                             layout="vertical"
                             onFinish={handleRecordPayment}
@@ -5405,6 +6427,7 @@ const BillingInvoicing = () => {
                             }}
                             className="bi-payment-form"
                         >
+                            {/* 1. Payment Amount */}
                             <Form.Item
                                 name="amount"
                                 label="Payment Amount"
@@ -5414,14 +6437,150 @@ const BillingInvoicing = () => {
                                 <InputNumber
                                     min={0.01}
                                     style={{ width: '100%' }}
-                                    prefix="₱"
                                     placeholder="0.00"
                                     className="bi-form-input bi-payment-amount-input"
                                     size="large"
+                                    // ⭐ Adds commas and ₱, but does NOT force .00 — user types decimals freely
+                                    formatter={(value) => {
+                                        if (!value) return '';
+                                        // Handle decimal typing natively without stripping user input
+                                        const parts = value.toString().split('.');
+                                        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                                        return parts.length > 1 ? `₱ ${parts[0]}.${parts[1]}` : `₱ ${parts[0]}`;
+                                    }}
+                                    parser={(value) => {
+                                        if (!value) return '';
+                                        return value.replace(/₱\s?|(,*)/g, '');
+                                    }}
+                                    addonAfter={
+                                        <Button
+                                            type="text"
+                                            size="small"
+                                            onClick={() => {
+                                                paymentForm.setFieldValue('amount', undefined);
+                                                setPaymentPercent(null);
+                                            }}
+                                            style={{ padding: '0 4px', height: 'auto', fontSize: 11, color: '#8b93a8' }}
+                                        >
+                                            Clear
+                                        </Button>
+                                    }
                                 />
                             </Form.Item>
 
-                                                        <Form.Item noStyle shouldUpdate={(prev, cur) => prev.amount !== cur.amount}>
+
+
+                            
+                                                    {/* ⭐ PAID BY — record that a different person
+                                handed over the money (family member, driver,
+                                sponsor). Pre-filled with the customer name. */}
+                            <div style={{
+                                padding: '12px 14px',
+                                background: isDarkMode ? '#1a1f3a' : '#f8fafc',
+                                borderRadius: 10,
+                                border: `1px dashed ${isDarkMode ? '#2a3450' : '#e2e8f0'}`,
+                                marginBottom: 16,
+                            }}>
+                                <div style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    marginBottom: 10,
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    letterSpacing: 0.5,
+                                    textTransform: 'uppercase',
+                                    color: '#64748b',
+                                }}>
+                                    <UserOutlined /> Paid By / Received From
+                                </div>
+                                <Row gutter={12}>
+                                    <Col xs={24} sm={14}>
+                                        <Form.Item
+                                            name="payer_name"
+                                            label="Payer Name"
+                                            style={{ marginBottom: 8 }}
+                                            tooltip="Leave blank if the booked customer is the payer."
+                                        >
+                                            <Input
+                                                placeholder={selectedInvoice?.customer_name || 'Name of person paying'}
+                                                className="bi-form-input"
+                                                allowClear
+                                            />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} sm={10}>
+                                        <Form.Item
+                                            name="payer_relation"
+                                            label="Relationship (optional)"
+                                            style={{ marginBottom: 8 }}
+                                            tooltip="e.g. Brother, Company driver, Sponsor"
+                                        >
+                                            <Select
+                                                allowClear
+                                                placeholder="e.g. Brother"
+                                                className="bi-form-select"
+                                                options={[
+                                                    { value: 'Self', label: 'Self (the customer)' },
+                                                    { value: 'Spouse', label: 'Spouse' },
+                                                    { value: 'Parent', label: 'Parent' },
+                                                    { value: 'Sibling', label: 'Sibling / Brother / Sister' },
+                                                    { value: 'Child', label: 'Child' },
+                                                    { value: 'Relative', label: 'Other Relative' },
+                                                    { value: 'Company rep', label: 'Company Representative' },
+                                                    { value: 'Driver', label: 'Driver' },
+                                                    { value: 'Sponsor', label: 'Sponsor' },
+                                                    { value: 'Friend', label: 'Friend' },
+                                                    { value: 'Other', label: 'Other' },
+                                                ]}
+                                            />
+                                        </Form.Item>
+                                    </Col>
+                                </Row>
+                                <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+                                    Leave blank if the same person who booked is the one paying.
+                                </div>
+                            </div>
+
+                            {/* 2. Payment % amount */}
+                            <Form.Item label="Payment % amount">
+
+                                
+                                <InputNumber
+                                    min={1}
+                                    max={100}
+                                    style={{ width: '100%' }}
+                                    placeholder="e.g., 30 for 30%"
+                                    addonAfter={
+                                        <Space size={4} style={{ marginLeft: 8 }}>
+                                            <span style={{ fontSize: 12 }}>%</span>
+                                            <Button
+                                                type="text"
+                                                size="small"
+                                                onClick={() => {
+                                                    setPaymentPercent(null);
+                                                    paymentForm.setFieldValue('amount', undefined);
+                                                }}
+                                                style={{ padding: '0 4px', height: 'auto', fontSize: 11, color: '#8b93a8' }}
+                                            >
+                                                Clear
+                                            </Button>
+                                        </Space>
+                                    }
+                                    value={paymentPercent}
+                                    onChange={(percent) => {
+                                        setPaymentPercent(percent);
+                                        if (percent && selectedInvoice?.total_amount) {
+                                            const computed = (Number(selectedInvoice.total_amount) * percent) / 100;
+                                            paymentForm.setFieldValue('amount', Number(computed.toFixed(2)));
+                                        } else if (!percent) {
+                                            paymentForm.setFieldValue('amount', undefined);
+                                        }
+                                    }}
+                                />
+                            </Form.Item>
+
+                            <Form.Item noStyle shouldUpdate={(prev, cur) => prev.amount !== cur.amount}>
                                 {({ getFieldValue }) => {
                                     const entered = Number(getFieldValue('amount') || 0);
                                     const balance = Number(selectedInvoice?.balance || 0);
@@ -5436,18 +6595,18 @@ const BillingInvoicing = () => {
                                             style={{ marginBottom: 16, borderRadius: '10px' }}
                                             message={
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                                    <span>Change to return</span>
-                                                    <span style={{ fontWeight: 700, fontSize: '16px', color: '#52c41a' }}>
-                                                        ₱{change.toFixed(2)}
-                                                    </span>
+                                                   <span>Change to return</span>
+<span style={{ fontWeight: 700, fontSize: '16px', color: '#52c41a' }}>
+    {money(change)}
+</span>
                                                 </div>
                                             }
                                             description={
-                                                <span style={{ fontSize: 12, color: '#64748b' }}>
-                                                    The payment will be recorded as <strong>exact cash</strong>{' '}
-                                                    (₱{balance.toFixed(2)}). The change (₱{change.toFixed(2)}) is not
-                                                    counted as payment.
-                                                </span>
+                                               <span style={{ fontSize: 12, color: '#64748b' }}>
+    The payment will be recorded as <strong>exact cash</strong>{' '}
+    ({money(balance)}). The change ({money(change)}) is not
+    counted as payment.
+</span>
                                             }
                                             className={isDarkMode ? 'bi-alert-dark' : ''}
                                         />
@@ -5579,11 +6738,14 @@ const BillingInvoicing = () => {
                             </Form.Item>
 
                             <div className="bi-modal-footer-enhanced">
-                                <Button
+                                                          <Button
                                     onClick={() => {
                                         setPaymentModalVisible(false);
                                         paymentForm.resetFields();
                                         setPaymentMethod('cash');
+                                        setPaymentPercent(null);
+                                        paymentForm.setFieldValue('payer_name', '');
+                                        paymentForm.setFieldValue('payer_relation', '');
                                     }}
                                     className="bi-footer-btn"
                                 >
@@ -5637,10 +6799,12 @@ const BillingInvoicing = () => {
                             </div>
                         </div>
                     }
-                    open={receiptModalVisible}
+                                      open={receiptModalVisible}
                     onCancel={() => { setReceiptModalVisible(false); setReceiptData(null); }}
-                    width={750}
+                    width={850}
                     className={`${modalClass} bi-receipt-modal`}
+                    centered={true}
+                    styles={{ body: { maxHeight: '80vh', overflowY: 'auto' } }}
                     footer={
                         <div className="bi-modal-footer-enhanced">
                             <Space size={8}>
@@ -5708,7 +6872,7 @@ const BillingInvoicing = () => {
                                 </div>
                             </div>
 
-                            {/* Customer Details */}
+                                                       {/* Customer Details */}
                             <div className="bi-info-section">
                                 <div className="bi-section-header">
                                     <UserOutlined style={{ color: '#1a7ab5' }} />
@@ -5728,6 +6892,104 @@ const BillingInvoicing = () => {
                                         <span className="bi-info-value">{receiptData.payment?.invoice_number}</span>
                                     </div>
                                 </div>
+
+                                {/* ⭐ PAID BY — only shown when the payer is a
+                                    different person from the customer. */}
+                                {(receiptData.payment?.is_third_party_payer
+                                    || (receiptData.payment?.payer_name
+                                        && receiptData.payment.payer_name.toLowerCase()
+                                            !== (receiptData.payment?.customer_name || '').toLowerCase())) && (
+                                    <div style={{
+                                        marginTop: 12,
+                                        padding: '10px 14px',
+                                        background: '#fffbeb',
+                                        border: '1px solid #fde68a',
+                                        borderRadius: 8,
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        gap: 12,
+                                    }}>
+                                        <div>
+                                            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b' }}>
+                                                Received From
+                                            </div>
+                                            <div style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', marginTop: 2 }}>
+                                                {receiptData.payment?.payer_name}
+                                            </div>
+                                        </div>
+                                        {receiptData.payment?.payer_relation && (
+                                            <div style={{ textAlign: 'right' }}>
+                                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: '#64748b' }}>
+                                                    Relationship
+                                                </div>
+                                                <div style={{ fontSize: 12, fontWeight: 600, color: '#7c3aed', marginTop: 2 }}>
+                                                    {receiptData.payment.payer_relation}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* ⭐ AMOUNT SUMMARY — Grand Total, Amount Paid,
+                                Balance After Payment. The three numbers the
+                                cashier and customer care about most. */}
+                            <div className="bi-invoice-summary-grid" style={{ marginBottom: 20 }}>
+                                <div className="bi-summary-card">
+                                    <div className="bi-summary-icon" style={{ background: '#e8f0fe', color: '#1a7ab5' }}>
+                                        <DollarOutlined />
+                                    </div>
+                                    <div>
+                                        <div className="bi-summary-label">Grand Total (Event)</div>
+                                        <div className="bi-summary-value">
+                                            {money(receiptData.payment?.total_amount ?? 0)}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bi-summary-card">
+                                    <div className="bi-summary-icon" style={{ background: '#e6f7e6', color: '#52c41a' }}>
+                                        <CheckCircleOutlined />
+                                    </div>
+                                    <div>
+                                        <div className="bi-summary-label">This Payment</div>
+                                        <div className="bi-summary-value" style={{ color: '#52c41a' }}>
+                                            {money(receiptData.payment?.amount ?? 0)}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bi-summary-card">
+                                    <div className="bi-summary-icon" style={{ background: '#fff1f0', color: '#ff4d4f' }}>
+                                        <WarningOutlined />
+                                    </div>
+                                    <div>
+                                        <div className="bi-summary-label">
+                                            {(Number(receiptData.payment?.balance_after_payment ?? 0) <= 0.01)
+                                                ? 'Fully Paid'
+                                                : 'Balance After Payment'}
+                                        </div>
+                                        <div className="bi-summary-value" style={{
+                                            color: (Number(receiptData.payment?.balance_after_payment ?? 0) <= 0.01)
+                                                ? '#52c41a'
+                                                : '#ff4d4f',
+                                        }}>
+                                            {money(receiptData.payment?.balance_after_payment ?? 0)}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bi-summary-card">
+                                    <div className="bi-summary-icon" style={{ background: '#f0f9ff', color: '#0891b2' }}>
+                                        <UserOutlined />
+                                    </div>
+                                    <div>
+                                        <div className="bi-summary-label">Cashier</div>
+                                        <div className="bi-summary-value" style={{ fontSize: 14 }}>
+                                            {receiptData.payment?.cashier_name
+                                                || receiptData.payment?.verified_by
+                                                || 'System'}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
 
                             {/* Payment Details */}
@@ -5738,10 +7000,10 @@ const BillingInvoicing = () => {
                                 </div>
                                 <div className="bi-payment-details-grid">
                                     <div className="bi-payment-detail-item">
-                                        <span className="bi-payment-detail-label">Amount</span>
-                                        <span className="bi-payment-detail-value" style={{ fontSize: '24px', fontWeight: 700, color: '#1a7ab5' }}>
-                                            ₱{Number(receiptData.payment?.amount || 0).toLocaleString()}
-                                        </span>
+                                        <span className="bi-payment-detail-label">Amount Paid</span>
+                                       <span className="bi-payment-detail-value" style={{ fontSize: '24px', fontWeight: 700, color: '#1a7ab5' }}>
+    {money(receiptData.payment?.amount)}
+</span>
                                     </div>
                                     <div className="bi-payment-detail-item">
                                         <span className="bi-payment-detail-label">Payment Method</span>
@@ -5753,9 +7015,18 @@ const BillingInvoicing = () => {
                                         </span>
                                     </div>
                                     <div className="bi-payment-detail-item">
-                                        <span className="bi-payment-detail-label">Payment Type</span>
+                                        <span className="bi-payment-detail-label">Type / Category</span>
                                         <span className="bi-payment-detail-value">
-                                            <Tag color="blue">{receiptData.payment?.payment_type?.toUpperCase() || 'PARTIAL'}</Tag>
+                                            <Tag color={
+                                                receiptData.payment?.payment_category === 'damage' ? 'red'
+                                                : receiptData.payment?.payment_category === 'additional' ? 'purple'
+                                                : receiptData.payment?.payment_category === 'deposit' ? 'blue'
+                                                : receiptData.payment?.payment_category === 'full' ? 'green'
+                                                : 'orange'
+                                            }>
+                                                {receiptData.payment?.payment_category_label
+                                                    || (receiptData.payment?.payment_type?.toUpperCase() || 'PARTIAL')}
+                                            </Tag>
                                         </span>
                                     </div>
                                     <div className="bi-payment-detail-item">
@@ -5764,6 +7035,32 @@ const BillingInvoicing = () => {
                                             <Text copyable className="bi-plain-text">
                                                 {receiptData.payment?.reference_number || 'N/A'}
                                             </Text>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* ⭐ Date & Time — always shown with the cashier */}
+                            <div className="bi-info-section">
+                                <div className="bi-section-header">
+                                    <CalendarOutlined style={{ color: '#1a7ab5' }} />
+                                    <span className="bi-section-title-text">Date & Time</span>
+                                </div>
+                                <div className="bi-info-grid">
+                                    <div className="bi-info-item">
+                                        <span className="bi-info-label">Payment Date</span>
+                                        <span className="bi-info-value">
+                                            {receiptData.payment?.date
+                                                ? dayjs(receiptData.payment.date).format('MMMM DD, YYYY')
+                                                : '—'}
+                                        </span>
+                                    </div>
+                                    <div className="bi-info-item">
+                                        <span className="bi-info-label">Payment Time</span>
+                                        <span className="bi-info-value">
+                                            {receiptData.payment?.date_time
+                                                ? dayjs(receiptData.payment.date_time).format('h:mm A')
+                                                : '—'}
                                         </span>
                                     </div>
                                 </div>
@@ -5978,7 +7275,7 @@ const BillingInvoicing = () => {
                                 </Row>
                             </div>
 
-                            {/* ⭐ Additional Charges breakdown — one input per fee */}
+                                                     {/* ⭐ Additional Charges breakdown */}
                             <div className="bi-form-section">
                                 <div className="bi-form-section-title">Additional Charges</div>
                                 <Row gutter={16}>
@@ -6010,6 +7307,64 @@ const BillingInvoicing = () => {
                                     ))}
                                 </Row>
 
+                                {/* ⭐ CUSTOM CHARGES (e.g., Glass damage +57) */}
+                                <div style={{ marginTop: 16 }}>
+                                    {customCharges.map((item, index) => (
+                                        <Row gutter={16} key={item.id} style={{ marginBottom: 8 }}>
+                                            <Col xs={24} sm={12}>
+                                                <Input
+                                                    placeholder="Custom description (e.g., Glass damage)"
+                                                    value={item.description}
+                                                    onChange={(e) => {
+                                                        const newItems = [...customCharges];
+                                                        newItems[index].description = e.target.value;
+                                                        setCustomCharges(newItems);
+                                                    }}
+                                                    className="bi-form-input"
+                                                />
+                                            </Col>
+                                            <Col xs={16} sm={8}>
+                                                <InputNumber
+                                                    min={0}
+                                                    style={{ width: '100%' }}
+                                                    prefix="₱"
+                                                    placeholder="0.00"
+                                                    value={item.amount}
+                                                    onChange={(value) => {
+                                                        const newItems = [...customCharges];
+                                                        newItems[index].amount = Number(value || 0);
+                                                        setCustomCharges(newItems);
+                                                    }}
+                                                    className="bi-form-input"
+                                                />
+                                            </Col>
+                                            <Col xs={8} sm={4}>
+                                                <Button
+                                                    danger
+                                                    type="text"
+                                                    icon={<DeleteOutlined />}
+                                                    onClick={() => {
+                                                        setCustomCharges(customCharges.filter(c => c.id !== item.id));
+                                                    }}
+                                                />
+                                            </Col>
+                                        </Row>
+                                    ))}
+                                    <Button
+                                        type="dashed"
+                                        block
+                                        icon={<PlusOutlined />}
+                                        onClick={() => {
+                                            setCustomCharges([
+                                                ...customCharges,
+                                                { id: Date.now(), description: '', amount: 0 }
+                                            ]);
+                                        }}
+                                    >
+                                        Add Custom Charge
+                                    </Button>
+                                </div>
+
                                 {/* Live subtotal of the extra fees */}
                                 <div
                                     style={{
@@ -6018,21 +7373,21 @@ const BillingInvoicing = () => {
                                         padding: '8px 12px',
                                         background: isDarkMode ? '#1a1f3a' : '#f8fafc',
                                         borderRadius: 8,
-                                        marginTop: 4,
+                                        marginTop: 16,
                                     }}
                                 >
                                     <Text type="secondary" style={{ marginRight: 12 }}>
                                         Total Additional Charges:
                                     </Text>
                                     <Text strong style={{ color: '#1a7ab5' }}>
-                                        ₱
-                                        {Number(
+                                        {money(
                                             (invoiceCharges.transportation_fee || 0) +
                                             (invoiceCharges.setup_fee || 0) +
                                             (invoiceCharges.service_crew_fee || 0) +
                                             (invoiceCharges.equipment_rental || 0) +
-                                            (invoiceCharges.extra_food_fee || 0)
-                                        ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                            (invoiceCharges.extra_food_fee || 0) +
+                                            customCharges.reduce((sum, c) => sum + (c.amount || 0), 0)
+                                        )}
                                     </Text>
                                 </div>
                             </div>
@@ -6074,6 +7429,112 @@ const BillingInvoicing = () => {
                         </Form>
                     </div>
                 </Modal>
+                {/* ==================== DEDICATED ADDITIONAL CHARGES MODAL ==================== */}
+                <Modal
+                    title={
+                        <div className="bi-modal-header-enhanced">
+                            <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #faad14, #d48806)' }}>
+                                <PercentageOutlined />
+                            </div>
+                            <div className="bi-modal-title-group">
+                                <span className="bi-modal-title">Additional Charges</span>
+                                <span className="bi-modal-subtitle">Manage fees for this invoice</span>
+                            </div>
+                            <div className="bi-modal-badge-group">
+                                <span className="bi-modal-badge">{selectedInvoice?.invoice_number || 'N/A'}</span>
+                            </div>
+                        </div>
+                    }
+                    open={chargesModalVisible}
+                    onCancel={() => { setChargesModalVisible(false); chargesForm.resetFields(); }}
+                    width={700}
+                    footer={null}
+                    className={modalClass}
+                    destroyOnClose
+                >
+                    <div className="bi-modal-body-enhanced">
+                        <Form form={chargesForm} layout="vertical" onFinish={handleSaveCharges}>
+                            
+                            <div className="bi-form-section">
+                                <div className="bi-form-section-title">Standard Fees</div>
+                                <Row gutter={16}>
+                                    <Col xs={24} sm={12}>
+                                        <Form.Item name={['standardCharges', 'transportation_fee']} label="Transportation Fee">
+                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" className="bi-form-input" />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} sm={12}>
+                                        <Form.Item name={['standardCharges', 'setup_fee']} label="Setup Fee">
+                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" className="bi-form-input" />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} sm={12}>
+                                        <Form.Item name={['standardCharges', 'service_crew_fee']} label="Service Crew Fee">
+                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" className="bi-form-input" />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} sm={12}>
+                                        <Form.Item name={['standardCharges', 'equipment_rental']} label="Equipment Rental">
+                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" className="bi-form-input" />
+                                        </Form.Item>
+                                    </Col>
+                                    <Col xs={24} sm={12}>
+                                        <Form.Item name={['standardCharges', 'extra_food_fee']} label="Extra Food Request">
+                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" className="bi-form-input" />
+                                        </Form.Item>
+                                    </Col>
+                                </Row>
+                            </div>
+
+                            <div className="bi-form-section">
+                                <div className="bi-form-section-title">Other Charges</div>
+                                <Form.List name="otherCharges">
+                                    {(fields, { add, remove }) => (
+                                        <>
+                                            {fields.map(({ key, name, ...restField }) => (
+                                                <Row gutter={16} key={key} style={{ marginBottom: 12 }}>
+                                                    <Col xs={24} sm={12}>
+                                                        <Form.Item
+                                                            {...restField}
+                                                            name={[name, 'description']}
+                                                            rules={[{ required: true, message: 'Enter description' }]}
+                                                            style={{ marginBottom: 0 }}
+                                                        >
+                                                            <Input placeholder="Description (e.g., Glass damage)" className="bi-form-input" />
+                                                        </Form.Item>
+                                                    </Col>
+                                                    <Col xs={16} sm={8}>
+                                                        <Form.Item
+                                                            {...restField}
+                                                            name={[name, 'amount']}
+                                                            rules={[{ required: true, message: 'Enter amount' }]}
+                                                            style={{ marginBottom: 0 }}
+                                                        >
+                                                            <InputNumber min={0} style={{ width: '100%' }} prefix="₱" placeholder="0.00" className="bi-form-input" />
+                                                        </Form.Item>
+                                                    </Col>
+                                                    <Col xs={8} sm={4}>
+                                                        <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(name)} />
+                                                    </Col>
+                                                </Row>
+                                            ))}
+                                            <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>
+                                                Add Custom Charge
+                                            </Button>
+                                        </>
+                                    )}
+                                </Form.List>
+                            </div>
+
+                            <div className="bi-modal-footer-enhanced">
+                                <Button onClick={() => setChargesModalVisible(false)}>Cancel</Button>
+                                <Button type="primary" htmlType="submit" icon={<CheckCircleOutlined />} style={{ background: '#faad14', borderColor: '#faad14' }}>
+                                    Save Changes
+                                </Button>
+                            </div>
+                        </Form>
+                    </div>
+                </Modal>
 
                 {/* ==================== APPLY DISCOUNT MODAL ==================== */}
                 <Modal
@@ -6099,10 +7560,10 @@ const BillingInvoicing = () => {
                                     <br />
                                     <Text strong>{selectedInvoice?.invoice_number || 'N/A'}</Text>
                                 </Col>
-                                <Col span={12}>
+                                                               <Col span={12}>
                                     <Text type="secondary">Subtotal:</Text>
                                     <br />
-                                    <Text strong>₱{Number(selectedInvoice?.subtotal || 0).toLocaleString()}</Text>
+                                    <Text strong>{money(selectedInvoice?.subtotal)}</Text>
                                 </Col>
                             </Row>
                         </div>
@@ -6146,9 +7607,9 @@ const BillingInvoicing = () => {
                     destroyOnClose
                 >
                     <div className="bi-modal-body-enhanced">
-                        <Alert
+                                             <Alert
                             message={`Reminder for ${selectedInvoice?.customer_name || 'Customer'}`}
-                            description={`Outstanding balance: ₱${Number(selectedInvoice?.balance || 0).toLocaleString()}`}
+                            description={`Outstanding balance: ${money(selectedInvoice?.balance)}`}
                             type="warning"
                             showIcon
                             style={{ marginBottom: 20 }}
@@ -6404,12 +7865,12 @@ const BillingInvoicing = () => {
                                         </div>
                                         <div className="bi-info-item">
                                             <span className="bi-info-label">Total Amount</span>
-                                            <span className="bi-info-value">₱{Number(selectedInvoice?.total_amount || 0).toLocaleString()}</span>
+                                            <span className="bi-info-value">{money(selectedInvoice?.total_amount)}</span>
                                         </div>
-                                        <div className="bi-info-item">
+                                                                                <div className="bi-info-item">
                                             <span className="bi-info-label">Paid Amount</span>
                                             <span className="bi-info-value" style={{ color: '#52c41a', fontWeight: 600 }}>
-                                                ₱{Number(selectedInvoice?.paid_amount || 0).toLocaleString()}
+                                                {money(selectedInvoice?.paid_amount)}
                                             </span>
                                         </div>
                                     </div>
@@ -6556,14 +8017,14 @@ const BillingInvoicing = () => {
                                             <span className="bi-info-label">Customer</span>
                                             <span className="bi-info-value">{selectedInvoice?.customer_name || 'N/A'}</span>
                                         </div>
-                                        <div className="bi-info-item">
+                                                                               <div className="bi-info-item">
                                             <span className="bi-info-label">Total Amount</span>
-                                            <span className="bi-info-value">₱{Number(selectedInvoice?.total_amount || 0).toLocaleString()}</span>
+                                            <span className="bi-info-value">{money(selectedInvoice?.total_amount)}</span>
                                         </div>
                                         <div className="bi-info-item">
                                             <span className="bi-info-label">Paid Amount</span>
                                             <span className="bi-info-value" style={{ color: '#52c41a' }}>
-                                                ₱{Number(selectedInvoice?.paid_amount || 0).toLocaleString()}
+                                                {money(selectedInvoice?.paid_amount)}
                                             </span>
                                         </div>
                                         <div className="bi-info-item">
@@ -6644,10 +8105,10 @@ const BillingInvoicing = () => {
                                             <span className="bi-info-label">Refund #</span>
                                             <span className="bi-info-value">{selectedRefund?.refund_number}</span>
                                         </div>
-                                        <div className="bi-info-item">
+                                                                               <div className="bi-info-item">
                                             <span className="bi-info-label">Deposit on File</span>
                                             <span className="bi-info-value" style={{ color: '#1a7ab5', fontWeight: 600 }}>
-                                                ₱{Number(selectedRefund?.deposit_snapshot || 0).toLocaleString()}
+                                                {money(selectedRefund?.deposit_snapshot)}
                                             </span>
                                         </div>
                                         <div className="bi-info-item">
@@ -6742,9 +8203,9 @@ const BillingInvoicing = () => {
                             destroyOnClose
                         >
                             <div className="bi-modal-body-enhanced">
-                                <Alert
+                                                                <Alert
                                     message="Confirm Refund Release"
-                                    description={`Release the approved refund of ₱${Number(selectedRefund?.approved_amount || selectedRefund?.amount || 0).toLocaleString()} to the customer. This action will also cancel the booking.`}
+                                    description={`Release the approved refund of ${money(selectedRefund?.approved_amount ?? selectedRefund?.amount)} to the customer. This action will also cancel the booking.`}
                                     type="success"
                                     showIcon
                                     style={{ marginBottom: 20 }}
@@ -6761,10 +8222,10 @@ const BillingInvoicing = () => {
                                             <span className="bi-info-label">Refund #</span>
                                             <span className="bi-info-value">{selectedRefund?.refund_number}</span>
                                         </div>
-                                        <div className="bi-info-item">
+                                                                               <div className="bi-info-item">
                                             <span className="bi-info-label">Approved Amount</span>
                                             <span className="bi-info-value" style={{ color: '#52c41a', fontWeight: 600 }}>
-                                                ₱{Number(selectedRefund?.approved_amount || selectedRefund?.amount || 0).toLocaleString()}
+                                                {money(selectedRefund?.approved_amount ?? selectedRefund?.amount)}
                                             </span>
                                         </div>
                                     </div>
@@ -6960,19 +8421,19 @@ const BillingInvoicing = () => {
                                             <div className="bi-summary-icon" style={{ background: '#e8f0fe', color: '#1a7ab5' }}>
                                                 <DollarOutlined />
                                             </div>
-                                            <div>
+                                                                                       <div>
                                                 <div className="bi-summary-label">Refund Amount</div>
-                                                <div className="bi-summary-value">₱{Number(selectedRefund.amount || 0).toLocaleString()}</div>
+                                                <div className="bi-summary-value">{money(selectedRefund.amount)}</div>
                                             </div>
                                         </div>
                                         <div className="bi-summary-card">
                                             <div className="bi-summary-icon" style={{ background: '#fff7e6', color: '#faad14' }}>
                                                 <WalletOutlined />
                                             </div>
-                                            <div>
+                                                                                       <div>
                                                 <div className="bi-summary-label">Deposit Snapshot</div>
                                                 <div className="bi-summary-value" style={{ color: '#faad14' }}>
-                                                    ₱{Number(selectedRefund.deposit_snapshot || 0).toLocaleString()}
+                                                    {money(selectedRefund.deposit_snapshot)}
                                                 </div>
                                             </div>
                                         </div>
@@ -6980,10 +8441,10 @@ const BillingInvoicing = () => {
                                             <div className="bi-summary-icon" style={{ background: '#e6f7e6', color: '#52c41a' }}>
                                                 <CheckCircleOutlined />
                                             </div>
-                                            <div>
+                                                                                       <div>
                                                 <div className="bi-summary-label">Released Amount</div>
                                                 <div className="bi-summary-value" style={{ color: '#52c41a' }}>
-                                                    ₱{Number(selectedRefund.released_amount || 0).toLocaleString()}
+                                                    {money(selectedRefund.released_amount)}
                                                 </div>
                                             </div>
                                         </div>
@@ -7141,10 +8602,102 @@ const BillingInvoicing = () => {
                             )}
                         </Modal>
                     </>
-                )}
+                     )}
+
+                {/* ==================== MASTER LIST MODAL ==================== */}
+                <Modal
+                    title={
+                        <div className="bi-modal-header-enhanced bi-pdf-header">
+                            <div className="bi-modal-icon" style={{ background: 'linear-gradient(135deg, #1a7ab5, #1565a0)' }}>
+                                <UnorderedListOutlined />
+                            </div>
+                            <span className="bi-modal-title" style={{ textTransform: 'capitalize' }}>
+                                Master List — {masterListType}
+                            </span>
+                            <div className="bi-pdf-controls">
+                                <Button size="small" icon={<ZoomOutOutlined />} onClick={() => setMasterListZoom(Math.max(50, masterListZoom - 10))} />
+                                <span style={{ fontSize: 12, minWidth: 50, textAlign: 'center' }}>{masterListZoom}%</span>
+                                <Button size="small" icon={<ZoomInOutlined />} onClick={() => setMasterListZoom(Math.min(200, masterListZoom + 10))} />
+                                <Button size="small" icon={<FullscreenOutlined />} onClick={() => setMasterListZoom(100)}>Fit</Button>
+                            </div>
+                        </div>
+                    }
+                    open={masterListModalVisible}
+                    onCancel={() => setMasterListModalVisible(false)}
+                    width="95%"
+                    style={{ maxWidth: 1400, top: 20 }}
+                    className="bi-pdf-viewer-modal"
+                    centered={false}
+                    maskClosable={true}
+                    footer={
+                        <div className="bi-modal-footer-enhanced bi-pdf-footer">
+                            <Space>
+                                <span style={{ fontSize: 12, color: '#64748b' }}>Filter by date:</span>
+                              <RangePicker
+    value={masterListDateRange}
+    onChange={(v) => {
+        const next = v || [];
+        setMasterListDateRange(next);
+        handleRegenerateMasterList(next);
+    }}
+    size="small"
+    format="YYYY-MM-DD"
+/>
+<Button
+    size="small"
+    onClick={() => {
+        setMasterListDateRange([]);
+        handleRegenerateMasterList([]);
+    }}
+>
+    Clear Filter
+</Button>
+                            </Space>
+                            <Space>
+                                <Button icon={<PrinterOutlined />} onClick={handlePrintMasterList} type="primary">
+                                    Print
+                                </Button>
+                                <Button icon={<DownloadOutlined />} onClick={handleDownloadMasterList}>
+                                    Download PDF
+                                </Button>
+                                <Button onClick={() => setMasterListModalVisible(false)}>Close</Button>
+                            </Space>
+                        </div>
+                    }
+                    destroyOnClose
+                    styles={{
+                        body: {
+                            padding: '20px',
+                            background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
+                            maxHeight: 'calc(100vh - 200px)',
+                            overflow: 'auto',
+                            display: 'flex',
+                            justifyContent: 'center',
+                            alignItems: 'flex-start',
+                        },
+                    }}
+                >
+                    <div
+                        style={{
+                            transform: `scale(${masterListZoom / 100})`,
+                            transformOrigin: 'top center',
+                            transition: 'transform 0.2s ease',
+                            background: '#ffffff',
+                            borderRadius: '4px',
+                            boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+                            padding: 0,
+                            margin: '0 auto',
+                            maxWidth: '297mm',
+                            width: '100%',
+                        }}
+                    >
+                        <div dangerouslySetInnerHTML={{ __html: masterListHtml }} />
+                    </div>
+                </Modal>
             </div>
         </ConfigProvider>
     );
+
 };
 
 export default BillingInvoicing;

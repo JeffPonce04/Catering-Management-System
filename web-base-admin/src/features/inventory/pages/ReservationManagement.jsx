@@ -19,6 +19,7 @@ import {
   useCreateEquipmentReservation, useEquipment, useEquipmentReservations,
   useReturnEquipmentReservation, useUpdateEquipmentReservation,
 } from '../../../hooks/useInventoryQueries';
+import { useBookings } from '../../../hooks/useBookingQuotation';
 import '../styles/EquipmentReservation.css';
 
 const { Text, Title } = Typography;
@@ -29,7 +30,6 @@ const getStatusConfig = (status) => {
   const config = {
     reserved: { color: '#f59e0b', bg: '#fffbeb', text: 'Reserved', icon: <ClockCircleOutlined /> },
     checked_out: { color: '#1a7ab5', bg: '#e6f0fa', text: 'Checked Out', icon: <CheckCircleOutlined /> },
-    returned: { color: '#10b981', bg: '#ecfdf5', text: 'Returned', icon: <CheckOutlined /> },
     cancelled: { color: '#ef4444', bg: '#fef2f2', text: 'Cancelled', icon: <CloseOutlined /> },
   };
   return config[status] || { color: '#6b7280', bg: '#f3f4f6', text: 'Unknown', icon: <MoreOutlined /> };
@@ -72,8 +72,23 @@ const ReservationManagement = () => {
   const [editForm] = Form.useForm();
   const [returnForm] = Form.useForm();
 
-  const reservationsQuery = useEquipmentReservations({ per_page: 500 });
-  const equipmentQuery = useEquipment({ per_page: 500, active: 1 });
+  // ⭐ FIX: Added refetchOnMount and staleTime to ensure newly reserved items
+  // from the Orders & Events workspace appear instantly when you open this page.
+  const reservationsQuery = useEquipmentReservations({ per_page: 500 }, {
+    refetchOnMount: 'always',
+    staleTime: 0,
+  });
+  const equipmentQuery = useEquipment({ per_page: 500, active: 1 }, {
+    refetchOnMount: 'always',
+    staleTime: 0,
+  });
+
+  // ⭐ FETCH APPROVED BOOKINGS for the dropdown
+  const { data: bookingsData, isLoading: bookingsLoading } = useBookings({
+    status_in: 'confirmed,approved',
+    per_page: 500,
+  });
+  const approvedBookings = bookingsData?.data || [];
   const createReservation = useCreateEquipmentReservation();
   const updateReservation = useUpdateEquipmentReservation();
   const returnReservation = useReturnEquipmentReservation();
@@ -86,8 +101,15 @@ const ReservationManagement = () => {
     return () => observer.disconnect();
   }, []);
 
-  const rows = useMemo(() => reservationsQuery.data?.data || [], [reservationsQuery.data]);
-  const filtered = useMemo(() => rows.filter((row) => {
+  // ⭐ Safely unwrap the paginated data array regardless of how the hook returns it
+  const rows = useMemo(() => {
+    const payload = reservationsQuery.data;
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.data?.data)) return payload.data.data;
+    return [];
+  }, [reservationsQuery.data]);  const filtered = useMemo(() => rows.filter((row) => {
     const term = search.trim().toLowerCase();
     const matches = !term || [row.equipment_name, row.booking_no, row.customer_name, row.event_name]
       .some((value) => String(value || '').toLowerCase().includes(term));
@@ -95,6 +117,16 @@ const ReservationManagement = () => {
   }), [rows, search, filterStatus]);
 
   const equipment = equipmentQuery.data?.data || [];
+
+  // ⭐ Auto-fill the date when a booking is selected
+  const handleBookingSelect = (bookingId) => {
+    const selectedBooking = approvedBookings.find(b => b.booking_id === bookingId);
+    if (selectedBooking && selectedBooking.event_date) {
+      createForm.setFieldsValue({
+        event_date: dayjs(selectedBooking.event_date)
+      });
+    }
+  };
 
   const submitCreate = async (values) => {
     try {
@@ -295,7 +327,7 @@ const ReservationManagement = () => {
                 <EditOutlined />
               </button>
             </Tooltip>
-            {row.status !== 'returned' && row.status !== 'cancelled' && (
+            {row.status !== 'cancelled' && (
               <Tooltip title="Return Equipment">
                 <button className="reservation-action-icon return" onClick={() => openReturn(row)}>
                   <RollbackOutlined />
@@ -443,14 +475,7 @@ const ReservationManagement = () => {
             </div>
             <div className="reservation-stat-trend up">In Progress</div>
           </div>
-          <div className="reservation-stat-card">
-            <div className="reservation-stat-icon green"><CheckOutlined /></div>
-            <div className="reservation-stat-info">
-              <div className="reservation-stat-value">{returnedCount}</div>
-              <div className="reservation-stat-label">Returned</div>
-            </div>
-            <div className="reservation-stat-trend up">Completed</div>
-          </div>
+               {/* ⭐ FIX: Returned card removed since returned items are hidden */}
           <div className="reservation-stat-card">
             <div className="reservation-stat-icon orange"><BoxPlotOutlined /></div>
             <div className="reservation-stat-info">
@@ -485,11 +510,9 @@ const ReservationManagement = () => {
                   className="reservation-filter-select"
                   placeholder="Status"
                 >
-                  <Option value="all">All Status</Option>
+                               <Option value="all">All Active Status</Option>
                   <Option value="reserved">Reserved</Option>
                   <Option value="checked_out">Checked Out</Option>
-                  <Option value="returned">Returned</Option>
-                  <Option value="cancelled">Cancelled</Option>
                 </Select>
               </div>
             </div>
@@ -502,14 +525,8 @@ const ReservationManagement = () => {
                   dataSource={filtered}
                   rowKey="id"
                   className={tableClass}
-                  pagination={{
-                    pageSize: 10,
-                    showSizeChanger: true,
-                    showTotal: (total) => `Total ${total} reservations`,
-                    itemRender: renderPaginationItem,
-                    pageSizeOptions: ['5', '10', '20', '50']
-                  }}
-                  scroll={{ x: 1300, y: 'calc(100vh - 460px)' }}
+                                 pagination={false}
+                  scroll={{ x: 1300, y: 'max-content' }}
                   locale={{
                     emptyText: (
                       <div className="reservation-empty-state">
@@ -648,14 +665,20 @@ const ReservationManagement = () => {
               </Form.Item>
 
               <Row gutter={16}>
-                <Col xs={24} md={12}>
-                  <Form.Item name="booking_id" label="Booking ID" rules={[{ required: true }]}>
-                    <InputNumber 
-                      min={1} 
-                      style={{ width: '100%' }} 
+                          <Col xs={24} md={12}>
+                  <Form.Item name="booking_id" label="Booking ID" rules={[{ required: true, message: 'Please select a booking' }]}>
+                    <Select
+                      showSearch
+                      loading={bookingsLoading}
+                      optionFilterProp="label"
                       size="large"
-                      placeholder="Enter booking ID"
-                      className="reservation-input-modern"
+                      placeholder="Select approved booking"
+                      className="reservation-select-modern"
+                      onChange={handleBookingSelect}
+                      options={approvedBookings.map((b) => ({
+                        value: b.booking_id,
+                        label: `${b.booking_no} - ${b.customer_name} (${b.event_date || 'No date'})`
+                      }))}
                     />
                   </Form.Item>
                 </Col>

@@ -24,8 +24,17 @@ use Illuminate\Support\Facades\Schema;
 
 class EventController extends Controller
 {
-    protected $notificationService;
+    private const MEAL_SEQUENCE = [
+        'breakfast'        => 1,
+        'morning snacks'   => 2,
+        'morning snack'    => 2,
+        'lunch'            => 3,
+        'afternoon snacks' => 4,
+        'afternoon snack'  => 4,
+        'dinner'           => 5,
+    ];
 
+    protected $notificationService;
     public function __construct(NotificationService $notificationService)
     {
         $this->notificationService = $notificationService;
@@ -80,29 +89,31 @@ class EventController extends Controller
     public function index(Request $request)
     {
         $query = $this->query()
-            ->whereIn('booking_status', ['confirmed', 'ongoing'])
-            ->whereHas('serviceEvent', fn ($q) => $q->whereNotIn('status', ['completed', 'cancelled']));
+            ->whereIn('booking_status', ['confirmed', 'ongoing', 'missed_delivery', 'missed_pickup'])
+            ->whereHas('serviceEvent', fn($q) => $q->whereNotIn('status', ['completed', 'cancelled']));
 
         $requestedStatus = strtolower((string) $request->input('status', ''));
         if ($requestedStatus !== '' && $requestedStatus !== 'all') {
             $query->where('booking_status', $requestedStatus)
-                ->whereHas('serviceEvent', fn ($q) => $q->where('status', $requestedStatus));
+                ->whereHas('serviceEvent', fn($q) => $q->where('status', $requestedStatus));
         }
 
         if ($request->boolean('ongoing_only')) {
             $query->where('booking_status', 'ongoing')
-                ->whereHas('serviceEvent', fn ($q) => $q->where('status', 'ongoing'));
+                ->whereHas('serviceEvent', fn($q) => $q->where('status', 'ongoing'));
         }
 
         if ($request->event_date) {
-            $query->whereHas('serviceEvent', fn ($q) => $q->whereDate('event_date', $request->event_date));
+            $query->whereHas('serviceEvent', fn($q) => $q->whereDate('event_date', $request->event_date));
         }
 
         if ($request->search) {
             $search = $request->search;
             $query->where(function ($q) use ($search) {
                 $q->where('booking_no', 'like', "%{$search}%")
-                    ->orWhereHas('serviceEvent.customer.person', fn ($p) =>
+                    ->orWhereHas(
+                        'serviceEvent.customer.person',
+                        fn($p) =>
                         $p->where('first_name', 'like', "%{$search}%")
                             ->orWhere('last_name', 'like', "%{$search}%")
                     );
@@ -110,7 +121,7 @@ class EventController extends Controller
         }
 
         $events = $query->latest('booking_id')->paginate($request->integer('per_page', 15));
-        $events->getCollection()->transform(fn ($booking) => $this->formatEvent($booking));
+        $events->getCollection()->transform(fn($booking) => $this->formatEvent($booking));
 
         return $this->ok($events);
     }
@@ -132,7 +143,7 @@ class EventController extends Controller
             ->whereIn('booking_status', ['ongoing'])
             ->count();
         $completed = (clone $operational)->where('booking_status', 'completed')->count();
-        
+
         return $this->ok([
             'total' => $total,
             'upcoming' => $upcoming,
@@ -147,31 +158,31 @@ class EventController extends Controller
     public function sendEventReminders()
     {
         $tomorrow = now()->addDay()->toDateString();
-        
-        $events = Booking::whereHas('serviceEvent', function($q) use ($tomorrow) {
+
+        $events = Booking::whereHas('serviceEvent', function ($q) use ($tomorrow) {
             $q->whereDate('event_date', $tomorrow);
         })->whereIn('booking_status', ['confirmed', 'ongoing'])->get();
-        
+
         $remindersSent = 0;
-        
+
         foreach ($events as $booking) {
             // ✅ Notification: Event starts tomorrow for Event Coordinator
             $this->notificationService->eventStartsTomorrow($booking);
             $remindersSent++;
-            
+
             // Also check equipment needs
             foreach ($booking->equipment as $equipmentItem) {
                 if ($equipmentItem->equipment) {
                     $this->notificationService->equipmentPreparationNeeded($booking, $equipmentItem->equipment);
                 }
             }
-            
+
             // Check delivery preparation
             if ($booking->serviceEvent?->delivery_method === 'delivery') {
                 $this->notificationService->deliveryPreparationReady($booking);
             }
         }
-        
+
         return $this->ok(['sent' => $remindersSent], 'Event reminders sent');
     }
 
@@ -193,7 +204,7 @@ class EventController extends Controller
         $staffIds = collect($validated['staff_ids'] ?? $validated['staff_id'] ?? [])
             ->flatten()
             ->filter()
-            ->map(fn ($value) => (int) $value)
+            ->map(fn($value) => (int) $value)
             ->unique()
             ->values();
 
@@ -216,7 +227,7 @@ class EventController extends Controller
         $employees = Employee::whereIn('employee_id', $staffIds)->get()->keyBy('employee_id');
 
         DB::transaction(function () use ($booking, $validated, $staffIds, $employees, $eventService, $eventDate, $startTime, $endTime, $scheduleLabel, $shiftType) {
-            $assignments = $staffIds->map(fn ($staffId) => [
+            $assignments = $staffIds->map(fn($staffId) => [
                 'staff_id' => $staffId,
                 'role' => $validated['role'],
                 'schedule' => $scheduleLabel,
@@ -298,7 +309,9 @@ class EventController extends Controller
             }
         });
 
-        return $this->ok($eventService->getAssignedStaff($booking->fresh()), 'Staff assigned and schedule created successfully');
+        // ⭐ FIX: Ensure the fresh staff list is returned so the frontend can map it correctly.
+        $booking->refresh();
+        return $this->ok($eventService->getAssignedStaff($booking), 'Staff assigned and schedule created successfully');
     }
 
     private function resolveEventShiftType(?int $shiftTypeId, string $startTime, string $endTime): ShiftType
@@ -357,7 +370,7 @@ class EventController extends Controller
     {
         $booking = Booking::findOrFail($id);
         $eventService = app(EventService::class);
-        
+
         return $this->ok($eventService->getAssignedStaff($booking));
     }
 
@@ -366,12 +379,12 @@ class EventController extends Controller
         $validated = $request->validate([
             'status' => 'required|in:pending,confirmed,declined',
         ]);
-        
+
         $booking = Booking::findOrFail($id);
         $tracking = EventTracking::where('booking_id', $booking->booking_id)
             ->where('stage', 'preparation')
             ->first();
-        
+
         if ($tracking && $tracking->notes) {
             $metadata = json_decode($tracking->notes, true);
             $metadata = is_array($metadata) ? $metadata : [];
@@ -383,7 +396,7 @@ class EventController extends Controller
             }
             $tracking->update(['notes' => json_encode($metadata)]);
         }
-        
+
         return $this->ok(null, 'Staff status updated');
     }
 
@@ -393,13 +406,13 @@ class EventController extends Controller
         $tracking = EventTracking::where('booking_id', $booking->booking_id)
             ->where('stage', 'preparation')
             ->first();
-        
+
         if ($tracking && $tracking->notes) {
             $metadata = json_decode($tracking->notes, true);
             $metadata['assigned_staff'] = array_filter($metadata['assigned_staff'] ?? [], fn($s) => $s['staff_id'] != $staffId);
             $tracking->update(['notes' => json_encode($metadata)]);
         }
-        
+
         // Remove only schedules created for this event.
         $scheduleQuery = Schedule::where('employee_id', $staffId);
         if (Schema::hasColumn('schedules', 'booking_id')) {
@@ -408,7 +421,7 @@ class EventController extends Controller
             $scheduleQuery->where('assignment_details', 'like', '%"booking_id":' . $booking->booking_id . '%');
         }
         $scheduleQuery->delete();
-        
+
         // ✅ Notification: Staff removed from event
         $employee = Employee::find($staffId);
         if ($employee && $employee->user_id) {
@@ -423,7 +436,7 @@ class EventController extends Controller
                 ['booking_id' => $booking->booking_id]
             );
         }
-        
+
         return $this->ok(null, 'Staff removed');
     }
 
@@ -650,7 +663,7 @@ class EventController extends Controller
             'driver_phone' => $validated['driver_phone'] ?? $delivery->driver_phone,
             'status' => $validated['status'] ?? $delivery->status,
             'notes' => json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-        ], fn ($value) => $value !== null));
+        ], fn($value) => $value !== null));
 
         return $this->ok(
             $this->formatDeliveryRows(collect([$delivery->fresh('mealService.eventDay')]))[0] ?? null,
@@ -673,7 +686,7 @@ class EventController extends Controller
     {
         $booking = Booking::findOrFail($id);
         $eventService = app(EventService::class);
-        
+
         return $this->ok($eventService->getMultiDayProgress($booking));
     }
 
@@ -684,11 +697,11 @@ class EventController extends Controller
             'notes' => 'nullable|string',
             'attendance' => 'nullable|integer|min:0',
         ]);
-        
+
         $booking = Booking::findOrFail($id);
         $eventService = app(EventService::class);
         $eventService->updateDailyProgress($booking, $day, $validated);
-        
+
         // ✅ Notification: Daily progress milestone reached
         if ($validated['completion'] >= 100) {
             $customer = $booking->serviceEvent?->customer;
@@ -703,7 +716,7 @@ class EventController extends Controller
                 );
             }
         }
-        
+
         return $this->ok(null, 'Daily progress updated');
     }
 
@@ -712,11 +725,11 @@ class EventController extends Controller
         $validated = $request->validate([
             'present' => 'required|integer|min:0',
         ]);
-        
+
         $booking = Booking::findOrFail($id);
         $eventService = app(EventService::class);
         $eventService->updateAttendance($booking, $day, $validated['present']);
-        
+
         return $this->ok(null, 'Attendance updated');
     }
 
@@ -725,7 +738,7 @@ class EventController extends Controller
         $booking = Booking::findOrFail($id);
         $eventService = app(EventService::class);
         $result = $eventService->advanceToNextDay($booking);
-        
+
         // ✅ Notification: Next day advanced
         if ($result['success']) {
             $customer = $booking->serviceEvent?->customer;
@@ -740,7 +753,7 @@ class EventController extends Controller
                 );
             }
         }
-        
+
         return $this->ok($result, $result['success'] ? 'Advanced to next day' : 'Cannot advance');
     }
 
@@ -812,6 +825,47 @@ class EventController extends Controller
             return $this->fail('A reason is required to complete an event with an outstanding balance.', 422);
         }
 
+        // ⭐ FIX: Before completing, verify that every checked kitchen task
+        //    has a matching deduction record. If a task is marked done in the
+        //    UI but has no deduction record (or vice versa), the completion
+        //    would lock in an incorrect state forever.
+        $orderTasks = [];
+        if ($booking->order && $booking->order->kitchen_tasks) {
+            $orderTasks = is_array($booking->order->kitchen_tasks)
+                ? $booking->order->kitchen_tasks
+                : (json_decode($booking->order->kitchen_tasks, true) ?: []);
+        }
+        $deductionKeys = \App\Models\Setting::where('group', 'kitchen_task_deductions')
+            ->where('key', 'like', $booking->booking_id . ':%')
+            ->pluck('key')
+            ->map(fn($k) => str_replace($booking->booking_id . ':', '', $k))
+            ->all();
+        $deductionSet = array_flip($deductionKeys);
+
+        $inconsistent = [];
+        foreach ($orderTasks as $task) {
+            $taskId = (string) ($task['id'] ?? '');
+            if ($taskId === '') continue;
+            $uiDone = (bool) ($task['is_done'] ?? false);
+            $hasDeduction = isset($deductionSet[$taskId]);
+            if ($uiDone !== $hasDeduction) {
+                $inconsistent[] = [
+                    'task_id' => $taskId,
+                    'task' => $task['task'] ?? $task['name'] ?? 'Task',
+                    'ui_done' => $uiDone,
+                    'has_deduction' => $hasDeduction,
+                ];
+            }
+        }
+
+        if (! empty($inconsistent)) {
+            return $this->fail(
+                'Some kitchen tasks have an inconsistent state. Please re-check or un-check them before completing the event.',
+                422,
+                ['code' => 'kitchen_task_inconsistent', 'tasks' => $inconsistent]
+            );
+        }
+
         $eventService = app(EventService::class);
         $eventService->completeEvent(
             $booking,
@@ -826,7 +880,7 @@ class EventController extends Controller
                 'approved_at' => now()->toDateTimeString(),
             ]
         );
-        
+
         // ✅ Notification: Event completed
         $customer = $booking->serviceEvent?->customer;
         if ($customer && $customer->user_id) {
@@ -841,7 +895,7 @@ class EventController extends Controller
                 ['booking_id' => $booking->booking_id]
             );
         }
-        
+
         return $this->ok([
             'event_completed' => true,
             'booking_completed' => true,
@@ -856,7 +910,7 @@ class EventController extends Controller
     {
         $booking = Booking::with('equipment.equipment')->findOrFail($id);
         $eventService = app(EventService::class);
-        
+
         return $this->ok($eventService->getEventEquipment($booking));
     }
 
@@ -871,7 +925,7 @@ class EventController extends Controller
 
         $booking = Booking::with('equipment.equipment')->findOrFail($id);
         $items = $booking->equipment
-            ->filter(fn ($item) => ! (bool) ($item->is_out_approved ?? false) && $item->status !== 'returned')
+            ->filter(fn($item) => ! (bool) ($item->is_out_approved ?? false) && $item->status !== 'returned')
             ->values();
 
         $updated = $this->approveEquipmentRows($booking, $items, $validated);
@@ -963,7 +1017,7 @@ class EventController extends Controller
             'checked_out_by' => 'nullable|string',
             'notes' => 'nullable|string',
         ]);
-        
+
         $booking = Booking::with('serviceEvent')->findOrFail($id);
 
         // Existing reservation approval: this is the normal Event Management workflow.
@@ -995,6 +1049,47 @@ class EventController extends Controller
         $this->notificationService->equipmentReserved($equipmentItem->fresh(), $booking);
 
         return $this->ok($equipmentItem->fresh('equipment'), 'Equipment checked out successfully');
+    }
+
+    /**
+     * ⭐ Quick status update for an equipment row from the Operations Hub.
+     * PUT /events/{id}/equipment/{transactionId}/status
+     */
+    public function updateEquipmentStatus(Request $request, $id, $transactionId)
+    {
+        $validated = $request->validate([
+            'status' => 'required|in:reserved,checked_out,returned',
+            'checked_out_by' => 'nullable|string',
+            'returned_at' => 'nullable|date',
+        ]);
+
+        $booking = Booking::findOrFail($id);
+        $equipmentItem = BookingEquipment::where('booking_id', $booking->booking_id)
+            ->where('booking_equipment_id', $transactionId)
+            ->firstOrFail();
+
+        $updateData = [
+            'status' => $validated['status'],
+        ];
+
+        if ($validated['status'] === 'checked_out') {
+            $updateData['is_out_approved'] = true;
+            $updateData['out_approved_at'] = now();
+            $updateData['checked_out_date'] = $equipmentItem->checked_out_date ?? now();
+            if (!empty($validated['checked_out_by'])) {
+                $updateData['checked_out_by'] = $validated['checked_out_by'];
+            }
+        } elseif ($validated['status'] === 'returned') {
+            $updateData['checked_in_date'] = now();
+            $updateData['returned_by'] = $validated['checked_out_by'] ?? 'Event Management';
+        }
+
+        $equipmentItem->update($updateData);
+
+        return $this->ok(
+            $equipmentItem->fresh(['equipment']),
+            'Equipment status updated successfully.'
+        );
     }
 
     public function returnEquipment(Request $request, $id, $transactionId)
@@ -1040,23 +1135,23 @@ class EventController extends Controller
                 $equipmentItem->equipment->update(['condition' => 'Fair']);
             }
         });
-        
+
         // Equipment damage/missing counts are kept on booking_equipment rows.
-        
+
         // ✅ Notifications for damaged/missing equipment
         if (($validated['quantity_damaged'] ?? 0) > 0) {
             $this->notificationService->equipmentDamaged($equipmentItem, $booking, $validated['quantity_damaged']);
         }
-        
+
         if (($validated['quantity_missing'] ?? 0) > 0) {
             $this->notificationService->equipmentMissing($equipmentItem, $booking, $validated['quantity_missing']);
         }
-        
+
         // Check if equipment is overdue
         if ($equipmentItem->rental_end_date < now()) {
             $this->notificationService->equipmentReturnOverdue($equipmentItem, $booking);
         }
-        
+
         return $this->ok($equipmentItem, 'Equipment returned successfully');
     }
 
@@ -1064,9 +1159,9 @@ class EventController extends Controller
     {
         $booking = Booking::with(['items.menuItem.recipeIngredients.ingredient.stock'])
             ->findOrFail($id);
-        
+
         $deductions = $inventoryService->getPendingDeductions($booking);
-        
+
         return $this->ok([
             'booking_id' => $booking->booking_id,
             'booking_no' => $booking->booking_no,
@@ -1083,24 +1178,24 @@ class EventController extends Controller
             'deductions.*.ingredient_id' => 'required|exists:ingredients,ingredient_id',
             'deductions.*.quantity' => 'required|numeric|min:0',
         ]);
-        
+
         $booking = Booking::findOrFail($id);
         if ($booking->booking_status !== 'completed') {
             return $this->fail('Inventory deductions can only be confirmed after the booking is marked as completed.', 422);
         }
-        
+
         $confirmedDeductions = [];
         foreach ($validated['deductions'] ?? [] as $deduction) {
             $confirmedDeductions[$deduction['ingredient_id']] = $deduction['quantity'];
         }
-        
+
         $results = $inventoryService->deductForCompletedEvent($booking, $confirmedDeductions);
-        
+
         // ✅ Notification: Ingredient computation completed
         if ($booking->order) {
             $this->notificationService->ingredientComputationCompleted($booking->order);
         }
-        
+
         return $this->ok($results, 'Inventory deductions confirmed');
     }
 
@@ -1109,7 +1204,7 @@ class EventController extends Controller
         $booking = Booking::where('booking_no', $eventCode)
             ->orWhere('booking_id', $eventCode)
             ->firstOrFail();
-        
+
         $returnedCount = 0;
         foreach ($booking->equipment as $eq) {
             if ($eq->status !== 'returned') {
@@ -1120,7 +1215,7 @@ class EventController extends Controller
                 $returnedCount++;
             }
         }
-        
+
         return $this->ok(['returned' => $returnedCount], 'All equipment returned');
     }
 
@@ -1145,6 +1240,17 @@ class EventController extends Controller
             'status' => 'sometimes|required|in:pending,confirmed,ongoing,completed,cancelled',
             'special_requests' => 'nullable|string|max:5000',
         ]);
+
+        if (
+            strtolower((string) $booking->booking_status) === 'ongoing'
+            && in_array(strtolower((string) ($validated['status'] ?? '')), ['pending', 'confirmed'], true)
+        ) {
+            return $this->fail(
+                'An ongoing event can only be reverted with the Un-start Event action.',
+                422,
+                ['code' => 'event_ongoing_locked']
+            );
+        }
 
         $startDate = Carbon::parse($validated['event_date'] ?? $booking->serviceEvent->event_date);
         if (! empty($validated['event_end_date']) && Carbon::parse($validated['event_end_date'])->lt($startDate)) {
@@ -1175,26 +1281,59 @@ class EventController extends Controller
     public function destroy($id)
     {
         $booking = Booking::with('serviceEvent')->findOrFail($id);
+
         DB::transaction(function () use ($booking) {
+            // ⭐ FIX: Reverse every kitchen task deduction before cancelling.
+            //    Without this, cancelling a booking leaves stock permanently
+            //    deducted with no way for the user to recover it.
+            $deductionRecords = \App\Models\Setting::where('group', 'kitchen_task_deductions')
+                ->where('key', 'like', $booking->booking_id . ':%')
+                ->get();
+
+            $inventory = app(\App\Services\InventoryService::class);
+            foreach ($deductionRecords as $record) {
+                $payload = json_decode((string) $record->value, true) ?: [];
+                $ingredients = $payload['ingredients'] ?? [];
+                $deductionId = $payload['deduction_id'] ?? $record->key;
+
+                foreach ($ingredients as $row) {
+                    $inventory->move(
+                        (int) $row['ingredient_id'],
+                        (float) $row['quantity'],
+                        'return',
+                        "Booking cancelled — kitchen task reversed [{$deductionId}] (Booking {$booking->booking_no})"
+                    );
+
+                    $stockRow = \App\Models\InventoryStock::where('ingredient_id', (int) $row['ingredient_id'])->first();
+                    if ($stockRow) {
+                        $stockRow->update([
+                            'reserved_quantity' => (float) $stockRow->reserved_quantity + (float) $row['quantity'],
+                        ]);
+                    }
+                }
+
+                $record->delete();
+            }
+
             $booking->update(['booking_status' => 'cancelled']);
             $booking->serviceEvent?->update(['status' => 'cancelled']);
         });
+
         return $this->ok(null, 'Event cancelled');
     }
-
     public function track(Request $request, $id)
     {
         $data = $request->validate([
-            'stage'=>'required|in:preparation,ready,ongoing,completed',
-            'progress_percentage'=>'nullable|integer|min:0|max:100',
-            'notes'=>'nullable'
+            'stage' => 'required|in:preparation,ready,ongoing,completed',
+            'progress_percentage' => 'nullable|integer|min:0|max:100',
+            'notes' => 'nullable'
         ]);
         $tracking = EventTracking::updateOrCreate(
-            ['booking_id'=>$id,'stage'=>$data['stage']],
+            ['booking_id' => $id, 'stage' => $data['stage']],
             [
-                'progress_percentage'=>$data['progress_percentage'] ?? 0,
-                'notes'=>is_array($data['notes'] ?? null) ? json_encode($data['notes']) : ($data['notes'] ?? null),
-                'stage_started_at'=>now()
+                'progress_percentage' => $data['progress_percentage'] ?? 0,
+                'notes' => is_array($data['notes'] ?? null) ? json_encode($data['notes']) : ($data['notes'] ?? null),
+                'stage_started_at' => now()
             ]
         );
         return $this->ok($tracking, 'Event tracking updated');
@@ -1209,12 +1348,12 @@ class EventController extends Controller
     public function updateLiveStatus(Request $request, $id)
     {
         $validated = $request->validate([
-            'current_phase'=>'nullable|in:pending,confirmed,preparation,ready,ongoing,completed,cancelled',
-            'progress'=>'nullable|integer|min:0|max:100',
-            'notes'=>'nullable|string|max:5000',
-            'issues'=>'nullable|array',
-            'current_day'=>'nullable|integer|min:1',
-            'is_done'=>'nullable|boolean',
+            'current_phase' => 'nullable|in:pending,confirmed,preparation,ready,ongoing,completed,cancelled',
+            'progress' => 'nullable|integer|min:0|max:100',
+            'notes' => 'nullable|string|max:5000',
+            'issues' => 'nullable|array',
+            'current_day' => 'nullable|integer|min:1',
+            'is_done' => 'nullable|boolean',
         ]);
 
         $booking = Booking::with('serviceEvent')->findOrFail($id);
@@ -1232,6 +1371,20 @@ class EventController extends Controller
         ]);
 
         $booking = Booking::with(['serviceEvent', 'payments', 'invoice', 'quotation'])->findOrFail($id);
+
+        // ⭐ Requirement #4 — never allow double-start.
+        $currentBookingStatus = strtolower((string) $booking->booking_status);
+        $currentEventStatus   = strtolower((string) ($booking->serviceEvent?->status ?? ''));
+        if (
+            in_array($currentBookingStatus, ['ongoing', 'completed'], true) ||
+            in_array($currentEventStatus, ['ongoing', 'completed'], true)
+        ) {
+            return $this->ok(
+                $this->formatEvent($this->query()->findOrFail($id)),
+                'The event is already started.'
+            );
+        }
+
         $eventDate = $booking->serviceEvent?->event_date;
         $scheduledDate = $eventDate ? Carbon::parse($eventDate)->toDateString() : null;
         $today = now()->toDateString();
@@ -1258,8 +1411,31 @@ class EventController extends Controller
             return $this->fail('Please enter a reason before manually starting this event.', 422);
         }
 
+        // ⭐ Requirement #6 — block start until all ingredients are purchased.
+        //    force_start bypasses this (logged with a reason).
+        if (empty($validated['force_start'])) {
+            $settingsRow = \App\Models\Setting::where('group', 'ingredients_summary')
+                ->where('key', 'booking_' . $booking->booking_id)
+                ->first();
+            $ingredientsList = $settingsRow ? (json_decode($settingsRow->value, true) ?: []) : [];
+            $unpurchased = collect($ingredientsList)->filter(
+                fn($i) => ($i['need_to_buy'] ?? false) === true && ($i['purchased'] ?? false) !== true
+            );
+
+            if ($unpurchased->count() > 0) {
+                return $this->fail(
+                    'You cannot start this event until all ingredients are purchased. ' .
+                        $unpurchased->count() . ' ingredient(s) still need to be bought.',
+                    422,
+                    [
+                        'code' => 'ingredients_incomplete',
+                        'unpurchased' => $unpurchased->values()->all(),
+                    ]
+                );
+            }
+        }
+
         DB::transaction(function () use ($booking, $validated, $isDifferentDate, $depositOverride, $requiredDeposit, $paidAmount, $depositBalance) {
-            $booking->update(['booking_status' => 'ongoing']);
             if ($booking->serviceEvent) {
                 $booking->serviceEvent->update(['status' => 'ongoing']);
             }
@@ -1290,7 +1466,36 @@ class EventController extends Controller
                     'notes' => json_encode($metadata, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 ]
             );
+
+            // ⭐ Requirement #4 — mark the booking as ongoing so Kitchen
+            //    Preparation sees a valid started status after force-start.
+            $booking->update(['booking_status' => 'ongoing']);
+
+            // ⭐ FIX #1 — Only activate the first meal when the booking is
+            //    genuinely Ongoing in the DB (defensive: this block runs after
+            //    the status update, but we re-check to be safe).
+            $freshStatus = strtolower((string) $booking->fresh()->booking_status);
+            if (in_array($freshStatus, ['ongoing', 'completed'], true)) {
+                $this->activateFirstMeal($booking);
+            }
         });
+
+        $this->logCustom(
+            'force_start_event',
+            'bookings',
+            $booking->booking_id,
+            "Event {$booking->booking_no} force-started",
+            [
+                'booking_no'       => $booking->booking_no,
+                'customer'         => $booking->serviceEvent?->customer?->person?->full_name ?? 'Unknown',
+                'scheduled_date'   => $scheduledDate,
+                'started_at'       => now()->toDateTimeString(),
+                'started_by'       => optional($request->user())->user_id,
+                'started_by_name'  => optional($request->user())->person?->full_name ?? optional($request->user())->username ?? 'System',
+                'deposit_override' => $depositOverride,
+                'reason'           => $validated['reason'] ?? null,
+            ]
+        );
 
         return $this->ok($this->formatEvent($this->query()->findOrFail($id)), 'Event started.');
     }
@@ -1311,6 +1516,1005 @@ class EventController extends Controller
         return $this->ok($meal->fresh(), 'Meal service status updated.');
     }
 
+
+    // ============================================================
+    // ⭐ KITCHEN TASK — Complete + deduct ingredients
+    // ============================================================
+    /**
+     * POST /events/{id}/kitchen-task/complete
+     *
+     * The client sends the ACTUAL quantities used. We:
+     *   1. Lock the stock rows and validate availability
+     *   2. Deduct via InventoryService::move() (writes movements + audit)
+     *   3. Store the deduction id on the task metadata for reversal
+     *
+     * Idempotency is enforced by the `deduplication_key` column
+     * (bookingId:taskId). A repeated submit returns already_deducted.
+     */
+        // (duplicate KITCHEN TASK HELPERS + startMeal removed — kept only the first copy)
+
+    /**
+     * POST /events/{id}/kitchen-task/complete
+     *
+     * Validates (backend) → event started, meal started, ingredients belong to the
+     * recipe, qty ≤ live stock → locks stock rows → deducts ONCE → persists DONE
+     * permanently (deduction record + task store). Idempotent.
+     */
+    // ============================================================
+    // ⭐ KITCHEN TASK HELPERS — single source of truth for DONE state
+    // ============================================================
+
+    private function decodeJsonValue($value): array
+    {
+        if (is_array($value)) return $value;
+        if (is_object($value)) return (array) $value;
+        $decoded = json_decode((string) $value, true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    private function resolveOrder(Booking $booking): ?\App\Models\Order
+    {
+        $booking->loadMissing('order');
+        return $booking->order;
+    }
+
+    private function readKitchenTasks(Booking $booking): array
+    {
+        $order = $this->resolveOrder($booking);
+        if (! $order) return [];
+
+        $tasks = [];
+        $meta  = Setting::where('group', 'order_metadata')->where('key', 'order_' . $order->order_id)->first();
+        if ($meta) {
+            $decoded = $this->decodeJsonValue($meta->value);
+            if (! empty($decoded['kitchen_preparation']) && is_array($decoded['kitchen_preparation'])) {
+                $tasks = $decoded['kitchen_preparation'];
+            }
+        }
+        if (empty($tasks)) {
+            $legacy = Setting::where('group', 'kitchen_tasks')->where('key', 'order_' . $order->order_id)->first();
+            if ($legacy) $tasks = $this->decodeJsonValue($legacy->value);
+        }
+        if (empty($tasks) && ! empty($order->kitchen_tasks)) {
+            $tasks = $this->decodeJsonValue($order->kitchen_tasks);
+        }
+
+        return array_values(array_filter($tasks, 'is_array'));
+    }
+
+    private function writeKitchenTasks(Booking $booking, array $tasks): void
+    {
+        $order = $this->resolveOrder($booking);
+        if (! $order) return;
+
+        $tasks = array_values($tasks);
+        $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+
+        $metaSetting = Setting::where('group', 'order_metadata')->where('key', 'order_' . $order->order_id)->first();
+        $metadata    = $metaSetting ? $this->decodeJsonValue($metaSetting->value) : [];
+        $metadata['kitchen_preparation'] = $tasks;
+
+        Setting::updateOrCreate(
+            ['group' => 'order_metadata', 'key' => 'order_' . $order->order_id],
+            ['value' => json_encode($metadata, $flags), 'type' => 'json']
+        );
+        Setting::updateOrCreate(
+            ['group' => 'kitchen_tasks', 'key' => 'order_' . $order->order_id],
+            ['value' => json_encode($tasks, $flags), 'type' => 'json']
+        );
+
+        if (Schema::hasColumn('orders', 'kitchen_tasks')) {
+            try {
+                $order->update(['kitchen_tasks' => json_encode($tasks, $flags)]);
+            } catch (\Throwable $e) {
+                Log::warning('Could not mirror kitchen tasks to orders.kitchen_tasks: ' . $e->getMessage());
+            }
+        }
+    }
+
+    private function deductedTaskIds(int $bookingId): array
+    {
+        $prefixLen = strlen((string) $bookingId) + 1;
+
+        return Setting::where('group', 'kitchen_task_deductions')
+            ->where('key', 'like', $bookingId . ':%')
+            ->pluck('key')
+            ->map(fn($key) => substr((string) $key, $prefixLen))
+            ->all();
+    }
+
+    private function applyDeductionState(int $bookingId, array $tasks): array
+    {
+        $done = array_flip($this->deductedTaskIds($bookingId));
+
+        return array_map(function ($task) use ($done) {
+            $taskId = (string) ($task['id'] ?? '');
+            if ($taskId !== '' && isset($done[$taskId])) {
+                $task['is_done'] = true;
+                $task['status']  = 'completed';
+            }
+            return $task;
+        }, $tasks);
+    }
+
+    private function isBookingStarted(Booking $booking): bool
+    {
+        $booking->loadMissing('serviceEvent');
+
+        // ⭐ PACKED / TRAY: These service types do not use the "Start Event" 
+        // workflow. They are considered ready for kitchen prep and 
+        // delivery/pickup as soon as they are confirmed.
+        $serviceType = strtolower((string) ($booking->serviceEvent?->service_type ?? ''));
+        if (in_array($serviceType, ['packed', 'tray'], true)) {
+            return true;
+        }
+
+        return in_array(strtolower((string) $booking->booking_status), ['ongoing', 'completed'], true)
+            || in_array(strtolower((string) ($booking->serviceEvent?->status ?? '')), ['ongoing', 'completed'], true);
+    }
+
+    private function clockMinutes($value): ?int
+    {
+        $text = trim((string) $value);
+        if ($text === '') return null;
+        try {
+            $c = Carbon::parse($text);
+            return ((int) $c->format('G')) * 60 + (int) $c->format('i');
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** Meals in chronological order: day → scheduled time → meal sequence. */
+    private function orderedMeals(Booking $booking)
+    {
+        $booking->loadMissing('mealServices.eventDay');
+
+        return $booking->mealServices->map(function ($meal) {
+            $type = strtolower(trim(str_replace('_', ' ', (string) $meal->meal_type)));
+            return [
+                'meal' => $meal,
+                'day'  => (int) ($meal->eventDay?->day_number ?? $meal->day_number ?? 1),
+                'time' => $this->clockMinutes($meal->serving_time),
+                'seq'  => self::MEAL_SEQUENCE[$type] ?? 99,
+            ];
+        })->sort(function ($a, $b) {
+            if ($a['day'] !== $b['day']) return $a['day'] <=> $b['day'];
+            if ($a['time'] !== null && $b['time'] !== null && $a['time'] !== $b['time']) return $a['time'] <=> $b['time'];
+            if ($a['seq'] !== $b['seq']) return $a['seq'] <=> $b['seq'];
+            return (int) $a['meal']->meal_service_id <=> (int) $b['meal']->meal_service_id;
+        })->values();
+    }
+
+    /** meal_service_id => true when every kitchen task of that meal is DONE. */
+    private function mealCompletionMap(Booking $booking): array
+    {
+        $tasks  = $this->applyDeductionState((int) $booking->booking_id, $this->readKitchenTasks($booking));
+        $byMeal = [];
+        foreach ($tasks as $task) {
+            if (! empty($task['is_header'])) continue;
+            $mealId = (int) ($task['meal_service_id'] ?? 0);
+            if ($mealId) $byMeal[$mealId][] = ! empty($task['is_done']);
+        }
+
+        $map = [];
+        foreach ($booking->mealServices as $meal) {
+            $flags = $byMeal[(int) $meal->meal_service_id] ?? [];
+            $map[(int) $meal->meal_service_id] = empty($flags) ? true : ! in_array(false, $flags, true);
+        }
+        return $map;
+    }
+
+    private function activateFirstMeal(Booking $booking): void
+    {
+        try {
+            $booking->load('mealServices.eventDay');
+            $ordered = $this->orderedMeals($booking);
+            if ($ordered->isEmpty()) return;
+
+            if ($ordered->contains(fn($row) => $row['meal']->preparation_status === 'preparing')) return;
+
+            $first = $ordered->first(fn($row) => $row['meal']->preparation_status !== 'completed');
+            if ($first) {
+                $first['meal']->update(['preparation_status' => 'preparing']);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('activateFirstMeal failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * POST /events/{id}/meals/{mealServiceId}/start
+     * Starts a meal (GREEN). If an earlier meal still has open tasks the client
+     * must confirm with confirm_incomplete_previous = true.
+     */
+    /**
+     * POST /events/{id}/meals/{mealServiceId}/unstart
+     *
+     * Returns a started meal to "Not Started".
+     *  • Does NOT change the booking/event status.
+     *  • Does NOT touch inventory (use /kitchen-task/uncomplete per
+     *    completed task to reverse a deduction).
+     */
+    public function unstartMeal(Request $request, $id, $mealServiceId)
+    {
+        $booking = Booking::with(['mealServices', 'order'])->findOrFail($id);
+        $meal = $booking->mealServices->firstWhere('meal_service_id', (int) $mealServiceId);
+
+        if (! $meal) {
+            return $this->fail('Meal service not found for this booking.', 404);
+        }
+
+        if (! in_array($meal->preparation_status, ['preparing', 'completed'], true)) {
+            return $this->ok([
+                'meal_service_id'    => (int) $meal->meal_service_id,
+                'preparation_status' => $meal->preparation_status,
+                'already_pending'    => true,
+            ], 'This meal is already Not Started.');
+        }
+
+        $meal->update(['preparation_status' => 'pending']);
+
+        return $this->ok([
+            'meal_service_id'    => (int) $meal->meal_service_id,
+            'preparation_status' => 'pending',
+            'already_pending'    => false,
+        ], 'Meal returned to Not Started.');
+    }
+
+    public function startMeal(Request $request, $id, $mealServiceId)
+    {
+        $validated = $request->validate(['confirm_incomplete_previous' => 'nullable|boolean']);
+
+        $booking = Booking::with(['serviceEvent', 'order', 'mealServices.eventDay'])->findOrFail($id);
+
+        // ⭐ Packed/Tray don't require the event to be "ongoing"
+        $isPackedTray = in_array(strtolower((string) ($booking->serviceEvent?->service_type ?? '')), ['packed', 'tray'], true);
+
+        if (! $isPackedTray && ! $this->isBookingStarted($booking)) {
+            return $this->fail('The event is not started yet, you cannot start a meal.', 422, ['code' => 'event_not_started']);
+        }
+
+        $meal = $booking->mealServices->firstWhere('meal_service_id', (int) $mealServiceId);
+        if (! $meal) {
+            return $this->fail('Meal service not found for this booking.', 404);
+        }
+
+        if (in_array($meal->preparation_status, ['preparing', 'completed'], true)) {
+            return $this->ok([
+                'meal_service_id'    => (int) $meal->meal_service_id,
+                'preparation_status' => $meal->preparation_status,
+                'already_started'    => true,
+            ], 'This meal is already started.');
+        }
+
+        $ordered    = $this->orderedMeals($booking);
+        $completion = $this->mealCompletionMap($booking);
+        $position   = $ordered->search(fn($row) => (int) $row['meal']->meal_service_id === (int) $meal->meal_service_id);
+
+        $previousIncomplete = $position === false
+            ? collect()
+            : $ordered->slice(0, $position)
+            ->filter(fn($row) => ! ($completion[(int) $row['meal']->meal_service_id] ?? true))
+            ->values();
+
+        if ($previousIncomplete->isNotEmpty() && ! ($validated['confirm_incomplete_previous'] ?? false)) {
+            $blocking = $previousIncomplete->first();
+            $mealName = ucwords(strtolower(trim(str_replace('_', ' ', (string) $meal->meal_type))));
+
+            return $this->fail(
+                "You have not completed all the tasks for the previous meal. Are you sure you want to start the next meal: {$mealName}?",
+                422,
+                [
+                    'code'               => 'previous_meal_incomplete',
+                    'next_meal_type'     => $mealName,
+                    'blocking_day'       => $blocking['day'],
+                    'blocking_meal_type' => ucwords(strtolower(trim(str_replace('_', ' ', (string) $blocking['meal']->meal_type)))),
+                    'pending_count'      => $previousIncomplete->count(),
+                ]
+            );
+        }
+
+        $meal->update(['preparation_status' => 'preparing']);
+
+        return $this->ok([
+            'meal_service_id'    => (int) $meal->meal_service_id,
+            'preparation_status' => 'preparing',
+            'already_started'    => false,
+        ], 'Meal started.');
+    }
+
+
+    public function completeKitchenTask(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'task_id'                     => ['required', 'string', 'max:255'],
+            'meal_service_id'             => ['nullable', 'integer', 'exists:meal_services,meal_service_id'],
+            'menu_item_id'                => ['nullable', 'integer', 'exists:menu_items,menu_item_id'],
+            'deduplication_key'           => ['nullable', 'string', 'max:255'],
+            'force_complete'              => ['nullable', 'boolean'], // ⭐ NEW
+            'ingredients'                 => ['required', 'array', 'min:1'],
+            'ingredients.*.ingredient_id' => ['required', 'integer', 'exists:ingredients,ingredient_id'],
+            'ingredients.*.quantity'      => ['required', 'numeric', 'min:0.001'],
+            'ingredients.*.unit'          => ['nullable', 'string', 'max:20'],
+        ]);
+
+        $forceComplete = (bool) ($validated['force_complete'] ?? false);
+
+        $booking = Booking::with([
+            'serviceEvent',
+            'order',
+            'mealServices.eventDay',
+            'items.menuItem.recipeIngredients.ingredient',
+        ])->findOrFail($id);
+
+        $taskId   = (string) $validated['task_id'];
+        $dedupKey = "{$booking->booking_id}:{$taskId}"; // always server-derived (reversal uses the same key)
+
+        // 1. Idempotency — already deducted?
+        $existing = Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->first();
+        if ($existing) {
+            $payload = $this->decodeJsonValue($existing->value);
+            return $this->ok([
+                'already_deducted' => true,
+                'deduction_id'     => $payload['deduction_id'] ?? null,
+                'task_id'          => $taskId,
+                'booking_id'       => $booking->booking_id,
+            ], 'Ingredients were already deducted for this task.');
+        }
+
+        // 2. Check if 30% deposit is paid (applies to ALL service types now)
+        if (! $forceComplete) {
+            $totalAmount = (float) ($booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0);
+            $paidAmount  = (float) $booking->payments()->where('status', 'completed')->sum('amount');
+            $requiredDeposit = round($totalAmount * 0.30, 2);
+
+            if ($paidAmount < $requiredDeposit) {
+                return $this->fail(
+                    'The required 30% deposit has not been paid.',
+                    422,
+                    ['code' => 'deposit_required', 'required' => $requiredDeposit, 'paid' => $paidAmount]
+                );
+            }
+        }
+
+        // 3. The event MUST be Ongoing / Started (unless Packed/Tray or force-completed).
+        $isPackedTray = in_array(strtolower((string) ($booking->serviceEvent?->service_type ?? '')), ['packed', 'tray'], true);
+
+        if (! $isPackedTray && ! $this->isBookingStarted($booking) && ! $forceComplete) {
+            return $this->fail(
+                'The event is not started yet, you cannot mark as done this menu.',
+                422,
+                ['code' => 'event_not_started']
+            );
+        }
+
+        // 3. The task must exist in the order's kitchen list.
+        $taskRow = collect($this->readKitchenTasks($booking))
+            ->first(fn($t) => (string) ($t['id'] ?? '') === $taskId && empty($t['is_header']));
+        if (! $taskRow) {
+            return $this->fail(
+                'This kitchen task no longer exists in the order. Please refresh the kitchen list and try again.',
+                422,
+                ['code' => 'task_not_found']
+            );
+        }
+
+        $mealServiceId = (int) ($taskRow['meal_service_id'] ?? $validated['meal_service_id'] ?? 0) ?: null;
+        $menuItemId    = (int) ($taskRow['menu_item_id'] ?? $validated['menu_item_id'] ?? 0) ?: null;
+        // 4. The meal must be started (GREEN).
+        if ($mealServiceId) {
+            $meal = $booking->mealServices->firstWhere('meal_service_id', $mealServiceId);
+            if (! $meal) {
+                return $this->fail('Meal service not found for this booking.', 422, ['code' => 'meal_not_found']);
+            }
+
+            // ⭐ PACKED / TRAY bypass the "Start Meal" requirement.
+            $serviceType = strtolower((string) ($booking->serviceEvent?->service_type ?? ''));
+            $isPackedTray = in_array($serviceType, ['packed', 'tray'], true);
+
+            if (! $isPackedTray && ! in_array($meal->preparation_status, ['preparing', 'completed'], true)) {
+                return $this->fail('Please start this meal first.', 422, ['code' => 'meal_not_started']);
+            }
+        }
+
+        // 5. Recipe requirements come from the DB — ingredients must belong to this menu.
+        $inventory    = app(\App\Services\InventoryService::class);
+        $requirements = collect($inventory->getKitchenTaskRequirements($booking, $mealServiceId, $menuItemId))
+            ->keyBy('ingredient_id');
+        if ($requirements->isEmpty()) {
+            return $this->fail(
+                'No recipe ingredients are configured for this menu. Add a recipe before completing the task.',
+                422,
+                ['code' => 'no_recipe']
+            );
+        }
+
+        $rows = collect($validated['ingredients'])
+            ->groupBy('ingredient_id')
+            ->map(fn($group) => [
+                'ingredient_id' => (int) $group->first()['ingredient_id'],
+                'quantity'      => round((float) $group->sum('quantity'), 3),
+                'unit'          => $group->first()['unit'] ?? null,
+            ])
+            ->values();
+
+        if ($rows->contains(fn($r) => ! $requirements->has((int) $r['ingredient_id']))) {
+            return $this->fail(
+                'One or more ingredients do not belong to this menu.',
+                422,
+                ['code' => 'ingredient_mismatch']
+            );
+        }
+
+        $deductionId = 'KTD-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999);
+        $userId      = auth()->id();
+
+        // 6. Atomic: lock → re-check → validate stock → deduct → persist.
+        $outcome = DB::transaction(function () use (
+            $booking,
+            $taskId,
+            $dedupKey,
+            $rows,
+            $inventory,
+            $deductionId,
+            $mealServiceId,
+            $menuItemId,
+            $userId
+        ) {
+            $order = $this->resolveOrder($booking);
+            if ($order) {
+                Setting::where('group', 'order_metadata')->where('key', 'order_' . $order->order_id)->lockForUpdate()->first();
+            }
+
+            $ids    = $rows->pluck('ingredient_id')->map(fn($v) => (int) $v)->sort()->values()->all();
+            $stocks = \App\Models\InventoryStock::whereIn('ingredient_id', $ids)
+                ->orderBy('ingredient_id')
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('ingredient_id');
+
+            // Second request waiting on the lock lands here → no double deduction.
+            if (Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->exists()) {
+                return ['already' => true];
+            }
+
+            $shortages = [];
+            foreach ($rows as $row) {
+                $stock     = $stocks->get((int) $row['ingredient_id']);
+                $available = $stock ? (float) $stock->current_quantity : 0.0;
+                $requested = (float) $row['quantity'];
+                if ($requested > $available + 0.0005) {
+                    $ingredient  = \App\Models\Ingredient::find($row['ingredient_id']);
+                    $shortages[] = [
+                        'ingredient_id' => $row['ingredient_id'],
+                        'name'          => $ingredient?->name ?? "Ingredient #{$row['ingredient_id']}",
+                        'unit'          => $row['unit'] ?? $ingredient?->unit ?? '',
+                        'required'      => round($requested, 3),
+                        'available'     => round($available, 3),
+                        'shortage'      => round($requested - $available, 3),
+                    ];
+                }
+            }
+            if (! empty($shortages)) {
+                return ['shortages' => $shortages];
+            }
+
+            // Mark the task done in the store.
+            $tasks   = $this->readKitchenTasks($booking);
+            $matched = false;
+            foreach ($tasks as &$t) {
+                if ((string) ($t['id'] ?? '') === $taskId && empty($t['is_header'])) {
+                    $t['is_done']      = true;
+                    $t['status']       = 'completed';
+                    $t['completed_at'] = now()->toIso8601String();
+                    $t['completed_by'] = $userId;
+                    $t['deduction_id'] = $deductionId;
+                    $matched = true;
+                    break;
+                }
+            }
+            unset($t);
+
+            if (! $matched) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'task_id' => 'This kitchen task no longer exists in the order. Please refresh the kitchen list and try again.',
+                ]);
+            }
+
+            // Deduct (writes Stock Movements + audit through InventoryService::move).
+            $movementIds = [];
+            $deducted    = [];
+            foreach ($rows as $row) {
+                $ingredientId = (int) $row['ingredient_id'];
+                $qty          = round((float) $row['quantity'], 3);
+
+                $movement = $inventory->move(
+                    $ingredientId,
+                    -1 * $qty,
+                    'usage',
+                    "Kitchen task completed [{$deductionId}]: {$taskId} (Booking {$booking->booking_no})"
+                );
+                $movement->update(['reference_type' => 'KitchenTaskDeduction', 'reference_id' => null]);
+                $movementIds[] = $movement->movement_id;
+
+                $released = 0.0;
+                $stockRow = \App\Models\InventoryStock::where('ingredient_id', $ingredientId)->first();
+                if ($stockRow) {
+                    $reservedBefore = (float) $stockRow->reserved_quantity;
+                    $released       = min($qty, $reservedBefore);
+                    $stockRow->update(['reserved_quantity' => max(0, $reservedBefore - $qty)]);
+                }
+
+                $deducted[] = [
+                    'ingredient_id'     => $ingredientId,
+                    'quantity'          => $qty,
+                    'unit'              => $row['unit'] ?? null,
+                    'reserved_released' => round($released, 3),
+                ];
+            }
+
+            Setting::updateOrCreate(
+                ['group' => 'kitchen_task_deductions', 'key' => $dedupKey],
+                [
+                    'value' => json_encode([
+                        'deduction_id'    => $deductionId,
+                        'booking_id'      => $booking->booking_id,
+                        'task_id'         => $taskId,
+                        'meal_service_id' => $mealServiceId,
+                        'menu_item_id'    => $menuItemId,
+                        'movement_ids'    => $movementIds,
+                        'ingredients'     => $deducted,
+                        'deducted_at'     => now()->toIso8601String(),
+                        'deducted_by'     => $userId,
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'json',
+                ]
+            );
+
+            // Persist DONE permanently (deduction overlay heals any lost flag).
+            $tasks = $this->applyDeductionState((int) $booking->booking_id, $tasks);
+            $this->writeKitchenTasks($booking, $tasks);
+
+            // Meal fully done → BLUE.
+            $mealCompleted = false;
+            if ($mealServiceId) {
+                $mealTasks = array_filter($tasks, fn($t) => empty($t['is_header']) && (int) ($t['meal_service_id'] ?? 0) === $mealServiceId);
+                $mealCompleted = ! empty($mealTasks) && collect($mealTasks)->every(fn($t) => ! empty($t['is_done']));
+                if ($mealCompleted) {
+                    MealService::where('meal_service_id', $mealServiceId)->update(['preparation_status' => 'completed']);
+                }
+            }
+
+            return ['done' => true, 'meal_completed' => $mealCompleted, 'count' => count($deducted)];
+        });
+
+        if (! empty($outcome['already'])) {
+            return $this->ok([
+                'already_deducted' => true,
+                'task_id'          => $taskId,
+                'booking_id'       => $booking->booking_id,
+            ], 'Ingredients were already deducted for this task.');
+        }
+
+        if (! empty($outcome['shortages'])) {
+            return $this->fail(
+                'Not enough stock to complete this task.',
+                422,
+                ['code' => 'insufficient_stock', 'shortages' => $outcome['shortages']]
+            );
+        }
+
+        return $this->ok([
+            'already_deducted' => false,
+            'deduction_id'     => $deductionId,
+            'task_id'          => $taskId,
+            'booking_id'       => $booking->booking_id,
+            'booking_no'       => $booking->booking_no,
+            'deducted_count'   => $outcome['count'],
+            'meal_service_id'  => $mealServiceId,
+            'meal_completed'   => (bool) $outcome['meal_completed'],
+        ], 'Kitchen task completed and inventory updated.');
+    }
+
+    // ⚠️ Legacy copy removed — see git history if needed.
+    private function __completeKitchenTaskLegacy_removed(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'task_id'                     => ['required', 'string', 'max:255'],
+            'meal_service_id'             => ['nullable', 'integer', 'exists:meal_services,meal_service_id'],
+            'menu_item_id'                => ['nullable', 'integer', 'exists:menu_items,menu_item_id'],
+            'deduplication_key'           => ['nullable', 'string', 'max:255'],
+            'ingredients'                 => ['required', 'array', 'min:1'],
+            'ingredients.*.ingredient_id' => ['required', 'integer', 'exists:ingredients,ingredient_id'],
+            'ingredients.*.quantity'      => ['required', 'numeric', 'min:0.001'],
+            'ingredients.*.unit'          => ['nullable', 'string', 'max:20'],
+        ]);
+
+        $booking = Booking::with([
+            'serviceEvent',
+            'order',
+            'mealServices.eventDay',
+            'items.menuItem.recipeIngredients.ingredient',
+        ])->findOrFail($id);
+
+        $taskId   = (string) $validated['task_id'];
+        $dedupKey = "{$booking->booking_id}:{$taskId}"; // always server-derived (reversal uses the same key)
+
+        // 1. Idempotency — already deducted?
+        $existing = Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->first();
+        if ($existing) {
+            $payload = $this->decodeJsonValue($existing->value);
+            return $this->ok([
+                'already_deducted' => true,
+                'deduction_id'     => $payload['deduction_id'] ?? null,
+                'task_id'          => $taskId,
+                'booking_id'       => $booking->booking_id,
+            ], 'Ingredients were already deducted for this task.');
+        }
+
+        // 2. The event MUST be Ongoing / Started.
+        // ⭐ Packed/Tray are exempt from this rule since they skip the "Start Event" workflow.
+        $isPackedTray = in_array(strtolower((string) ($booking->serviceEvent?->service_type ?? '')), ['packed', 'tray'], true);
+
+        if (! $isPackedTray && ! $this->isBookingStarted($booking)) {
+            return $this->fail(
+                'The event is not started yet, you cannot mark as done this menu.',
+                422,
+                ['code' => 'event_not_started']
+            );
+        }
+        // 3. The task must exist in the order's kitchen list.
+        $taskRow = collect($this->readKitchenTasks($booking))
+            ->first(fn($t) => (string) ($t['id'] ?? '') === $taskId && empty($t['is_header']));
+        if (! $taskRow) {
+            return $this->fail(
+                'This kitchen task no longer exists in the order. Please refresh the kitchen list and try again.',
+                422,
+                ['code' => 'task_not_found']
+            );
+        }
+
+        $mealServiceId = (int) ($taskRow['meal_service_id'] ?? $validated['meal_service_id'] ?? 0) ?: null;
+        $menuItemId    = (int) ($taskRow['menu_item_id'] ?? $validated['menu_item_id'] ?? 0) ?: null;
+
+        // 4. The meal must be started (GREEN).
+        if ($mealServiceId) {
+            $meal = $booking->mealServices->firstWhere('meal_service_id', $mealServiceId);
+            if (! $meal) {
+                return $this->fail('Meal service not found for this booking.', 422, ['code' => 'meal_not_found']);
+            }
+
+            // ⭐ PACKED / TRAY bypass the "Start Meal" requirement.
+            $isPackedTray = in_array(strtolower((string) ($booking->serviceEvent?->service_type ?? '')), ['packed', 'tray'], true);
+
+            if (! $isPackedTray && ! in_array($meal->preparation_status, ['preparing', 'completed'], true)) {
+                return $this->fail('Please start this meal first.', 422, ['code' => 'meal_not_started']);
+            }
+        }
+
+        // 5. Recipe requirements come from the DB — ingredients must belong to this menu.
+        $inventory    = app(\App\Services\InventoryService::class);
+        $requirements = collect($inventory->getKitchenTaskRequirements($booking, $mealServiceId, $menuItemId))
+            ->keyBy('ingredient_id');
+        if ($requirements->isEmpty()) {
+            return $this->fail(
+                'No recipe ingredients are configured for this menu. Add a recipe before completing the task.',
+                422,
+                ['code' => 'no_recipe']
+            );
+        }
+
+        $rows = collect($validated['ingredients'])
+            ->groupBy('ingredient_id')
+            ->map(fn($group) => [
+                'ingredient_id' => (int) $group->first()['ingredient_id'],
+                'quantity'      => round((float) $group->sum('quantity'), 3),
+                'unit'          => $group->first()['unit'] ?? null,
+            ])
+            ->values();
+
+        if ($rows->contains(fn($r) => ! $requirements->has((int) $r['ingredient_id']))) {
+            return $this->fail(
+                'One or more ingredients do not belong to this menu.',
+                422,
+                ['code' => 'ingredient_mismatch']
+            );
+        }
+
+        $deductionId = 'KTD-' . now()->format('YmdHisv') . '-' . $booking->booking_id . '-' . random_int(100, 999);
+        $userId      = auth()->id();
+
+        // 6. Atomic: lock → re-check → validate stock → deduct → persist.
+        $outcome = DB::transaction(function () use (
+            $booking,
+            $taskId,
+            $dedupKey,
+            $rows,
+            $inventory,
+            $deductionId,
+            $mealServiceId,
+            $menuItemId,
+            $userId
+        ) {
+            $order = $this->resolveOrder($booking);
+            if ($order) {
+                Setting::where('group', 'order_metadata')->where('key', 'order_' . $order->order_id)->lockForUpdate()->first();
+            }
+
+            $ids    = $rows->pluck('ingredient_id')->map(fn($v) => (int) $v)->sort()->values()->all();
+            $stocks = \App\Models\InventoryStock::whereIn('ingredient_id', $ids)
+                ->orderBy('ingredient_id')
+                ->lockForUpdate()
+                ->get()
+                ->keyBy('ingredient_id');
+
+            // Second request waiting on the lock lands here → no double deduction.
+            if (Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->exists()) {
+                return ['already' => true];
+            }
+
+            $shortages = [];
+            foreach ($rows as $row) {
+                $stock     = $stocks->get((int) $row['ingredient_id']);
+                $available = $stock ? (float) $stock->current_quantity : 0.0;
+                $requested = (float) $row['quantity'];
+                if ($requested > $available + 0.0005) {
+                    $ingredient  = \App\Models\Ingredient::find($row['ingredient_id']);
+                    $shortages[] = [
+                        'ingredient_id' => $row['ingredient_id'],
+                        'name'          => $ingredient?->name ?? "Ingredient #{$row['ingredient_id']}",
+                        'unit'          => $row['unit'] ?? $ingredient?->unit ?? '',
+                        'required'      => round($requested, 3),
+                        'available'     => round($available, 3),
+                        'shortage'      => round($requested - $available, 3),
+                    ];
+                }
+            }
+            if (! empty($shortages)) {
+                return ['shortages' => $shortages];
+            }
+
+            // Mark the task done in the store.
+            $tasks   = $this->readKitchenTasks($booking);
+            $matched = false;
+            foreach ($tasks as &$t) {
+                if ((string) ($t['id'] ?? '') === $taskId && empty($t['is_header'])) {
+                    $t['is_done']      = true;
+                    $t['status']       = 'completed';
+                    $t['completed_at'] = now()->toIso8601String();
+                    $t['completed_by'] = $userId;
+                    $t['deduction_id'] = $deductionId;
+                    $matched = true;
+                    break;
+                }
+            }
+            unset($t);
+
+            if (! $matched) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'task_id' => 'This kitchen task no longer exists in the order. Please refresh the kitchen list and try again.',
+                ]);
+            }
+
+            // Deduct (writes Stock Movements + audit through InventoryService::move).
+            $movementIds = [];
+            $deducted    = [];
+            foreach ($rows as $row) {
+                $ingredientId = (int) $row['ingredient_id'];
+                $qty          = round((float) $row['quantity'], 3);
+
+                $movement = $inventory->move(
+                    $ingredientId,
+                    -1 * $qty,
+                    'usage',
+                    "Kitchen task completed [{$deductionId}]: {$taskId} (Booking {$booking->booking_no})"
+                );
+                $movement->update(['reference_type' => 'KitchenTaskDeduction', 'reference_id' => null]);
+                $movementIds[] = $movement->movement_id;
+
+                $released = 0.0;
+                $stockRow = \App\Models\InventoryStock::where('ingredient_id', $ingredientId)->first();
+                if ($stockRow) {
+                    $reservedBefore = (float) $stockRow->reserved_quantity;
+                    $released       = min($qty, $reservedBefore);
+                    $stockRow->update(['reserved_quantity' => max(0, $reservedBefore - $qty)]);
+                }
+
+                $deducted[] = [
+                    'ingredient_id'     => $ingredientId,
+                    'quantity'          => $qty,
+                    'unit'              => $row['unit'] ?? null,
+                    'reserved_released' => round($released, 3),
+                ];
+            }
+
+            Setting::updateOrCreate(
+                ['group' => 'kitchen_task_deductions', 'key' => $dedupKey],
+                [
+                    'value' => json_encode([
+                        'deduction_id'    => $deductionId,
+                        'booking_id'      => $booking->booking_id,
+                        'task_id'         => $taskId,
+                        'meal_service_id' => $mealServiceId,
+                        'menu_item_id'    => $menuItemId,
+                        'movement_ids'    => $movementIds,
+                        'ingredients'     => $deducted,
+                        'deducted_at'     => now()->toIso8601String(),
+                        'deducted_by'     => $userId,
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'type'  => 'json',
+                ]
+            );
+
+            // Persist DONE permanently (deduction overlay heals any lost flag).
+            $tasks = $this->applyDeductionState((int) $booking->booking_id, $tasks);
+            $this->writeKitchenTasks($booking, $tasks);
+
+            // Meal fully done → BLUE.
+            $mealCompleted = false;
+            if ($mealServiceId) {
+                $mealTasks = array_filter($tasks, fn($t) => empty($t['is_header']) && (int) ($t['meal_service_id'] ?? 0) === $mealServiceId);
+                $mealCompleted = ! empty($mealTasks) && collect($mealTasks)->every(fn($t) => ! empty($t['is_done']));
+                if ($mealCompleted) {
+                    MealService::where('meal_service_id', $mealServiceId)->update(['preparation_status' => 'completed']);
+                }
+            }
+
+            return ['done' => true, 'meal_completed' => $mealCompleted, 'count' => count($deducted)];
+        });
+
+        if (! empty($outcome['already'])) {
+            return $this->ok([
+                'already_deducted' => true,
+                'task_id'          => $taskId,
+                'booking_id'       => $booking->booking_id,
+            ], 'Ingredients were already deducted for this task.');
+        }
+
+        if (! empty($outcome['shortages'])) {
+            return $this->fail(
+                'Not enough stock to complete this task.',
+                422,
+                ['code' => 'insufficient_stock', 'shortages' => $outcome['shortages']]
+            );
+        }
+
+        return $this->ok([
+            'already_deducted' => false,
+            'deduction_id'     => $deductionId,
+            'task_id'          => $taskId,
+            'booking_id'       => $booking->booking_id,
+            'booking_no'       => $booking->booking_no,
+            'deducted_count'   => $outcome['count'],
+            'meal_service_id'  => $mealServiceId,
+            'meal_completed'   => (bool) $outcome['meal_completed'],
+        ], 'Kitchen task completed and inventory updated.');
+    }
+
+    /**
+     * POST /events/{id}/kitchen-task/uncomplete
+     *
+     * Reverses the deduction stored for this task. Completed events are
+     * rejected — the operator must create an explicit adjustment instead.
+     */
+    /**
+     * POST /events/{id}/kitchen-task/uncomplete
+     * Restores the deducted quantities ONCE (row-locked), writes a "return"
+     * Stock Movement, un-checks the task permanently.
+     */
+    public function uncompleteKitchenTask(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'task_id'      => ['required', 'string', 'max:255'],
+            'deduction_id' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $booking = Booking::with(['serviceEvent', 'order'])->findOrFail($id);
+
+        if (
+            strtolower((string) $booking->booking_status) === 'completed'
+            || strtolower((string) ($booking->serviceEvent?->status ?? '')) === 'completed'
+        ) {
+            return $this->fail(
+                'This event is completed. Create an inventory adjustment instead of reversing the deduction.',
+                422,
+                ['code' => 'event_completed']
+            );
+        }
+
+        $taskId    = (string) $validated['task_id'];
+        $dedupKey  = "{$booking->booking_id}:{$taskId}";
+        $inventory = app(\App\Services\InventoryService::class);
+
+        $outcome = DB::transaction(function () use ($booking, $taskId, $dedupKey, $inventory) {
+            $order = $this->resolveOrder($booking);
+            if ($order) {
+                Setting::where('group', 'order_metadata')->where('key', 'order_' . $order->order_id)->lockForUpdate()->first();
+            }
+
+            // Row-locked: a second concurrent request finds nothing and restores nothing.
+            $record = Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->lockForUpdate()->first();
+            if (! $record) {
+                return ['reversed' => false];
+            }
+
+            $payload     = $this->decodeJsonValue($record->value);
+            $rows        = $payload['ingredients'] ?? [];
+            $deductionId = $payload['deduction_id'] ?? $dedupKey;
+
+            usort($rows, fn($a, $b) => (int) $a['ingredient_id'] <=> (int) $b['ingredient_id']);
+            $ids = collect($rows)->pluck('ingredient_id')->map(fn($v) => (int) $v)->unique()->values()->all();
+            if (! empty($ids)) {
+                \App\Models\InventoryStock::whereIn('ingredient_id', $ids)->orderBy('ingredient_id')->lockForUpdate()->get();
+            }
+
+            foreach ($rows as $row) {
+                $ingredientId = (int) $row['ingredient_id'];
+                $qty          = (float) $row['quantity'];
+
+                $movement = $inventory->move(
+                    $ingredientId,
+                    $qty,
+                    'return',
+                    "Kitchen task reversed [{$deductionId}] (Booking {$booking->booking_no})"
+                );
+                $movement->update(['reference_type' => 'KitchenTaskReversal', 'reference_id' => null]);
+
+                // Give back exactly what was released from the reservation.
+                $release  = (float) ($row['reserved_released'] ?? $qty);
+                $stockRow = \App\Models\InventoryStock::where('ingredient_id', $ingredientId)->first();
+                if ($stockRow && $release > 0) {
+                    $stockRow->update(['reserved_quantity' => (float) $stockRow->reserved_quantity + $release]);
+                }
+            }
+
+            Setting::where('group', 'kitchen_task_deductions')->where('key', $dedupKey)->delete();
+
+            // Un-check the task in the store.
+            $tasks         = $this->readKitchenTasks($booking);
+            $mealServiceId = null;
+            foreach ($tasks as $i => &$t) {
+                if ((string) ($t['id'] ?? '') === $taskId) {
+                    $mealServiceId = (int) ($t['meal_service_id'] ?? 0) ?: null;
+                    if (! empty($t['synthetic'])) {
+                        unset($tasks[$i]);
+                        continue;
+                    }
+                    $t['is_done'] = false;
+                    $t['status']  = 'pending';
+                    unset($t['completed_at'], $t['completed_by'], $t['deduction_id']);
+                }
+            }
+            unset($t);
+
+            $tasks = $this->applyDeductionState((int) $booking->booking_id, array_values($tasks));
+            $this->writeKitchenTasks($booking, $tasks);
+
+            if ($mealServiceId) {
+                MealService::where('meal_service_id', $mealServiceId)
+                    ->where('preparation_status', 'completed')
+                    ->update(['preparation_status' => 'preparing']);
+            }
+
+            return ['reversed' => true, 'deduction_id' => $deductionId, 'count' => count($rows)];
+        });
+
+        if (! $outcome['reversed']) {
+            return $this->ok([
+                'reversed' => false,
+                'task_id'  => $taskId,
+                'reason'   => 'no_deduction_found',
+            ], 'No deduction was recorded for this task.');
+        }
+
+        return $this->ok([
+            'reversed'       => true,
+            'deduction_id'   => $outcome['deduction_id'],
+            'task_id'        => $taskId,
+            'restored_count' => $outcome['count'],
+        ], 'Ingredient deduction reversed and stock restored.');
+    }
 
     private function checklistDueAt($serviceDate, $servingTime): ?Carbon
     {
@@ -1399,9 +2603,9 @@ class EventController extends Controller
 
         // Keep system-detected rows fresh without overwriting manual rows.
         $paid = (float) $booking->payments()->where('status', 'completed')->sum('amount');
-        $allEquipmentOut = $booking->equipment->count() > 0 && $booking->equipment->every(fn ($eq) => in_array($eq->status, ['checked_out', 'returned'], true));
-        $allEquipmentReturned = $booking->equipment->count() > 0 && $booking->equipment->every(fn ($eq) => $eq->status === 'returned');
-        $allMealsDelivered = $booking->mealServices->count() > 0 && $booking->mealServices->every(fn ($meal) => in_array($meal->delivery_status, ['arrived', 'serving', 'completed'], true) || in_array($meal->meal_status, ['delivered', 'serving', 'served', 'completed'], true));
+        $allEquipmentOut = $booking->equipment->count() > 0 && $booking->equipment->every(fn($eq) => in_array($eq->status, ['checked_out', 'returned'], true));
+        $allEquipmentReturned = $booking->equipment->count() > 0 && $booking->equipment->every(fn($eq) => $eq->status === 'returned');
+        $allMealsDelivered = $booking->mealServices->count() > 0 && $booking->mealServices->every(fn($meal) => in_array($meal->delivery_status, ['arrived', 'serving', 'completed'], true) || in_array($meal->meal_status, ['delivered', 'serving', 'served', 'completed'], true));
 
         $preparationTracking = $booking->tracking()->where('stage', 'preparation')->first();
         $preparationMetadata = json_decode($preparationTracking?->notes ?? '[]', true);
@@ -1433,7 +2637,7 @@ class EventController extends Controller
 
     private function formatChecklistRows($rows): array
     {
-        return collect($rows)->map(fn ($item) => [
+        return collect($rows)->map(fn($item) => [
             'id' => $item->event_checklist_item_id,
             'event_checklist_item_id' => $item->event_checklist_item_id,
             'meal_service_id' => $item->meal_service_id,
@@ -1490,24 +2694,24 @@ class EventController extends Controller
         return collect($rows)->map(function ($delivery) {
             $metadata = $this->deliveryMetadata($delivery->notes);
             return [
-            'id' => $delivery->event_delivery_tracking_id,
-            'event_delivery_tracking_id' => $delivery->event_delivery_tracking_id,
-            'meal_service_id' => $delivery->meal_service_id,
-            'day_number' => $delivery->mealService?->day_number,
-            'meal_type' => $delivery->mealService?->meal_type,
-            'event_date' => $delivery->delivery_date?->toDateString(),
-            'delivery_date' => $delivery->delivery_date?->toDateString(),
-            'delivery_time' => $delivery->delivery_time,
-            'return_time' => $delivery->return_time,
-            'venue' => $delivery->venue,
-            'driver' => $delivery->driver,
-            'driver_phone' => $delivery->driver_phone,
-            'delivery_type' => $delivery->delivery_type,
-            'status' => $delivery->status,
-            'vehicle' => $metadata['vehicle'] ?? null,
-            'items' => $metadata['items'] ?? null,
-            'notes' => $metadata['notes'] ?? null,
-        ];
+                'id' => $delivery->event_delivery_tracking_id,
+                'event_delivery_tracking_id' => $delivery->event_delivery_tracking_id,
+                'meal_service_id' => $delivery->meal_service_id,
+                'day_number' => $delivery->mealService?->day_number,
+                'meal_type' => $delivery->mealService?->meal_type,
+                'event_date' => $delivery->delivery_date?->toDateString(),
+                'delivery_date' => $delivery->delivery_date?->toDateString(),
+                'delivery_time' => $delivery->delivery_time,
+                'return_time' => $delivery->return_time,
+                'venue' => $delivery->venue,
+                'driver' => $delivery->driver,
+                'driver_phone' => $delivery->driver_phone,
+                'delivery_type' => $delivery->delivery_type,
+                'status' => $delivery->status,
+                'vehicle' => $metadata['vehicle'] ?? null,
+                'items' => $metadata['items'] ?? null,
+                'notes' => $metadata['notes'] ?? null,
+            ];
         })->values()->all();
     }
 
@@ -1530,7 +2734,7 @@ class EventController extends Controller
         $person = $event?->customer?->person;
         $customerName = $person?->full_name ?? 'Unknown';
         $eventName = $event?->eventType?->name ?? 'Event';
-        
+
         $trackingRows = $booking->relationLoaded('tracking') ? $booking->tracking : collect();
         $mealRows = $booking->relationLoaded('mealServices') ? $booking->mealServices : collect();
         $eventDayRows = $booking->relationLoaded('eventDays') ? $booking->eventDays : collect();
@@ -1538,8 +2742,75 @@ class EventController extends Controller
         $checklistRows = $booking->relationLoaded('eventChecklistItems') ? $booking->eventChecklistItems : collect();
         $deliveryRows = $booking->relationLoaded('deliveryTrackings') ? $booking->deliveryTrackings : collect();
         $paymentRows = $booking->relationLoaded('payments') ? $booking->payments : collect();
+        // ⭐ Kitchen tasks live in the settings store (same one OrderController writes to).
+        $kitchenStoreTasks = $this->readKitchenTasks($booking);
+        // ⭐ Fetch the saved kitchen tasks from the Order model        $orderTasks = [];
+        if ($booking->order && $booking->order->kitchen_tasks) {
+            $orderTasks = is_array($booking->order->kitchen_tasks)
+                ? $booking->order->kitchen_tasks
+                : (json_decode($booking->order->kitchen_tasks, true) ?: []);
+        }
+
+        if (! empty($kitchenStoreTasks)) {
+            $orderTasks = $kitchenStoreTasks;
+        }
+        // ⭐ FIX (BUG A): Use deduction records as the source of truth for        //    `is_done`, but do NOT force `is_done: false` on tasks that have
+        //    no deduction yet. Manual task edits (start time / assigned to /
+        //    out for delivery) preserve their saved is_done flag, and legacy
+        //    tasks marked done before the deduction system existed must not
+        //    be silently reverted on every refresh.
+        if (! empty($orderTasks)) {
+            $deductionKeys = \App\Models\Setting::where('group', 'kitchen_task_deductions')
+                ->where('key', 'like', $booking->booking_id . ':%')
+                ->pluck('key')
+                ->map(fn($k) => str_replace($booking->booking_id . ':', '', $k))
+                ->all();
+
+            $doneTaskIds = array_flip($deductionKeys);
+
+            $orderTasks = array_map(function ($task) use ($doneTaskIds) {
+                $taskId = (string) ($task['id'] ?? '');
+                $hasDeduction = $taskId !== '' && isset($doneTaskIds[$taskId]);
+                $savedDone    = (bool) ($task['is_done'] ?? false);
+
+                if ($hasDeduction) {
+                    // Deduction exists → task MUST be done.
+                    $task['is_done'] = true;
+                    $task['status']  = 'completed';
+                } elseif ($savedDone && ! empty($task['synthetic'])) {
+                    // Synthetic record (was appended by completeKitchenTask
+                    // for a legacy position-based task) → trust its flag.
+                    $task['is_done'] = true;
+                    $task['status']  = 'completed';
+                }
+                // Else: leave whatever was saved — do NOT force false.
+
+                return $task;
+            }, $orderTasks);
+        }
+        // ⭐ Attach the LIVE meal state + schedule so the UI can colour the meal header
+        //    (GREEN = started, BLUE = all tasks done) and show date / day / meal / time.
+        if (! empty($orderTasks) && $mealRows->isNotEmpty()) {
+            $mealById = $mealRows->keyBy('meal_service_id');
+            $dayById  = $eventDayRows->pluck('day_number', 'event_day_id');
+
+            $orderTasks = array_map(function ($task) use ($mealById, $dayById) {
+                $mealId = $task['meal_service_id'] ?? null;
+                $meal   = $mealId ? $mealById->get((int) $mealId) : null;
+                if ($meal) {
+                    $task['meal_preparation_status'] = $meal->preparation_status;
+                    $task['meal_type']    = $meal->meal_type ?? ($task['meal_type'] ?? null);
+                    $task['service_date'] = $meal->service_date?->toDateString() ?? ($task['service_date'] ?? null);
+                    $task['serving_time'] = $meal->serving_time ?? ($task['serving_time'] ?? null);
+                    $task['day_number']   = (int) ($dayById->get($meal->event_day_id) ?? $meal->day_number ?? ($task['day_number'] ?? 1));
+                }
+                return $task;
+            }, $orderTasks);
+        }
+
         $tracking = $trackingRows->where('stage', 'ongoing')->first();
         $progressData = json_decode($tracking?->notes ?? '[]', true);
+
         $preparationTracking = $trackingRows->where('stage', 'preparation')->first();
         $preparationMetadata = json_decode($preparationTracking?->notes ?? '[]', true);
         $assignedStaff = collect($preparationMetadata['assigned_staff'] ?? [])->values();
@@ -1562,15 +2833,19 @@ class EventController extends Controller
             'menu_source' => $meal->menu_source,
             'package_id' => $meal->package_id,
             'menu_item_id' => $meal->menu_item_id,
-            'menu_name' => $meal->menu_name,
+            // ⭐ FIX #6 — If it's a package, provide the individual item names
+            // so the frontend View Details modal doesn't show a combined string.
+            'menu_name' => $meal->menu_source === 'package'
+                ? ($meal->package?->menuItems->pluck('name')->join(', ') ?: 'Package Items')
+                : $meal->menu_name,
             'menu_description' => $meal->menu_description,
             'price_per_head' => (float) $meal->price_per_head,
             'total_meal_amount' => (float) $meal->total_meal_amount,
-            'filters' => ($meal->relationLoaded('filters') ? $meal->filters : collect())->map(fn ($filter) => [
+            'filters' => ($meal->relationLoaded('filters') ? $meal->filters : collect())->map(fn($filter) => [
                 'filter_key' => $filter->filter_key,
                 'filter_value' => $filter->filter_value,
             ])->values(),
-            'custom_items' => ($meal->relationLoaded('customItems') ? $meal->customItems : collect())->map(fn ($item) => [
+            'custom_items' => ($meal->relationLoaded('customItems') ? $meal->customItems : collect())->map(fn($item) => [
                 'meal_service_custom_item_id' => $item->meal_service_custom_item_id,
                 'menu_item_id' => $item->menu_item_id,
                 'item_name' => $item->item_name ?? $item->menuItem?->name,
@@ -1595,7 +2870,7 @@ class EventController extends Controller
             'status' => $meal['meal_status'] ?? 'pending',
             'date' => $meal['date'],
         ])->values();
-        
+
         return [
             'id' => $booking->booking_id,
             'event_id' => $booking->booking_id,
@@ -1611,8 +2886,42 @@ class EventController extends Controller
             'time' => $event?->event_time,
             'location' => $event?->venue,
             'venue' => $event?->venue,
+            'status' => $booking->booking_status,
+            // ⭐ Keep Orders & Events consistent with Bookings.
+            'booking_source' => $booking->booking_source ?? 'walk_in',
+            'order_status' => $booking->order?->status,
             'guests_count' => $event?->guests_count ?? 0,
             'status' => $booking->booking_status,
+            // ⭐ Keep Orders & Events consistent with Bookings.
+            'booking_source' => $booking->booking_source ?? 'walk_in',
+            // ⭐ SERVICE TYPE — surfaced so the frontend can render the
+            //    correct Operations Hub layout and completion action.
+            'service_type' => $event?->service_type,
+            'service_type_label' => (function () use ($event) {
+                $svc = strtolower((string) ($event?->service_type ?? 'buffet'));
+                return match ($svc) {
+                    'packed' => 'Packed',
+                    'tray'   => 'Tray',
+                    default  => 'Buffet',
+                };
+            })(),
+            'is_packed_or_tray' => in_array(strtolower((string) ($event?->service_type ?? '')), ['packed', 'tray'], true),
+            // ⭐ Normalized completion mode — always 'deliver' or 'pickup'.
+            //    Mirrors the same resolution used by BookingController so
+            //    both modules agree on the correct action label.
+            'packed_tray_mode' => (function () use ($event) {
+                $svc = strtolower(trim((string) ($event?->service_type ?? '')));
+                if (! in_array($svc, ['packed', 'tray'], true)) return null;
+                $raw = strtolower(trim((string) ($event?->delivery_method ?? '')));
+                $normalized = str_replace([' ', '-'], '_', $raw);
+                return in_array($normalized, ['delivery', 'deliver', 'delivered'], true)
+                    ? 'deliver'
+                    : 'pickup';
+            })(),
+            // ⭐ The raw customer-facing delivery method — untouched.
+            'delivery_method' => $event?->delivery_method,
+            'delivery_completed_at' => $event?->delivery_completed_at ?? null,
+            'pickup_completed_at' => $event?->pickup_completed_at ?? null,
             'order_status' => $booking->order?->status,
             'total_amount' => $booking->invoice?->total_amount ?? $booking->quotation?->total_amount ?? 0,
             'paid_amount' => $booking->invoice?->paid_amount ?? $paymentRows->where('status', 'completed')->sum('amount') ?? 0,
@@ -1657,6 +2966,7 @@ class EventController extends Controller
                 'issues' => [],
                 'notes' => '',
             ],
+            'kitchen_preparation' => $orderTasks,  // ⭐ Added saved kitchen tasks
             'checklist' => $this->formatChecklistRows($checklistRows),
             'delivery_tracking' => $this->formatDeliveryRows($deliveryRows),
             'event_days' => $eventDayRows->map(fn($day) => [
@@ -1668,6 +2978,26 @@ class EventController extends Controller
             'meal_services' => $mealServices,
             'meal_schedule' => $mealServices,
             'timeline' => $timeline,
+
+            // ⭐ KEY #1 + #3 — Multi-day metadata for the frontend.
+            //    `days` / `total_days` / `event_end_date` must survive
+            //    every round-trip so the table, badge, and Day Schedule
+            //    pane render correctly.
+            'event_date' => $event?->event_date?->toDateString(),
+            'event_end_date' => ($event?->event_end_date ?? $event?->event_date)?->toDateString(),
+            'days' => $computedTotalDays,
+            'total_days' => $computedTotalDays,
+            'is_multi_day' => (bool) (($event?->booking_scope === 'multi_day') || $computedTotalDays > 1),
+            'booking_scope' => $event?->booking_scope ?? 'regular',
+
+            // ⭐ KEY #3 — Per-day order rows. Each entry is the meals that
+            // belong to that day, so the frontend can render one row per
+            // day without re-grouping on the client.
+            'meal_services_by_day' => $mealServices
+                ->groupBy(fn($m) => (int) ($m['day_number'] ?? 1))
+                ->sortKeys()
+                ->map(fn($rows) => $rows->values())
+                ->values(),
         ];
     }
 }

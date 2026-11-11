@@ -122,14 +122,22 @@ class Booking extends Model
 
     public function getPaidAmountAttribute()
     {
-        return $this->payments()->where('status', 'completed')->sum('amount');
+        // ⭐ CRITICAL FIX: Use the already-loaded payments collection
+        // if available. This prevents running a new SQL query for every
+        // single booking during serialization (which causes timeouts).
+        if ($this->relationLoaded('payments')) {
+            return (float) $this->payments->where('status', 'completed')->sum('amount');
+        }
+
+        // Fallback: only run a query if payments weren't eager-loaded.
+        return (float) $this->payments()->where('status', 'completed')->sum('amount');
     }
 
     public function getBalanceAttribute()
     {
-        return max(0, $this->total_amount - $this->paid_amount);
+        // ⭐ Uses the cached accessors above — no extra queries.
+        return max(0, (float) $this->total_amount - (float) $this->paid_amount);
     }
-
     public function getInventoryDeductedAttribute()
     {
         return (bool) Setting::getValue('inventory_deductions', 'booking_' . $this->booking_id, false);

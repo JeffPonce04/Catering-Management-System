@@ -35,6 +35,7 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     overflow-x: hidden;
 }
+
 /* ==================== DARK MODE — MATCHES REFERENCE ==================== */
 .bqm-dark-mode {
     --bqm-primary: #60a5fa;
@@ -50,12 +51,10 @@
     --bqm-warning-soft: rgba(251, 191, 36, 0.12);
     --bqm-danger: #f87171;
     --bqm-danger-soft: rgba(248, 113, 113, 0.12);
-    /* Text — soft whites, NOT #ffffff */
     --bqm-text: #e2e8f0;
     --bqm-text-strong: #f1f5f9;
     --bqm-muted: #94a3b8;
     --bqm-muted-soft: #64748b;
-    /* Surfaces */
     --bqm-border: #1f2937;
     --bqm-border-strong: #2a3441;
     --bqm-surface: #111827;
@@ -97,7 +96,7 @@
     width: 44px;
     height: 44px;
     color: #ffffff;
-    font-size: 21px;
+    font-size: 23px;
     place-items: center;
     background: linear-gradient(135deg, #3b82f6, #2563eb);
     border-radius: 12px;
@@ -107,7 +106,7 @@
 .bqm-header-info h1 {
     margin: 0;
     color: var(--bqm-text);
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 700;
     letter-spacing: -0.3px;
     line-height: 1.2;
@@ -118,7 +117,7 @@
     margin-top: 2px;
     height: 9.05px;
     color: var(--bqm-primary);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.8px;
 }
@@ -129,7 +128,7 @@
     gap: 5px;
     padding: 6px 12px;
     color: var(--bqm-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     background: var(--bqm-page);
     border: 1px solid var(--bqm-border);
@@ -166,7 +165,7 @@
     display: grid;
     width: 52px;
     height: 52px;
-    font-size: 22px;
+    font-size: 24px;
     border-radius: 14px;
     place-items: center;
 }
@@ -193,7 +192,7 @@
 
 .bqm-kpi-value {
     color: var(--bqm-text);
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 700;
     line-height: 1.2;
 }
@@ -201,7 +200,7 @@
 .bqm-kpi-label {
     margin-top: 4px;
     color: var(--bqm-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
 }
 
@@ -223,7 +222,7 @@
 .bqm-dark-mode .bqm-main-card .ant-card-body {
     background: #111827;
 }
-/* Tab panes — explicit backgrounds per theme */
+
 .bqm-container .ant-tabs-tabpane {
     background: #ffffff;
 }
@@ -251,7 +250,7 @@
 .bqm-tabs .ant-tabs-tab,
 .bqm-inner-tabs .ant-tabs-tab {
     padding: 16px 12px;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
@@ -262,7 +261,6 @@
     border-radius: 99px;
 }
 
-/* Kill the white flash on tab switch: disable AntD's default motion */
 .bqm-tabs .ant-tabs-tabpane,
 .bqm-inner-tabs .ant-tabs-tabpane {
     background: transparent;
@@ -275,6 +273,7 @@
 .bqm-dark-mode .bqm-inner-tabs .ant-tabs-tabpane {
     background: #111827 !important;
 }
+
 .bqm-tab-content {
     padding: 24px;
     background: transparent;
@@ -345,16 +344,13 @@
 
 /* ==================== TABLES ==================== */
 .bqm-table .ant-table {
-    font-size: 13px;
+    font-size: 15px;
 }
 
-/* ============================================================
-   TABLE — LIGHT MODE (default) — clean white / gray header
-   ============================================================ */
 .bqm-table .ant-table-thead > tr > th {
     padding: 14px 16px;
     color: #475569 !important;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -366,7 +362,7 @@
 }
 
 .bqm-table .ant-table-thead > tr > th::before {
-    display: none !important; /* remove AntD's column divider */
+    display: none !important;
 }
 
 .bqm-table .ant-table-tbody > tr > td {
@@ -386,9 +382,6 @@
     color: #1e293b !important;
 }
 
-/* ============================================================
-   TABLE — DARK MODE OVERRIDE
-   ============================================================ */
 .bqm-dark-mode .bqm-table .ant-table-thead > tr > th {
     background: #0b1220 !important;
     color: #94a3b8 !important;
@@ -419,7 +412,7 @@
 .bqm-customer-name,
 .bqm-event-date {
     color: var(--bqm-text);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
@@ -431,7 +424,7 @@
     gap: 4px;
     margin-top: 4px;
     color: var(--bqm-muted);
-    font-size: 11px;
+    font-size: 13px;
 }
 
 .bqm-id-text {
@@ -440,7 +433,7 @@
     padding: 4px 10px;
     color: var(--bqm-primary);
     font-family: 'Monaco', 'Menlo', monospace;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     background: var(--bqm-primary-soft);
     border-radius: 20px;
@@ -452,7 +445,7 @@
     gap: 6px;
     padding: 4px 10px;
     color: var(--bqm-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     background: var(--bqm-page);
     border-radius: 20px;
@@ -460,13 +453,13 @@
 
 .bqm-service-text,
 .bqm-event-type-text {
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-text);
 }
 
 .bqm-amount {
     color: var(--bqm-text);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
 }
 
@@ -475,7 +468,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     border-radius: 20px;
 }
@@ -489,7 +482,7 @@
 
 .bqm-today-tag {
     margin-top: 4px;
-    font-size: 10px;
+    font-size: 12px;
 }
 
 /* ==================== ACTION ICONS ==================== */
@@ -603,7 +596,7 @@
     justify-content: flex-end;
     gap: 12px;
     padding: 10px 18px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-text);
     background: var(--bqm-page);
     border-top: 1px solid var(--bqm-border);
@@ -627,6 +620,64 @@
     margin-bottom: 16px;
 }
 
+.bqm-calendar-zoom-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--bqm-surface);
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--bqm-border);
+}
+
+.bqm-calendar-zoom-controls .ant-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.bqm-dark-mode .bqm-calendar-zoom-controls {
+    background: #111827;
+    border-color: #1f2937;
+}
+
+.bqm-calendar-zoom-inner {
+    /* Ensures the calendar takes up space properly when scaled */
+    display: flex;
+    justify-content: center;
+    width: 100%;
+}
+
+.bqm-calendar-zoom-inner .ant-picker-calendar {
+    width: 100%;
+    max-width: 100%;
+}
+
+/* Enlarge the calendar cells in the fullscreen modal for better visibility */
+.bqm-modal-clean .bqm-calendar-zoom-inner .ant-picker-calendar-date {
+    min-height: 120px !important;
+    padding: 8px !important;
+}
+
+.bqm-modal-clean .bqm-calendar-zoom-inner .ant-picker-calendar-date-value {
+    font-size: 16px !important;
+    font-weight: 600 !important;
+}
+
+.bqm-modal-clean .bqm-calendar-zoom-inner .bqm-calendar-event-item {
+    padding: 6px 10px !important;
+    font-size: 13px !important;
+}
+
+.bqm-modal-clean .bqm-calendar-zoom-inner .bqm-calendar-event-time,
+.bqm-modal-clean .bqm-calendar-zoom-inner .bqm-calendar-event-name {
+    font-size: 13px !important;
+}
+
+.bqm-modal-clean .bqm-calendar-zoom-inner .bqm-calendar-availability-badge {
+    font-size: 12px !important;
+    padding: 4px 8px !important;
+}
 .bqm-calendar-wrapper {
     overflow: hidden;
     background: var(--bqm-surface);
@@ -659,7 +710,7 @@
 
 .bqm-calendar-wrapper-compact .ant-picker-calendar-date-value {
     color: var(--bqm-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
 }
 
@@ -679,7 +730,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--bqm-muted);
 }
 
@@ -732,7 +783,7 @@
     gap: 4px;
     margin-bottom: 4px;
     padding: 2px 6px;
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
     border-radius: 4px;
     width: 100%;
@@ -753,7 +804,7 @@
     padding: 3px 6px;
     color: #ffffff;
     font-family: inherit;
-    font-size: 10px;
+    font-size: 12px;
     text-align: left;
     background: linear-gradient(135deg, #3b82f6, #2563eb);
     border: none;
@@ -770,7 +821,7 @@
 .bqm-calendar-event-time,
 .bqm-calendar-event-name {
     overflow: hidden;
-    font-size: 9px;
+    font-size: 11px;
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -781,7 +832,7 @@
 
 .bqm-calendar-event-more {
     color: var(--bqm-primary);
-    font-size: 9px;
+    font-size: 11px;
     font-weight: 600;
     text-align: center;
     margin-top: 2px;
@@ -810,7 +861,7 @@
 }
 
 .bqm-meal-day-tag {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     padding: 4px 14px;
 }
@@ -836,7 +887,7 @@
 }
 
 .bqm-meal-type-tag {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     padding: 4px 14px;
 }
@@ -845,7 +896,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-text);
 }
 
@@ -853,7 +904,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-muted);
 }
 
@@ -861,7 +912,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: 12px;
+    font-size: 14px;
     color: var(--bqm-muted);
     background: var(--bqm-page);
     padding: 2px 10px;
@@ -881,7 +932,7 @@
     grid-template-columns: 3fr 0.7fr 1fr 1.2fr;
     gap: 8px;
     padding: 8px 14px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-text);
 }
 
@@ -890,8 +941,9 @@
 .bqm-dark-mode .bqm-meal-menu-total {
     color: #e2e8f0;
 }
+
 .bqm-meal-menu-header {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     background: var(--bqm-page);
     border-bottom: 1px solid var(--bqm-border);
@@ -906,7 +958,7 @@
 }
 
 .bqm-meal-menu-total {
-    font-size: 14px;
+    font-size: 16px;
     background: var(--bqm-primary-soft);
     border-top: 2px solid var(--bqm-border);
 }
@@ -962,12 +1014,12 @@
 }
 
 .bqm-steps-fixed .ant-steps-item { flex: 1; }
-.bqm-steps-fixed .ant-steps-item-title { font-size: 12px; font-weight: 500; }
+.bqm-steps-fixed .ant-steps-item-title { font-size: 14px; font-weight: 500; }
 .bqm-steps-fixed .ant-steps-item-icon {
     width: 28px;
     height: 28px;
     line-height: 28px;
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .bqm-step-content-fixed { padding: 0 24px 16px; }
@@ -990,7 +1042,7 @@
     justify-content: center;
     width: 48px;
     height: 48px;
-    font-size: 22px;
+    font-size: 24px;
     color: #ffffff;
     background: linear-gradient(135deg, #3b82f6, #2563eb);
     border-radius: 14px;
@@ -1005,7 +1057,7 @@
 
 .bqm-step-title-professional {
     margin: 0;
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 700;
     color: var(--bqm-text);
     letter-spacing: -0.3px;
@@ -1013,7 +1065,7 @@
 
 .bqm-step-desc-professional {
     margin: 2px 0 0;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-muted);
 }
 
@@ -1029,7 +1081,7 @@
 .bqm-step-info-professional {
     display: flex;
     justify-content: space-between;
-    font-size: 11px;
+    font-size: 13px;
     color: var(--bqm-muted);
 }
 
@@ -1047,7 +1099,7 @@
     align-items: center;
     gap: 8px;
     margin-bottom: 14px;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--bqm-text);
     letter-spacing: 0.3px;
@@ -1055,12 +1107,12 @@
 
 .bqm-section-label-professional .anticon {
     color: var(--bqm-primary);
-    font-size: 16px;
+    font-size: 18px;
 }
 
 .bqm-input-professional .ant-input,
 .bqm-input-professional .ant-input-number-input {
-    font-size: 14px;
+    font-size: 16px;
     padding: 10px 14px;
 }
 
@@ -1070,7 +1122,7 @@
 
 .bqm-input-icon {
     color: var(--bqm-muted);
-    font-size: 16px;
+    font-size: 18px;
 }
 
 .bqm-select-professional .ant-select-selector {
@@ -1082,7 +1134,7 @@
 
 .bqm-select-professional .ant-select-selection-placeholder,
 .bqm-select-professional .ant-select-selection-item {
-    font-size: 14px;
+    font-size: 16px;
     line-height: 32px;
 }
 
@@ -1090,12 +1142,12 @@
     border-radius: 10px;
     padding: 10px 14px;
     height: 48px;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .bqm-textarea-professional {
     border-radius: 10px;
-    font-size: 14px;
+    font-size: 16px;
     padding: 10px 14px;
 }
 
@@ -1149,14 +1201,14 @@
 
 .bqm-service-option-label,
 .bqm-scope-option-label {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--bqm-text);
 }
 
 .bqm-service-option-desc,
 .bqm-scope-option-desc {
-    font-size: 12px;
+    font-size: 14px;
     color: var(--bqm-muted);
 }
 
@@ -1170,7 +1222,7 @@
 }
 
 .bqm-multi-day-label {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--bqm-muted);
     margin-bottom: 8px;
@@ -1179,13 +1231,13 @@
 .bqm-multi-day-input { width: 80px; }
 
 .bqm-multi-day-input .ant-input-number-input {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 600;
     text-align: center;
 }
 
-.bqm-multi-day-text { font-size: 14px; color: var(--bqm-muted); }
-.bqm-multi-day-badge { font-size: 12px; font-weight: 600; padding: 2px 14px; }
+.bqm-multi-day-text { font-size: 16px; color: var(--bqm-muted); }
+.bqm-multi-day-badge { font-size: 14px; font-weight: 600; padding: 2px 14px; }
 
 /* Meal services in wizard */
 .bqm-meal-toolbar-professional {
@@ -1242,13 +1294,13 @@
 }
 
 .bqm-meal-number {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 600;
     color: var(--bqm-text);
 }
 
 .bqm-meal-day-tag {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
 }
 
@@ -1259,7 +1311,7 @@
 }
 
 .bqm-meal-label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--bqm-muted);
     text-transform: uppercase;
@@ -1271,7 +1323,7 @@
 }
 
 .bqm-meal-total-professional {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
     color: #10b981;
     padding: 4px 0;
@@ -1284,7 +1336,7 @@
 }
 
 .bqm-selected-items-label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--bqm-muted);
     margin-bottom: 6px;
@@ -1298,7 +1350,7 @@
 
 .bqm-selected-items-list .ant-tag {
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 14px;
     padding: 2px 10px;
 }
 
@@ -1308,11 +1360,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .bqm-meal-summary-content strong {
-    font-size: 18px;
+    font-size: 20px;
     color: #10b981;
 }
 
@@ -1324,7 +1376,7 @@
 }
 
 .bqm-additional-label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--bqm-muted);
     text-transform: uppercase;
@@ -1336,7 +1388,7 @@
 }
 
 .bqm-additional-field .ant-input-number-input {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 500;
 }
 
@@ -1354,13 +1406,13 @@
 }
 
 .bqm-summary-card-professional .ant-statistic-title {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--bqm-muted);
 }
 
 .bqm-summary-card-professional .ant-statistic-content {
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 700;
 }
 
@@ -1400,7 +1452,7 @@
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--bqm-muted);
     background: var(--bqm-page);
@@ -1410,14 +1462,14 @@
 }
 
 .bqm-review-card-header .anticon {
-    font-size: 14px;
+    font-size: 16px;
     color: var(--bqm-primary);
 }
 
 .bqm-review-badge {
     margin-left: auto;
     padding: 1px 10px;
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     color: #ffffff;
     background: var(--bqm-primary);
@@ -1430,7 +1482,7 @@
     display: flex;
     justify-content: space-between;
     padding: 6px 0;
-    font-size: 13px;
+    font-size: 15px;
     border-bottom: 1px solid var(--bqm-border);
 }
 
@@ -1447,18 +1499,18 @@
     display: flex;
     justify-content: space-between;
     padding: 4px 0;
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .bqm-review-discount { color: #10b981; }
 
 .bqm-review-grand-total {
     padding: 8px 0;
-    font-size: 16px;
+    font-size: 18px;
     border-top: 2px solid var(--bqm-border);
 }
 
-.bqm-review-grand-total strong { font-size: 18px; }
+.bqm-review-grand-total strong { font-size: 20px; }
 
 .bqm-review-divider {
     height: 1px;
@@ -1468,7 +1520,7 @@
 
 .bqm-review-requests {
     padding: 8px 12px;
-    font-size: 13px;
+    font-size: 15px;
     background: var(--bqm-primary-soft);
     border-radius: 8px;
     color: var(--bqm-text);
@@ -1476,7 +1528,7 @@
 }
 
 .bqm-review-table .ant-table-cell {
-    font-size: 12px;
+    font-size: 14px;
     padding: 4px 8px !important;
 }
 
@@ -1508,7 +1560,7 @@
 
 .bqm-step-indicator {
     padding: 4px 12px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: var(--bqm-primary);
     background: var(--bqm-primary-soft);
@@ -1533,7 +1585,7 @@
 }
 
 .bqm-menu-modal-title {
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 600;
     color: var(--bqm-text);
 }
@@ -1544,7 +1596,7 @@
 }
 
 .bqm-menu-modal-subtitle {
-    font-size: 13px;
+    font-size: 15px;
     color: var(--bqm-muted);
 }
 
@@ -1618,7 +1670,7 @@
     position: absolute;
     top: 8px;
     right: 8px;
-    font-size: 16px;
+    font-size: 18px;
     color: var(--bqm-muted);
 }
 
@@ -1648,23 +1700,23 @@
     justify-content: center;
     width: 100%;
     height: 100%;
-    font-size: 32px;
+    font-size: 34px;
     color: var(--bqm-muted);
 }
 
 .bqm-menu-item-info { text-align: center; }
 
 .bqm-menu-item-name {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     color: var(--bqm-text);
     margin-bottom: 2px;
 }
 
-.bqm-menu-item-category { font-size: 11px; color: var(--bqm-muted); }
+.bqm-menu-item-category { font-size: 13px; color: var(--bqm-muted); }
 
 .bqm-menu-item-price {
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 700;
     color: #10b981;
     margin-top: 4px;
@@ -1678,7 +1730,7 @@
 }
 
 .bqm-menu-modal-selected-count {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: var(--bqm-muted);
 }
@@ -1703,7 +1755,7 @@
 }
 
 .bqm-modal-clean .ant-form-item-extra {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--bqm-muted);
 }
 
@@ -1728,7 +1780,7 @@
     width: 40px;
     height: 40px;
     color: #ffffff;
-    font-size: 18px;
+    font-size: 20px;
     background: linear-gradient(135deg, #3b82f6, #2563eb);
     border-radius: 12px;
     place-items: center;
@@ -1738,14 +1790,14 @@
 .bqm-step-title {
     flex: 1;
     color: var(--bqm-text);
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 600;
 }
 
 .bqm-modal-badge {
     padding: 4px 12px;
     font-family: 'Monaco', monospace;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     background: var(--bqm-primary-soft);
     border-radius: 20px;
@@ -1763,7 +1815,7 @@
 .bqm-step-desc {
     margin-top: 2px;
     color: var(--bqm-muted);
-    font-size: 11px;
+    font-size: 13px;
 }
 
 .bqm-modal-step-body,
@@ -1806,13 +1858,13 @@
     align-items: center;
     gap: 8px;
     color: var(--bqm-muted);
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
 }
 
 .bqm-info-value {
     color: var(--bqm-text);
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     text-align: right;
 }
@@ -1844,8 +1896,7 @@
 }
 
 /* ============================================================================
-   FORMAL MODALS — WHITE / BLUE PROFESSIONAL (Late Cancellation, Deposit Overdue,
-   Refund Review)
+   FORMAL MODALS
    ============================================================================ */
 
 .bqm-formal-modal .ant-modal-content {
@@ -1881,7 +1932,6 @@
     background: #ffffff;
 }
 
-/* ---------- Header ---------- */
 .bqm-formal-header {
     position: relative;
     display: grid;
@@ -1902,7 +1952,7 @@
     border-radius: 10px;
     background: #eff6ff;
     color: #1d4ed8;
-    font-size: 20px;
+    font-size: 22px;
     flex-shrink: 0;
 }
 
@@ -1920,7 +1970,7 @@
 
 .bqm-formal-eyebrow {
     display: inline-block;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -1930,7 +1980,7 @@
 
 .bqm-formal-title {
     margin: 0 0 4px;
-    font-size: 17px;
+    font-size: 19px;
     font-weight: 600;
     line-height: 1.35;
     color: #0f172a;
@@ -1939,13 +1989,12 @@
 
 .bqm-formal-subtitle {
     margin: 0;
-    font-size: 12.5px;
+    font-size: 14.5px;
     line-height: 1.55;
     color: #64748b;
     max-width: 62ch;
 }
 
-/* Header stamp (day count / status) */
 .bqm-formal-stamp {
     display: flex;
     flex-direction: column;
@@ -1969,7 +2018,7 @@
 }
 
 .bqm-formal-stamp-label {
-    font-size: 9.5px;
+    font-size: 11.5px;
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -1978,7 +2027,7 @@
 }
 
 .bqm-formal-stamp-value {
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 700;
     line-height: 1;
     color: #1d4ed8;
@@ -1986,9 +2035,8 @@
 }
 
 .bqm-formal-stamp--amber .bqm-formal-stamp-value { color: #b45309; }
-.bqm-formal-stamp--danger .bqm-formal-stamp-value { color: #b91c1c; font-size: 14px; }
+.bqm-formal-stamp--danger .bqm-formal-stamp-value { color: #b91c1c; font-size: 16px; }
 
-/* ---------- Body ---------- */
 .bqm-formal-body {
     flex: 1;
     padding: 20px 28px 8px;
@@ -2003,7 +2051,6 @@
 }
 .bqm-formal-body::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.22); }
 
-/* Info strip */
 .bqm-formal-strip {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2025,7 +2072,7 @@
 }
 
 .bqm-formal-strip-label {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -2033,7 +2080,7 @@
 }
 
 .bqm-formal-strip-value {
-    font-size: 13.5px;
+    font-size: 15.5px;
     font-weight: 500;
     color: #0f172a;
     word-break: break-word;
@@ -2041,13 +2088,12 @@
 }
 
 .bqm-formal-strip-value--money {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
     color: #1d4ed8;
     font-variant-numeric: tabular-nums;
 }
 
-/* Sections */
 .bqm-formal-section {
     display: flex;
     flex-direction: column;
@@ -2074,7 +2120,7 @@
     border-radius: 6px;
     background: #1d4ed8;
     color: #ffffff;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 700;
     letter-spacing: 0.6px;
     font-variant-numeric: tabular-nums;
@@ -2082,7 +2128,7 @@
 }
 
 .bqm-formal-section-title {
-    font-size: 13.5px;
+    font-size: 15.5px;
     font-weight: 600;
     color: #0f172a;
 }
@@ -2099,7 +2145,7 @@
     height: 20px;
     padding: 0 8px;
     border-radius: 4px;
-    font-size: 9.5px;
+    font-size: 11.5px;
     font-weight: 700;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -2116,7 +2162,6 @@
     color: #64748b;
 }
 
-/* ---------- Choice grid ---------- */
 .bqm-formal-choicegrid { display: block; }
 
 .bqm-formal-choicegrid-inner {
@@ -2180,7 +2225,7 @@
 
 .bqm-formal-choice-label {
     display: block !important;
-    font-size: 13.5px;
+    font-size: 15.5px;
     font-weight: 600;
     color: #0f172a;
     line-height: 1.25;
@@ -2188,7 +2233,7 @@
 
 .bqm-formal-choice-hint {
     display: block !important;
-    font-size: 11.5px;
+    font-size: 13.5px;
     font-weight: 400;
     color: #64748b;
     line-height: 1.45;
@@ -2215,7 +2260,6 @@
 }
 .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--success::after { width: 5px; }
 
-/* ---------- Panels ---------- */
 .bqm-formal-panel {
     position: relative;
     padding: 14px 16px;
@@ -2224,32 +2268,29 @@
     background: #eff6ff;
 }
 
-.bqm-formal-panel::before {
-    content: '';
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 3px;
-    border-radius: 8px 0 0 8px;
-    background: #1d4ed8;
+.bqm-formal-panel {
+    position: relative;
+    padding: 14px 16px;
+    border-radius: 8px;
+    border: 1px solid #dbeafe;
+    background: #eff6ff;
+    /* Removed the colored line */
 }
 
 .bqm-formal-panel--success {
     background: #f0fdfa;
     border-color: #ccfbf1;
 }
-.bqm-formal-panel--success::before { background: #059669; }
 
 .bqm-formal-panel--danger {
     background: #fef2f2;
     border-color: #fee2e2;
 }
-.bqm-formal-panel--danger::before { background: #dc2626; }
-
 .bqm-formal-panel-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 12.5px;
+    font-size: 14.5px;
     font-weight: 600;
     color: #1d4ed8;
     margin-bottom: 10px;
@@ -2260,12 +2301,11 @@
 
 .bqm-formal-panel-text {
     margin: 0;
-    font-size: 12.5px;
+    font-size: 14.5px;
     line-height: 1.55;
     color: #475569;
 }
 
-/* ---------- Dossier (read-only rows) ---------- */
 .bqm-formal-dossier {
     border: 1px solid #e2e8f0;
     border-radius: 8px;
@@ -2286,7 +2326,7 @@
 .bqm-formal-dossier-row--stack { align-items: flex-start; }
 
 .bqm-formal-dossier-label {
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 600;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -2294,7 +2334,7 @@
 }
 
 .bqm-formal-dossier-value {
-    font-size: 13.5px;
+    font-size: 15.5px;
     font-weight: 500;
     color: #0f172a;
     word-break: break-word;
@@ -2302,20 +2342,19 @@
 
 .bqm-formal-dossier-value--block {
     font-weight: 400;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.6;
     color: #475569;
     white-space: pre-wrap;
 }
 
-/* ---------- Pill ---------- */
 .bqm-formal-pill {
     display: inline-flex;
     align-items: center;
     height: 22px;
     padding: 0 10px;
     border-radius: 6px;
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 700;
     letter-spacing: 0.5px;
     text-transform: uppercase;
@@ -2324,7 +2363,6 @@
 .bqm-formal-pill--warn { background: #fef3c7; color: #92400e; }
 .bqm-formal-pill--info { background: #dbeafe; color: #1e3a8a; }
 
-/* ---------- Note ---------- */
 .bqm-formal-note {
     display: flex;
     align-items: flex-start;
@@ -2332,14 +2370,14 @@
     padding: 11px 14px;
     background: #f8fafc;
     border-radius: 8px;
-    font-size: 12.5px;
+    font-size: 14.5px;
     line-height: 1.55;
     color: #475569;
     border: 1px solid #e2e8f0;
 }
 
 .bqm-formal-note > .anticon {
-    font-size: 14px;
+    font-size: 16px;
     margin-top: 2px;
     color: #1d4ed8;
     flex-shrink: 0;
@@ -2366,7 +2404,6 @@
 }
 .bqm-formal-note--warning > .anticon { color: #d97706; }
 
-/* ---------- Cashier option cards ---------- */
 .bqm-formal-options {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2419,26 +2456,26 @@
     margin-bottom: 10px;
 }
 
-.bqm-formal-option-icon { font-size: 16px; }
+.bqm-formal-option-icon { font-size: 18px; }
 .bqm-formal-option--forfeit .bqm-formal-option-icon { color: #dc2626; }
 .bqm-formal-option--refund  .bqm-formal-option-icon { color: #1d4ed8; }
 
 .bqm-formal-option-title {
-    font-size: 13.5px;
+    font-size: 15.5px;
     font-weight: 600;
     color: #0f172a;
 }
 
 .bqm-formal-option-text {
     flex: 1;
-    font-size: 12.5px;
+    font-size: 14.5px;
     line-height: 1.55;
     color: #64748b;
     margin: 0 0 12px;
 }
 
 .bqm-formal-option-action {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.4px;
     text-transform: uppercase;
@@ -2447,9 +2484,8 @@
 .bqm-formal-option--forfeit .bqm-formal-option-action { color: #dc2626; }
 .bqm-formal-option--refund  .bqm-formal-option-action { color: #1d4ed8; }
 
-/* ---------- Form controls ---------- */
 .bqm-formal-form .ant-form-item-label > label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     letter-spacing: 0.4px;
     text-transform: uppercase;
@@ -2465,7 +2501,7 @@
 .bqm-formal-form textarea.ant-input {
     border-radius: 8px !important;
     border-color: #e2e8f0 !important;
-    font-size: 13.5px;
+    font-size: 15.5px;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -2485,7 +2521,6 @@
     box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.08) !important;
 }
 
-/* ---------- Footer ---------- */
 .bqm-formal-footer {
     display: flex;
     align-items: center;
@@ -2501,16 +2536,15 @@
 .bqm-formal-footer-right { display: flex; align-items: center; gap: 8px; }
 
 .bqm-formal-footer-note {
-    font-size: 11.5px;
+    font-size: 13.5px;
     color: #94a3b8;
     line-height: 1.5;
 }
 
-/* ---------- Buttons ---------- */
 .bqm-formal-btn {
     border-radius: 8px !important;
     font-weight: 500 !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     padding: 0 20px !important;
     height: 40px !important;
     transition: background 0.15s ease, border-color 0.15s ease !important;
@@ -2570,7 +2604,6 @@
     background: #fef2f2 !important;
 }
 
-/* ---------- Refund approval two-option ---------- */
 .bqm-refund-choicegrid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2612,25 +2645,25 @@
     margin-bottom: 8px;
 }
 
-.bqm-refund-choice-icon { font-size: 18px; }
+.bqm-refund-choice-icon { font-size: 20px; }
 .bqm-refund-choice--success .bqm-refund-choice-icon { color: #059669; }
 .bqm-refund-choice--danger  .bqm-refund-choice-icon { color: #dc2626; }
 
 .bqm-refund-choice-title {
     font-weight: 600;
-    font-size: 13.5px;
+    font-size: 15.5px;
     color: #0f172a;
 }
 
 .bqm-refund-choice-text {
-    font-size: 12.5px;
+    font-size: 14.5px;
     color: #64748b;
     line-height: 1.55;
     margin: 0 0 10px;
 }
 
 .bqm-refund-choice-action {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -2679,12 +2712,11 @@
     .bqm-calendar-wrapper-compact .ant-picker-calendar-date { min-height: 65px !important; }
     .bqm-calendar-event-name { display: none; }
     .bqm-calendar-legend { gap: 8px; }
-    .bqm-legend-item { font-size: 9px; }
+    .bqm-legend-item { font-size: 11px; }
 
     .bqm-table .ant-pagination { align-items: flex-end; flex-wrap: wrap; }
     .bqm-table .ant-pagination-total-text { width: 100%; }
 
-    /* Formal modal responsive */
     .bqm-formal-header { grid-template-columns: 48px 1fr; padding: 18px 20px; }
     .bqm-formal-stamp { display: none; }
     .bqm-formal-body { padding: 18px 20px 8px; }
@@ -2722,7 +2754,7 @@
 }
 
 /* ============================================================
-   BQM PRO MODAL — white/blue professional (3-Day Warning, Confirm Refund, etc.)
+   BQM PRO MODAL
    ============================================================ */
 
 .bqm-pro-modal .ant-modal-content {
@@ -2739,7 +2771,6 @@
     flex-direction: column;
 }
 
-/* ---------- Header ---------- */
 .bqm-pro-modal-header {
     display: flex;
     align-items: flex-start;
@@ -2756,7 +2787,7 @@
     width: 40px;
     height: 40px;
     border-radius: 10px;
-    font-size: 18px;
+    font-size: 20px;
     flex-shrink: 0;
     background: #eff6ff;
     color: #1d4ed8;
@@ -2782,7 +2813,7 @@
 }
 
 .bqm-pro-modal-eyebrow {
-    font-size: 10.5px;
+    font-size: 12.5px;
     font-weight: 600;
     letter-spacing: 0.6px;
     text-transform: uppercase;
@@ -2790,7 +2821,7 @@
 }
 
 .bqm-pro-modal-title {
-    font-size: 17px;
+    font-size: 19px;
     font-weight: 600;
     color: #0f172a;
     line-height: 1.35;
@@ -2798,14 +2829,13 @@
 }
 
 .bqm-pro-modal-subtitle {
-    font-size: 12.5px;
+    font-size: 14.5px;
     color: #64748b;
     line-height: 1.55;
     margin-top: 2px;
     max-width: 56ch;
 }
 
-/* ---------- Body ---------- */
 .bqm-pro-modal-body {
     padding: 20px 24px;
     display: flex;
@@ -2813,7 +2843,6 @@
     gap: 20px;
 }
 
-/* ---------- Highlight card ---------- */
 .bqm-pro-highlight-card {
     display: flex;
     align-items: flex-start;
@@ -2827,12 +2856,13 @@
 
 .bqm-pro-highlight-warning { background: #f8fbff; border-color: #dbeafe; border-left-color: #1d4ed8; }
 .bqm-pro-highlight-info    { background: #f8fbff; border-color: #dbeafe; border-left-color: #1d4ed8; }
+.bqm-pro-highlight-success { background: #f0fdf4; border-color: #dcfce3; border-left-color: #10b981; }
 
 .bqm-pro-highlight-message {
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.6;
     color: #1e293b;
     font-weight: 450;
@@ -2845,7 +2875,7 @@
     width: 22px;
     height: 22px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 14px;
     flex-shrink: 0;
     margin-top: 1px;
     background: #dbeafe;
@@ -2857,7 +2887,6 @@
     font-weight: 600;
 }
 
-/* ---------- Info grid ---------- */
 .bqm-pro-info-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -2880,7 +2909,7 @@
 .bqm-pro-info-full { grid-column: 1 / -1; }
 
 .bqm-pro-info-label {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     color: #64748b;
     flex-shrink: 0;
@@ -2888,7 +2917,7 @@
 }
 
 .bqm-pro-info-value {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: #0f172a;
     text-align: right;
@@ -2898,7 +2927,7 @@
 
 .bqm-pro-info-value.bqm-mono {
     font-family: 'SFMono-Regular', 'Consolas', 'Courier New', monospace;
-    font-size: 12.5px;
+    font-size: 14.5px;
     font-weight: 600;
     color: #1d4ed8;
     letter-spacing: 0.2px;
@@ -2909,7 +2938,6 @@
 
 .bqm-amount-amber { color: #b45309; font-weight: 600; }
 
-/* ---------- Footer + buttons ---------- */
 .bqm-pro-modal-footer {
     display: flex;
     justify-content: flex-end;
@@ -2924,7 +2952,7 @@
     height: 40px !important;
     padding: 0 20px !important;
     border-radius: 8px !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     font-weight: 500 !important;
     background: #ffffff !important;
     border: 1px solid #cbd5e1 !important;
@@ -2942,7 +2970,7 @@
     height: 40px !important;
     padding: 0 20px !important;
     border-radius: 8px !important;
-    font-size: 13px !important;
+    font-size: 15px !important;
     font-weight: 500 !important;
     background: #1d4ed8 !important;
     border: 1px solid #1d4ed8 !important;
@@ -2955,6 +2983,27 @@
     border-color: #1e40af !important;
 }
 
+.bqm-pro-btn-success {
+    height: 40px !important;
+    padding: 0 20px !important;
+    border-radius: 8px !important;
+    font-size: 15px !important;
+    font-weight: 500 !important;
+    background: #10b981 !important;
+    border: 1px solid #10b981 !important;
+    color: #ffffff !important;
+    box-shadow: none !important;
+}
+.bqm-pro-btn-success:hover {
+    background: #059669 !important;
+    border-color: #059669 !important;
+}
+
+/* Header Success Variant */
+.bqm-pro-header-success .bqm-pro-modal-icon {
+    background: #ecfdf5;
+    color: #10b981;
+}
 /* ---------- Dark mode ---------- */
 .bqm-dark-mode .bqm-pro-modal .ant-modal-content {
     background: #0f172a !important;
@@ -2975,6 +3024,15 @@
     border-color: #334155;
     border-left-color: #60a5fa;
 }
+.bqm-dark-mode .bqm-pro-highlight-success {
+    background: rgba(52, 211, 153, 0.08);
+    border-color: rgba(52, 211, 153, 0.25);
+    border-left-color: #34d399;
+}
+.bqm-dark-mode .bqm-pro-highlight-success .bqm-pro-highlight-message .anticon {
+    background: rgba(52, 211, 153, 0.15);
+    color: #34d399;
+}
 .bqm-dark-mode .bqm-pro-highlight-message { color: #cbd5e1; }
 .bqm-dark-mode .bqm-pro-highlight-message .anticon { background: #1e40af; color: #bfdbfe; }
 .bqm-dark-mode .bqm-pro-highlight-message strong { color: #f1f5f9; }
@@ -2986,7 +3044,7 @@
     background: #1e293b !important;
     border-color: #334155 !important;
     color: #e2e8f0 !important;
-}   
+}
 
 /* Cancel reschedule proposal button */
 .bqm-action-icon.cancel-proposal {
@@ -2999,7 +3057,6 @@
     background-color: #fef3c7;
     border-color: #f59e0b;
 }
-
 
 .bqm-action-icon.cancel-proposal {
     border-color: #f59e0b;
@@ -3045,11 +3102,11 @@
 }
 
 .bqm-theme-switch .ant-switch-inner {
-    font-size: 14px;
+    font-size: 16px;
 }
 
 .bqm-theme-switch .ant-switch-inner .anticon {
-    font-size: 12px;
+    font-size: 14px;
 }
 
 .bqm-dark-mode .bqm-theme-switch {
@@ -3061,21 +3118,19 @@
 }
 
 /* ============================================================
-   DARK MODE — FULL UI (soft white / navy slate)
+   DARK MODE — FULL UI
    ============================================================ */
 .bqm-dark-mode.bqm-container {
     background: #0b1220;
     color: #e2e8f0;
 }
 
-/* Ensure the inner card region matches the container during transitions */
 .bqm-dark-mode .bqm-main-card,
 .bqm-dark-mode .bqm-main-card .ant-card-body,
 .bqm-dark-mode .bqm-main-card .ant-tabs-content-holder {
     background: #111827 !important;
 }
 
-/* ---------- Header ---------- */
 .bqm-dark-mode .bqm-header,
 .bqm-header-dark {
     background: #111827;
@@ -3096,7 +3151,6 @@
     box-shadow: 0 4px 8px rgba(59, 130, 246, 0.25);
 }
 
-/* ---------- KPI Cards ---------- */
 .bqm-dark-mode .bqm-kpi-card {
     background: #111827;
     border: 1px solid #1f2937;
@@ -3117,7 +3171,6 @@
 .bqm-dark-mode .bqm-kpi-icon.green  { color: #34d399; background: rgba(52, 211, 153, 0.12); }
 .bqm-dark-mode .bqm-kpi-icon.red    { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 
-/* ---------- Main Card / Tabs ---------- */
 .bqm-dark-mode .bqm-main-card,
 .bqm-main-card-dark {
     background: #111827;
@@ -3125,8 +3178,6 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-/* Critical: the Card body + tab panes need an explicit dark background,
-   otherwise AntD's default white will paint for one frame during tab switch */
 .bqm-dark-mode .bqm-main-card .ant-card-body,
 .bqm-dark-mode .bqm-main-card .ant-card-body > *,
 .bqm-dark-mode .bqm-tabs .ant-tabs-content-holder,
@@ -3156,7 +3207,6 @@
 .bqm-dark-mode .bqm-tabs .ant-tabs-tab-active .ant-tabs-tab-btn,
 .bqm-dark-mode .bqm-inner-tabs .ant-tabs-tab-active .ant-tabs-tab-btn { color: #60a5fa !important; }
 
-/* Prevent AntD's default white under Tabs from flashing during tab transitions */
 .bqm-dark-mode .ant-tabs,
 .bqm-dark-mode .ant-tabs-content-holder,
 .bqm-dark-mode .ant-tabs-content,
@@ -3169,7 +3219,6 @@
     background: #60a5fa;
 }
 
-/* Kill the default white transition AntD uses on tab panes */
 .bqm-dark-mode .ant-tabs-tabpane {
     transition: opacity 0.1s ease !important;
 }
@@ -3177,7 +3226,6 @@
 .bqm-dark-mode .bqm-tabs .ant-tabs-ink-bar,
 .bqm-dark-mode .bqm-inner-tabs .ant-tabs-ink-bar { background: #60a5fa; }
 
-/* ---------- Filters ---------- */
 .bqm-dark-mode .bqm-filters,
 .bqm-dark-mode .bqm-history-filters,
 .bqm-dark-mode .bqm-filters-dark,
@@ -3218,7 +3266,6 @@
 .bqm-dark-mode .bqm-filter-group:hover { border-color: #3b82f6; }
 .bqm-dark-mode .bqm-filter-group > .anticon { color: #64748b; }
 
-/* ---------- Tables ---------- */
 .bqm-dark-mode .bqm-table,
 .bqm-dark-mode .bqm-table .ant-table,
 .bqm-dark-mode .bqm-table .ant-table-container,
@@ -3230,7 +3277,6 @@
     color: #e2e8f0 !important;
 }
 
-/* AntD table loading mask — dark friendly */
 .bqm-dark-mode .bqm-table .ant-spin-container::after,
 .bqm-dark-mode .bqm-table .ant-table-placeholder {
     background: #111827 !important;
@@ -3292,7 +3338,6 @@
 .bqm-dark-mode .bqm-scrollable-table-wrapper .ant-table-body::-webkit-scrollbar-thumb { background: #2a3441; border-radius: 4px; }
 .bqm-dark-mode .bqm-scrollable-table-wrapper .ant-table-body::-webkit-scrollbar-thumb:hover { background: #3b82f6; }
 
-/* ---------- Action icons ---------- */
 .bqm-dark-mode .bqm-action-icon {
     color: #94a3b8;
     background: transparent;
@@ -3306,7 +3351,6 @@
 .bqm-dark-mode .bqm-action-icon.delete:hover { color: #f87171; background: rgba(248, 113, 113, 0.12); border-color: rgba(248, 113, 113, 0.35); }
 .bqm-dark-mode .bqm-action-icon.edit:hover { color: #a78bfa; background: rgba(167, 139, 250, 0.12); border-color: rgba(167, 139, 250, 0.35); }
 
-/* ---------- Calendar ---------- */
 .bqm-dark-mode .bqm-calendar-wrapper { background: #111827; border: 1px solid #1f2937; }
 .bqm-dark-mode .bqm-calendar-wrapper-compact .ant-picker-calendar-date { background: #111827; }
 .bqm-dark-mode .bqm-calendar-wrapper-compact .ant-picker-calendar-date:hover { background: rgba(96, 165, 250, 0.08); }
@@ -3322,7 +3366,6 @@
 .bqm-dark-mode .ant-picker-calendar .ant-picker-cell-today .ant-picker-cell-inner::before { border-color: #60a5fa; }
 .bqm-dark-mode .ant-picker-calendar .ant-picker-cell-selected .ant-picker-cell-inner { background: #3b82f6; color: #f1f5f9; }
 
-/* ---------- Alerts ---------- */
 .bqm-dark-mode .bqm-info-alert { background: rgba(96, 165, 250, 0.08); border-color: rgba(96, 165, 250, 0.25); }
 .bqm-dark-mode .bqm-info-alert .ant-alert-message { color: #e2e8f0; }
 .bqm-dark-mode .bqm-info-alert .ant-alert-description { color: #94a3b8; }
@@ -3333,7 +3376,6 @@
 .bqm-dark-mode .ant-alert-message { color: #e2e8f0; }
 .bqm-dark-mode .ant-alert-description { color: #94a3b8; }
 
-/* ---------- Modals ---------- */
 .bqm-dark-mode .bqm-modal-clean .ant-modal-content { background: #111827; border: 1px solid #1f2937; box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.6); }
 .bqm-dark-mode .bqm-modal-header-clean { background: #111827; border-bottom: 1px solid #1f2937; }
 .bqm-dark-mode .bqm-modal-title-text,
@@ -3354,7 +3396,6 @@
 .bqm-dark-mode .bqm-info-label { color: #94a3b8; }
 .bqm-dark-mode .bqm-info-value { color: #e2e8f0; }
 
-/* ---------- Meal services view ---------- */
 .bqm-dark-mode .bqm-meal-day-group { border: 1px solid #1f2937; }
 .bqm-dark-mode .bqm-meal-day-header { background: rgba(96, 165, 250, 0.08); border-bottom: 1px solid #1f2937; }
 .bqm-dark-mode .bqm-meal-schedule-group { border-bottom: 1px solid #1a2233; }
@@ -3369,7 +3410,6 @@
 .bqm-dark-mode .bqm-meal-pax { color: #94a3b8; }
 .bqm-dark-mode .bqm-meal-notes-badge { color: #94a3b8; background: #0b1220; }
 
-/* ---------- Create booking wizard ---------- */
 .bqm-dark-mode .bqm-modal-fixed-center .ant-modal-content { background: #111827; }
 .bqm-dark-mode .bqm-step-progress-fixed { background: #111827; }
 .bqm-dark-mode .bqm-step-header-professional { border-bottom: 1px solid #1f2937; }
@@ -3450,7 +3490,6 @@
 .bqm-dark-mode .bqm-review-grand-total { border-top: 1px solid #1f2937; }
 .bqm-dark-mode .bqm-step-buttons-fixed { background: #111827; border-top: 1px solid #1f2937; }
 
-/* ---------- Menu selection modal ---------- */
 .bqm-dark-mode .bqm-menu-modal .ant-modal-content { background: #111827; }
 .bqm-dark-mode .bqm-menu-modal-title { color: #e2e8f0; }
 .bqm-dark-mode .bqm-menu-modal-subtitle { color: #94a3b8; }
@@ -3465,7 +3504,6 @@
 .bqm-dark-mode .bqm-menu-item-image { background: #111827; }
 .bqm-dark-mode .bqm-menu-items-container::-webkit-scrollbar-thumb { background: #2a3441; }
 
-/* ---------- Buttons ---------- */
 .bqm-dark-mode .bqm-modal-buttons-clean .ant-btn:not(.ant-btn-primary) {
     background: #111827;
     border-color: #1f2937;
@@ -3481,30 +3519,24 @@
 .bqm-dark-mode .ant-btn-primary { background: #3b82f6; border-color: #3b82f6; }
 .bqm-dark-mode .ant-btn-primary:hover { background: #2563eb; border-color: #2563eb; }
 
-/* ---------- Forms ---------- */
 .bqm-dark-mode .ant-form-item-label > label { color: #94a3b8; }
 
-/* ---------- Steps ---------- */
 .bqm-dark-mode .ant-steps-item-title { color: #64748b !important; }
 .bqm-dark-mode .ant-steps-item-process .ant-steps-item-title { color: #e2e8f0 !important; }
 .bqm-dark-mode .ant-steps-item-icon { background: #111827; border-color: #1f2937; }
 .bqm-dark-mode .ant-steps-item-process .ant-steps-item-icon { background: #3b82f6; border-color: #3b82f6; }
 .bqm-dark-mode .ant-steps-item-finish .ant-steps-item-icon { background: #10b981; border-color: #10b981; }
 
-/* ---------- Progress ---------- */
 .bqm-dark-mode .ant-progress-bg { background: #1f2937; }
 
-/* ---------- Tags / tooltips ---------- */
 .bqm-dark-mode .ant-tag { border-color: #1f2937; }
 .bqm-dark-mode .ant-tooltip-inner { background: #1a2233; color: #e2e8f0; border: 1px solid #1f2937; }
 
-/* ---------- Select dropdown ---------- */
 .bqm-dark-mode .ant-select-dropdown { background: #111827; border: 1px solid #1f2937; }
 .bqm-dark-mode .ant-select-item { color: #cbd5e1; }
 .bqm-dark-mode .ant-select-item-option-active { background: rgba(96, 165, 250, 0.08); }
 .bqm-dark-mode .ant-select-item-option-selected { background: rgba(96, 165, 250, 0.12); color: #60a5fa; }
 
-/* ---------- Date picker dropdown ---------- */
 .bqm-dark-mode .ant-picker-dropdown .ant-picker-panel-container { background: #111827; border: 1px solid #1f2937; }
 .bqm-dark-mode .ant-picker-header { color: #e2e8f0; border-bottom: 1px solid #1f2937; }
 .bqm-dark-mode .ant-picker-header button { color: #94a3b8; }
@@ -3514,7 +3546,6 @@
 .bqm-dark-mode .ant-picker-cell-in-view:hover .ant-picker-cell-inner { background: rgba(96, 165, 250, 0.12); }
 .bqm-dark-mode .ant-picker-cell-selected .ant-picker-cell-inner { background: #3b82f6; color: #f1f5f9; }
 
-/* ---------- Radios / checkbox / input number ---------- */
 .bqm-dark-mode .ant-radio-button-wrapper { background: #111827; border-color: #1f2937; color: #94a3b8; }
 .bqm-dark-mode .ant-radio-button-wrapper:hover { color: #60a5fa; }
 .bqm-dark-mode .ant-radio-button-wrapper-checked {
@@ -3526,7 +3557,6 @@
 .bqm-dark-mode .ant-input-number { background: #111827; border-color: #1f2937; }
 .bqm-dark-mode .ant-input-number-input { color: #e2e8f0; }
 
-/* ---------- Misc ---------- */
 .bqm-dark-mode .ant-modal-close { color: #94a3b8; }
 .bqm-dark-mode .ant-modal-close:hover { color: #e2e8f0; background: rgba(255, 255, 255, 0.06); }
 .bqm-dark-mode .ant-switch { background: #2a3441; }
@@ -3541,7 +3571,6 @@
 .bqm-dark-mode .ant-dropdown-menu-item { color: #cbd5e1; }
 .bqm-dark-mode .ant-dropdown-menu-item:hover { background: rgba(96, 165, 250, 0.08); }
 
-/* ---------- Pagination ---------- */
 .bqm-dark-mode .ant-pagination-item {
     background: #111827;
     border-color: #1f2937;
@@ -3558,8 +3587,7 @@
 .bqm-dark-mode .ant-pagination-total-text { color: #94a3b8; }
 
 /* ============================================================
-   SKELETON LOADING STYLES — LIGHT GRAY
-   Matches the Dashboard skeleton for a consistent loading feel.
+   SKELETON LOADING STYLES
    ============================================================ */
 
 @keyframes bqm-skeleton-shimmer {
@@ -3572,7 +3600,6 @@
   to   { opacity: 1; transform: translateY(0);   }
 }
 
-/* Base shimmer (light gray) */
 .bqm-skeleton-pulse,
 .bqm-skeleton-text,
 .bqm-skeleton-circle,
@@ -3594,7 +3621,6 @@
   flex-shrink: 0;
 }
 
-/* Card container that fades in */
 .bqm-skeleton-card {
   opacity: 0;
   animation: bqm-skeleton-fade-in 0.4s ease forwards;
@@ -3619,7 +3645,7 @@
   height: auto;
   min-height: 0;
 }
-/* ---------- KPI grid skeleton ---------- */
+
 .bqm-kpi-skeleton-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -3646,21 +3672,18 @@
   min-width: 0;
 }
 
-/* ---------- Header button skeletons ---------- */
 .bqm-header-skeleton-btn {
   width: 80px;
   height: 32px;
   border-radius: 8px;
 }
 
-/* ---------- Table skeleton ---------- */
 .bqm-table-skeleton {
   display: flex;
   flex-direction: column;
   padding: 24px;
   background: var(--bqm-surface);
   border-top: 1px solid var(--bqm-border);
-  /* Mirror the real table's fixed height so no empty gap appears */
   height: calc(100vh - 420px);
   min-height: 300px;
   overflow: hidden;
@@ -3691,7 +3714,6 @@
   padding: 18px 0;
   border-bottom: 1px solid var(--bqm-border);
   align-items: center;
-  /* Each row keeps a fixed height so the total fills the container */
   min-height: 66px;
   flex-shrink: 0;
 }
@@ -3700,7 +3722,6 @@
   border-bottom: none;
 }
 
-/* Row cell layout — avatar + two bars */
 .bqm-table-skeleton-cell {
   display: flex;
   align-items: center;
@@ -3716,7 +3737,6 @@
   min-width: 0;
 }
 
-/* Hidden on mobile — collapse to fewer columns */
 @media (max-width: 1180px) {
   .bqm-kpi-skeleton-grid { grid-template-columns: repeat(2, 1fr); }
   .bqm-table-skeleton-row {
@@ -3737,7 +3757,6 @@
   }
 }
 
-/* Dark mode adjustment */
 .bqm-dark-mode .bqm-skeleton-pulse,
 .bqm-dark-mode .bqm-skeleton-text,
 .bqm-dark-mode .bqm-skeleton-circle,
@@ -3753,7 +3772,7 @@
 }
 
 /* ============================================================
-   DARK MODE — ROOT/BODY CLASS (for portal-rendered modals)
+   DARK MODE — ROOT/BODY CLASS
    ============================================================ */
 html.bqm-dark-mode,
 body.bqm-dark-mode {
@@ -3832,7 +3851,6 @@ body.bqm-dark-mode {
     color: #e2e8f0;
 }
 
-/* Info cards in view-details modal */
 .bqm-dark-mode .bqm-info-card,
 .bqm-dark-mode .bqm-price-summary,
 .bqm-dark-mode .bqm-special-request-box,
@@ -3979,7 +3997,6 @@ body.bqm-dark-mode {
     color: #94a3b8;
 }
 
-/* Formal choice grid */
 .bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper,
 .bqm-modal-dark-root .bqm-formal-choicegrid-inner .ant-radio-button-wrapper {
     background: #0b1220 !important;
@@ -4011,7 +4028,6 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-formal-choice-hint,
 .bqm-modal-dark-root .bqm-formal-choice-hint { color: #94a3b8 !important; }
 
-/* Formal panels */
 .bqm-dark-mode .bqm-formal-panel,
 .bqm-modal-dark-root .bqm-formal-panel {
     background: rgba(96, 165, 250, 0.06) !important;
@@ -4036,7 +4052,6 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-formal-panel-text,
 .bqm-modal-dark-root .bqm-formal-panel-text { color: #94a3b8 !important; }
 
-/* Formal dossier */
 .bqm-dark-mode .bqm-formal-dossier,
 .bqm-modal-dark-root .bqm-formal-dossier {
     background: #0b1220 !important;
@@ -4051,13 +4066,11 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-formal-dossier-value--block,
 .bqm-modal-dark-root .bqm-formal-dossier-value--block { color: #cbd5e1; }
 
-/* Formal pills */
 .bqm-dark-mode .bqm-formal-pill--warn,
 .bqm-modal-dark-root .bqm-formal-pill--warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .bqm-dark-mode .bqm-formal-pill--info,
 .bqm-modal-dark-root .bqm-formal-pill--info { background: rgba(96, 165, 250, 0.15); color: #60a5fa; }
 
-/* Formal notes */
 .bqm-dark-mode .bqm-formal-note,
 .bqm-modal-dark-root .bqm-formal-note {
     background: #0b1220;
@@ -4089,7 +4102,6 @@ body.bqm-dark-mode {
     color: #fbbf24;
 }
 
-/* Cashier option cards */
 .bqm-dark-mode .bqm-formal-option,
 .bqm-modal-dark-root .bqm-formal-option {
     background: #0b1220;
@@ -4112,7 +4124,6 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-formal-option-text,
 .bqm-modal-dark-root .bqm-formal-option-text { color: #94a3b8; }
 
-/* Formal forms */
 .bqm-dark-mode .bqm-formal-form .ant-form-item-label > label,
 .bqm-modal-dark-root .bqm-formal-form .ant-form-item-label > label { color: #94a3b8; }
 
@@ -4137,7 +4148,6 @@ body.bqm-dark-mode {
     color: #475569 !important;
 }
 
-/* Formal footer */
 .bqm-dark-mode .bqm-formal-footer,
 .bqm-modal-dark-root .bqm-formal-footer {
     background: #0b1220 !important;
@@ -4146,7 +4156,6 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-formal-footer-note,
 .bqm-modal-dark-root .bqm-formal-footer-note { color: #64748b; }
 
-/* Formal buttons */
 .bqm-dark-mode .bqm-formal-btn--ghost,
 .bqm-modal-dark-root .bqm-formal-btn--ghost {
     background: #0b1220 !important;
@@ -4170,7 +4179,6 @@ body.bqm-dark-mode {
     background: rgba(248, 113, 113, 0.08) !important;
 }
 
-/* Refund choice grid */
 .bqm-dark-mode .bqm-refund-choice,
 .bqm-modal-dark-root .bqm-refund-choice {
     background: #0b1220;
@@ -4293,717 +4301,8 @@ body.bqm-dark-mode {
 .bqm-dark-mode .bqm-step-content-fixed,
 .bqm-modal-dark-root .bqm-step-content-fixed { background: transparent !important; }
 
-
 /* ============================================================
-   DARK MODE — MODAL & FORMAL MODAL COVERAGE
-   Ensures every modal surface goes dark when .bqm-dark-mode is active
-   ============================================================ */
-
-/* ---------- Generic modal content wrapper ---------- */
-.bqm-dark-mode .bqm-modal-clean-content {
-    background: #111827 !important;
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-modal-step-body {
-    background: #111827 !important;
-}
-
-.bqm-dark-mode .bqm-modal-step-header {
-    background: #0b1220 !important;
-    border-bottom: 1px solid #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-modal-footer-simple,
-.bqm-dark-mode .bqm-modal-buttons-clean {
-    background: #111827 !important;
-    border-top: 1px solid #1f2937 !important;
-}
-
-/* Buttons inside clean modal footers */
-.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default,
-.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default {
-    background: #111827 !important;
-    border-color: #1f2937 !important;
-    color: #cbd5e1 !important;
-}
-
-.bqm-dark-mode .bqm-modal-buttons-clean .ant-btn-default:hover,
-.bqm-dark-mode .bqm-modal-footer-simple .ant-btn-default:hover {
-    background: #111827 !important;
-    border-color: #3b82f6 !important;
-    color: #60a5fa !important;
-}
-
-/* Step content inside booking-details modal */
-.bqm-dark-mode .bqm-step-content {
-    background: transparent !important;
-    color: #e2e8f0;
-}
-
-/* ---------- Info cards (view details) ---------- */
-.bqm-dark-mode .bqm-info-card,
-.bqm-dark-mode .bqm-price-summary,
-.bqm-dark-mode .bqm-special-request-box {
-    background: #0b1220 !important;
-    border: 1px solid #1f2937 !important;
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-info-row,
-.bqm-dark-mode .bqm-price-row {
-    border-bottom: 1px solid #1a2233 !important;
-}
-
-.bqm-dark-mode .bqm-info-label {
-    color: #94a3b8 !important;
-}
-
-.bqm-dark-mode .bqm-info-value {
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-price-summary-header {
-    color: #e2e8f0 !important;
-    border-bottom: 1px solid #1f2937 !important;
-}
-
-/* ============================================================
-   FORMAL MODALS — FULL DARK OVERRIDE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-formal-modal .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-formal-shell {
-    background: #0f172a !important;
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-formal-header {
-    background: #0f172a !important;
-    border-bottom: 1px solid #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-formal-header-icon {
-    background: rgba(96, 165, 250, 0.12);
-    color: #60a5fa;
-}
-
-.bqm-dark-mode .bqm-formal-header--warning .bqm-formal-header-icon {
-    background: rgba(248, 113, 113, 0.12);
-    color: #f87171;
-}
-
-.bqm-dark-mode .bqm-formal-header--amber .bqm-formal-header-icon {
-    background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
-}
-
-.bqm-dark-mode .bqm-formal-header--danger .bqm-formal-header-icon {
-    background: rgba(248, 113, 113, 0.12);
-    color: #f87171;
-}
-
-.bqm-dark-mode .bqm-formal-eyebrow {
-    color: #64748b;
-}
-
-.bqm-dark-mode .bqm-formal-title {
-    color: #f1f5f9 !important;
-}
-
-.bqm-dark-mode .bqm-formal-subtitle {
-    color: #94a3b8 !important;
-}
-
-/* Formal stamp */
-.bqm-dark-mode .bqm-formal-stamp {
-    background: rgba(96, 165, 250, 0.08);
-    border-color: rgba(96, 165, 250, 0.25);
-}
-
-.bqm-dark-mode .bqm-formal-stamp--amber {
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.25);
-}
-
-.bqm-dark-mode .bqm-formal-stamp--danger {
-    background: rgba(248, 113, 113, 0.08);
-    border-color: rgba(248, 113, 113, 0.25);
-}
-
-.bqm-dark-mode .bqm-formal-stamp-label {
-    color: #64748b;
-}
-
-.bqm-dark-mode .bqm-formal-stamp-value {
-    color: #60a5fa;
-}
-
-.bqm-dark-mode .bqm-formal-stamp--amber .bqm-formal-stamp-value {
-    color: #fbbf24;
-}
-
-.bqm-dark-mode .bqm-formal-stamp--danger .bqm-formal-stamp-value {
-    color: #f87171;
-}
-
-/* Formal body */
-.bqm-dark-mode .bqm-formal-body {
-    background: #0f172a !important;
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-formal-body::-webkit-scrollbar-thumb {
-    background: #2a3441;
-}
-
-/* Info strip */
-.bqm-dark-mode .bqm-formal-strip {
-    background: #1f2937;
-    border-color: #1f2937;
-}
-
-.bqm-dark-mode .bqm-formal-strip-item {
-    background: #0b1220 !important;
-}
-
-.bqm-dark-mode .bqm-formal-strip-label {
-    color: #64748b;
-}
-
-.bqm-dark-mode .bqm-formal-strip-value {
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-formal-strip-value--money {
-    color: #60a5fa;
-}
-
-/* Sections */
-.bqm-dark-mode .bqm-formal-section {
-    border-bottom: 1px solid #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-formal-section-index {
-    background: #3b82f6;
-    color: #f1f5f9;
-}
-
-.bqm-dark-mode .bqm-formal-section-title {
-    color: #f1f5f9;
-}
-
-.bqm-dark-mode .bqm-formal-section-rule {
-    background: #1f2937;
-}
-
-.bqm-dark-mode .bqm-formal-chip--restricted {
-    background: rgba(251, 191, 36, 0.15);
-    color: #fbbf24;
-}
-
-.bqm-dark-mode .bqm-formal-chip--readonly {
-    background: #1e293b;
-    color: #94a3b8;
-}
-
-/* Choice grid */
-.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper {
-    background: #0b1220 !important;
-    border-color: #1f2937 !important;
-    color: #cbd5e1;
-}
-
-.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper:hover {
-    border-color: #3b82f6 !important;
-    background: rgba(96, 165, 250, 0.08) !important;
-}
-
-.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--danger {
-    background: rgba(248, 113, 113, 0.1) !important;
-    border-color: #f87171 !important;
-}
-
-.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--info {
-    background: rgba(96, 165, 250, 0.1) !important;
-    border-color: #60a5fa !important;
-}
-
-.bqm-dark-mode .bqm-formal-choicegrid-inner .ant-radio-button-wrapper-checked.bqm-formal-choice--success {
-    background: rgba(52, 211, 153, 0.1) !important;
-    border-color: #34d399 !important;
-}
-
-.bqm-dark-mode .bqm-formal-choice-label {
-    color: #f1f5f9 !important;
-}
-
-.bqm-dark-mode .bqm-formal-choice-hint {
-    color: #94a3b8 !important;
-}
-
-/* Panels */
-.bqm-dark-mode .bqm-formal-panel {
-    background: rgba(96, 165, 250, 0.06) !important;
-    border-color: rgba(96, 165, 250, 0.2) !important;
-}
-
-.bqm-dark-mode .bqm-formal-panel--success {
-    background: rgba(52, 211, 153, 0.08) !important;
-    border-color: rgba(52, 211, 153, 0.25) !important;
-}
-
-.bqm-dark-mode .bqm-formal-panel--danger {
-    background: rgba(248, 113, 113, 0.08) !important;
-    border-color: rgba(248, 113, 113, 0.25) !important;
-}
-
-.bqm-dark-mode .bqm-formal-panel-head {
-    color: #60a5fa;
-}
-
-.bqm-dark-mode .bqm-formal-panel--success .bqm-formal-panel-head {
-    color: #34d399;
-}
-
-.bqm-dark-mode .bqm-formal-panel--danger .bqm-formal-panel-head {
-    color: #f87171;
-}
-
-.bqm-dark-mode .bqm-formal-panel-text {
-    color: #94a3b8 !important;
-}
-
-/* Dossier (read-only rows) */
-.bqm-dark-mode .bqm-formal-dossier {
-    background: #0b1220 !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-formal-dossier-row {
-    border-bottom: 1px solid #1a2233 !important;
-}
-
-.bqm-dark-mode .bqm-formal-dossier-label {
-    color: #64748b;
-}
-
-.bqm-dark-mode .bqm-formal-dossier-value {
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-formal-dossier-value--block {
-    color: #cbd5e1;
-}
-
-/* Pills */
-.bqm-dark-mode .bqm-formal-pill--warn {
-    background: rgba(251, 191, 36, 0.15);
-    color: #fbbf24;
-}
-
-.bqm-dark-mode .bqm-formal-pill--info {
-    background: rgba(96, 165, 250, 0.15);
-    color: #60a5fa;
-}
-
-/* Notes */
-.bqm-dark-mode .bqm-formal-note {
-    background: #0b1220;
-    border-color: #1f2937;
-    color: #cbd5e1;
-}
-
-.bqm-dark-mode .bqm-formal-note > .anticon {
-    color: #60a5fa;
-}
-
-.bqm-dark-mode .bqm-formal-note--success {
-    background: rgba(52, 211, 153, 0.08);
-    border-color: rgba(52, 211, 153, 0.25);
-    color: #34d399;
-}
-
-.bqm-dark-mode .bqm-formal-note--success > .anticon {
-    color: #34d399;
-}
-
-.bqm-dark-mode .bqm-formal-note--danger {
-    background: rgba(248, 113, 113, 0.08);
-    border-color: rgba(248, 113, 113, 0.25);
-    color: #f87171;
-}
-
-.bqm-dark-mode .bqm-formal-note--danger > .anticon {
-    color: #f87171;
-}
-
-.bqm-dark-mode .bqm-formal-note--warning {
-    background: rgba(251, 191, 36, 0.08);
-    border-color: rgba(251, 191, 36, 0.25);
-    color: #fbbf24;
-}
-
-/* Formal option cards (cashier view) */
-.bqm-dark-mode .bqm-formal-option {
-    background: #0b1220;
-    border-color: #1f2937;
-}
-
-.bqm-dark-mode .bqm-formal-option:hover:not(:disabled) {
-    border-color: #3b82f6;
-    box-shadow: 0 4px 12px -6px rgba(0, 0, 0, 0.5);
-}
-
-.bqm-dark-mode .bqm-formal-option:disabled,
-.bqm-dark-mode .bqm-formal-option.is-disabled {
-    background: #0f1623;
-    opacity: 0.5;
-}
-
-.bqm-dark-mode .bqm-formal-option-title {
-    color: #f1f5f9;
-}
-
-.bqm-dark-mode .bqm-formal-option-text {
-    color: #94a3b8;
-}
-
-/* Formal forms */
-.bqm-dark-mode .bqm-formal-form .ant-form-item-label > label {
-    color: #94a3b8;
-}
-
-.bqm-dark-mode .bqm-formal-form .ant-input,
-.bqm-dark-mode .bqm-formal-form .ant-input-affix-wrapper,
-.bqm-dark-mode .bqm-formal-form .ant-input-number,
-.bqm-dark-mode .bqm-formal-form .ant-select-selector,
-.bqm-dark-mode .bqm-formal-form textarea.ant-input {
-    background: #0b1220 !important;
-    border-color: #1f2937 !important;
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-formal-form .ant-input::placeholder,
-.bqm-dark-mode .bqm-formal-form textarea.ant-input::placeholder {
-    color: #475569 !important;
-}
-
-/* Formal footer */
-.bqm-dark-mode .bqm-formal-footer {
-    background: #0b1220 !important;
-    border-top: 1px solid #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-formal-footer-note {
-    color: #64748b;
-}
-
-/* Formal buttons */
-.bqm-dark-mode .bqm-formal-btn--ghost {
-    background: #0b1220 !important;
-    border-color: #1f2937 !important;
-    color: #cbd5e1 !important;
-}
-
-.bqm-dark-mode .bqm-formal-btn--ghost:hover {
-    border-color: #3b82f6 !important;
-    color: #60a5fa !important;
-}
-
-.bqm-dark-mode .bqm-formal-btn--ghost-danger {
-    background: #0b1220 !important;
-    border-color: rgba(248, 113, 113, 0.35) !important;
-    color: #f87171 !important;
-}
-
-.bqm-dark-mode .bqm-formal-btn--ghost-danger:hover {
-    border-color: #f87171 !important;
-    background: rgba(248, 113, 113, 0.08) !important;
-}
-
-/* Refund choice grid */
-.bqm-dark-mode .bqm-refund-choice {
-    background: #0b1220;
-    border-color: #1f2937;
-}
-
-.bqm-dark-mode .bqm-refund-choice:hover {
-    border-color: #3b82f6;
-}
-
-.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--success {
-    border-color: #34d399;
-    background: rgba(52, 211, 153, 0.08);
-}
-
-.bqm-dark-mode .bqm-refund-choice.is-selected.bqm-refund-choice--danger {
-    border-color: #f87171;
-    background: rgba(248, 113, 113, 0.08);
-}
-
-.bqm-dark-mode .bqm-refund-choice-title {
-    color: #f1f5f9;
-}
-
-.bqm-dark-mode .bqm-refund-choice-text {
-    color: #94a3b8;
-}
-
-/* ============================================================
-   PRO MODAL — FULL DARK OVERRIDE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-pro-modal-shell {
-    background: #0f172a !important;
-}
-
-.bqm-dark-mode .bqm-pro-modal-body {
-    background: #0f172a !important;
-}
-
-/* Info grid rows in pro modal */
-.bqm-dark-mode .bqm-pro-info-row {
-    border-bottom-color: #1e293b !important;
-}
-
-.bqm-dark-mode .bqm-pro-info-label {
-    color: #94a3b8 !important;
-}
-
-.bqm-dark-mode .bqm-pro-info-value {
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-pro-info-value.bqm-mono {
-    color: #93c5fd !important;
-}
-
-/* Pro form */
-.bqm-dark-mode .bqm-pro-form .ant-form-item-label > label {
-    color: #94a3b8;
-}
-
-.bqm-dark-mode .bqm-pro-form .ant-input,
-.bqm-dark-mode .bqm-pro-form .ant-input-affix-wrapper,
-.bqm-dark-mode .bqm-pro-form .ant-input-number,
-.bqm-dark-mode .bqm-pro-form .ant-select-selector,
-.bqm-dark-mode .bqm-pro-form textarea.ant-input {
-    background: #0b1220 !important;
-    border-color: #1f2937 !important;
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-pro-form .ant-input::placeholder,
-.bqm-dark-mode .bqm-pro-form textarea.ant-input::placeholder {
-    color: #475569 !important;
-}
-
-/* Pro section */
-.bqm-dark-mode .bqm-pro-section {
-    background: transparent;
-}
-
-.bqm-dark-mode .bqm-pro-section-title {
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-pro-section-number {
-    background: #3b82f6;
-    color: #f1f5f9;
-}
-
-/* Pro footer buttons */
-.bqm-dark-mode .bqm-pro-modal-footer {
-    background: #0b1220 !important;
-    border-top: 1px solid #1e293b !important;
-}
-
-.bqm-dark-mode .bqm-pro-btn-secondary {
-    background: #1e293b !important;
-    border-color: #334155 !important;
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-pro-btn-secondary:hover {
-    background: #334155 !important;
-    border-color: #475569 !important;
-    color: #f1f5f9 !important;
-}
-
-/* ============================================================
-   MENU SELECTION MODAL — ADDITIONAL DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-menu-modal .ant-modal-content {
-    background: #111827 !important;
-}
-
-.bqm-dark-mode .bqm-menu-modal-body {
-    background: transparent;
-}
-
-.bqm-dark-mode .bqm-menu-modal-footer {
-    background: #111827 !important;
-    border-top: 1px solid #1f2937;
-}
-
-.bqm-dark-mode .bqm-menu-modal-selected-count {
-    color: #94a3b8;
-}
-
-.bqm-dark-mode .bqm-menu-list-item {
-    background: #0b1220;
-    border-color: #1f2937;
-}
-
-.bqm-dark-mode .bqm-menu-list-item.selected {
-    background: rgba(52, 211, 153, 0.08);
-    border-color: #34d399;
-}
-
-.bqm-dark-mode .bqm-menu-list-item-name {
-    color: #e2e8f0;
-}
-
-.bqm-dark-mode .bqm-menu-list-item-price {
-    color: #34d399;
-}
-
-.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-nav {
-    border-bottom: 1px solid #1f2937;
-}
-
-.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-tab {
-    color: #94a3b8;
-}
-
-.bqm-dark-mode .bqm-menu-selection-tabs .ant-tabs-tab-active .ant-tabs-tab-btn {
-    color: #60a5fa !important;
-}
-
-/* ============================================================
-   CREATE BOOKING MODAL — ADDITIONAL DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-modal-fixed-center .ant-modal-body {
-    background: #111827 !important;
-}
-
-.bqm-dark-mode .bqm-modal-content-fixed {
-    background: #111827 !important;
-}
-
-.bqm-dark-mode .bqm-step-content-fixed {
-    background: transparent !important;
-}
-
-.bqm-dark-mode .bqm-steps-fixed .ant-steps-item-title {
-    color: #64748b !important;
-}
-
-.bqm-dark-mode .bqm-steps-fixed .ant-steps-item-process .ant-steps-item-title {
-    color: #e2e8f0 !important;
-}
-
-.bqm-dark-mode .bqm-form-fixed {
-    background: transparent;
-}
-
-/* ============================================================
-   THREE-DAY WARNING MODAL (PRO) — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-three-day-warning-modal .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-shell {
-    background: #0f172a !important;
-}
-
-.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-header {
-    background: #0f172a !important;
-    border-bottom: 1px solid #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-three-day-warning-modal .bqm-pro-modal-footer {
-    background: #0b1220 !important;
-    border-top: 1px solid #1f2937 !important;
-}
-
-/* ============================================================
-   CONFIRM REFUND MODAL — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-confirm-refund-modal .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-confirm-refund-modal .bqm-pro-modal-shell {
-    background: #0f172a !important;
-}
-
-/* ============================================================
-   LATE APPROVAL MODAL — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-late-approval-modal .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-late-approval-modal .bqm-formal-shell {
-    background: #0f172a !important;
-}
-
-/* ============================================================
-   DEPOSIT OVERDUE MODAL — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-deposit-overdue-modal .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-deposit-overdue-modal .bqm-formal-shell {
-    background: #0f172a !important;
-}
-
-/* ============================================================
-   LC SHEET (Late Cancellation) — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-lc-sheet .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-lc-sheet .bqm-formal-shell {
-    background: #0f172a !important;
-}
-
-/* ============================================================
-   REFUND REVIEW SHEET — DARK COVERAGE
-   ============================================================ */
-
-.bqm-dark-mode .bqm-refund-review-sheet .ant-modal-content {
-    background: #0f172a !important;
-    border-color: #1f2937 !important;
-}
-
-.bqm-dark-mode .bqm-refund-review-sheet .bqm-formal-shell {
-    background: #0f172a !important;
-}
-
-/* ============================================================
-   ⭐ Loading pill (grows from 0% to 100% like page open)
+   ⭐ Loading pill
    ============================================================ */
 .bqm-loading-line {
     position: fixed;
@@ -5039,7 +4338,7 @@ body.bqm-dark-mode {
 }
 
 .bqm-loading-line-text {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: #111827;
     letter-spacing: 0.1px;
@@ -5050,7 +4349,7 @@ body.bqm-dark-mode {
 }
 
 .bqm-loading-line-cancel {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     color: #ef4444;
     background: transparent;
@@ -5068,7 +4367,6 @@ body.bqm-dark-mode {
     color: #ffffff;
 }
 
-/* Thin bar pinned to the bottom edge of the pill — grows from 0% to 100% */
 .bqm-loading-line-track {
     position: absolute;
     left: 0;
@@ -5103,7 +4401,7 @@ body.bqm-dark-mode {
 }
 
 /* ============================================================
-   ⭐ Skeleton logo icon — remove blue, keep gray in both modes
+   ⭐ Skeleton logo icon
    ============================================================ */
 .bqm-logo-icon-skeleton,
 .bqm-logo-icon-skeleton svg,
@@ -5117,14 +4415,12 @@ body.bqm-dark-mode {
     border: none !important;
 }
 
-/* Match the dark background used by the rest of the skeleton */
 .bqm-dark-mode .bqm-logo-icon-skeleton,
 .bqm-dark-mode .bqm-logo-icon-skeleton svg,
 .bqm-dark-mode .bqm-logo-icon-skeleton * {
     background-color: #334155 !important;
 }
 
-/* Keep the pulse animation on the icon so it feels alive */
 .bqm-logo-icon-skeleton {
     animation: bqm-skeleton-pulse 1.4s ease-in-out infinite;
 }
@@ -5133,13 +4429,11 @@ body.bqm-dark-mode {
    ⭐ Hide/Unhide on Insight cards
    ============================================================ */
 
-/* Positioning context for the hover button. */
 .bqm-kpi-card-hideable {
     position: relative;
     overflow: hidden;
 }
 
-/* Hover button — hidden by default, revealed on card hover or focus. */
 .bqm-kpi-card-hideable .bqm-kpi-hide-btn {
     position: absolute;
     top: 10px;
@@ -5151,14 +4445,13 @@ body.bqm-dark-mode {
     border: 1px solid #e5e7eb;
     background: #ffffff;
     color: #6b7280;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
 
-    /* Hidden until hover */
     opacity: 0;
     pointer-events: none;
     transform: translateY(-2px);
@@ -5173,7 +4466,6 @@ body.bqm-dark-mode {
     z-index: 3;
 }
 
-/* Reveal on card hover, or when the button itself receives focus. */
 .bqm-kpi-card-hideable:hover .bqm-kpi-hide-btn,
 .bqm-kpi-card-hideable:focus-within .bqm-kpi-hide-btn,
 .bqm-kpi-card-hideable .bqm-kpi-hide-btn:focus-visible {
@@ -5192,7 +4484,6 @@ body.bqm-dark-mode {
     transform: scale(0.94);
 }
 
-/* Dark mode */
 .bqm-dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn,
 .dark-mode .bqm-kpi-card-hideable .bqm-kpi-hide-btn {
     background: #1f2937;
@@ -5206,7 +4497,6 @@ body.bqm-dark-mode {
     background: #1e3a8a33;
 }
 
-/* ⭐ Digit-aware mask — monospace keeps the asterisks aligned with digits. */
 .bqm-kpi-masked-value {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Courier New", monospace;
     letter-spacing: 0.5px;
@@ -5222,31 +4512,22 @@ body.bqm-dark-mode {
 
 /* ============================================================
    ⭐ Red-alert rows
-   Applied to a booking row when either:
-     • booking is not approved AND event is ≤3 days away
-     • booking is approved AND deposit deadline has passed (unpaid)
-   The row still shows its normal status pills; this styling only adds
-   the border + background so the row is visually flagged.
    ============================================================ */
 
-/* Light-mode alert row */
 .bqm-table .ant-table-tbody > tr.bqm-row-alert > td {
     background-color: #fff5f5;
     border-top: 1px solid #fecaca;
     border-bottom: 1px solid #fecaca;
 }
 
-/* Left accent stripe — reads at a glance even with many rows */
 .bqm-table .ant-table-tbody > tr.bqm-row-alert > td:first-child {
     box-shadow: inset 4px 0 0 0 #dc2626;
 }
 
-/* Hover keeps the red theme so the cursor target is obvious */
 .bqm-table .ant-table-tbody > tr.bqm-row-alert:hover > td {
     background-color: #fee2e2 !important;
 }
 
-/* Dark-mode variant — same accent, softer background so text stays legible */
 .bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-alert > td,
 .dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-alert > td {
     background-color: #3f1414;
@@ -5262,39 +4543,28 @@ body.bqm-dark-mode {
     background-color: #4c1919 !important;
 }
 
-/* Native tooltip styling — \n in `title` becomes a real line break */
 .bqm-table .ant-table-tbody > tr.bqm-row-alert {
     cursor: help;
 }
 
 /* ============================================================
    ⭐ Yellow pre-warning row
-   Applied when:
-     • booking is approved / confirmed / ongoing
-     • deposit is NOT paid
-     • deposit deadline has NOT yet passed (still in the future)
-   The red `.bqm-row-alert` rule takes precedence — rows never
-   carry both classes.
    ============================================================ */
 
-/* Light-mode yellow row */
 .bqm-table .ant-table-tbody > tr.bqm-row-warning > td {
     background-color: #fffbeb;
     border-top: 1px solid #fde68a;
     border-bottom: 1px solid #fde68a;
 }
 
-/* Left accent stripe — amber */
 .bqm-table .ant-table-tbody > tr.bqm-row-warning > td:first-child {
     box-shadow: inset 4px 0 0 0 #f59e0b;
 }
 
-/* Hover keeps the amber theme */
 .bqm-table .ant-table-tbody > tr.bqm-row-warning:hover > td {
     background-color: #fef3c7 !important;
 }
 
-/* Dark-mode variant */
 .bqm-dark-mode .bqm-table .ant-table-tbody > tr.bqm-row-warning > td,
 .dark-mode     .bqm-table .ant-table-tbody > tr.bqm-row-warning > td {
     background-color: #3f2d0a;
@@ -5310,13 +4580,10 @@ body.bqm-dark-mode {
     background-color: #4b370c !important;
 }
 
-/* Cursor hint */
 .bqm-table .ant-table-tbody > tr.bqm-row-warning {
     cursor: help;
 }
 
-/* Defensive: if a row somehow carries both classes (shouldn't happen
-   given the priority order in getBookingRowDecorations), red wins. */
 .bqm-table .ant-table-tbody > tr.bqm-row-alert.bqm-row-warning > td {
     background-color: #fff5f5 !important;
     border-top: 1px solid #fecaca !important;
@@ -5340,3 +4607,420 @@ body.bqm-dark-mode {
     outline: 2px solid #ef4444;
     outline-offset: 2px;
 }
+/* ============================================================
+   BOOKING DETAILS — CLEAN 2-COLUMN LAYOUT (NO PAGE SCROLL)
+   ============================================================ */
+
+/* 1. Hide outer scrollbars completely */
+/* 1. Hide outer scrollbars completely */
+.bqm-details-noscroll {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    height: auto;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 2. Flexbox layout for the 2 columns */
+/* 2. Flexbox layout for the 2 columns */
+.bqm-details-layout {
+    display: flex;
+    gap: 20px;
+    padding: 20px 24px;
+    height: auto;
+    box-sizing: border-box;
+    background: var(--bqm-surface);
+    overflow: hidden;
+    align-items: flex-start;
+}
+
+/* ---------- Columns ---------- */
+.bqm-details-left {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    overflow-y: auto;
+    padding-right: 0;
+    /* ⭐ HIDE SCROLLBAR */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.bqm-details-left::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.bqm-details-left::-webkit-scrollbar {
+    display: none;                  /* Chrome / Safari */
+    width: 0;
+    height: 0;
+}
+.bqm-details-right {
+    flex: 1.1;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    min-height: 0;
+    max-height: calc(100vh - 260px); /* ⭐ Prevents overflow past viewport */
+    overflow: hidden;
+}
+/* ---------- Cards ---------- */
+.bqm-details-card {
+    background: var(--bqm-surface);
+    border: 1px solid var(--bqm-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+/* Used for the Meal Services card to fill the whole right column */
+.bqm-details-card--flex,
+.bqm-details-card--meals {
+    flex: 1;
+    min-height: 0; /* CRITICAL: Allows the inner list to scroll */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.bqm-details-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bqm-text);
+    background: var(--bqm-page);
+    border-bottom: 1px solid var(--bqm-border);
+    flex-shrink: 0; /* Header stays fixed */
+}
+
+/* ---------- Hero Header ---------- */
+.bqm-details-hero {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px;
+    background: linear-gradient(135deg, var(--bqm-primary-soft), var(--bqm-surface));
+    border: 1px solid var(--bqm-border);
+    border-radius: 12px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+}
+.bqm-details-hero-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.bqm-details-hero-avatar {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: #fff;
+    font-size: 20px;
+    font-weight: 700;
+}
+.bqm-details-hero-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--bqm-text);
+    line-height: 1.2;
+}
+.bqm-details-hero-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--bqm-muted);
+}
+.bqm-details-hero-meta .anticon { margin-right: 6px; }
+.bqm-details-hero-status {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+}
+
+/* ---------- Key/Value Rows ---------- */
+.bqm-details-grid-rows {
+    display: flex;
+    flex-direction: column;
+}
+.bqm-detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--bqm-border);
+    font-size: 13.5px;
+    gap: 16px;
+}
+.bqm-detail-row:last-child {
+    border-bottom: none;
+}
+.bqm-detail-label {
+    color: var(--bqm-muted);
+    font-weight: 500;
+    flex-shrink: 0;
+    min-width: 110px;
+}
+.bqm-detail-val {
+    color: var(--bqm-text);
+    font-weight: 500;
+    text-align: right;
+    word-break: break-word;
+}
+.bqm-amount-text {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--bqm-primary);
+}
+
+.bqm-details-meals-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    /* ⭐ HIDE SCROLLBAR */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.bqm-details-meals-list::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+.bqm-meal-item-block {
+    border: 1px solid var(--bqm-border);
+    border-radius: 8px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.bqm-meal-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bqm-page);
+    border-bottom: 1px solid var(--bqm-border);
+}
+.bqm-meal-item-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.bqm-meal-type {
+    font-weight: 600;
+    font-size: 13.5px;
+    color: var(--bqm-text);
+    text-transform: capitalize;
+}
+.bqm-meal-item-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 12.5px;
+    color: var(--bqm-muted);
+}
+.bqm-meal-item-meta .anticon { margin-right: 4px; }
+
+/* Meal Items Mini-Table */
+.bqm-meal-items-table {
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+}
+.bqm-meal-items-head {
+    display: grid;
+    grid-template-columns: 1fr 40px 70px;
+    gap: 8px;
+    padding: 6px 12px;
+    background: var(--bqm-surface);
+    border-bottom: 1px dashed var(--bqm-border);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--bqm-muted);
+    text-transform: uppercase;
+}
+.bqm-meal-items-row {
+    display: grid;
+    grid-template-columns: 1fr 40px 70px;
+    gap: 8px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--bqm-border);
+    color: var(--bqm-text);
+}
+.bqm-meal-items-row:last-child { border-bottom: none; }
+.bqm-item-name { font-weight: 500; }
+
+.bqm-details-empty-text {
+    padding: 24px;
+    text-align: center;
+    color: var(--bqm-muted);
+    font-style: italic;
+}
+
+/* ---------- Dark Mode ---------- */
+.bqm-dark-mode .bqm-details-layout { background: #111827; }
+.bqm-dark-mode .bqm-details-hero {
+    background: linear-gradient(135deg, rgba(96, 165, 250, 0.08), #111827);
+    border-color: #1f2937;
+}
+.bqm-dark-mode .bqm-details-hero-name { color: #f1f5f9; }
+.bqm-dark-mode .bqm-details-hero-meta { color: #94a3b8; }
+.bqm-dark-mode .bqm-details-card { background: #111827; border-color: #1f2937; }
+.bqm-dark-mode .bqm-details-card-head { background: #0b1220; border-color: #1f2937; color: #e2e8f0; }
+.bqm-dark-mode .bqm-detail-row { border-color: #1a2233; }
+.bqm-dark-mode .bqm-detail-label { color: #94a3b8; }
+.bqm-dark-mode .bqm-detail-val { color: #e2e8f0; }
+.bqm-dark-mode .bqm-amount-text { color: #60a5fa; }
+
+.bqm-dark-mode .bqm-meal-item-block { border-color: #1f2937; }
+.bqm-dark-mode .bqm-meal-item-header { background: #0b1220; border-color: #1f2937; }
+.bqm-dark-mode .bqm-meal-type { color: #e2e8f0; }
+.bqm-dark-mode .bqm-meal-item-meta { color: #94a3b8; }
+.bqm-dark-mode .bqm-meal-items-head { background: #0b1220; border-color: #1f2937; color: #64748b; }
+.bqm-dark-mode .bqm-meal-items-row { border-color: #1a2233; color: #cbd5e1; }
+
+@media (max-width: 992px) {
+    .bqm-details-layout { flex-direction: column; overflow-y: auto; height: auto; }
+    .bqm-details-noscroll { height: auto; }
+    .bqm-details-meals-list { overflow-y: visible; }
+}
+
+/* ⭐ REQUEST #5 — Consistent package + item colour */
+.bqm-meal-selected-package {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    background: #f5f3ff;
+    color: #6d28d9;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.bqm-package-item-tag {
+    color: #6d28d9 !important;
+    border-color: #ddd6fe !important;
+    background: #f5f3ff !important;
+}
+
+.bqm-package-item-tag .bqm-package-item-name {
+    font-weight: 600;
+    color: #6d28d9;
+}
+
+.bqm-meal-items-table .bqm-item-name {
+    color: inherit;
+}
+
+/* ⭐ 1. Lock the outer page height so it doesn't scroll */
+.bqm-container {
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ⭐ 2. Make the inner main card scrollable if the screen is very small, but hide the scrollbar */
+.bqm-main-card {
+    height: calc(100vh - 100px); /* Adjust based on header height */
+    overflow-y: auto;
+}
+
+/* 3. Force the flex container to respect heights */
+.bqm-calendar-with-sidebar { 
+    align-items: flex-start !important; 
+    min-height: 0;
+}
+
+/* 4. Set the side panel height to fit the available space */
+.bqm-calendar-with-sidebar .bqm-calendar-side-panel { 
+    transition: box-shadow .15s ease; 
+    /* ⭐ ADJUSTED: Use 152px to account for the 32px bottom padding */
+    height: calc(100vh - 152px) !important; 
+    max-height: calc(100vh - 152px) !important;
+    overflow: hidden !important;
+    flex: 0 0 340px;
+}
+
+.bqm-calendar-side-panel:hover { 
+    box-shadow: 0 4px 14px rgba(0,0,0,.08); 
+}
+
+/* 5. Make the event list scrollable and ensure it can shrink */
+.bqm-calendar-side-panel > div:nth-child(4) { 
+    overflow-y: auto !important;
+    min-height: 0 !important; 
+    flex: 1 1 auto !important; 
+}
+
+/* 6. Hide the main page scrollbars */
+.bqm-main-card::-webkit-scrollbar {
+    display: none;
+}
+.bqm-main-card {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+/* 7. Show scrollbars ONLY for the side panel */
+.bqm-calendar-side-panel > div:nth-child(4)::-webkit-scrollbar {
+    display: block;
+    width: 6px;
+}
+.bqm-calendar-side-panel > div:nth-child(4)::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 4px;
+}
+.bqm-calendar-side-panel > div:nth-child(4)::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* 8. Responsive fix for mobile */
+@media (max-width: 900px) {
+  .bqm-container {
+      height: auto;
+      overflow: auto;
+  }
+  .bqm-main-card {
+      height: auto;
+      overflow: visible;
+  }
+  .bqm-calendar-with-sidebar { 
+      flex-direction: column; 
+  }
+  .bqm-calendar-side-panel { 
+      width: 100% !important; 
+      flex: 1 1 auto !important; 
+      position: static !important; 
+      height: 500px !important; /* Give it a fixed height on mobile */
+      max-height: 500px !important; 
+  }
+}
+/* Target the date cell (assuming it's the container returned in dateCellRender) */
+.bqm-calendar-date-cell {
+    position: relative; /* Required for absolute positioning of buttons */
+    height: 100%;
+    min-height: 80px;
+}
+
+.bqm-calendar-date-cell:hover .bqm-date-hover-actions,
+.bqm-calendar-date-cell .bqm-date-hover-actions:hover {
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+}
+
+/* Make sure the buttons don't overlap the "+X more" text */
+.bqm-calendar-events-wrapper {
+    margin-bottom: 24px; 
+}   

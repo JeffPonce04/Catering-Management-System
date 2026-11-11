@@ -22,6 +22,7 @@ body {
 }
 
 /* Navigation Container */
+/* Navigation Container */
 .navigation-container {
   height: 100vh;
   position: fixed;
@@ -33,7 +34,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  z-index: 100;
+  z-index: 100; /* below every modal overlay (9999 / 99999) */
   transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -842,19 +843,27 @@ body {
 .navigation-container[style*="width: 80px"] .nav-item-wrapper {
   overflow: visible;
 }
-
 /* Modal Styles - Keep all existing modal styles */
 .navigation-modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
   background: rgba(0, 0, 0, 0.8);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: 9999;
   animation: navigationFadeIn 0.2s ease-out;
+}
+
+.navigation-modal-center-wrapper {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  pointer-events: none;
 }
 
 .dark-mode .navigation-modal-overlay {
@@ -2295,10 +2304,21 @@ body {
   color: #3b82f6;
 }
 
-/* Navigation container isolation */
+/* Navigation container — must NOT isolate, otherwise fixed modals
+   rendered inside the route tree get trapped in the sidebar stacking context. */
 .navigation-container {
-  isolation: isolate;
   z-index: 100;
+}
+
+/* While any app modal is open, disable & dim the sidebar */
+body:has(.catering-modal-overlay) .navigation-container,
+body:has(.sdf-modal-overlay) .navigation-container,
+body:has(.inventory-modal-overlay) .navigation-container,
+body:has(.booking-modal-overlay) .navigation-container,
+body:has(.modal-overlay) .navigation-container {
+  pointer-events: none;
+  filter: blur(3px);
+  transition: filter 0.25s ease;
 }
 
 /* When modal is open */
@@ -2626,8 +2646,9 @@ body.dark-mode .navigation-confirm-cancel {
   background: var(--bg-primary) !important;
 }
 
-.dark-mode .navigation-container,
-.navigation-container.dark-mode {
+/* .dark-mode is on <body>, not on .navigation-container — keep only the
+   descendant selector so the theme override actually applies. */
+.dark-mode .navigation-container {
   background: #0a0e1a !important;
 }
 

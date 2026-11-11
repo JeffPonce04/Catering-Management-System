@@ -3,6 +3,7 @@
 import { API_BASE_URL, API_ORIGIN } from '../../../config/env';
 import moment from 'moment';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import ReactDOM from 'react-dom';
 import {
   CalendarOutlined, ClockCircleOutlined, TeamOutlined,
   UserOutlined, DollarOutlined, PlusOutlined, ExportOutlined,
@@ -34,6 +35,12 @@ import {
   useEmployeeRequests
 } from '../../../hooks/useSchedulingQueries';
 import '../styles/StaffScheduling.css';
+
+/* ---------- Portal: renders children into document.body ---------- */
+const ModalPortal = ({ children }) => {
+  if (typeof document === 'undefined') return null;
+  return ReactDOM.createPortal(children, document.body);
+};
 
 // ==================== HELPER FUNCTIONS ====================
 
@@ -70,14 +77,27 @@ const getEmployeeSalaryGrade = (employee) => {
 
 const getEmployeeHourlyRate = (employee) => {
   if (!employee) return 0;
-  if (employee.hourly_rate && employee.hourly_rate > 0) return employee.hourly_rate;
-  if (employee.hourly_rate_override && employee.hourly_rate_override > 0) return employee.hourly_rate_override;
-  if (employee.monthly_salary && employee.monthly_salary > 0) return employee.monthly_salary / 160;
-  if (employee.daily_rate && employee.daily_rate > 0) return employee.daily_rate / 8;
-  if (employee.position?.salary_grade?.hourly_rate) return employee.position.salary_grade.hourly_rate;
+
+  // ⭐ FIX: Branch by explicit salary_base so monthly/daily employees
+  //    resolve to the same hourly value the backend PayrollService uses.
+  const base = employee.salary_base || 'hourly';
+
+  if (base === 'monthly' && employee.monthly_salary > 0) {
+    // 22 working days × 8 hours = 176 monthly hours (matches Employee::calculated_hourly_rate)
+    return Number(employee.monthly_salary) / 176;
+  }
+  if (base === 'daily' && employee.daily_rate > 0) {
+    return Number(employee.daily_rate) / 8;
+  }
+
+  // Hourly (or legacy fallback)
+  if (employee.hourly_rate && employee.hourly_rate > 0) return Number(employee.hourly_rate);
+  if (employee.hourly_rate_override && employee.hourly_rate_override > 0) return Number(employee.hourly_rate_override);
+  if (employee.monthly_salary && employee.monthly_salary > 0) return Number(employee.monthly_salary) / 176;
+  if (employee.daily_rate && employee.daily_rate > 0) return Number(employee.daily_rate) / 8;
+  if (employee.position?.salary_grade?.hourly_rate) return Number(employee.position.salary_grade.hourly_rate);
   return 0;
 };
-
 const getProfilePhotoUrl = (employee, apiUrl = API_ORIGIN) => {
   if (!employee) return null;
 
@@ -188,6 +208,27 @@ const isWithin15DayWindow = (date) => {
   selectedDate.setHours(0, 0, 0, 0);
   const diffDays = (selectedDate - today) / (1000 * 60 * 60 * 24);
   return diffDays >= 0 && diffDays <= 15;
+};
+
+// ⭐ NEW: Build the list of "YYYY-MM-DD" strings between two dates (inclusive).
+// Returns [] if the range is invalid.
+const buildDateRange = (from, to) => {
+  if (!from || !to) return [];
+  const start = new Date(from + 'T00:00:00');
+  const end = new Date(to + 'T00:00:00');
+  if (isNaN(start) || isNaN(end) || end < start) return [];
+
+  const dates = [];
+  const cursor = new Date(start);
+  let guard = 0;
+  while (cursor <= end && guard < 366) { // hard cap: 1 year
+    dates.push(
+      `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
+    );
+    cursor.setDate(cursor.getDate() + 1);
+    guard++;
+  }
+  return dates;
 };
 
 // ==================== REQUEST TYPE HELPERS ====================
@@ -551,7 +592,12 @@ const Staff_Scheduling = () => {
     endTime: '17:00',
     shift_type: 'regular',
     placement: '',
-    notes: ''
+    notes: '',
+    // ⭐ NEW: date-range scheduling
+    dateRangeMode: false,   // false = single date, true = range
+    fixedDuty: false,       // when true, schedule the same shift on every date in the range
+    dateFrom: '',
+    dateTo: ''
   });
 
   const [formData, setFormData] = useState({
@@ -623,8 +669,9 @@ const Staff_Scheduling = () => {
         employee_code: emp.employee_code || emp.employee_id || `EMP${String(emp.id).padStart(6, '0')}`,
         name: fullName,
         hourly_rate: hourlyRate,
-        daily_rate: emp.daily_rate || (hourlyRate * 8),
-        monthly_salary: emp.monthly_salary || emp.position?.salary_grade?.monthly_salary || 0,
+          daily_rate: emp.daily_rate || (hourlyRate * 8),
+        monthly_salary: emp.monthly_salary || (hourlyRate * 176) || 0,
+        salary_base: emp.salary_base || 'hourly',  // ⭐ ADD — needed by Fix 1
         salary_grade: salaryGrade,
         employee_type: emp.employee_type || 'regular',
         status: emp.status || 'active',
@@ -1342,78 +1389,118 @@ const Staff_Scheduling = () => {
     }
   };
 
-  // ==================== BATCH SCHEDULE HANDLER ====================
+   // ==================== BATCH SCHEDULE HANDLER (with date-range support) ====================
   const handleBatchSchedule = async () => {
     if (selectedEmployees.length === 0) {
       showNotification('Please select at least one employee', 'error');
       return;
     }
 
-    if (!batchScheduleData.date || !batchScheduleData.startTime || !batchScheduleData.endTime) {
+    if (!batchScheduleData.startTime || !batchScheduleData.endTime) {
       showNotification('Please fill in all required fields', 'error');
       return;
     }
 
-    if (!isWithin15DayWindow(batchScheduleData.date)) {
-      showNotification('Cannot schedule for dates beyond 15 days from today', 'error');
+    // ---- Resolve the list of dates ----
+    let targetDates = [];
+
+    if (batchScheduleData.dateRangeMode) {
+      if (!batchScheduleData.fixedDuty) {
+        showNotification('Enable "Fixed Duty" to schedule across a date range', 'error');
+        return;
+      }
+      if (!batchScheduleData.dateFrom || !batchScheduleData.dateTo) {
+        showNotification('Please select both From and To dates', 'error');
+        return;
+      }
+      targetDates = buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo);
+      if (targetDates.length === 0) {
+        showNotification('End date must be on or after start date', 'error');
+        return;
+      }
+    } else {
+      if (!batchScheduleData.date) {
+        showNotification('Please select a date', 'error');
+        return;
+      }
+      targetDates = [batchScheduleData.date];
+    }
+
+    // ---- 15-day edit-window check for every date ----
+    const outOfWindow = targetDates.filter((d) => !isWithin15DayWindow(d));
+    if (outOfWindow.length > 0) {
+      showNotification(
+        `Cannot schedule for dates beyond 15 days from today (${outOfWindow[0]}…)`,
+        'error'
+      );
       return;
     }
 
-    const employeesWithShifts = new Set();
-    shifts.forEach(shift => {
+    // ---- Build lookup of already-scheduled dates per employee ----
+    const existingByEmp = new Map(); // empId -> Set of dates
+    shifts.forEach((shift) => {
+      const empId = shift.employee_id || shift.employeeId;
       const shiftDate = shift.date || shift.work_date;
-      if (shiftDate === batchScheduleData.date) {
-        const empId = shift.employee_id || shift.employeeId;
-        if (empId) employeesWithShifts.add(empId);
-      }
+      if (!empId || !shiftDate) return;
+      if (!existingByEmp.has(empId)) existingByEmp.set(empId, new Set());
+      existingByEmp.get(empId).add(shiftDate);
     });
 
-    const availableEmployees = selectedEmployees.filter(empId => !employeesWithShifts.has(empId));
+    // ---- Build the work queue: (employee × date) pairs ----
+    const pairs = [];
+    let skippedExisting = 0;
 
-    if (availableEmployees.length === 0) {
-      const employeeNames = selectedEmployees.map(id => {
-        const emp = employees.find(e => e.id === id);
-        return emp?.name || id;
-      }).join(', ');
-      showNotification(`All selected employees (${employeeNames}) already have shifts on this date.`, 'warning');
+    selectedEmployees.forEach((empId) => {
+      const bookedDates = existingByEmp.get(empId) || new Set();
+      targetDates.forEach((d) => {
+        if (bookedDates.has(d)) {
+          skippedExisting++;
+        } else {
+          pairs.push({ employeeId: empId, date: d });
+        }
+      });
+    });
+
+    if (pairs.length === 0) {
+      showNotification(
+        'All selected employees already have shifts on every date in this range.',
+        'warning'
+      );
       return;
     }
 
+    // ---- Create shifts ----
     let successCount = 0;
     let failCount = 0;
     const errors = [];
 
-    for (let i = 0; i < availableEmployees.length; i++) {
-      const employeeId = availableEmployees[i];
-
+    for (let i = 0; i < pairs.length; i++) {
+      const { employeeId, date } = pairs[i];
       try {
-        const payload = {
+        await createShiftMutation.mutateAsync({
           employee_id: employeeId,
-          work_date: batchScheduleData.date,
+          work_date: date,
           start_time: batchScheduleData.startTime,
           end_time: batchScheduleData.endTime,
           shift_type: batchScheduleData.shift_type || 'regular',
           placement: batchScheduleData.placement?.trim() || '',
           notes: batchScheduleData.notes?.trim() || ''
-        };
-
-        await createShiftMutation.mutateAsync(payload);
+        });
         successCount++;
       } catch (error) {
         failCount++;
-        const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
-
-        if (errorMsg.includes('Duplicate entry') || errorMsg.includes('1062')) {
-          errors.push(`Employee ${employeeId}: Already has a shift on this date (skipped)`);
+        const msg = error.response?.data?.message || error.message || 'Unknown error';
+        if (msg.includes('Duplicate entry') || msg.includes('1062')) {
+          skippedExisting++;
         } else {
-          errors.push(`Employee ${employeeId}: ${errorMsg}`);
+          errors.push(`Employee ${employeeId} on ${date}: ${msg}`);
         }
       }
     }
 
-    const skippedCount = selectedEmployees.length - availableEmployees.length;
-    let message = `✅ Successfully created ${successCount} shifts`;
-    if (skippedCount > 0) message += `, ⏭️ ${skippedCount} skipped (already scheduled)`;
+    // ---- Report ----
+    let message = `✅ Successfully created ${successCount} shift${successCount !== 1 ? 's' : ''}`;
+    if (skippedExisting > 0) message += `, ⏭️ ${skippedExisting} skipped (already scheduled)`;
     if (failCount > 0) message += `, ❌ ${failCount} failed`;
 
     if (successCount > 0) {
@@ -1423,10 +1510,10 @@ const Staff_Scheduling = () => {
       setShowBatchModal(false);
       setSelectedEmployees([]);
       setSelectAll(false);
-    } else if (skippedCount > 0 && failCount === 0) {
-      showNotification(`All ${skippedCount} selected employees already have shifts on this date.`, 'warning');
+    } else if (skippedExisting > 0 && failCount === 0) {
+      showNotification('All selected shifts already existed.', 'warning');
     } else {
-      showNotification(`❌ Failed to create shifts. ${errors.join('; ')}`, 'error');
+      showNotification(`❌ Failed to create shifts. ${errors.slice(0, 3).join('; ')}`, 'error');
     }
   };
 
@@ -1655,7 +1742,11 @@ const Staff_Scheduling = () => {
       endTime: '17:00',
       shift_type: 'regular',
       placement: '',
-      notes: ''
+      notes: '',
+      dateRangeMode: false,
+      fixedDuty: false,
+      dateFrom: selectedDateStr,
+      dateTo: selectedDateStr
     });
     setShowBatchModal(true);
   };
@@ -1679,24 +1770,44 @@ const Staff_Scheduling = () => {
   };
 
   const getFilteredEmployeesForBatch = useCallback(() => {
-    const employeesWithShifts = new Set();
-    shifts.forEach(shift => {
+    // Dates this batch will target
+    const targetDates =
+      batchScheduleData.dateRangeMode
+        ? batchScheduleData.fixedDuty
+          ? buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo)
+          : []
+        : batchScheduleData.date
+          ? [batchScheduleData.date]
+          : [];
+
+    const targetSet = new Set(targetDates);
+
+    // employeeId -> Set of booked dates among the target range
+    const bookedByEmp = new Map();
+    shifts.forEach((shift) => {
       const shiftDate = shift.date || shift.work_date;
-      if (shiftDate === batchScheduleData.date) {
-        const empId = shift.employee_id || shift.employeeId;
-        if (empId) employeesWithShifts.add(empId);
-      }
+      if (!targetSet.has(shiftDate)) return;
+      const empId = shift.employee_id || shift.employeeId;
+      if (!empId) return;
+      if (!bookedByEmp.has(empId)) bookedByEmp.set(empId, new Set());
+      bookedByEmp.get(empId).add(shiftDate);
     });
 
-    return employees.filter(emp => {
+    return employees.filter((emp) => {
       if (emp.status !== 'active') return false;
       if (batchFilters.department !== 'all' && emp.department?.name !== batchFilters.department) return false;
       if (batchFilters.employeeType !== 'all' && emp.employee_type !== batchFilters.employeeType) return false;
       if (batchFilters.searchTerm && !emp.name.toLowerCase().includes(batchFilters.searchTerm.toLowerCase())) return false;
-      if (employeesWithShifts.has(emp.id)) return false;
+
+      // Fully booked = has a shift on every target date
+      if (targetDates.length > 0) {
+        const booked = bookedByEmp.get(emp.id) || new Set();
+        const allBooked = targetDates.every((d) => booked.has(d));
+        if (allBooked) return false;
+      }
       return true;
     });
-  }, [employees, batchFilters, shifts, batchScheduleData.date]);
+  }, [employees, batchFilters, shifts, batchScheduleData.date, batchScheduleData.dateRangeMode, batchScheduleData.fixedDuty, batchScheduleData.dateFrom, batchScheduleData.dateTo]);
 
   const filteredEmployeesForBatch = useMemo(() => {
     return getFilteredEmployeesForBatch();
@@ -2028,14 +2139,16 @@ const Staff_Scheduling = () => {
 
   return (
     <div className="sdf-scheduling-container">
-      {notification.show && (
-        <div className={`sdf-notification sdf-notification-${notification.type}`}>
-          {notification.type === 'success' && <CheckCircleOutlined />}
-          {notification.type === 'error' && <WarningOutlined />}
-          {notification.type === 'info' && <InfoCircleOutlined />}
-          <span>{notification.message}</span>
-        </div>
-      )}
+      <ModalPortal>
+        {notification.show && (
+          <div className={`sdf-notification sdf-notification-${notification.type}`}>
+            {notification.type === 'success' && <CheckCircleOutlined />}
+            {notification.type === 'error' && <WarningOutlined />}
+            {notification.type === 'info' && <InfoCircleOutlined />}
+            <span>{notification.message}</span>
+          </div>
+        )}
+      </ModalPortal>
 
       {scheduleWarning && activeTab === 'schedule' && (
         <div className={`sdf-warning-banner sdf-warning-${scheduleWarning.type}`}>
@@ -2251,11 +2364,13 @@ const Staff_Scheduling = () => {
                                 disabled={!shift}
                               />
                             </td>
-                            <td>
+                                                        <td>
                               <div className="sdf-employee-cell">
                                 <EmployeeAvatar employee={emp} size="small" />
                                 <div>
-                                  <div className="sdf-employee-name">{emp.name}</div>
+                                  <div className="sdf-employee-name">
+                                    {emp.name}
+                                  </div>
                                   <div className="sdf-employee-id">{emp.employee_code || emp.employee_id || 'N/A'}</div>
                                 </div>
                               </div>
@@ -2913,6 +3028,8 @@ const Staff_Scheduling = () => {
         )}
       </main>
 
+      {/* ==================== ALL MODALS — portaled to document.body ==================== */}
+      <ModalPortal>
       {/* ==================== REQUEST DETAIL MODAL ==================== */}
       {showRequestDetailModal && selectedRequest && (
         <div className="sdf-modal-overlay" onClick={() => setShowRequestDetailModal(false)}>
@@ -3207,16 +3324,141 @@ const Staff_Scheduling = () => {
                     <SettingOutlined /> Shift Configuration
                   </div>
 
+                                 {/* ⭐ Schedule mode toggle: Single Date vs Date Range */}
                   <div className="sdf-batch-form-group">
-                    <label><CalendarOutlined /> Schedule Date</label>
-                    <input
-                      type="date"
-                      name="date"
-                      value={batchScheduleData.date}
-                      onChange={handleBatchInputChange}
-                      className="sdf-batch-input"
-                    />
+                    <label><CalendarOutlined /> Schedule Mode</label>
+                    <div className="sdf-batch-radio-group">
+                      <label className={`sdf-batch-radio-label ${!batchScheduleData.dateRangeMode ? 'active' : ''}`}>
+                        <input
+                          type="radio"
+                          name="scheduleMode"
+                          checked={!batchScheduleData.dateRangeMode}
+                          onChange={() =>
+                            setBatchScheduleData((prev) => ({ ...prev, dateRangeMode: false }))
+                          }
+                        />
+                        <span>Single Date</span>
+                      </label>
+                      <label className={`sdf-batch-radio-label ${batchScheduleData.dateRangeMode ? 'active' : ''}`}>
+                        <input
+                          type="radio"
+                          name="scheduleMode"
+                          checked={batchScheduleData.dateRangeMode}
+                          onChange={() =>
+                            setBatchScheduleData((prev) => ({ ...prev, dateRangeMode: true }))
+                          }
+                        />
+                        <span>Date Range</span>
+                      </label>
+                    </div>
                   </div>
+
+                  {/* Single date input */}
+                  {!batchScheduleData.dateRangeMode && (
+                    <div className="sdf-batch-form-group">
+                      <label><CalendarOutlined /> Schedule Date</label>
+                      <input
+                        type="date"
+                        name="date"
+                        value={batchScheduleData.date}
+                        onChange={handleBatchInputChange}
+                        className="sdf-batch-input"
+                      />
+                    </div>
+                  )}
+
+                  {/* Date-range mode */}
+                  {batchScheduleData.dateRangeMode && (
+                    <>
+                      {/* ⭐ Fixed Duty checkbox */}
+                      <div className="sdf-batch-form-group">
+                        <label
+                          className="sdf-batch-checkbox"
+                          style={{
+                            padding: '10px 12px',
+                            border: '1px dashed var(--sdf-border)',
+                            borderRadius: 10
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={batchScheduleData.fixedDuty}
+                            onChange={(e) =>
+                              setBatchScheduleData((prev) => ({
+                                ...prev,
+                                fixedDuty: e.target.checked
+                              }))
+                            }
+                          />
+                          <span>
+                            <CheckSquareOutlined /> Fixed Duty — schedule the same shift on every day in the range
+                          </span>
+                        </label>
+                      </div>
+
+                      {batchScheduleData.fixedDuty && (
+                        <>
+                          <div className="sdf-batch-form-row">
+                            <div className="sdf-batch-form-group">
+                              <label><CalendarOutlined /> From</label>
+                              <input
+                                type="date"
+                                name="dateFrom"
+                                value={batchScheduleData.dateFrom}
+                                onChange={handleBatchInputChange}
+                                className="sdf-batch-input"
+                              />
+                            </div>
+                            <div className="sdf-batch-form-group">
+                              <label><CalendarOutlined /> To</label>
+                              <input
+                                type="date"
+                                name="dateTo"
+                                value={batchScheduleData.dateTo}
+                                onChange={handleBatchInputChange}
+                                className="sdf-batch-input"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Live range preview */}
+                          {(() => {
+                            const rangeDates = buildDateRange(
+                              batchScheduleData.dateFrom,
+                              batchScheduleData.dateTo
+                            );
+                            if (rangeDates.length === 0) return null;
+                            const empCount = selectedEmployees.length;
+                            const total = rangeDates.length * empCount;
+                            return (
+                              <div
+                                style={{
+                                  marginBottom: 16,
+                                  padding: '10px 14px',
+                                  borderRadius: 10,
+                                  background: 'var(--sdf-bg-secondary)',
+                                  border: '1px solid var(--sdf-border)',
+                                  fontSize: 13,
+                                  color: 'var(--sdf-text-secondary)'
+                                }}
+                              >
+                                <strong>{rangeDates.length}</strong> day
+                                {rangeDates.length !== 1 ? 's' : ''} selected
+                                {empCount > 0 && (
+                                  <>
+                                    {' • '}
+                                    <strong>{total}</strong> shift{total !== 1 ? 's' : ''} will be created (
+                                    {empCount} employee{empCount !== 1 ? 's' : ''} × {rangeDates.length} day
+                                    {rangeDates.length !== 1 ? 's' : ''})
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </>
+                  )}
 
                   <div className="sdf-batch-form-row">
                     <div className="sdf-batch-form-group">
@@ -3311,9 +3553,35 @@ const Staff_Scheduling = () => {
                         })()}
                       </strong>
                     </div>
-                    <div className="sdf-summary-row">
+                                        <div className="sdf-summary-row">
                       <span><TeamOutlined /> Selected Staff:</span>
                       <strong>{selectedEmployees.length} employee{selectedEmployees.length !== 1 ? 's' : ''}</strong>
+                    </div>
+                    <div className="sdf-summary-row">
+                      <span><CalendarOutlined /> Days in Range:</span>
+                      <strong>
+                        {(() => {
+                          const dates = batchScheduleData.dateRangeMode
+                            ? buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo)
+                            : batchScheduleData.date
+                              ? [batchScheduleData.date]
+                              : [];
+                          return `${dates.length} day${dates.length !== 1 ? 's' : ''}`;
+                        })()}
+                      </strong>
+                    </div>
+                    <div className="sdf-summary-row">
+                      <span><ScheduleOutlined /> Total Shifts to Create:</span>
+                      <strong>
+                        {(() => {
+                          const dates = batchScheduleData.dateRangeMode
+                            ? buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo)
+                            : batchScheduleData.date
+                              ? [batchScheduleData.date]
+                              : [];
+                          return dates.length * selectedEmployees.length;
+                        })()}
+                      </strong>
                     </div>
                     <div className="sdf-summary-row total">
                       <span><DollarOutlined /> Estimated Total Cost:</span>
@@ -3420,13 +3688,27 @@ const Staff_Scheduling = () => {
                         </label>
                       );
                     })}
-                    {filteredEmployeesForBatch.length === 0 && (
+                                       {filteredEmployeesForBatch.length === 0 && (
                       <div className="sdf-batch-empty">
                         <FilterOutlined />
                         <p>
-                          {shifts.some(s => s.date === batchScheduleData.date || s.work_date === batchScheduleData.date)
-                            ? 'All employees already have shifts on this date'
-                            : 'No employees match your filters'}
+                          {(() => {
+                            const targetDates = batchScheduleData.dateRangeMode
+                              ? buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo)
+                              : batchScheduleData.date
+                                ? [batchScheduleData.date]
+                                : [];
+                            if (targetDates.length === 0) return 'No employees match your filters';
+                            const targetSet = new Set(targetDates);
+                            const anyBooked = shifts.some((s) =>
+                              targetSet.has(s.date || s.work_date)
+                            );
+                            return anyBooked
+                              ? batchScheduleData.dateRangeMode
+                                ? 'All employees already have shifts on every date in this range'
+                                : 'All employees already have shifts on this date'
+                              : 'No employees match your filters';
+                          })()}
                         </p>
                       </div>
                     )}
@@ -3439,12 +3721,35 @@ const Staff_Scheduling = () => {
               <button className="sdf-batch-btn-secondary" onClick={() => setShowBatchModal(false)}>
                 Cancel
               </button>
-              <button
+                           <button
                 className="sdf-batch-btn-primary"
                 onClick={handleBatchSchedule}
-                disabled={selectedEmployees.length === 0 || !batchScheduleData.date || createShiftMutation.isPending}
+                disabled={
+                  selectedEmployees.length === 0 ||
+                  createShiftMutation.isPending ||
+                  (batchScheduleData.dateRangeMode
+                    ? !batchScheduleData.fixedDuty ||
+                      !batchScheduleData.dateFrom ||
+                      !batchScheduleData.dateTo
+                    : !batchScheduleData.date)
+                }
               >
-                {createShiftMutation.isPending ? <LoadingOutlined spin /> : <><PlusOutlined /> Create {selectedEmployees.length} Shift{selectedEmployees.length !== 1 ? 's' : ''}</>}
+                {createShiftMutation.isPending ? (
+                  <LoadingOutlined spin />
+                ) : (
+                  <>
+                    <PlusOutlined /> Create{' '}
+                    {(() => {
+                      const dates = batchScheduleData.dateRangeMode
+                        ? buildDateRange(batchScheduleData.dateFrom, batchScheduleData.dateTo)
+                        : batchScheduleData.date
+                          ? [batchScheduleData.date]
+                          : [];
+                      const total = dates.length * selectedEmployees.length;
+                      return `${total} Shift${total !== 1 ? 's' : ''}`;
+                    })()}
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -3982,7 +4287,6 @@ const Staff_Scheduling = () => {
           </div>
         </div>
       )}
-
       {/* ==================== DELETE CONFIRM MODAL ==================== */}
       {showDeleteConfirm && (
         <div className="sdf-modal-overlay" onClick={() => setShowDeleteConfirm(false)}>
@@ -4003,6 +4307,7 @@ const Staff_Scheduling = () => {
           </div>
         </div>
       )}
+      </ModalPortal>
     </div>
   );
 };

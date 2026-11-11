@@ -1,20 +1,28 @@
 // src/hooks/useStaffQueries.js
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { staffAPI, departmentAPI, positionAPI, salaryGradeAPI } from '../services/api';
 
-export const useEmployees = (filters = {}) =>
+export const useEmployees = (filters = {}, options = {}) =>
   useQuery({
     queryKey: ['employees', filters],
     queryFn: () => staffAPI.getEmployees(filters),
     staleTime: 2 * 60 * 1000,
     gcTime: 5 * 60 * 1000,
+    placeholderData: keepPreviousData,   // ✅ Smooth pagination — no blank flicker
+    refetchOnWindowFocus: false,        // ✅ Don't refetch when user switches tabs
+    refetchOnMount: false,              // ✅ Trust cache on mount (staleTime already handles freshness)
+    enabled: options.enabled !== false, // ✅ Allows conditional fetch — used by Master List
   });
-
 export const useEmployeeStats = () =>
   useQuery({
     queryKey: ['employee-stats'],
-    queryFn: () => staffAPI.getEmployeeStats(),
+    queryFn: async () => {
+      const res = await staffAPI.getEmployeeStats();
+      // Unwrap possible nesting: { data }, { data: { data } }, or flat
+      return res?.data?.data ?? res?.data ?? res ?? {};
+    },
     staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
 export const useArchivedEmployees = () =>
@@ -22,6 +30,8 @@ export const useArchivedEmployees = () =>
     queryKey: ['archived-employees'],
     queryFn: () => staffAPI.getArchivedEmployees(),
     staleTime: 2 * 60 * 1000,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
   });
 
 export const useDepartments = () =>
@@ -29,6 +39,7 @@ export const useDepartments = () =>
     queryKey: ['departments'],
     queryFn: () => departmentAPI.getAll(),
     staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
 export const usePositions = () =>
@@ -36,6 +47,7 @@ export const usePositions = () =>
     queryKey: ['positions'],
     queryFn: () => positionAPI.getAll(),
     staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
 export const useSalaryGrades = () =>
@@ -43,6 +55,7 @@ export const useSalaryGrades = () =>
     queryKey: ['salary-grades'],
     queryFn: () => salaryGradeAPI.getAll(),
     staleTime: 10 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
 
 export const useCreateEmployee = () => {
@@ -84,7 +97,38 @@ export const useToggleBookmark = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => staffAPI.toggleBookmark(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['employees'] }),
+    // ✅ Optimistic update — instant star toggle, no waiting for server
+    onMutate: async (id) => {
+      await queryClient.cancelQueries({ queryKey: ['employees'] });
+      const previous = queryClient.getQueriesData({ queryKey: ['employees'] });
+
+      queryClient.setQueriesData({ queryKey: ['employees'] }, (old) => {
+        if (!old) return old;
+        const patch = (list) =>
+          Array.isArray(list)
+            ? list.map((emp) =>
+                (emp.id || emp.employee_id) === id
+                  ? { ...emp, is_bookmarked: !emp.is_bookmarked }
+                  : emp
+              )
+            : list;
+
+        if (Array.isArray(old)) return patch(old);
+        if (old.data && Array.isArray(old.data)) return { ...old, data: patch(old.data) };
+        if (old.data?.data && Array.isArray(old.data.data))
+          return { ...old, data: { ...old.data, data: patch(old.data.data) } };
+        return old;
+      });
+
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      // Rollback on failure
+      context?.previous?.forEach(([key, data]) => {
+        queryClient.setQueryData(key, data);
+      });
+    },
+    // ✅ No invalidation needed — we already have the fresh state locally
   });
 };
 

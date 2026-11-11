@@ -18,7 +18,8 @@ import {
     Row,
     Col,
     Alert,
-    DatePicker,
+      DatePicker,
+    TimePicker,
     Badge,
     Empty,
     Form,
@@ -1142,11 +1143,12 @@ const MenuManagement = () => {
     // ============================================================
     // HANDLERS - MENU ITEMS
     // ============================================================
-    const handleAddMenu = () => {
+      const handleAddMenu = () => {
         closeMenuModal();
+        menuForm.resetFields();
+        // Only boolean/toggle defaults are pre-filled.
+        // All text and number fields stay BLANK so the user starts clean.
         menuForm.setFieldsValue({
-            prep_time_minutes: 15,
-            serving_size: 1,
             is_available: true,
             is_popular: false,
             is_vegetarian: false,
@@ -1154,12 +1156,6 @@ const MenuManagement = () => {
             is_gluten_free: false,
             is_halal: false,
             pricing_type: PRICING_TYPES.BOTH,
-            price: 45,
-            tray_price: 1500,
-            tray_servings: 25,
-            tray_min_pax: 20,
-            tray_max_pax: 25,
-            tray_description: 'Good for 20–25 pax',
         });
         setMenuModalVisible(true);
     };
@@ -1515,17 +1511,49 @@ const MenuManagement = () => {
         formData.append(key, value ? '1' : '0');
     };
 
-    const handleSaveMenu = async () => {
+       const handleSaveMenu = async () => {
         try {
             const values = await menuForm.validateFields();
+
+            // ⭐ VALIDATION A — duplicate menu name (case-insensitive).
+            //    Skips the row currently being edited.
+            const trimmedName = values.name.trim().toLowerCase();
+            const duplicateItem = menus.find((item) => {
+                if (selectedItem && Number(item.id) === Number(selectedItem.id)) {
+                    return false;
+                }
+                return item.name?.trim().toLowerCase() === trimmedName;
+            });
+
+            if (duplicateItem) {
+                message.error({
+                    content: `A menu item named "${values.name.trim()}" already exists. Please use a different name.`,
+                    duration: 4,
+                });
+                setModalCurrentStep(0);
+                return;
+            }
+
+            // ⭐ VALIDATION B — at least one recipe ingredient is required.
+            const validIngredients = recipeIngredients.filter(
+                (row) => row.ingredient_id && Number(row.quantity_per_pax) > 0
+            );
+
+            if (validIngredients.length === 0) {
+                message.error({
+                    content: 'Please add at least one ingredient to the recipe before saving.',
+                    duration: 4,
+                });
+                setModalCurrentStep(3); // Jump to the Recipe step
+                return;
+            }
+
             const formData = new FormData();
-            const recipePayload = recipeIngredients
-                .filter((row) => row.ingredient_id && Number(row.quantity_per_pax) > 0)
-                .map((row) => ({
-                    ingredient_id: Number(row.ingredient_id),
-                    quantity_per_pax: Number(row.quantity_per_pax),
-                    unit: row.unit || ingredientById.get(Number(row.ingredient_id))?.unit || 'kg',
-                }));
+            const recipePayload = validIngredients.map((row) => ({
+                ingredient_id: Number(row.ingredient_id),
+                quantity_per_pax: Number(row.quantity_per_pax),
+                unit: row.unit || ingredientById.get(Number(row.ingredient_id))?.unit || 'kg',
+            }));
 
             formData.append('name', values.name.trim());
             formData.append('category_id', String(values.category_id));
@@ -1725,14 +1753,19 @@ const MenuManagement = () => {
                         className="mm-menu-item-avatar"
                         icon={<FileImageOutlined />}
                     />
-                    <div className="mm-menu-item-info">
-                        <div className="mm-menu-item-name">{record.name}</div>
+                                      <div className="mm-menu-item-info">
+                        <div className="mm-menu-item-name mm-slide-in-text" title={record.name}>
+                            {record.name}
+                        </div>
                         <div className="mm-menu-item-meta">
                             <span className="mm-category-label">{record.category || 'Uncategorized'}</span>
                             {record.description && (
                                 <>
                                     <span className="mm-meta-sep">·</span>
-                                    <span className="mm-menu-item-desc" title={record.description}>
+                                    <span
+                                        className="mm-menu-item-desc mm-slide-in-text mm-slide-in-delay"
+                                        title={record.description}
+                                    >
                                         {record.description}
                                     </span>
                                 </>
@@ -2598,23 +2631,55 @@ const MenuManagement = () => {
                             </div>
                         </div>
                     </div>
-                                <div className="mm-header-right">
+                                                    <div className="mm-header-right">
                         <div className="mm-global-search">
                             <SearchOutlined className="mm-global-search-icon" />
                             <input
                                 type="text"
-                                placeholder="Search menu items, packages..."
-                                value={menuFilters.search}
+                                placeholder={
+                                    activeMainTab === 'menus' ? 'Search menu items...' :
+                                    activeMainTab === 'packages' ? 'Search packages...' :
+                                    activeMainTab === 'categories' ? 'Search categories...' :
+                                    'Search promotions...'
+                                }
+                                value={
+                                    activeMainTab === 'menus' ? menuFilters.search :
+                                    activeMainTab === 'packages' ? packageFilters.search :
+                                    activeMainTab === 'categories' ? categoryFilters.search :
+                                    promotionFilters.search
+                                }
                                 onChange={(event) => {
-                                    setMenuFilters((filters) => ({ ...filters, search: event.target.value }));
+                                    const value = event.target.value;
+                                    if (activeMainTab === 'menus') {
+                                        setMenuFilters((filters) => ({ ...filters, search: value }));
+                                    } else if (activeMainTab === 'packages') {
+                                        setPackageFilters((filters) => ({ ...filters, search: value }));
+                                    } else if (activeMainTab === 'categories') {
+                                        setCategoryFilters((filters) => ({ ...filters, search: value }));
+                                    } else {
+                                        setPromotionFilters((filters) => ({ ...filters, search: value }));
+                                    }
                                 }}
                                 className="mm-global-search-input"
                             />
-                            {menuFilters.search && (
+                            {((activeMainTab === 'menus' && menuFilters.search) ||
+                              (activeMainTab === 'packages' && packageFilters.search) ||
+                              (activeMainTab === 'categories' && categoryFilters.search) ||
+                              (activeMainTab === 'promotions' && promotionFilters.search)) && (
                                 <button
                                     type="button"
                                     className="mm-global-search-clear"
-                                    onClick={() => setMenuFilters((filters) => ({ ...filters, search: '' }))}
+                                    onClick={() => {
+                                        if (activeMainTab === 'menus') {
+                                            setMenuFilters((filters) => ({ ...filters, search: '' }));
+                                        } else if (activeMainTab === 'packages') {
+                                            setPackageFilters((filters) => ({ ...filters, search: '' }));
+                                        } else if (activeMainTab === 'categories') {
+                                            setCategoryFilters((filters) => ({ ...filters, search: '' }));
+                                        } else {
+                                            setPromotionFilters((filters) => ({ ...filters, search: '' }));
+                                        }
+                                    }}
                                     aria-label="Clear search"
                                 >
                                     <CloseOutlined />
@@ -2730,7 +2795,24 @@ const MenuManagement = () => {
                         {/* MENU ITEMS TAB */}
                         <TabPane tab={<span><MenuOutlined /> Menu Items</span>} key="menus">
                             <div className="mm-table-container">
-                                                               <div className="mm-filter-bar">
+                                                                                   <div className="mm-filter-bar">
+                                    <div className="mm-filter-field">
+                                        <label className="mm-filter-field-label">Search</label>
+                                        <Input
+                                            placeholder="Search menu items..."
+                                            value={menuFilters.search}
+                                            onChange={(event) =>
+                                                setMenuFilters((filters) => ({
+                                                    ...filters,
+                                                    search: event.target.value,
+                                                }))
+                                            }
+                                            allowClear
+                                            prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
+                                            className="mm-search-input"
+                                            style={{ width: 260 }}
+                                        />
+                                    </div>
                                     <div className="mm-filter-field">
                                         <label className="mm-filter-field-label">Category</label>
                                         <Select
@@ -2749,7 +2831,7 @@ const MenuManagement = () => {
                                     </div>
                                     <div className="mm-filter-field">
                                         <label className="mm-filter-field-label">Sort by</label>
-                                        <Select
+                                                                               <Select
                                             value={getSortValue()}
                                             onChange={handleSortChange}
                                             className="mm-filter-select"
@@ -2780,7 +2862,7 @@ const MenuManagement = () => {
                                         rowClassName={(record) =>
                                             [
                                                 !record.is_available ? 'mm-row-inactive' : '',
-                                                contentReady ? 'mm-row-animate' : '',
+            contentReady ? 'mm-row-animate' : '',
                                             ].filter(Boolean).join(' ')
                                         }
                                     />
@@ -2825,7 +2907,7 @@ const MenuManagement = () => {
                                             />
                                         </div>
                                     </div>
-                                </TabPane>
+                                                               </TabPane>
                             </>
                         )}
 
@@ -2972,10 +3054,27 @@ const MenuManagement = () => {
                                 <div style={{ display: modalCurrentStep === 0 ? 'block' : 'none' }}>
                                     <Row gutter={16}>
                                         <Col span={12}>
-                                            <Form.Item
+                                                                                     <Form.Item
                                                 name="name"
                                                 label="Menu Name"
-                                                rules={[{ required: true, message: 'Please enter menu name' }]}
+                                                rules={[
+                                                    { required: true, message: 'Please enter menu name' },
+                                                    {
+                                                        validator: (_, value) => {
+                                                            if (!value || !value.trim()) return Promise.resolve();
+                                                            const inputName = value.trim().toLowerCase();
+                                                            const exists = menus.some((item) => {
+                                                                if (selectedItem && Number(item.id) === Number(selectedItem.id)) return false;
+                                                                return item.name?.trim().toLowerCase() === inputName;
+                                                            });
+                                                            if (exists) {
+                                                                return Promise.reject(new Error('A menu item with this name already exists'));
+                                                            }
+                                                            return Promise.resolve();
+                                                        },
+                                                    },
+                                                ]}
+                                                validateTrigger={['onBlur', 'onChange']}
                                             >
                                                 <Input placeholder="e.g., Chicken Adobo" size="large" className="mm-input-modern" />
                                             </Form.Item>
@@ -3265,13 +3364,24 @@ const MenuManagement = () => {
                                 <Button onClick={closeMenuModal} className="mm-footer-btn cancel">
                                     Cancel
                                 </Button>
-                                {modalCurrentStep < 4 ? (
+                                                             {modalCurrentStep < 4 ? (
                                     <Button
                                         type="primary"
                                         onClick={async () => {
                                             try {
                                                 if (modalCurrentStep === 0) {
                                                     await menuForm.validateFields(['name', 'category_id']);
+
+                                                    // ⭐ Early duplicate-name check before advancing.
+                                                    const inputName = (menuForm.getFieldValue('name') || '').trim().toLowerCase();
+                                                    const exists = menus.some((item) => {
+                                                        if (selectedItem && Number(item.id) === Number(selectedItem.id)) return false;
+                                                        return item.name?.trim().toLowerCase() === inputName;
+                                                    });
+                                                    if (exists) {
+                                                        message.error(`A menu item named "${menuForm.getFieldValue('name').trim()}" already exists.`);
+                                                        return;
+                                                    }
                                                 }
                                                 if (modalCurrentStep === 1) {
                                                     await menuForm.validateFields(['pricing_type']);
@@ -3743,13 +3853,13 @@ const MenuManagement = () => {
 
                                 <Row gutter={16}>
                                     <Col span={12}>
-                                        <Form.Item name="start_time" label="Start Time (Optional)">
-                                            <DatePicker.TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
+                                                                             <Form.Item name="start_time" label="Start Time (Optional)">
+                                            <TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                     <Col span={12}>
-                                        <Form.Item name="end_time" label="End Time (Optional)">
-                                            <DatePicker.TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
+                                                                              <Form.Item name="end_time" label="End Time (Optional)">
+                                            <TimePicker format="HH:mm" style={{ width: '100%' }} size="large" className="mm-input-modern" />
                                         </Form.Item>
                                     </Col>
                                 </Row>

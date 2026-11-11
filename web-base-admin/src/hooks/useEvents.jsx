@@ -126,7 +126,7 @@ export const useEventLiveStatus = (id) => useQuery({
     queryFn: () => api.get(`/events/${id}/live-status`),
     select: payload,
     enabled: Boolean(id),
-    refetchInterval: 30000,
+    // refetchInterval: 30000,  // ⭐ DISABLED: Causing network timeouts
 });
 
 export const usePendingDeductions = (id) => useQuery({
@@ -465,7 +465,92 @@ export const useCompleteEvent = () => {
             // these into at most one refetch per matching query.
             queryClient.invalidateQueries({ queryKey: eventKeys.all });
             queryClient.invalidateQueries({ queryKey: ['bookings'] });
+            // ⭐ Packed/Tray completion may have moved a booking into history;
+            // refresh the calendar so the colour-coded marker disappears.
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'calendar'] });
         },
         onError: (error) => message.error(apiError(error, 'Failed to complete event.')),
     });
 };
+
+// ⭐ NEW — Complete a single kitchen task and deduct its ingredients.
+//    The component supplies the ACTUAL quantities via `data.ingredients`,
+//    so the backend never has to guess from the recipe.
+export const useCompleteKitchenTask = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: ({ eventId, data }) =>
+            api.post(`/events/${eventId}/kitchen-task/complete`, data),
+                onSuccess: (response, { eventId }) => {
+            message.success(response?.data?.message || 'Kitchen task completed.');
+            // ⭐ FIX: Invalidate the event detail so useEvent(id) refetches
+            // and picks up is_done=true from the backend. The backend now
+            // derives is_done from the kitchen_task_deductions Setting
+            // records, so this survives refresh, tab switches, and re-login.
+            queryClient.invalidateQueries({ queryKey: ['inventory'], refetchType: 'active' });
+            if (eventId) {
+                queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
+                queryClient.invalidateQueries({ queryKey: eventKeys.list({}) });
+            }
+        },
+        onError: (error) => message.error(apiError(error, 'Failed to complete kitchen task.')),
+    });
+};
+
+export const useUncompleteKitchenTask = () => {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: ({ eventId, data }) =>
+            api.post(`/events/${eventId}/kitchen-task/uncomplete`, data),
+             onSuccess: (response, { eventId }) => {
+            message.success(response?.data?.message || 'Kitchen task restored.');
+            // ⭐ FIX: Same as above — invalidate the event detail so the UI
+            // reflects is_done=false after the reversal.
+            queryClient.invalidateQueries({ queryKey: ['inventory'], refetchType: 'active' });
+            if (eventId) {
+                queryClient.invalidateQueries({ queryKey: eventKeys.detail(eventId), refetchType: 'active' });
+                queryClient.invalidateQueries({ queryKey: eventKeys.list({}) });
+            }
+        },
+        onError: (error) => message.error(apiError(error, 'Failed to reverse kitchen task.')),
+    });
+};
+
+
+// ⭐ NEW — Fetch ingredient requirements for a single menu item.
+//    Used by the ingredient review modal.
+export const useKitchenTaskIngredients = (bookingId, menuItemId) =>
+    useQuery({
+        queryKey: ['kitchen-task-ingredients', bookingId, menuItemId],
+        queryFn: () =>
+            api.get(`/bookings/${bookingId}/menu-item/${menuItemId}/ingredients`),
+        select: (response) => {
+            const payload = response?.data?.data ?? response?.data ?? {};
+            // ⭐ Return the full payload so the review modal can read
+            //    menu_item_name and summary alongside the ingredients.
+            return {
+                menu_item_name: payload?.menu_item_name ?? null,
+                ingredients: payload?.ingredients ?? payload?.data?.ingredients ?? [],
+                summary: payload?.summary ?? {},
+            };
+        },
+        enabled: Boolean(bookingId) && Boolean(menuItemId),
+        staleTime: 30 * 1000,
+    });
+
+// ⭐ NEW — Per-ingredient availability check for an upcoming event.
+//    Returns rows with required / available / shortage for the readiness guard.
+export const useEventIngredientReadiness = (bookingId) =>
+    useQuery({
+        queryKey: ['event-ingredient-readiness', bookingId],
+        queryFn: () => api.get(`/bookings/${bookingId}/ingredients-details`),
+        select: (response) => {
+            const payload = response?.data?.data ?? response?.data ?? {};
+            return {
+                rows: payload?.all_ingredients ?? [],
+                summary: payload?.ingredients_summary ?? {},
+            };
+        },
+        enabled: Boolean(bookingId),
+        staleTime: 60 * 1000,
+    });

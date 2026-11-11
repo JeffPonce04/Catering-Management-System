@@ -2,6 +2,7 @@
 
 import { API_ORIGIN } from '../../../config/env';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import ReactDOM from 'react-dom';
 import {
     SearchOutlined, PlusOutlined, TeamOutlined, ClockCircleOutlined,
     CalendarOutlined, EditOutlined, DeleteOutlined, EyeOutlined,
@@ -19,6 +20,7 @@ import {
 } from '@ant-design/icons';
 import { Tooltip, Input, Select, Button, Space } from 'antd';
 import PeopleIcon from '@mui/icons-material/People';
+import { useQueryClient } from '@tanstack/react-query';
 import { staffAPI, ensureArray } from '../../../services/api';
 import {
     useEmployees,
@@ -45,6 +47,12 @@ import '../styles/StaffManagement.css';
 
 const { Search: AntSearch } = Input;
 const { Option } = Select;
+
+/* ---------- Portal: renders children into document.body ---------- */
+const ModalPortal = ({ children }) => {
+    if (typeof document === 'undefined') return null;
+    return ReactDOM.createPortal(children, document.body);
+};
 
 // ==================== SKELETON LOADING COMPONENTS ====================
 const SkeletonBlock = ({ width = '100%', height = 14, radius = 8, style = {}, className = '' }) => (
@@ -246,6 +254,80 @@ const StaffManagementSkeleton = () => {
     );
 };
 
+/* ---------- Focus trap — locks keyboard focus inside an open modal ---------- */
+const FocusTrap = ({ children, active = true }) => {
+    const containerRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (!active) return;
+        const container = containerRef.current;
+        if (!container) return;
+
+        // Save previous focus so we can restore it when modal closes
+        const previouslyFocused = document.activeElement;
+
+        // Query focusable elements inside the modal
+        const getFocusable = () =>
+            Array.from(
+                container.querySelectorAll(
+                    'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            ).filter((el) => el.offsetParent !== null);
+
+        // Focus the first focusable element after mount
+        const focusFirst = () => {
+            const focusables = getFocusable();
+            if (focusables.length > 0) focusables[0].focus();
+            else container.focus();
+        };
+
+        // Small delay so the modal has rendered
+        const t = setTimeout(focusFirst, 50);
+
+        // Trap Tab / Shift+Tab inside the modal
+        const handleKeyDown = (e) => {
+            if (e.key !== 'Tab') return;
+            const focusables = getFocusable();
+            if (focusables.length === 0) {
+                e.preventDefault();
+                return;
+            }
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        };
+
+        container.addEventListener('keydown', handleKeyDown);
+
+        return () => {
+            clearTimeout(t);
+            container.removeEventListener('keydown', handleKeyDown);
+            // Restore focus to whatever was focused before the modal opened
+            if (previouslyFocused && previouslyFocused.focus) {
+                try { previouslyFocused.focus(); } catch (_) { /* ignore */ }
+            }
+        };
+    }, [active]);
+
+    return (
+        <div
+            ref={containerRef}
+            tabIndex={-1}
+            /* display:contents lets the child modal act as the direct
+               flex item of .catering-modal-overlay, so it centers properly */
+            style={{ outline: 'none', display: 'contents' }}
+        >
+            {children}
+        </div>
+    );
+};
+
 /* ---------- Fade-out wrapper for graceful skeleton exit ---------- */
 const SkeletonTransition = ({ show, children }) => {
     const [visible, setVisible] = React.useState(show);
@@ -279,6 +361,9 @@ const SkeletonTransition = ({ show, children }) => {
 };
 
 const StaffManagement = () => {
+    // ==================== REACT QUERY CLIENT ====================
+    const queryClient = useQueryClient();
+
     // ==================== STATE MANAGEMENT ====================
     const [searchQuery, setSearchQuery] = useState('');
     const [selectedDepartment, setSelectedDepartment] = useState('all');
@@ -326,12 +411,23 @@ const StaffManagement = () => {
     const [editingComplianceEmployee, setEditingComplianceEmployee] = useState(null);
     const [isLoadingCompliance, setIsLoadingCompliance] = useState(false);
 
+    // Master List modal states
+    const [showMasterListModal, setShowMasterListModal] = useState(false);
+    const [masterListTab, setMasterListTab] = useState('all');
+    const [masterListSearch, setMasterListSearch] = useState('');
+
     const [formData, setFormData] = useState({
         first_name: '', last_name: '', middle_name: '', email: '', phone: '',
         birth_date: '', gender: '', address: '', city: '', state: '', postal_code: '', country: 'Philippines',
         department_id: '', position_id: '', employee_type: 'regular', status: 'active',
-        hire_date: '', hourly_rate_override: '', bank_name: '', bank_account: '',
-        allowances: '', other_deductions: '', sss: '', philhealth: '', pagibig: '', tin: '',
+        hire_date: '',
+        salary_base: 'hourly',
+        hourly_rate_override: '',
+        daily_rate: '',
+        monthly_salary: '',
+        payroll_frequency: 'semi_monthly',
+        salary_effective_date: new Date().toISOString().split('T')[0],
+        bank_name: '', bank_account: '',        allowances: '', other_deductions: '', sss: '', philhealth: '', pagibig: '', tin: '',
         emergency_contact: '', emergency_relation: '', emergency_phone: '',
         skills: '', certifications: '', achievements: '', notes: '',
     });
@@ -372,7 +468,7 @@ const StaffManagement = () => {
     const [benefitsData, setBenefitsData] = useState([]);
     const [reportsData, setReportsData] = useState([]);
 
-    const pageSize = 6;
+    const pageSize = 7;
     const API_URL = API_ORIGIN;
 
     const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -381,6 +477,48 @@ const StaffManagement = () => {
         if (savedTheme === 'light') return false;
         return document.body.classList.contains('dark-mode');
     });
+
+    // ==================== BODY SCROLL LOCK ====================
+    // Freezes the page background while any modal is open.
+    // The overlay still scrolls internally (catering-modal-body has overflow: auto).
+    useEffect(() => {
+        const anyModalOpen =
+            showModal ||
+            showSalaryGradeModal ||
+            showPositionModal ||
+            showDepartmentModal ||
+            showComplianceModal ||
+            showBenefitsModal ||
+            showReportsModal ||
+            showStatusFilterModal ||
+            showComplianceEditModal ||
+            showMasterListModal ||
+            showDeleteConfirm ||
+            showPrintModal;
+
+        if (anyModalOpen) {
+            document.body.classList.add('catering-modal-open');
+        } else {
+            document.body.classList.remove('catering-modal-open');
+        }
+
+        return () => {
+            document.body.classList.remove('catering-modal-open');
+        };
+    }, [
+        showModal,
+        showSalaryGradeModal,
+        showPositionModal,
+        showDepartmentModal,
+        showComplianceModal,
+        showBenefitsModal,
+        showReportsModal,
+        showStatusFilterModal,
+        showComplianceEditModal,
+        showMasterListModal,
+        showDeleteConfirm,
+        showPrintModal,
+    ]);
 
     // Theme detection
     useEffect(() => {
@@ -476,6 +614,14 @@ const StaffManagement = () => {
     const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useEmployeeStats();
     const { data: archivedEmployeesResponse, isLoading: archivedLoading, refetch: refetchArchived } = useArchivedEmployees();
 
+    // Master List needs the FULL employee list (not paginated).
+    // Only fetches when the modal is open — React Query handles caching.
+       const { data: masterListAllEmployeesResponse, isLoading: masterListLoading } = useEmployees(
+        showMasterListModal 
+            ? { all: true } 
+            : { page: 0 }, // Dummy filter when closed
+        { enabled: showMasterListModal }
+    );
     const employees = React.useMemo(() => {
         if (!employeesResponse) return [];
         if (Array.isArray(employeesResponse)) return employeesResponse;
@@ -751,7 +897,14 @@ const StaffManagement = () => {
             first_name: '', last_name: '', middle_name: '', position_id: '', email: '',
             phone: '', address: '', city: '', state: '', postal_code: '', country: 'Philippines',
             department_id: '', employee_type: 'regular', status: 'active',
-            hire_date: '', hourly_rate_override: '', emergency_contact: '', emergency_relation: '',
+                     hire_date: '',
+            salary_base: 'hourly',
+            hourly_rate_override: '',
+            daily_rate: '',
+            monthly_salary: '',
+            payroll_frequency: 'semi_monthly',
+            salary_effective_date: new Date().toISOString().split('T')[0],
+            emergency_contact: '', emergency_relation: '',
             emergency_phone: '', sss: '', philhealth: '', pagibig: '', tin: '', skills: '',
             certifications: '', achievements: '', notes: '', profile_photo: null,
             bank_name: '', bank_account: '', birth_date: '', gender: '',
@@ -823,8 +976,13 @@ const StaffManagement = () => {
             department_id: employee.department?.id || employee.department_id || '',
             employee_type: employee.employee_type || 'regular',
             status: employee.status || 'active',
-            hire_date: employee.hire_date || '',
-            hourly_rate_override: employee.hourly_rate_override || '',
+                       hire_date: employee.hire_date || '',
+            salary_base: employee.salary_base || 'hourly',
+            hourly_rate_override: employee.hourly_rate_override || employee.hourly_rate || '',
+            daily_rate: employee.daily_rate || '',
+            monthly_salary: employee.monthly_salary || '',
+            payroll_frequency: employee.payroll_frequency || 'semi_monthly',
+            salary_effective_date: employee.salary_effective_date || new Date().toISOString().split('T')[0],
             emergency_contact: employee.emergency_contact_name || employee.emergency_contact || '',
             emergency_relation: employee.emergency_contact_relation || employee.emergency_relation || '',
             emergency_phone: employee.emergency_contact_phone || employee.emergency_phone || '',
@@ -904,7 +1062,12 @@ const StaffManagement = () => {
             employee_type: formData.employee_type || 'regular',
             status: formData.status || 'active',
             hire_date: formData.hire_date,
-            hourly_rate_override: formData.hourly_rate_override || '',
+                    hourly_rate_override: formData.hourly_rate_override || '',
+            salary_base: formData.salary_base || 'hourly',
+            monthly_salary: formData.monthly_salary || '',
+            daily_rate: formData.daily_rate || '',
+            payroll_frequency: formData.payroll_frequency || 'semi_monthly',
+            salary_effective_date: formData.salary_effective_date || '',
             bank_name: formData.bank_name || '',
             bank_account_number: formData.bank_account || '',
             allowances: formData.allowances || 0,
@@ -2136,15 +2299,61 @@ const StaffManagement = () => {
     };
 
     // Statistics
+    // Priority: backend stats.total → pagination.total → current page length (last resort)
+    // Never use `employees.length` as the primary number — it's only the CURRENT PAGE.
+    const totalStaffCount =
+        stats?.total ??
+        pagination?.total ??
+        employees.length;
+
+    const totalActiveCount =
+        stats?.active ??
+        pagination?.by_status?.active ??
+        employees.filter(e => e?.status === 'active').length;
+
+    const totalOnLeaveCount =
+        stats?.onleave ??
+        pagination?.by_status?.on_leave ??
+        employees.filter(e => e?.status === 'onleave' || e?.status === 'on_leave').length;
+
+    const totalInactiveCount =
+        stats?.inactive ?? 0;
+
     const statistics = [
-        { label: 'Total Staff', value: stats?.total || employees.length, icon: <TeamOutlined />, change: `${stats?.by_employee_type?.find(t => t.employee_type === 'regular')?.total || 0} regular` },
-        { label: 'Active', value: stats?.active || employees.filter(e => e?.status === 'active').length, icon: <CheckCircleOutlined />, change: 'On Duty' },
-        { label: 'On Leave', value: stats?.onleave || employees.filter(e => e?.status === 'onleave').length, icon: <ClockCircleOutlined />, change: 'This week' },
-        { label: 'Inactive', value: stats?.inactive || 0, icon: <PauseCircleOutlined />, change: 'Archived' },
-        { label: 'Archived', value: archivedEmployees.length, icon: <InboxOutlined />, change: 'Soft deleted' },
+        {
+            label: 'Total Staff',
+            value: totalStaffCount,
+            icon: <TeamOutlined />,
+            change: `${stats?.by_employee_type?.find(t => t.employee_type === 'regular')?.total || 0} regular`,
+        },
+        {
+            label: 'Active',
+            value: totalActiveCount,
+            icon: <CheckCircleOutlined />,
+            change: 'On Duty',
+        },
+        {
+            label: 'On Leave',
+            value: totalOnLeaveCount,
+            icon: <ClockCircleOutlined />,
+            change: 'This week',
+        },
+        {
+            label: 'Inactive',
+            value: totalInactiveCount,
+            icon: <PauseCircleOutlined />,
+            change: 'Archived',
+        },
+        {
+            label: 'Archived',
+            value: archivedEmployees.length,
+            icon: <InboxOutlined />,
+            change: 'Soft deleted',
+        },
     ];
 
     const quickActions = [
+        { icon: <FileSearchOutlined />, label: 'Master List', action: () => setShowMasterListModal(true) },
         { icon: <DollarOutlined />, label: 'Salary Grades', action: handleAddSalaryGrade },
         { icon: <SafetyOutlined />, label: 'Compliance', action: fetchComplianceData },
         { icon: <HeartOutlined />, label: 'Benefits', action: fetchBenefitsData },
@@ -2155,7 +2364,6 @@ const StaffManagement = () => {
         { icon: <PrinterOutlined />, label: 'Print All', action: () => setShowPrintModal(true) },
         { icon: isSelectMode ? <CloseOutlined /> : <CheckSquareOutlined />, label: isSelectMode ? 'Cancel Select' : 'Select Mode', action: toggleSelectMode }
     ];
-
     // Set current date
     useEffect(() => {
         const date = new Date();
@@ -2693,8 +2901,401 @@ const renderComplianceModal = () => (
     </div>
 );
 
+
+
+
+
+    // ==================== MASTER LIST MODAL (EMPLOYEE MASTER LIST) ====================
+    const renderMasterListModal = () => {
+        // ⚠️ `employees` is the PAGINATED list (only current page = 6-7 rows).
+        // To show ALL employees, we fetch the full list via React Query with per_page=9999.
+        // This uses the same ['employees'] cache — no extra cost if already loaded,
+        // and React Query deduplicates concurrent fetches automatically.
+            const allEmployeesSource = masterListAllEmployeesResponse
+            ? (Array.isArray(masterListAllEmployeesResponse)
+                ? masterListAllEmployeesResponse
+                : (masterListAllEmployeesResponse.data?.data || masterListAllEmployeesResponse.data || []))
+            : employees; // fallback to paginated while loading
+
+        const employeeRows = (allEmployeesSource || []).map(e => ({
+            id: e.id || e.employee_id,
+            employee_code: e.employee_code || `EMP-${e.id || e.employee_id}`,
+            name: `${e.first_name || ''} ${e.last_name || ''}`.trim() || 'Unknown',
+            department: e.department?.name || '—',
+            position: e.position?.title || '—',
+            status: e.status || 'active',
+        }));
+
+        // Filter by search across the 5 columns
+        const filteredRows = employeeRows.filter(row => {
+            if (!masterListSearch.trim()) return true;
+            const q = masterListSearch.toLowerCase();
+            return (
+                row.employee_code.toLowerCase().includes(q) ||
+                row.name.toLowerCase().includes(q) ||
+                row.department.toLowerCase().includes(q) ||
+                row.position.toLowerCase().includes(q) ||
+                row.status.toLowerCase().includes(q)
+            );
+        });
+
+        // Optional status filter tab
+        const tabFilteredRows = filteredRows.filter(row => {
+            if (masterListTab === 'all') return true;
+            return row.status === masterListTab;
+        });
+
+        const closeMasterList = () => {
+            setShowMasterListModal(false);
+            setMasterListTab('all');
+            setMasterListSearch('');
+        };
+
+        const handlePrintMasterList = () => {
+            const printWindow = window.open('', '_blank');
+            if (!printWindow) {
+                showNotificationMessage('Please allow pop-ups to print', 'error');
+                return;
+            }
+            const dateStr = new Date().toLocaleString();
+            const rows = tabFilteredRows.map(r => `
+                <tr>
+                    <td>${r.employee_code}</td>
+                    <td><strong>${r.name}</strong></td>
+                    <td>${r.department}</td>
+                    <td>${r.position}</td>
+                    <td>${r.status.charAt(0).toUpperCase() + r.status.slice(1)}</td>
+                </tr>
+            `).join('');
+
+            printWindow.document.write(`
+                <!DOCTYPE html><html><head><title>Employee Master List</title>
+                <style>
+                    * { margin:0; padding:0; box-sizing:border-box; }
+                    body { font-family:'Segoe UI',sans-serif; padding:40px; color:#111827; }
+                    .header { text-align:center; margin-bottom:24px; padding-bottom:16px; border-bottom:2px solid #2563eb; }
+                    .header h1 { font-size:22px; color:#1e3a8a; }
+                    .header p { color:#6b7280; margin-top:4px; font-size:13px; }
+                    .meta { display:flex; justify-content:space-between; margin-bottom:20px; padding:12px; background:#f3f4f6; border-radius:8px; font-size:13px; }
+                    table { width:100%; border-collapse:collapse; }
+                    th { background:#1e3a8a; color:white; padding:10px; text-align:left; font-size:12px; }
+                    td { padding:8px 10px; border-bottom:1px solid #e5e7eb; font-size:12px; }
+                    tr:nth-child(even) td { background:#f9fafb; }
+                    .footer { margin-top:24px; padding-top:16px; text-align:center; border-top:1px solid #e5e7eb; font-size:11px; color:#6b7280; }
+                </style></head><body>
+                <div class="header">
+                    <h1>Catering Staff Management System</h1>
+                    <p>Employee Master List</p>
+                </div>
+                <div class="meta">
+                    <span>Generated: <strong>${dateStr}</strong></span>
+                    <span>Total Employees: <strong>${tabFilteredRows.length}</strong></span>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Employee ID</th>
+                            <th>Name</th>
+                            <th>Department</th>
+                            <th>Position</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+                <div class="footer">© ${new Date().getFullYear()} Catering Staff Management System. All rights reserved.</div>
+                </body></html>
+            `);
+            printWindow.document.close();
+            printWindow.focus();
+            printWindow.print();
+        };
+
+        const handleExportCSV = () => {
+            const headers = ['Employee ID', 'Name', 'Department', 'Position', 'Status'];
+            const csvRows = [headers.join(',')];
+            tabFilteredRows.forEach(r => {
+                const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+                csvRows.push([
+                    r.employee_code,
+                    r.name,
+                    r.department,
+                    r.position,
+                    r.status.charAt(0).toUpperCase() + r.status.slice(1),
+                ].map(esc).join(','));
+            });
+            const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `employee-master-list-${new Date().toISOString().slice(0, 10)}.csv`;
+            link.click();
+            URL.revokeObjectURL(url);
+            showNotificationMessage('Master list exported as CSV', 'success');
+        };
+
+        const getStatusBadgeStyle = (status) => {
+            const found = statusOptions.find(s => s.value === status);
+            return {
+                background: found?.bgColor || '#f3f4f6',
+                color: found?.textColor || '#374151',
+            };
+        };
+
+             return (
+            <div className="catering-modal-overlay" onClick={(e) => e.stopPropagation()}>
+                <FocusTrap active={showMasterListModal}>
+                <div
+                    className="catering-modal"
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                        maxHeight: '90vh',
+                        maxWidth: '95vw',
+                        width: '1200px',
+                        overflow: 'hidden',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        backgroundColor: '#fff',
+                    }}
+                >
+                    {/* Header */}
+                    <div className="catering-modal-header" style={{ flexShrink: 0 }}>
+                        <h2 style={{ color: '#111827', display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <FileSearchOutlined /> Employee Master List
+                        </h2>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                      <span style={{ fontSize: 13, color: '#6b7280' }}>
+                                Showing: <strong style={{ color: '#111827' }}>{tabFilteredRows.length}</strong> of{' '}
+                                <strong style={{ color: '#111827' }}>{employeeRows.length}</strong> employees
+                            </span>
+                            <button
+                                className="catering-modal-close"
+                                onClick={closeMasterList}
+                                aria-label="Close"
+                            >
+                                <CloseOutlined />
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Filter bar */}
+                    <div style={{ flexShrink: 0, padding: '16px 24px 0', borderBottom: '1px solid #e5e7eb' }}>
+                        <div
+                            style={{
+                                display: 'flex',
+                                gap: 12,
+                                flexWrap: 'wrap',
+                                alignItems: 'center',
+                                padding: 16,
+                                background: '#f9fafb',
+                                borderRadius: 8,
+                                border: '1px solid #e5e7eb',
+                                marginBottom: 16,
+                            }}
+                        >
+                            <AntSearch
+                                placeholder="Search by employee ID, name, department, position, status..."
+                                allowClear
+                                value={masterListSearch}
+                                onChange={(e) => setMasterListSearch(e.target.value)}
+                                style={{ flex: 1, minWidth: 220 }}
+                                prefix={<SearchOutlined style={{ color: '#6b7280' }} />}
+                            />
+                            <Button icon={<FileTextOutlined />} onClick={handleExportCSV}>
+                                Export CSV
+                            </Button>
+                            <Button type="primary" icon={<PrinterOutlined />} onClick={handlePrintMasterList}>
+                                Print
+                            </Button>
+                        </div>
+
+                        {/* Status filter tabs */}
+                        <div style={{ display: 'flex', gap: 4, background: '#f3f4f6', padding: 4, borderRadius: 40, marginBottom: 16, width: 'fit-content', flexWrap: 'wrap' }}>
+                            {[
+                                { key: 'all', label: 'All' },
+                                { key: 'active', label: 'Active' },
+                                { key: 'onleave', label: 'On Leave' },
+                                { key: 'inactive', label: 'Inactive' },
+                                { key: 'terminated', label: 'Terminated' },
+                            ].map(tab => (
+                                <button
+                                    key={tab.key}
+                                    onClick={() => setMasterListTab(tab.key)}
+                                    style={{
+                                        padding: '8px 16px',
+                                        borderRadius: 32,
+                                        border: 'none',
+                                        background: masterListTab === tab.key ? '#fff' : 'transparent',
+                                        color: masterListTab === tab.key ? '#2563eb' : '#6b7280',
+                                        fontSize: 13,
+                                        fontWeight: 500,
+                                        cursor: 'pointer',
+                                        boxShadow: masterListTab === tab.key ? '0 1px 2px rgba(0,0,0,0.05)' : 'none',
+                                        transition: 'all 0.2s',
+                                    }}
+                                >
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                                   {/* Table */}
+                    <div
+                        className="catering-modal-body"
+                        style={{ overflowY: 'auto', overflowX: 'auto', flex: '1 1 auto', padding: 0 }}
+                    >
+                        {masterListLoading ? (
+                            <div style={{ textAlign: 'center', padding: 60 }}>
+                                <LoadingOutlined spin style={{ fontSize: 32, color: '#2563eb' }} />
+                                <p style={{ marginTop: 12, color: '#6b7280' }}>Loading full employee list…</p>
+                            </div>
+                        ) : tabFilteredRows.length === 0 ? (
+                            <div style={{ textAlign: 'center', padding: 60 }}>
+                                <FileSearchOutlined style={{ fontSize: 48, color: '#d1d5db' }} />
+                                <p style={{ marginTop: 12, color: '#6b7280' }}>No employees found</p>
+                            </div>
+                        ) : (
+                            <div style={{ padding: '0 24px 24px' }}>
+                                <table
+                                    style={{
+                                        width: '100%',
+                                        minWidth: 900,
+                                        tableLayout: 'fixed',
+                                        borderCollapse: 'separate',
+                                        borderSpacing: 0,
+                                    }}
+                                >
+                                    <colgroup>
+                                        <col style={{ width: '15%' }} />
+                                        <col style={{ width: '28%' }} />
+                                        <col style={{ width: '22%' }} />
+                                        <col style={{ width: '22%' }} />
+                                        <col style={{ width: '13%' }} />
+                                    </colgroup>
+                                    <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
+                                        <tr>
+                                            {['Employee ID', 'Name', 'Department', 'Position', 'Status'].map((h, i) => (
+                                                <th
+                                                    key={i}
+                                                    style={{
+                                                        textAlign: 'left',
+                                                        padding: '12px',
+                                                        background: '#f8fafc',
+                                                        borderBottom: '2px solid #e2e8f0',
+                                                        fontSize: 13,
+                                                        fontWeight: 600,
+                                                        color: '#111827',
+                                                        whiteSpace: 'nowrap',
+                                                    }}
+                                                >
+                                                    {h}
+                                                </th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {tabFilteredRows.map((row, idx) => (
+                                            <tr key={row.id} style={{ background: idx % 2 === 0 ? '#fff' : '#fafbfc' }}>
+                                                <td
+                                                    style={{
+                                                        padding: '10px 12px',
+                                                        fontSize: 12,
+                                                        fontFamily: 'monospace',
+                                                        color: '#374151',
+                                                        borderBottom: '1px solid #f1f5f9',
+                                                        wordBreak: 'break-word',
+                                                    }}
+                                                >
+                                                    {row.employee_code}
+                                                </td>
+                                                <td
+                                                    style={{
+                                                        padding: '10px 12px',
+                                                        fontSize: 13,
+                                                        color: '#111827',
+                                                        borderBottom: '1px solid #f1f5f9',
+                                                        wordBreak: 'break-word',
+                                                    }}
+                                                >
+                                                    <strong>{row.name}</strong>
+                                                </td>
+                                                <td
+                                                    style={{
+                                                        padding: '10px 12px',
+                                                        fontSize: 13,
+                                                        color: '#374151',
+                                                        borderBottom: '1px solid #f1f5f9',
+                                                        wordBreak: 'break-word',
+                                                    }}
+                                                >
+                                                    {row.department}
+                                                </td>
+                                                <td
+                                                    style={{
+                                                        padding: '10px 12px',
+                                                        fontSize: 13,
+                                                        color: '#374151',
+                                                        borderBottom: '1px solid #f1f5f9',
+                                                        wordBreak: 'break-word',
+                                                    }}
+                                                >
+                                                    {row.position}
+                                                </td>
+                                                <td style={{ padding: '10px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                                                    <span
+                                                        style={{
+                                                            display: 'inline-block',
+                                                            padding: '4px 12px',
+                                                            borderRadius: 20,
+                                                            fontSize: 11,
+                                                            fontWeight: 500,
+                                                            whiteSpace: 'nowrap',
+                                                            ...getStatusBadgeStyle(row.status),
+                                                        }}
+                                                    >
+                                                        {row.status.charAt(0).toUpperCase() + row.status.slice(1)}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="catering-modal-footer" style={{ flexShrink: 0 }}>
+                        <button className="catering-btn" onClick={closeMasterList}>Close</button>
+                        <button
+                            className="catering-btn"
+                            onClick={handleExportCSV}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                            <FileTextOutlined /> Export CSV
+                        </button>
+                        <button
+                            className="catering-btn catering-btn-primary"
+                            onClick={handlePrintMasterList}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        >
+                            <PrinterOutlined /> Print Master List
+                        </button>
+                    </div>
+                       </div>
+                </FocusTrap>
+            </div>
+        );
+    };
+
     // ==================== COMPLIANCE EDIT MODAL ====================
     const renderComplianceEditModal = () => (
+
+
+
+
+
         <div 
             className="catering-modal-overlay" 
             onClick={(e) => e.stopPropagation()}
@@ -3794,7 +4395,7 @@ const renderComplianceModal = () => (
     );
 
     // ==================== EMPLOYEE MODAL (View/Add/Edit) ====================
-    const renderEmployeeModal = () => (
+       const renderEmployeeModal = () => (
         <div 
             className="catering-modal-overlay" 
             onClick={(e) => {
@@ -3807,8 +4408,9 @@ const renderComplianceModal = () => (
                 e.stopPropagation();
             }}
         >
-            <div 
-                className={`catering-modal ${modalMode === 'view' ? 'catering-profile-modal' : ''}`} 
+            <FocusTrap active={showModal}>
+                <div 
+                className={`catering-modal catering-modal-enhanced ${modalMode === 'view' ? 'catering-profile-modal' : ''}`} 
                 onClick={(e) => e.stopPropagation()}
                 style={{
                     maxHeight: '90vh',
@@ -3817,27 +4419,25 @@ const renderComplianceModal = () => (
                     flexDirection: 'column'
                 }}
             >
-                <div className="catering-modal-header">
-                    <h2 style={{ color: '#000000' }}>
+                             <div className="catering-modal-header">
+                    <h2>
+                        <span className="header-icon">
+                            {modalMode === 'add' && <PlusOutlined />}
+                            {modalMode === 'edit' && <EditOutlined />}
+                            {modalMode === 'view' && <UserOutlined />}
+                        </span>
                         {modalMode === 'add' && 'Add New Staff Member'}
                         {modalMode === 'edit' && 'Edit Staff Information'}
                         {modalMode === 'view' && 'Staff Profile'}
                     </h2>
-                    {modalMode !== 'view' && (
+                                        {modalMode !== 'view' && (
                         <div className="catering-modal-progress">
-                            <span className={formStep >= 1 ? 'active' : ''} style={{ color: formStep >= 1 ? '#000000' : '#9ca3af' }}>1. Personal</span>
-                            <span className={formStep >= 2 ? 'active' : ''} style={{ color: formStep >= 2 ? '#000000' : '#9ca3af' }}>2. Employment</span>
-                            <span className={formStep >= 3 ? 'active' : ''} style={{ color: formStep >= 3 ? '#000000' : '#9ca3af' }}>3. Government</span>
-                            <span className={formStep >= 4 ? 'active' : ''} style={{ color: formStep >= 4 ? '#000000' : '#9ca3af' }}>4. Skills & Emergency</span>
+                            <span className={formStep >= 1 ? 'active' : ''}>1. Personal</span>
+                            <span className={formStep >= 2 ? 'active' : ''}>2. Employment</span>
+                            <span className={formStep >= 3 ? 'active' : ''}>3. Government</span>
+                            <span className={formStep >= 4 ? 'active' : ''}>4. Skills & Emergency</span>
                         </div>
                     )}
-                    <button 
-                        className="catering-modal-close" 
-                        onClick={closeModal}
-                        aria-label="Close"
-                    >
-                        <CloseOutlined />
-                    </button>
                 </div>
 
                 <div 
@@ -3871,10 +4471,9 @@ const renderComplianceModal = () => (
                             </div>
 
                             <StatusControls employee={selectedEmployee} />
-
                             <div className="catering-profile-sections">
-                                <div className="catering-profile-section">
-                                    <h3 style={{ color: '#000000' }}><UserOutlined /> Personal Information</h3>
+                                                             <div className="catering-profile-section">
+                                    <h3><UserOutlined /> Personal Information</h3>
                                     <div className="catering-profile-grid">
                                         <div><label style={{ color: '#000000' }}>Email</label><span style={{ color: '#000000' }}>{selectedEmployee.email}</span></div>
                                         <div><label style={{ color: '#000000' }}>Phone</label><span style={{ color: '#000000' }}>{selectedEmployee.phone}</span></div>
@@ -3882,19 +4481,34 @@ const renderComplianceModal = () => (
                                         <div><label style={{ color: '#000000' }}>Emergency Contact</label><span style={{ color: '#000000' }}>{selectedEmployee.emergency_contact_name || selectedEmployee.emergency_contact} ({selectedEmployee.emergency_contact_relation || selectedEmployee.emergency_relation})<br/>{selectedEmployee.emergency_contact_phone || selectedEmployee.emergency_phone}</span></div>
                                     </div>
                                 </div>
-
                                 <div className="catering-profile-section">
-                                    <h3 style={{ color: '#000000' }}><BankOutlined /> Employment Details</h3>
+                                    <h3><BankOutlined /> Employment Details</h3>
                                     <div className="catering-profile-grid">
                                         <div><label style={{ color: '#000000' }}>Hire Date</label><span style={{ color: '#000000' }}>{selectedEmployee.hire_date}</span></div>
                                         <div><label style={{ color: '#000000' }}>Employee Type</label><span style={{ color: '#000000' }}>{selectedEmployee.employee_type}</span></div>
-                                        <div><label style={{ color: '#000000' }}>Hourly Rate</label><span style={{ color: '#000000' }}>₱{(selectedEmployee.hourly_rate || selectedEmployee.calculated_hourly_rate || 0).toLocaleString()}/hour</span></div>
-                                        <div><label style={{ color: '#000000' }}>Bank Account</label><span style={{ color: '#000000' }}>{selectedEmployee.bank_name} - {selectedEmployee.bank_account_number || selectedEmployee.bank_account}</span></div>
+                                        <div>
+                                            <label style={{ color: '#000000' }}>Salary Base</label>
+                                            <span style={{ color: '#000000' }}>
+                                                {{ monthly: 'Monthly-Paid', daily: 'Daily-Paid', hourly: 'Hourly-Paid' }[selectedEmployee.salary_base || 'hourly']}
+                                            </span>
+                                        </div>
+                                        <div>
+                                            <label style={{ color: '#000000' }}>
+                                                {selectedEmployee.salary_base === 'monthly' ? 'Monthly Salary' : selectedEmployee.salary_base === 'daily' ? 'Daily Rate' : 'Hourly Rate'}
+                                            </label>
+                                            <span style={{ color: '#000000' }}>
+                                                {selectedEmployee.salary_base === 'monthly'
+                                                    ? `₱${Number(selectedEmployee.monthly_salary || 0).toLocaleString()}/month`
+                                                    : selectedEmployee.salary_base === 'daily'
+                                                        ? `₱${Number(selectedEmployee.daily_rate || 0).toLocaleString()}/day`
+                                                        : `₱${Number(selectedEmployee.hourly_rate || 0).toLocaleString()}/hour`}
+                                            </span>
+                                        </div>                                        <div><label style={{ color: '#000000' }}>Bank Account</label><span style={{ color: '#000000' }}>{selectedEmployee.bank_name} - {selectedEmployee.bank_account_number || selectedEmployee.bank_account}</span></div>
                                     </div>
                                 </div>
 
-                                <div className="catering-profile-section">
-                                    <h3 style={{ color: '#000000' }}><SafetyOutlined /> Government IDs</h3>
+                                                               <div className="catering-profile-section">
+                                    <h3><SafetyOutlined /> Government IDs</h3>
                                     <div className="catering-profile-grid">
                                         <div><label style={{ color: '#000000' }}>SSS</label><span style={{ color: '#000000' }}>{selectedEmployee.sss_number || selectedEmployee.sss || 'N/A'}</span></div>
                                         <div><label style={{ color: '#000000' }}>PhilHealth</label><span style={{ color: '#000000' }}>{selectedEmployee.philhealth_number || selectedEmployee.philhealth || 'N/A'}</span></div>
@@ -3903,8 +4517,8 @@ const renderComplianceModal = () => (
                                     </div>
                                 </div>
 
-                                <div className="catering-profile-section">
-                                    <h3 style={{ color: '#000000' }}><BookOutlined /> Skills & Certifications</h3>
+                                                              <div className="catering-profile-section">
+                                    <h3><BookOutlined /> Skills & Certifications</h3>
                                     <div className="catering-profile-skills">
                                         {Array.isArray(selectedEmployee.skills) && selectedEmployee.skills.map((skill, i) => (
                                             <span key={i} className="catering-skill-tag highlight" style={{ color: '#000000' }}>{skill}</span>
@@ -3942,8 +4556,8 @@ const renderComplianceModal = () => (
                                         </div>
                                     )}
 
-                                    <div className="catering-form-section">
-                                        <h3 style={{ color: '#000000' }}><UserOutlined /> Personal Information</h3>
+                                                                    <div className="catering-form-section">
+                                        <h3><span className="section-icon"><UserOutlined /></span> Personal Information</h3>
                                         <div className="catering-form-row">
                                             <div className="catering-form-group">
                                                 <label style={{ color: '#000000' }}>First Name *</label>
@@ -4026,38 +4640,154 @@ const renderComplianceModal = () => (
                             )}
 
                             {formStep === 2 && (
-                                <div className="catering-form-section">
-                                    <h3 style={{ color: '#000000' }}><BankOutlined /> Employment Details</h3>
+                                                               <div className="catering-form-section">
+                                    <h3><span className="section-icon"><BankOutlined /></span> Employment Details</h3>
 
-                                    {selectedPositionDetails.salary_grade && (
-                                        <div className="catering-auto-fill-section">
-                                            <h4 style={{ color: '#000000' }}><DollarOutlined /> Salary Information (Auto-filled from Position)</h4>
-                                            <div className="catering-form-row">
-                                                <div className="catering-form-group">
-                                                    <label style={{ color: '#000000' }}>Salary Grade</label>
-                                                    <input type="text" className="catering-form-input catering-auto-field" value={selectedPositionDetails.salary_grade} disabled readOnly style={{ color: '#000000' }} />
-                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>Derived from selected position</small>
-                                                </div>
-                                                <div className="catering-form-group">
-                                                    <label style={{ color: '#000000' }}>Hourly Rate (₱)</label>
-                                                    <input type="text" className="catering-form-input catering-auto-field" value={`₱${selectedPositionDetails.hourly_rate.toLocaleString()}/hour`} disabled readOnly style={{ color: '#000000' }} />
-                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>Based on salary grade</small>
-                                                </div>
+
+
+
+
+                                    <div className="catering-auto-fill-section">
+                                        <h4 style={{ color: '#000000' }}><DollarOutlined /> Salary Configuration</h4>
+
+                                        <div className="catering-form-row">
+                                            <div className="catering-form-group">
+                                                <label style={{ color: '#000000' }}>Salary Base *</label>
+                                                <select
+                                                    name="salary_base"
+                                                    className="catering-form-select"
+                                                    value={formData.salary_base}
+                                                    onChange={handleInputChange}
+                                                    style={{ color: '#000000' }}
+                                                >
+                                                    <option value="hourly">Hourly-Paid</option>
+                                                    <option value="daily">Daily-Paid</option>
+                                                    <option value="monthly">Monthly-Paid</option>
+                                                </select>
                                             </div>
-                                            <div className="catering-form-row">
-                                                <div className="catering-form-group">
-                                                    <label style={{ color: '#000000' }}>Monthly Equivalent (₱)</label>
-                                                    <input type="text" className="catering-form-input catering-auto-field" value={`₱${(selectedPositionDetails.hourly_rate * 160).toLocaleString()}/month`} disabled readOnly style={{ color: '#000000' }} />
-                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>Based on 160 hours/month (for reference only)</small>
-                                                </div>
-                                                <div className="catering-form-group">
-                                                    <label style={{ color: '#000000' }}>Hourly Rate Override (Optional)</label>
-                                                    <input type="number" name="hourly_rate_override" className="catering-form-input" value={formData.hourly_rate_override} onChange={handleInputChange} placeholder="Leave empty to use grade rate" min="0" step="10" style={{ color: '#000000' }} />
-                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>Only use if this employee has a different rate</small>
-                                                </div>
+                                            <div className="catering-form-group">
+                                                <label style={{ color: '#000000' }}>Payroll Frequency</label>
+                                                <select
+                                                    name="payroll_frequency"
+                                                    className="catering-form-select"
+                                                    value={formData.payroll_frequency}
+                                                    onChange={handleInputChange}
+                                                    style={{ color: '#000000' }}
+                                                >
+                                                    <option value="semi_monthly">Semi-Monthly (1-15 / 16-End)</option>
+                                                    <option value="monthly">Monthly</option>
+                                                </select>
                                             </div>
                                         </div>
-                                    )}
+
+                                        {formData.salary_base === 'monthly' && (
+                                            <div className="catering-form-row">
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Monthly Salary (₱) *</label>
+                                                    <input
+                                                        type="number"
+                                                        name="monthly_salary"
+                                                        className="catering-form-input"
+                                                        value={formData.monthly_salary}
+                                                        onChange={handleInputChange}
+                                                        min="0"
+                                                        step="0.01"
+                                                        placeholder="e.g., 15000"
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>
+                                                        ≈ ₱{(Number(formData.monthly_salary || 0) / 176).toFixed(2)}/hour
+                                                        · ₱{(Number(formData.monthly_salary || 0) / 22).toFixed(2)}/day
+                                                    </small>
+                                                </div>
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Effective Date</label>
+                                                    <input
+                                                        type="date"
+                                                        name="salary_effective_date"
+                                                        className="catering-form-input"
+                                                        value={formData.salary_effective_date}
+                                                        onChange={handleInputChange}
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {formData.salary_base === 'daily' && (
+                                            <div className="catering-form-row">
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Daily Rate (₱) *</label>
+                                                    <input
+                                                        type="number"
+                                                        name="daily_rate"
+                                                        className="catering-form-input"
+                                                        value={formData.daily_rate}
+                                                        onChange={handleInputChange}
+                                                        min="0"
+                                                        step="0.01"
+                                                        placeholder="e.g., 600"
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>
+                                                        ≈ ₱{(Number(formData.daily_rate || 0) / 8).toFixed(2)}/hour
+                                                        · ₱{(Number(formData.daily_rate || 0) * 22).toFixed(2)}/month
+                                                    </small>
+                                                </div>
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Effective Date</label>
+                                                    <input
+                                                        type="date"
+                                                        name="salary_effective_date"
+                                                        className="catering-form-input"
+                                                        value={formData.salary_effective_date}
+                                                        onChange={handleInputChange}
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {formData.salary_base === 'hourly' && (
+                                            <div className="catering-form-row">
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Hourly Rate (₱) *</label>
+                                                    <input
+                                                        type="number"
+                                                        name="hourly_rate_override"
+                                                        className="catering-form-input"
+                                                        value={formData.hourly_rate_override}
+                                                        onChange={handleInputChange}
+                                                        min="0"
+                                                        step="0.01"
+                                                        placeholder="e.g., 75"
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                    <small className="catering-form-hint" style={{ color: '#000000' }}>
+                                                        ≈ ₱{(Number(formData.hourly_rate_override || 0) * 8).toFixed(2)}/day
+                                                        · ₱{(Number(formData.hourly_rate_override || 0) * 176).toFixed(2)}/month
+                                                    </small>
+                                                </div>
+                                                <div className="catering-form-group">
+                                                    <label style={{ color: '#000000' }}>Effective Date</label>
+                                                    <input
+                                                        type="date"
+                                                        name="salary_effective_date"
+                                                        className="catering-form-input"
+                                                        value={formData.salary_effective_date}
+                                                        onChange={handleInputChange}
+                                                        style={{ color: '#000000' }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                        {selectedPositionDetails.salary_grade && (
+                                            <small className="catering-form-hint" style={{ color: '#000000', display: 'block', marginTop: 8 }}>
+                                                Position salary grade: <strong>{selectedPositionDetails.salary_grade}</strong>
+                                                {' '}(₱{selectedPositionDetails.hourly_rate.toLocaleString()}/hr default)
+                                            </small>
+                                        )}
+                                    </div>
 
                                     <div className="catering-form-row">
                                         <div className="catering-form-group">
@@ -4105,8 +4835,8 @@ const renderComplianceModal = () => (
                             )}
 
                             {formStep === 3 && (
-                                <div className="catering-form-section">
-                                    <h3 style={{ color: '#000000' }}><SafetyOutlined /> Government IDs</h3>
+                                                                <div className="catering-form-section">
+                                    <h3><span className="section-icon"><SafetyOutlined /></span> Government IDs</h3>
                                     <div className="catering-form-row">
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>SSS Number</label><input type="text" name="sss" className="catering-form-input" value={formData.sss} onChange={handleInputChange} placeholder="XX-XXXXXXX-X" style={{ color: '#000000' }} /></div>
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>PhilHealth</label><input type="text" name="philhealth" className="catering-form-input" value={formData.philhealth} onChange={handleInputChange} placeholder="XX-XXXXXXXXX-X" style={{ color: '#000000' }} /></div>
@@ -4121,23 +4851,22 @@ const renderComplianceModal = () => (
                             {formStep === 4 && (
                                 <>
                                     <div className="catering-form-section">
-                                        <h3 style={{ color: '#000000' }}><HeartOutlined /> Emergency Contact</h3>
+                                        <h3><span className="section-icon"><HeartOutlined /></span> Emergency Contact</h3>
                                         <div className="catering-form-row">
                                             <div className="catering-form-group"><label style={{ color: '#000000' }}>Contact Name</label><input type="text" name="emergency_contact" className="catering-form-input" value={formData.emergency_contact} onChange={handleInputChange} style={{ color: '#000000' }} /></div>
                                             <div className="catering-form-group"><label style={{ color: '#000000' }}>Relationship</label><input type="text" name="emergency_relation" className="catering-form-input" value={formData.emergency_relation} onChange={handleInputChange} style={{ color: '#000000' }} /></div>
                                         </div>
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>Emergency Phone</label><input type="tel" name="emergency_phone" className="catering-form-input" value={formData.emergency_phone} onChange={handleInputChange} style={{ color: '#000000' }} /></div>
                                     </div>
-
                                     <div className="catering-form-section">
-                                        <h3 style={{ color: '#000000' }}><BookOutlined /> Skills & Certifications</h3>
+                                        <h3><span className="section-icon"><BookOutlined /></span> Skills & Certifications</h3>
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>Skills (comma separated)</label><input type="text" name="skills" className="catering-form-input" value={formData.skills} onChange={handleInputChange} placeholder="e.g., Food Safety, Menu Planning, Leadership" style={{ color: '#000000' }} /></div>
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>Certifications</label><input type="text" name="certifications" className="catering-form-input" value={formData.certifications} onChange={handleInputChange} placeholder="e.g., ServSafe, Culinary Arts" style={{ color: '#000000' }} /></div>
                                         <div className="catering-form-group"><label style={{ color: '#000000' }}>Achievements</label><input type="text" name="achievements" className="catering-form-input" value={formData.achievements} onChange={handleInputChange} placeholder="e.g., Employee of the Month" style={{ color: '#000000' }} /></div>
                                     </div>
 
-                                    <div className="catering-form-section">
-                                        <h3 style={{ color: '#000000' }}><FileTextOutlined /> Additional Notes</h3>
+                                                                       <div className="catering-form-section">
+                                        <h3><span className="section-icon"><FileTextOutlined /></span> Additional Notes</h3>
                                         <div className="catering-form-group"><textarea name="notes" className="catering-form-textarea" value={formData.notes} onChange={handleInputChange} placeholder="Enter any additional notes" rows="4" style={{ color: '#000000' }} /></div>
                                     </div>
                                 </>
@@ -4146,20 +4875,41 @@ const renderComplianceModal = () => (
                     )}
                 </div>
 
-                <div className="catering-modal-footer">
-                    {modalMode !== 'view' && formStep > 1 && (<button className="catering-btn" onClick={handlePrevStep} disabled={isSubmitting} style={{ color: '#000000' }}>Previous</button>)}
-                    <button className="catering-btn" onClick={closeModal} disabled={isSubmitting} style={{ color: '#000000' }}>Cancel</button>
-                    {modalMode !== 'view' && formStep < 4 && (<button className="catering-btn catering-btn-primary" onClick={handleNextStep} disabled={isSubmitting}>Next</button>)}
-                    {modalMode !== 'view' && formStep === 4 && (<button className="catering-btn catering-btn-primary" onClick={handleSaveEmployee} disabled={isSubmitting}>{isSubmitting ? <LoadingOutlined spin /> : (modalMode === 'add' ? 'Add Staff Member' : 'Save Changes')}</button>)}
+                         <div className="catering-modal-footer">
+                    {modalMode !== 'view' && formStep > 1 && (
+                        <button className="catering-btn" onClick={handlePrevStep} disabled={isSubmitting}>
+                            Previous
+                        </button>
+                    )}
+                    <button className="catering-btn" onClick={closeModal} disabled={isSubmitting}>
+                        Cancel
+                    </button>
+                    {modalMode !== 'view' && formStep < 4 && (
+                        <button className="catering-btn catering-btn-primary" onClick={handleNextStep} disabled={isSubmitting}>
+                            Next
+                        </button>
+                    )}
+                    {modalMode !== 'view' && formStep === 4 && (
+                        <button className="catering-btn catering-btn-primary" onClick={handleSaveEmployee} disabled={isSubmitting}>
+                            {isSubmitting ? <LoadingOutlined spin /> : (modalMode === 'add' ? 'Add Staff Member' : 'Save Changes')}
+                        </button>
+                    )}
                     {modalMode === 'view' && (
                         <>
-                            <button className="catering-btn" onClick={() => handlePrintProfile(selectedEmployee)} style={{ color: '#000000' }}><PrinterOutlined /> Print Profile</button>
-                            <button className="catering-btn" onClick={() => handleBookmark(selectedEmployee.id || selectedEmployee.employee_id)} style={{ color: '#000000' }}><StarOutlined /> {selectedEmployee?.is_bookmarked ? 'Remove Bookmark' : 'Add Bookmark'}</button>
-                            <button className="catering-btn catering-btn-primary" onClick={() => handleEditEmployee(selectedEmployee)}><EditOutlined /> Edit Profile</button>
+                            <button className="catering-btn" onClick={() => handlePrintProfile(selectedEmployee)}>
+                                <PrinterOutlined /> Print Profile
+                            </button>
+                            <button className="catering-btn" onClick={() => handleBookmark(selectedEmployee.id || selectedEmployee.employee_id)}>
+                                <StarOutlined /> {selectedEmployee?.is_bookmarked ? 'Remove Bookmark' : 'Add Bookmark'}
+                            </button>
+                            <button className="catering-btn catering-btn-primary" onClick={() => handleEditEmployee(selectedEmployee)}>
+                                <EditOutlined /> Edit Profile
+                            </button>
                         </>
                     )}
                 </div>
             </div>
+            </FocusTrap>
         </div>
     );
 
@@ -4267,8 +5017,7 @@ const renderComplianceModal = () => (
                     </select>
 
                     <div className="catering-badge-group">
-                        <span className="catering-badge"><strong>{pagination?.total || filteredEmployees.length}</strong> Total Staff</span>
-                    </div>
+<span className="catering-badge"><strong>{pagination?.total ?? totalStaffCount}</strong> Total Staff</span>                    </div>
                 </div>
 
                 {/* Bulk Actions Bar */}
@@ -4289,8 +5038,7 @@ const renderComplianceModal = () => (
                     <div className="catering-table-header">
                         <div className="catering-table-title">
                             <h2>Staff Directory</h2>
-                            <span className="catering-table-count">Showing {paginatedEmployees.length} of {pagination?.total || filteredEmployees.length} records</span>
-                        </div>
+<span className="catering-table-count">Showing {paginatedEmployees.length} of {pagination?.total ?? totalStaffCount} records</span>                        </div>
                         <div className="catering-table-actions">
                             <Tooltip title="Add Staff Member">
                                 <button className="catering-btn catering-btn-primary" onClick={handleAddEmployee}>
@@ -4417,8 +5165,20 @@ const renderComplianceModal = () => (
                                                     </td>
                                                 )}
                                                 {visibleColumns.salary_grade && <td><span className="catering-salary-grade-text">{getEmployeeSalaryGrade(emp)}</span></td>}
-                                                {visibleColumns.hourly_rate && <td>₱{(emp.hourly_rate || emp.calculated_hourly_rate || 0).toLocaleString()}/hr</td>}
-                                                {visibleColumns.contact && (
+                                                {visibleColumns.hourly_rate && (
+                                                    <td>
+                                                        {(() => {
+                                                            const base = emp.salary_base || 'hourly';
+                                                            if (base === 'monthly') {
+                                                                return <>₱{Number(emp.monthly_salary || 0).toLocaleString()}<small style={{ color: '#6b7280' }}>/mo</small></>;
+                                                            }
+                                                            if (base === 'daily') {
+                                                                return <>₱{Number(emp.daily_rate || 0).toLocaleString()}<small style={{ color: '#6b7280' }}>/day</small></>;
+                                                            }
+                                                            return <>₱{Number(emp.hourly_rate || emp.calculated_hourly_rate || 0).toLocaleString()}<small style={{ color: '#6b7280' }}>/hr</small></>;
+                                                        })()}
+                                                    </td>
+                                                )}                                                {visibleColumns.contact && (
                                                     <td><div className="catering-contact-info"><span><MailFilled /> {emp.email}</span><span><PhoneFilled /> {emp.phone}</span></div></td>
                                                 )}
                                                 {visibleColumns.actions && (
@@ -4461,8 +5221,7 @@ const renderComplianceModal = () => (
                     {totalPages > 1 && (
                         <div className="catering-pagination">
                             <span className="catering-pagination-info">
-                                Showing {((pagination?.current_page || currentPage) - 1) * pageSize + 1} to {Math.min((pagination?.current_page || currentPage) * pageSize, pagination?.total || filteredEmployees.length)} of {pagination?.total || filteredEmployees.length} staff members
-                            </span>
+Showing {((pagination?.current_page || currentPage) - 1) * pageSize + 1} to {Math.min((pagination?.current_page || currentPage) * pageSize, pagination?.total ?? totalStaffCount)} of {pagination?.total ?? totalStaffCount} staff members                            </span>
                             <div className="catering-pagination-controls">
                                 <button 
                                     className="catering-pagination-btn" 
@@ -4521,18 +5280,24 @@ const renderComplianceModal = () => (
                     )}
                 </div>
             </main>
+               {/* Render All Modals — portaled to document.body so they escape any
+                ancestor stacking context (Framer Motion transform, isolation, etc.) */}
+            <ModalPortal>
+                {showModal && renderEmployeeModal()}
+                {showSalaryGradeModal && renderSalaryGradeModal()}
+                {showPositionModal && renderPositionModal()}
+                {showDepartmentModal && renderDepartmentModal()}
+                {showComplianceModal && renderComplianceModal()}
+                {showBenefitsModal && renderBenefitsModal()}
+                {showReportsModal && renderReportsModal()}
+                {showStatusFilterModal && <StatusFilterModal />}
+                {showComplianceEditModal && renderComplianceEditModal()}
+                               {showMasterListModal && renderMasterListModal()}
+            </ModalPortal>
 
-            {/* Render All Modals */}
-            {showModal && renderEmployeeModal()}
-            {showSalaryGradeModal && renderSalaryGradeModal()}
-            {showPositionModal && renderPositionModal()}
-            {showDepartmentModal && renderDepartmentModal()}
-            {showComplianceModal && renderComplianceModal()}
-            {showBenefitsModal && renderBenefitsModal()}
-            {showReportsModal && renderReportsModal()}
-            {showStatusFilterModal && <StatusFilterModal />}
-            {showComplianceEditModal && renderComplianceEditModal()}
-
+            {/* Delete Confirm + Print — must also be portaled, otherwise they
+                are trapped inside the sidebar stacking context. */}
+            <ModalPortal>
             {/* Delete Confirmation Modal */}
             {showDeleteConfirm && (
                 <div 
@@ -4631,7 +5396,7 @@ const renderComplianceModal = () => (
                             }}
                         >
                             <p style={{ color: '#000000' }}>Print all staff members with professional layout?</p>
-                            <div className="catering-import-actions">
+                                                    <div className="catering-import-actions">
                                 <button className="catering-btn" onClick={() => setShowPrintModal(false)} style={{ color: '#000000' }}>Cancel</button>
                                 <button className="catering-btn catering-btn-primary" onClick={handlePrintAll}><PrinterOutlined /> Print All ({filteredEmployees.length})</button>
                             </div>
@@ -4639,12 +5404,22 @@ const renderComplianceModal = () => (
                     </div>
                 </div>
             )}
+            </ModalPortal>
 
-            {/* Notification */}
-            {showNotification && <Notification />}
+            {/* Notification — portaled so it's never clipped */}
+            <ModalPortal>
+                {showNotification && <Notification />}
 
-            {/* Success Animation */}
-            {showSuccessAnimation && (<div className="catering-success-animation"><CheckCircleOutlined /><span>Staff Added Successfully!</span></div>)}
+
+
+
+                
+                {showSuccessAnimation && (
+                    <div className="catering-success-animation">
+                        <CheckCircleOutlined /><span>Staff Added Successfully!</span>
+                    </div>
+                )}
+            </ModalPortal>
         </div>
     );
 };

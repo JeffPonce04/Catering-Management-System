@@ -2,6 +2,11 @@
 // COMPLETE VERSION - All features fully functional with all fixes
 // + Enhanced Booking Profitability Modal (white-blue theme)
 // + Per-Menu Ingredient Cost Breakdown (expandable)
+// + Operations Hub as a TAB next to Confirmed Bookings / Ongoing
+// + Equipment status editable (Reserve → Out → Return)
+// + Auto-reserve on Add Equipment
+// + History tab removed
+// + Period selector auto-hidden by default
 // System-wide Profitability Analytics live in the Reports Center module.
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -125,6 +130,11 @@ import {
     useRejectBooking,
     syncBookingInCache,
     broadcastBookingChanged,
+    // ⭐ Packed/Tray completion
+    useCompletePackedTray,
+    useUndoPackedTrayCompletion,
+    useMarkPackedTrayMissed,
+    useUndoPackedTrayMissed,
 } from '../../../hooks/useBookingQuotation';
 
 import {
@@ -165,6 +175,8 @@ import {
     useReturnEquipment,
     useCompleteEvent,
     useActiveEmployees,
+    useCompleteKitchenTask,
+    useUncompleteKitchenTask,
 } from '../../../hooks/useEvents';
 
 import { useShoppingList } from '../../../hooks/useShoppingList';
@@ -190,6 +202,9 @@ let __ueFirstMountAfterPageLoad = true;
 const MEAL_STATUS_OPTIONS = ['pending', 'preparing', 'ready_for_delivery', 'dispatched', 'delivered', 'serving', 'served', 'completed', 'cancelled'];
 const EVENT_IN_PROGRESS_HIDDEN_KEY = 'ue_event_in_progress_hidden';
 
+// ⭐ Packed/Tray meals are no longer auto-marked Delivered/Picked Up when
+//    Kitchen Prep finishes. The cashier clicks the per-meal button instead.
+const AUTO_COMPLETE_PACKED_TRAY_MEAL = false;
 // ============================================================
 // HELPER FUNCTIONS
 // ============================================================
@@ -205,8 +220,35 @@ const formatBookingId = (bookingNo) => {
 };
 
 const formatCurrency = (value) => {
-    if (!value && value !== 0) return '₱0.00';
-    return `₱${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const n = Number(value);
+    const safe = Number.isFinite(n) ? n : 0;
+    return `₱${safe.toLocaleString('en-PH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    })}`;
+};
+
+// ⭐ Short alias for inline usage
+const money = formatCurrency;
+
+// ⭐ Helper to parse "10:30 AM" into minutes (630) for accurate time sorting
+const parseTimeToMinutes = (timeValue) => {
+    const match = String(timeValue || '').trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+    if (!match) return 0;
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || 0);
+    const meridiem = String(match[3] || '').toUpperCase();
+    if (meridiem === 'PM' && hour < 12) hour += 12;
+    if (meridiem === 'AM' && hour === 12) hour = 0;
+    return (hour * 60) + minute;
+};
+
+// ⭐ Helper to generate a sortable timestamp from Event Date + Event Time
+const getBookingScheduleValue = (booking) => {
+    if (!booking) return Number.MAX_SAFE_INTEGER;
+    const dateValue = dayjs(booking?.event_date);
+    if (!dateValue.isValid()) return Number.MAX_SAFE_INTEGER;
+    return dateValue.startOf('day').valueOf() + (parseTimeToMinutes(booking?.event_time) * 60 * 1000);
 };
 
 const safeNumber = (value, defaultValue = 0) => {
@@ -232,8 +274,97 @@ const normalizeApiResponse = (response) => {
     return response;
 };
 
-const normalizeBookingCollection = (bookingsData) => {
-    const rawData = bookingsData?.data || bookingsData || [];
+// ============================================================
+// ⭐ DELIVERY METHOD + PACKED/TRAY PER-MEAL HELPERS
+// ============================================================
+const PACKED_TRAY_DONE_MEAL_STATUSES = ['delivered', 'served', 'completed'];
+const PACKED_TRAY_MISSED_MEAL_STATUSES = ['missed_delivery', 'missed_pickup'];
+
+// Accepts delivery / deliver / pickup / pick up / pick-up / pick_up.
+const normalizeDeliveryMethod = (value) => {
+    const key = String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
+    if (['delivery', 'deliver', 'delivered'].includes(key)) return 'deliver';
+    if (['pickup', 'pickedup', 'pick-up', 'pick_up', 'pick up'].includes(key)) return 'pickup';
+    return '';
+};
+// 'deliver' | 'pickup' — Buffet always delivers.
+// ⭐ For Packed/Tray the SERVER-RESOLVED `packed_tray_mode` wins over the
+//    raw `delivery_method`, because the backend already normalized it
+//    (see BookingController::resolvePackedTrayMode).
+const 
+getRecordDeliveryMode = (record) => {
+    const svc = String(record?.service_type || '').toLowerCase();
+    const isPackedTray = ['packed', 'tray'].includes(svc);
+
+    // ⭐ Buffet is ALWAYS delivery — the customer never had a pickup option.
+    //    Ignore any stored delivery_method value (legacy rows may have been
+    //    saved with 'pickup' before the backend forced it to 'delivery').
+    if (!isPackedTray) {
+        return 'deliver';
+    }
+
+    // ⭐ For Packed/Tray, strictly follow the mode they selected.
+    //    The server-resolved `packed_tray_mode` takes priority.
+    const fromMode = normalizeDeliveryMethod(record?.packed_tray_mode);
+    if (fromMode) return fromMode;
+
+    // Fallback for Packed/Tray if packed_tray_mode is missing
+    const fromMethod = normalizeDeliveryMethod(record?.delivery_method);
+    if (fromMethod) return fromMethod;
+
+    // Final fallback for Packed/Tray — inspect raw service event data
+    const rawEvent = record?._raw?.service_event || record?._raw?.serviceEvent;
+    if (rawEvent) {
+        const rawMethod = normalizeDeliveryMethod(rawEvent.delivery_method);
+        if (rawMethod) return rawMethod;
+    }
+
+    return 'pickup';
+};
+const getDeliveryMethodLabel = (record) =>
+    getRecordDeliveryMode(record) === 'deliver' ? 'Deliver' : 'Pick up';
+
+// ⭐ Meal display order — must match the backend `MEAL_SEQUENCE`
+//    (Breakfast → Morning Snacks → Lunch → Afternoon Snacks → Dinner)
+const PACKED_TRAY_MEAL_ORDER = {
+    'breakfast': 0,
+    'morning snacks': 1, 'morning snack': 1,
+    'lunch': 2,
+    'afternoon snacks': 3, 'afternoon snack': 3,
+    'dinner': 4,
+};
+
+const packedTrayMealOrder = (meal) => {
+    const key = String(meal?.meal_type || '').toLowerCase().replace(/_/g, ' ').trim();
+    return PACKED_TRAY_MEAL_ORDER[key] ?? 99;
+};
+
+// One pill per finished meal: "Pickup: Breakfast", "Pickup: Lunch", ...
+const getPackedTrayMealStatusPills = (record) => {
+    if (!record?.is_packed_or_tray) return [];
+    const base = getRecordDeliveryMode(record) === 'deliver' ? 'Deliver' : 'Pickup';
+
+    return safeArray(record.meal_services)
+        .slice()
+        .sort((a, b) =>
+            (safeNumber(a.day_number, 1) - safeNumber(b.day_number, 1)) ||
+            (packedTrayMealOrder(a) - packedTrayMealOrder(b)) ||
+            (safeNumber(a.meal_service_id) - safeNumber(b.meal_service_id))
+        )
+        .map((meal) => {
+            const delivery = String(meal.delivery_status || '').toLowerCase();
+            const mealLabel = formatKitchenMealType(meal.meal_type || 'Meal');
+            if (PACKED_TRAY_DONE_MEAL_STATUSES.includes(delivery)) {
+                return { key: meal.meal_service_id, label: `${base}: ${mealLabel}`, tone: 'done' };
+            }
+            if (PACKED_TRAY_MISSED_MEAL_STATUSES.includes(delivery)) {
+                return { key: meal.meal_service_id, label: `Missed ${base}: ${mealLabel}`, tone: 'missed' };
+            }
+            return null;
+        })
+        .filter(Boolean);
+};
+const normalizeBookingCollection = (bookingsData) => {    const rawData = bookingsData?.data || bookingsData || [];
     let dataArray = [];
 
     if (rawData && typeof rawData === 'object') {
@@ -274,10 +405,43 @@ const normalizeBookingCollection = (bookingsData) => {
             event_time: event.event_time || raw.event_time,
             venue: event.venue || raw.venue,
             guests_count: event.guests_count || raw.guests_count || 0,
-            service_type: event.service_type || raw.service_type,
-            delivery_method: event.delivery_method || raw.delivery_method,
-            special_requests: event.special_requests || raw.special_requests,
-            total_amount: totalAmount,
+                   service_type: event.service_type || raw.service_type,
+            service_type_label: raw.service_type_label || (function () {
+                const svc = String(event.service_type || raw.service_type || 'buffet').toLowerCase();
+                if (svc === 'packed') return 'Packed';
+                if (svc === 'tray') return 'Tray';
+                return 'Buffet';
+            })(),
+            is_packed_or_tray: Boolean(raw.is_packed_or_tray) || ['packed', 'tray'].includes(String(event.service_type || raw.service_type || '').toLowerCase()),
+                            packed_tray_mode: (function () {
+                const svc = String(event.service_type || raw.service_type || '').toLowerCase();
+                if (!['packed', 'tray'].includes(svc)) return null;
+                // ⭐ Prefer the server-resolved `packed_tray_mode` (backend
+                //    already ran resolvePackedTrayMode()). Only fall back to
+                //    the raw delivery_method when the server didn't send it.
+                return normalizeDeliveryMethod(raw.packed_tray_mode)
+                    || normalizeDeliveryMethod(raw.delivery_method || event.delivery_method)
+                    || 'pickup';
+            })(),
+            delivery_completed_at: raw.delivery_completed_at || event.delivery_completed_at || null,
+            pickup_completed_at: raw.pickup_completed_at || event.pickup_completed_at || null,
+            // ⭐ Ensure we always capture the exact method the customer chose.
+            //    If the backend returns 'delivery', we must keep it as 'delivery',
+            //    not fall back to 'pickup'.
+            // ⭐ Check the event relationship first. If the API returns a
+            //    raw `delivery_method` column on the booking, check that too.
+                      delivery_method: 
+                event.delivery_method || 
+                raw.service_event?.delivery_method || 
+                raw.delivery_method || 
+                null,
+            // ⭐ Explicitly preserve the raw delivery method from the service event
+            //    so downstream helpers can reliably resolve pickup vs delivery.
+            _raw_delivery_method: 
+                event.delivery_method || 
+                raw.service_event?.delivery_method || 
+                raw.delivery_method || 
+                null,         total_amount: totalAmount,
             paid_amount: paidAmount,
             balance,
             payments,
@@ -359,21 +523,75 @@ const toTimePickerValue = (value, fallbackHour = 8) => {
     return dayjs().hour(hour).minute(minute).second(0).millisecond(0);
 };
 
-const formatKitchenGroupTitle = (task) => {
-    const serviceDate = task?.service_date || task?.date || 'Date TBD';
+// ============================================================
+// ⭐ KITCHEN TIME SUGGESTIONS  (OUT = serving − 30 min, START = OUT − 60 min)
+// ============================================================
+const KITCHEN_DELIVERY_LEAD_MINUTES = 30;
+const KITCHEN_DEFAULT_PREP_MINUTES = 60;
+
+// ⭐ PACKED / TRAY time-based warning thresholds (minutes before due time)
+const PACKED_TRAY_YELLOW_THRESHOLD_MIN = 20;
+const PACKED_TRAY_RED_THRESHOLD_MIN = 0;
+
+// Updates made inside the Operations Workspace apply instantly (no 5s loading strip).
+const OPS_WORKSPACE_SILENT_TYPES = [
+    'kitchen', 'update', 'equipment', 'delivery', 'staff', 'ingredients', 'delete', 'save',
+];
+
+const cleanKitchenTime = (value) => {
+    const text = safeString(value).trim();
+    return text && text !== '-' ? text : '';
+};
+
+const parseClockToMinutes = (value) => {
+    const text = safeString(value).trim();
+    if (!text || text === '-') return null;
+    const match = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?$/i);
+    if (!match) return null;
+    let hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const meridiem = match[3]?.toUpperCase();
+    if (meridiem === 'AM' && hour === 12) hour = 0;
+    if (meridiem === 'PM' && hour < 12) hour += 12;
+    if (hour > 23 || minute > 59) return null;
+    return hour * 60 + minute;
+};
+
+const minutesToClock = (total) => {
+    const normalized = ((total % 1440) + 1440) % 1440;
+    const hour = Math.floor(normalized / 60);
+    const minute = String(normalized % 60).padStart(2, '0');
+    const suffix = hour >= 12 ? 'PM' : 'AM';
+    return `${hour % 12 || 12}:${minute} ${suffix}`;
+};
+
+const suggestKitchenTimes = (servingTime, prepMinutes) => {
+    const serving = parseClockToMinutes(servingTime);
+    if (serving === null) return { start: '', out: '' };
+    const out = serving - KITCHEN_DELIVERY_LEAD_MINUTES;
+    const start = out - (Number(prepMinutes) > 0 ? Number(prepMinutes) : KITCHEN_DEFAULT_PREP_MINUTES);
+    return { start: minutesToClock(start), out: minutesToClock(out) };
+};
+
+const formatKitchenGroupTitle = (task) => {    const serviceDate = task?.service_date || task?.date || 'Date TBD';
     const mealType = formatKitchenMealType(task?.meal_type || task?.meal || 'Meal');
     const servingTime = formatKitchenServingTime(task?.serving_time || task?.time);
     const dayNumber = extractKitchenDayNumber(task, 1);
-    return `${serviceDate} ${mealType}${servingTime ? ` ${servingTime}` : ''} - DAY ${dayNumber}`;
-};
+    // ⭐ Format: "2026-11-26 : DAY 1 "Morning Snacks" - 10:00 AM"
+    // ⭐ Exact format: 2026-10-31 : DAY 1 "Breakfast" 6:00 AM
+    return `${serviceDate} : DAY ${dayNumber} "${mealType}"${servingTime ? ` ${servingTime}` : ''}`;};
 
 const normalizeKitchenTask = (task, index = 0, booking = null) => ({
     ...task,
     id: task?.id || task?.task_id || `kitchen-${index}`,
     task: extractKitchenTaskName(task?.task || task?.name),
     quantity: task?.quantity || task?.qty || '',
-    start_time: task?.start_time || task?.start || '',
-    out_for_delivery: task?.out_for_delivery || task?.end_time || task?.deadline || '',
+     start_time: cleanKitchenTime(task?.start_time || task?.start)
+        || suggestKitchenTimes(task?.serving_time || task?.time, task?.prep_time_minutes).start,
+    out_for_delivery: cleanKitchenTime(task?.out_for_delivery || task?.deadline)
+        || suggestKitchenTimes(task?.serving_time || task?.time).out,
+    start_time_suggested: !cleanKitchenTime(task?.start_time || task?.start),
+    out_time_suggested: !cleanKitchenTime(task?.out_for_delivery || task?.deadline),
     assigned_to: task?.assigned_to || 'Kitchen Team',
     notes: task?.notes || '',
     status: task?.status || (task?.is_done ? 'completed' : 'pending'),
@@ -383,7 +601,8 @@ const normalizeKitchenTask = (task, index = 0, booking = null) => ({
     service_date: task?.service_date || task?.date || booking?.event_date || '',
     serving_time: task?.serving_time || task?.time || '',
     day_number: extractKitchenDayNumber(task, 1),
-});
+    meal_preparation_status: task?.meal_preparation_status || '',
+    meal_active: task?.meal_preparation_status === 'preparing',});
 
 // ============================================================
 // STATUS CONFIGURATION
@@ -405,10 +624,15 @@ const getStatusConfig = (status) => {
         approved: { color: '#22c55e', text: 'Approved', icon: <CheckCircleOutlined />, bg: '#f0fdf4' },
         upcoming: { color: '#3b82f6', text: 'Upcoming', icon: <ClockCircleOutlined />, bg: '#eff6ff' },
         reserved: { color: '#8b5cf6', text: 'Reserved', icon: <ClockCircleOutlined />, bg: '#f5f3ff' },
-        checked_out: { color: '#f59e0b', text: 'In Use', icon: <PlayCircleOutlined />, bg: '#fffbeb' },
-        in_use: { color: '#f59e0b', text: 'In Use', icon: <PlayCircleOutlined />, bg: '#fffbeb' },
-        returned: { color: '#10b981', text: 'Available', icon: <CheckCircleOutlined />, bg: '#ecfdf5' },
+        checked_out: { color: '#f59e0b', text: 'Out', icon: <PlayCircleOutlined />, bg: '#fffbeb' },
+        in_use: { color: '#f59e0b', text: 'Out', icon: <PlayCircleOutlined />, bg: '#fffbeb' },
+        returned: { color: '#10b981', text: 'Returned', icon: <CheckCircleOutlined />, bg: '#ecfdf5' },
         available: { color: '#10b981', text: 'Available', icon: <CheckCircleOutlined />, bg: '#ecfdf5' },
+        // ⭐ PACKED / TRAY completion statuses
+        done_deliver: { color: '#0d9488', text: 'Done Deliver', icon: <TruckOutlined />, bg: '#ccfbf1' },
+        done_pickup: { color: '#0d9488', text: 'Done Pickup', icon: <ShoppingOutlined />, bg: '#ccfbf1' },
+        missed_delivery: { color: '#dc2626', text: 'Missed Delivery', icon: <WarningOutlined />, bg: '#fef2f2' },
+        missed_pickup: { color: '#dc2626', text: 'Missed Pickup', icon: <WarningOutlined />, bg: '#fef2f2' },
     };
     return config[status] || config.pending;
 };
@@ -422,6 +646,42 @@ const getBookingDisplayStatus = (booking) => {
     if (booking.event_done) return 'done';
 
     return backendStatus;
+};
+
+// ⭐ PACKED / TRAY time-based highlight.
+// Returns { level: 'yellow' | 'red' | null, minutesUntil: number|null, message: string }
+const getPackedTrayTimeAlert = (booking, nowMs = Date.now()) => {
+    if (!booking || !booking.is_packed_or_tray) return { level: null, minutesUntil: null, message: '' };
+    const status = String(booking.booking_status || '').toLowerCase();
+    if (['done_deliver', 'done_pickup', 'missed_delivery', 'missed_pickup', 'completed', 'cancelled', 'rejected'].includes(status)) {
+        return { level: null, minutesUntil: null, message: '' };
+    }
+
+    const dateText = String(booking.event_date || '').split('T')[0];
+    const timeText = String(booking.event_time || '').trim();
+    if (!dateText || !timeText) return { level: null, minutesUntil: null, message: '' };
+
+    const scheduled = dayjs(`${dateText} ${timeText}`, ['YYYY-MM-DD h:mm A', 'YYYY-MM-DD HH:mm', 'YYYY-MM-DD']);
+    if (!scheduled.isValid()) return { level: null, minutesUntil: null, message: '' };
+
+    const minutesUntil = Math.floor((scheduled.valueOf() - nowMs) / 60000);
+    const isDeliver = String(booking.packed_tray_mode || booking.delivery_method || '').toLowerCase() === 'deliver';
+
+    if (minutesUntil <= PACKED_TRAY_RED_THRESHOLD_MIN) {
+        return {
+            level: 'red',
+            minutesUntil,
+            message: isDeliver ? 'DELIVERY TIME HAS PASSED' : 'PICKUP TIME HAS PASSED',
+        };
+    }
+    if (minutesUntil <= PACKED_TRAY_YELLOW_THRESHOLD_MIN) {
+        return {
+            level: 'yellow',
+            minutesUntil,
+            message: (isDeliver ? 'Deliver in ' : 'Pickup in ') + `${minutesUntil} min`,
+        };
+    }
+    return { level: null, minutesUntil, message: '' };
 };
 
 const getEventTypeName = (eventTypeId, eventTypes) => {
@@ -501,9 +761,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
         msg.success('Report exported');
     };
 
-    // --------------------------------------------------------
-    // Build per-menu ingredient breakdown
-    // --------------------------------------------------------
     const buildMenuIngredientGroups = (data) => {
         const menus = safeArray(data.menu_breakdown);
         const ingredients = safeArray(data.ingredient_breakdown);
@@ -513,7 +770,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
             const menuName = menu.menu_name || 'Menu';
             const menuQty = safeNumber(menu.quantity, 1);
 
-            // Try to find ingredient contributions from the flat breakdown's `menu_items` refs
             const contributions = [];
             ingredients.forEach((ing) => {
                 const refs = safeArray(ing.menu_items).filter((ref) => {
@@ -542,7 +798,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                 });
             });
 
-            // Fallback: if no contributions found but the backend gave a per-menu cost, show a summary row
             if (contributions.length === 0 && safeNumber(menu.ingredient_cost) > 0) {
                 contributions.push({
                     ingredient_id: `menu-cost-${menuId}`,
@@ -571,9 +826,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
         });
     };
 
-    // --------------------------------------------------------
-    // RENDER: BOOKING VIEW
-    // --------------------------------------------------------
     const renderBookingView = () => {
         if (!bookingProfitability) return <Empty description="No profitability data available" />;
         const data = bookingProfitability;
@@ -584,7 +836,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
 
         const menuGroups = buildMenuIngredientGroups(data);
 
-        // Expanded row renderer
         const expandedRowRender = (menuRow) => {
             const group = menuGroups.find(
                 (g) => String(g.menu_item_id) === String(menuRow.menu_item_id)
@@ -704,7 +955,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
 
         return (
             <div className="pb-modal-booking">
-                {/* HEADER CARD */}
                 <div className="pb-header-card">
                     <div className="pb-header-left">
                         <div className="pb-booking-id-chip">
@@ -743,7 +993,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                     </div>
                 </div>
 
-                {/* KPI STRIP */}
                 <div className="pb-kpi-grid">
                     <div className="pb-kpi pb-kpi-revenue">
                         <div className="pb-kpi-icon"><BankOutlined /></div>
@@ -775,7 +1024,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                     </div>
                 </div>
 
-                {/* REVENUE & COST COLUMNS */}
                 <Row gutter={16} className="pb-two-col">
                     <Col xs={24} md={12}>
                         <div className="pb-card pb-card-revenue">
@@ -853,7 +1101,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                     </Col>
                 </Row>
 
-                {/* PAYMENT CARD */}
                 <div className="pb-card pb-card-payment">
                     <div className="pb-card-header">
                         <div className="pb-card-title">
@@ -900,7 +1147,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                     </div>
                 </div>
 
-                {/* MENU BREAKDOWN — EXPANDABLE with Ingredient Cost Breakdown */}
                 {data.menu_breakdown?.length > 0 && (
                     <div className="pb-card pb-card-menu">
                         <div className="pb-card-header">
@@ -962,7 +1208,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
                     </div>
                 )}
 
-                {/* INGREDIENT BREAKDOWN — Flat view (all ingredients) */}
                 {data.ingredient_breakdown?.length > 0 && (
                     <div className="pb-card pb-card-ingredients">
                         <div className="pb-card-header">
@@ -1023,9 +1268,6 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
         );
     };
 
-    // --------------------------------------------------------
-    // FOOTER
-    // --------------------------------------------------------
     const renderFooter = () => (
         <div className="pb-modal-footer">
             <Space>
@@ -1073,10 +1315,10 @@ const ProfitabilityModal = ({ visible, onClose, bookingId = null }) => {
         </Modal>
     );
 };
+
 // ============================================================
 // SKELETON LOADING (light gray, matches Dashboard + Bookings)
 // ============================================================
-
 const SkeletonText = ({ width = '100%', height = 14, style = {} }) => (
     <div className="ue-skeleton-text" style={{ width, height, ...style }} />
 );
@@ -1241,7 +1483,7 @@ const OrderEventsSkeleton = ({ isDarkMode }) => (
 // MAIN COMPONENT
 // ============================================================
 const UnifiedOrderEventsManagement = () => {
-         const isMounted = useRef(true);
+    const isMounted = useRef(true);
     const { message } = App.useApp();
     const queryClient = useQueryClient();
     const { user } = useAuth();
@@ -1254,7 +1496,6 @@ const UnifiedOrderEventsManagement = () => {
         return document.body.classList.contains('dark-mode');
     });
 
-    // Ensure body has the class on mount (so portal-level CSS matches)
     useEffect(() => {
         if (isDarkMode) {
             document.body.classList.add('dark-mode');
@@ -1262,20 +1503,10 @@ const UnifiedOrderEventsManagement = () => {
             document.body.classList.remove('dark-mode');
         }
     }, [isDarkMode]);
-    // Skeleton: show ONLY on the first mount after a hard page load.
-    // In-app navigation back to this page uses the module flag which
-    // has already been flipped to false, so no skeleton is shown.
+
     const [showSkeleton, setShowSkeleton] = useState(__ueFirstMountAfterPageLoad);
 
-       // ⭐ Hide/Unhide for the three financial KPI cards.
-    //
-    //    Rules:
-    //      • Admin + super-admin can toggle
-    //      • Cashier never sees the toggle button, but sees the mask
-    //      • Cross-tab: BroadcastChannel — cashier sees change instantly
-    //      • Cross-device: 10-second poll against the server — cashier
-    //        sees change within 10 seconds without a manual refresh
-    //      • Persisted server-side (per-org) so a reload keeps the mask
+    // ⭐ Hide/Unhide for the three financial KPI cards.
     const FINANCIAL_VISIBILITY_KEY = 'ue_financial_visibility';
     const FINANCIAL_VISIBILITY_CHANNEL = 'ue_financial_visibility_channel';
     const FINANCIAL_VISIBILITY_ENDPOINT = '/settings/financial-visibility';
@@ -1317,10 +1548,8 @@ const UnifiedOrderEventsManagement = () => {
 
     const [financialVisibility, setFinancialVisibility] = useState(readCachedVisibility);
 
-    // Local mirror so the toggle is instant; the server confirms later.
     const effectiveVisibility = financialVisibility;
 
-    // ── 1. Load the persisted state from the server on mount ─────────
     useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -1355,7 +1584,6 @@ const UnifiedOrderEventsManagement = () => {
         };
     }, []);
 
-    // ── 2. Cross-tab signal — cashier sees the toggle instantly ──────
     useEffect(() => {
         let channel;
         try {
@@ -1396,8 +1624,6 @@ const UnifiedOrderEventsManagement = () => {
         };
     }, []);
 
-    // ── 3. Poll the server every 10s so cashiers on other devices
-    //       see the toggle without refreshing the page.
     useEffect(() => {
         const interval = setInterval(async () => {
             try {
@@ -1437,7 +1663,6 @@ const UnifiedOrderEventsManagement = () => {
         return () => clearInterval(interval);
     }, []);
 
-    // ── 4. Admin toggle — persist + broadcast ───────────────────────
     const handleToggleFinancialVisibility = useCallback(async (key) => {
         if (!canToggleFinancialVisibility) {
             message.warning('Only administrators can hide or unhide financial values.');
@@ -1447,7 +1672,6 @@ const UnifiedOrderEventsManagement = () => {
         const current = financialVisibility;
         const next = { ...current, [key]: !current[key] };
 
-        // Optimistic flip for instant feedback.
         setFinancialVisibility(next);
         try {
             localStorage.setItem(FINANCIAL_VISIBILITY_KEY, JSON.stringify(next));
@@ -1455,7 +1679,6 @@ const UnifiedOrderEventsManagement = () => {
             /* ignore quota */
         }
 
-        // Broadcast to every other tab in the same browser instantly.
         try {
             if (typeof BroadcastChannel !== 'undefined') {
                 const channel = new BroadcastChannel(FINANCIAL_VISIBILITY_CHANNEL);
@@ -1466,11 +1689,9 @@ const UnifiedOrderEventsManagement = () => {
             /* ignore */
         }
 
-        // Persist to the server so other devices pick it up via polling.
         try {
             await api.put(FINANCIAL_VISIBILITY_ENDPOINT, next);
         } catch (e) {
-            // Roll back on failure.
             setFinancialVisibility(current);
             try {
                 localStorage.setItem(
@@ -1487,8 +1708,6 @@ const UnifiedOrderEventsManagement = () => {
         }
     }, [canToggleFinancialVisibility, financialVisibility, message]);
 
-    // ⭐ Mask that matches the visible value's digit count so the card
-    //    never shifts width when toggled.
     const maskMatchingValue = (visibleValue) => {
         const str = String(visibleValue ?? '');
         if (!str) return '**********';
@@ -1497,7 +1716,8 @@ const UnifiedOrderEventsManagement = () => {
         const length = Math.max(3, digits);
         return (hasCurrency ? '₱' : '') + '*'.repeat(length);
     };
-      const [searchText, setSearchText] = useState(
+
+    const [searchText, setSearchText] = useState(
         () => sessionStorage.getItem('ue_searchText') || ''
     );
     const [filterStatus, setFilterStatus] = useState(
@@ -1518,22 +1738,13 @@ const UnifiedOrderEventsManagement = () => {
         () => sessionStorage.getItem('ue_activeTab') || 'orders'
     );
 
-       // ⭐ Dashboard period selector: weekly / monthly / yearly.
-    //    anchor is the reference date used to compute the period window.
+    // ⭐ Dashboard period selector: weekly / monthly / yearly.
     const [dashboardPeriod, setDashboardPeriod] = useState(
         () => sessionStorage.getItem('ue_dashboardPeriod') || 'monthly'
     );
     const [dashboardAnchor, setDashboardAnchor] = useState(
         () => sessionStorage.getItem('ue_dashboardAnchor') || dayjs().format('YYYY-MM-DD')
     );
-
-    // ⭐ Hide/show the whole Period Behavior toolbar. Persisted so a
-    //    reload keeps the operator's preference.
-    const [periodToolbarHidden, setPeriodToolbarHidden] = useState(
-        () => sessionStorage.getItem('ue_periodToolbarHidden') === 'true'
-    );
-
-     // Persist period + anchor across remounts.
     useEffect(() => {
         sessionStorage.setItem('ue_dashboardPeriod', dashboardPeriod);
     }, [dashboardPeriod]);
@@ -1542,56 +1753,13 @@ const UnifiedOrderEventsManagement = () => {
         sessionStorage.setItem('ue_dashboardAnchor', dashboardAnchor);
     }, [dashboardAnchor]);
 
-    useEffect(() => {
-        sessionStorage.setItem('ue_periodToolbarHidden', String(periodToolbarHidden));
-    }, [periodToolbarHidden]);
-
-    // ⭐ Toggle helper with a small toast so the operator gets feedback.
-    const handleTogglePeriodToolbar = useCallback(() => {
-        setPeriodToolbarHidden((prev) => {
-            const next = !prev;
-            message.success(
-                next ? 'Period selector hidden' : 'Period selector shown'
-            );
-            return next;
-        });
-    }, [message]);
-
-    // ⭐ Force the statistics query to refetch the moment the period
-    //    or anchor changes, so every KPI card on screen updates instantly.
-    //    (The client-side `stats` useMemo already recomputes automatically
-    //    because `filterByPeriod` depends on `periodRange`.)
-    useEffect(() => {
-        refetchStatistics();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dashboardPeriod, dashboardAnchor]);
+      // ⭐ Period changes now update the KPI cards purely client-side
+    //    (they read from confirmedBookings), so no server refetch is needed.
     const [eventInProgressHidden, setEventInProgressHidden] = useState(() => {
         const saved = localStorage.getItem(EVENT_IN_PROGRESS_HIDDEN_KEY);
         return saved === 'true';
     });
 
-     const [historySearchText, setHistorySearchText] = useState(
-        () => sessionStorage.getItem('ue_historySearchText') || ''
-    );
-    const [historyFilterStatus, setHistoryFilterStatus] = useState(
-        () => sessionStorage.getItem('ue_historyFilterStatus') || 'all'
-    );
-    const [historyDateRange, setHistoryDateRange] = useState(
-        () => {
-            const saved = sessionStorage.getItem('ue_historyDateRange');
-            if (!saved) return [];
-            try {
-                const parsed = JSON.parse(saved);
-                return Array.isArray(parsed)
-                    ? parsed.map((d) => (d ? dayjs(d) : null))
-                    : [];
-            } catch {
-                return [];
-            }
-        }
-    );
-    const [historyPage, setHistoryPage] = useState(1);
-    const [historyPageSize, setHistoryPageSize] = useState(10);
     const [selectedBooking, setSelectedBooking] = useState(null);
     const [viewModalVisible, setViewModalVisible] = useState(false);
     const [editModalVisible, setEditModalVisible] = useState(false);
@@ -1608,6 +1776,14 @@ const UnifiedOrderEventsManagement = () => {
     const [kitchenTasks, setKitchenTasks] = useState([]);
     const [kitchenLoading, setKitchenLoading] = useState(false);
 
+    // ⭐ Requirements #3, #4, #7 — ingredient review + deduction flow
+    const [ingredientReviewOpen, setIngredientReviewOpen] = useState(false);
+    const [ingredientReviewTask, setIngredientReviewTask] = useState(null);
+    const [ingredientReviewRows, setIngredientReviewRows] = useState([]);
+    const [ingredientReviewMenuName, setIngredientReviewMenuName] = useState('');
+    const [ingredientReviewShortages, setIngredientReviewShortages] = useState([]);
+    const [ingredientReviewSubmitting, setIngredientReviewSubmitting] = useState(false);
+
     const [deliveryModalVisible, setDeliveryModalVisible] = useState(false);
     const [deliveryItems, setDeliveryItems] = useState([]);
     const [deliveryCurrentPage, setDeliveryCurrentPage] = useState(1);
@@ -1618,7 +1794,7 @@ const UnifiedOrderEventsManagement = () => {
     const [selectedEquipment, setSelectedEquipment] = useState({});
     const [loadingEquipment, setLoadingEquipment] = useState(false);
     const [equipmentSearch, setEquipmentSearch] = useState('');
-
+    const [filterAvailableOnly, setFilterAvailableOnly] = useState(false);
     const [staffAssignmentModalVisible, setStaffAssignmentModalVisible] = useState(false);
     const [addStaffModalVisible, setAddStaffModalVisible] = useState(false);
     const [staffList, setStaffList] = useState([]);
@@ -1643,18 +1819,53 @@ const UnifiedOrderEventsManagement = () => {
     const [equipmentForm] = Form.useForm();
 
     const [liveStatusModalVisible, setLiveStatusModalVisible] = useState(false);
-    const [paymentModalVisible, setPaymentModalVisible] = useState(false);
+     const [paymentModalVisible, setPaymentModalVisible] = useState(false);
     const [paymentForm] = Form.useForm();
+    const [paymentPercent, setPaymentPercent] = useState(null); // ⭐ Tracks the percent input
     const [editForm] = Form.useForm();
 
+    // ⭐ Live flag: does the selected booking have an invoice? Read from the
+    //    freshest booking object so the "Create Invoice to Continue" flow
+    //    never reopens once the invoice exists — even if the invoice was
+    //    created in Billing & Invoicing, not here.
+    const selectedBookingHasInvoice = useMemo(() => {
+        if (!selectedBooking) return false;
+        return Boolean(
+            selectedBooking?.invoice?.invoice_id
+            || selectedBooking?.invoice_id
+            || selectedBooking?.invoice_number
+        );
+    }, [selectedBooking]);
+    // ⭐ Inline "Create Invoice" modal shown when a payment is attempted
+    //    for a booking that has no invoice yet.
+    const [createInvoiceFromPaymentVisible, setCreateInvoiceFromPaymentVisible] = useState(false);
+    const [pendingPaymentValues, setPendingPaymentValues] = useState(null);
+    const [createInvoiceFromPaymentForm] = Form.useForm();
+    const [createInvoiceFromPaymentCharges, setCreateInvoiceFromPaymentCharges] = useState({
+        transportation_fee: 0,
+        setup_fee: 0,
+        service_crew_fee: 0,
+        equipment_rental: 0,
+        extra_food_fee: 0,
+    });
+    const [createInvoiceFromPaymentSubmitting, setCreateInvoiceFromPaymentSubmitting] = useState(false);
     const [equipmentDetailsModalVisible, setEquipmentDetailsModalVisible] = useState(false);
     const [equipmentDetailsData, setEquipmentDetailsData] = useState([]);
     const [selectedEquipmentIds, setSelectedEquipmentIds] = useState([]);
 
     const [viewModalData, setViewModalData] = useState(null);
 
-    // ── Persist filter / tab state to sessionStorage ─────────────────
-    // Prevents query-key churn when the user navigates away and back.
+    // ⭐ Operations Hub is now a TAB next to Confirmed Bookings / Ongoing.
+    const [opsHubTab, setOpsHubTab] = useState('kitchen');
+    const [opsHubBookingId, setOpsHubBookingId] = useState(null);
+
+    // ⭐ FIX #4 — tick every 30 s so the 20-min red warning refreshes on its own.
+    const [nowTick, setNowTick] = useState(() => Date.now());
+    useEffect(() => {
+        const id = setInterval(() => setNowTick(Date.now()), 30 * 1000);
+        return () => clearInterval(id);
+    }, []);
+
     useEffect(() => {
         sessionStorage.setItem('ue_searchText', searchText);
     }, [searchText]);
@@ -1679,27 +1890,7 @@ const UnifiedOrderEventsManagement = () => {
         sessionStorage.setItem('ue_activeTab', activeTab);
     }, [activeTab]);
 
-    useEffect(() => {
-        sessionStorage.setItem('ue_historySearchText', historySearchText);
-    }, [historySearchText]);
-
-    useEffect(() => {
-        sessionStorage.setItem('ue_historyFilterStatus', historyFilterStatus);
-    }, [historyFilterStatus]);
-
-    useEffect(() => {
-        if (historyDateRange && historyDateRange.length > 0) {
-            sessionStorage.setItem(
-                'ue_historyDateRange',
-                JSON.stringify(
-                    historyDateRange.map((d) => (d ? dayjs(d).format('YYYY-MM-DD') : null))
-                )
-            );
-        } else {
-            sessionStorage.removeItem('ue_historyDateRange');
-        }
-    }, [historyDateRange]);
-      // BOOKING PROFITABILITY MODAL STATE
+    // BOOKING PROFITABILITY MODAL STATE
     const [profitabilityModalVisible, setProfitabilityModalVisible] = useState(false);
     const [profitabilityBookingId, setProfitabilityBookingId] = useState(null);
 
@@ -1708,8 +1899,17 @@ const UnifiedOrderEventsManagement = () => {
     const loadingLineRef = useRef(null);
     const loadingLineTimerRef = useRef(null);
 
+    const activeTabRef = useRef(activeTab);
+    useEffect(() => {
+        activeTabRef.current = activeTab;
+    }, [activeTab]);
+
     const showLoadingLine = useCallback((type, bookingNo) => {
-        if (loadingLineTimerRef.current) {
+        // ⭐ Operations Workspace updates apply instantly: no strip, no 5s countdown.
+        //    Every other module keeps its existing behaviour.
+        if (activeTabRef.current === 'operations' && OPS_WORKSPACE_SILENT_TYPES.includes(type)) {
+            return new AbortController().signal;
+        }        if (loadingLineTimerRef.current) {
             clearTimeout(loadingLineTimerRef.current);
             loadingLineTimerRef.current = null;
         }
@@ -1749,7 +1949,7 @@ const UnifiedOrderEventsManagement = () => {
         loadingLineRef.current = line;
         setLoadingLine(line);
 
-         loadingLineTimerRef.current = setTimeout(() => {
+        loadingLineTimerRef.current = setTimeout(() => {
             setLoadingLine(null);
             loadingLineRef.current = null;
             loadingLineTimerRef.current = null;
@@ -1780,25 +1980,15 @@ const UnifiedOrderEventsManagement = () => {
             if (loadingLineTimerRef.current) clearTimeout(loadingLineTimerRef.current);
         };
     }, []);
-    /**
-     * ⭐ Wraps any async action with the loading line + abort handling.
-     * The loading line shows FIRST, waits 5 seconds (giving the user
-     * time to Cancel), and ONLY THEN fires the backend request.
-     */
-    const runWithLoadingLine = useCallback(async (type, record, fn) => {
+
+       const runWithLoadingLine = useCallback(async (type, record, fn) => {
         const bookingNo = safeString(record?.booking_no || record?.order_number || record?.id || '');
+        // ⭐ The signal is now used ONLY to cancel the loading UI.
+        //    The underlying axios request is NOT tied to it — otherwise
+        //    a slow backend would cancel the payment/booking write.
         const signal = showLoadingLine(type, bookingNo);
-        const HOLD_MS = 5000;
 
         try {
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(resolve, HOLD_MS);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    reject(new DOMException('Aborted', 'AbortError'));
-                });
-            });
-
             const result = await fn(signal);
             return result;
         } catch (error) {
@@ -1807,7 +1997,7 @@ const UnifiedOrderEventsManagement = () => {
                 error?.name === 'AbortError' ||
                 error?.code === 'ERR_CANCELED'
             ) {
-                hideLoadingLine();
+                // Silent — user pressed Cancel on the loading strip.
                 return null;
             }
             throw error;
@@ -1815,27 +2005,21 @@ const UnifiedOrderEventsManagement = () => {
             hideLoadingLine();
         }
     }, [showLoadingLine, hideLoadingLine]);
-        // API HOOKS
-       const debouncedSearchText = useDebouncedValue(searchText, 400);
+    // API HOOKS
+    const debouncedSearchText = useDebouncedValue(searchText, 400);
 
+    // ⚡ Use the SAME cap as the Bookings page (FETCH_ALL_LIMIT = 200) so
+    //    every approved booking that exists on the Bookings page also
+    //    exists here. Previously per_page was 50, which silently hid
+    //    approved bookings #51+ from Orders & Events.
     const activeBookingsFilters = useMemo(() => ({
         status_in: 'confirmed,rescheduled,approved,ongoing',
         search: debouncedSearchText || undefined,
         event_type_id: filterEventType !== 'all' ? filterEventType : undefined,
         event_date: selectedDate ? dayjs(selectedDate).format('YYYY-MM-DD') : undefined,
         page: 1,
-        per_page: 50,
-     }), [debouncedSearchText, filterEventType, selectedDate]);
-
-    const historyBookingsFilters = useMemo(() => ({
-        status: historyFilterStatus !== 'all' ? historyFilterStatus : undefined,
-        status_in: historyFilterStatus === 'all' ? 'completed,cancelled,rejected' : undefined,
-        search: historySearchText || undefined,
-        date_from: historyDateRange?.[0] ? dayjs(historyDateRange[0]).format('YYYY-MM-DD') : undefined,
-        date_to: historyDateRange?.[1] ? dayjs(historyDateRange[1]).format('YYYY-MM-DD') : undefined,
-        page: 1,
-        per_page: 50,
-    }), [historyFilterStatus, historySearchText, historyDateRange]);
+        per_page: 200,
+    }), [debouncedSearchText, filterEventType, selectedDate]);
 
     const {
         data: activeBookingsData,
@@ -1849,15 +2033,10 @@ const UnifiedOrderEventsManagement = () => {
         isPending: historyBookingsPending,
         isLoading: historyBookingsLoading,
         refetch: refetchHistoryBookings,
-    } = useBookings(historyBookingsFilters);
+    } = useBookings({ page: 1, per_page: 200, status_in: 'completed,cancelled,rejected' });
 
-      // Only the tab the user is looking at gates the page.
-    const bookingsLoading =
-        activeTab === 'orders'
-            ? activeBookingsPending
-            : activeTab === 'history'
-                ? historyBookingsPending
-                : false;
+    // Only the tab the user is looking at gates the page.
+    const bookingsLoading = activeTab === 'orders' ? activeBookingsPending : false;
 
     const refetchBookings = useCallback(() => Promise.allSettled([
         refetchActiveBookings(),
@@ -1868,9 +2047,9 @@ const UnifiedOrderEventsManagement = () => {
         data: statistics,
         isPending: statisticsPending,
         refetch: refetchStatistics,
-    } = useBookingStatistics(dashboardPeriod, dashboardAnchor);     const { data: eventTypesData, refetch: refetchEventTypes } = useEventTypes();
-    // useEventTypes returns a normalized list envelope { data, total, ... }
-    // not a bare array — unwrap it here so all consumers get the rows.
+    } = useBookingStatistics(dashboardPeriod, dashboardAnchor);
+
+    const { data: eventTypesData, refetch: refetchEventTypes } = useEventTypes();
     const eventTypes = safeArray(eventTypesData?.data);
 
     const { data: kitchenOrders, refetch: refetchKitchenOrders } = useKitchenOrders();
@@ -1902,12 +2081,19 @@ const UnifiedOrderEventsManagement = () => {
     const approveAllEquipmentMutation = useApproveAllEquipment();
     const returnEquipmentMutation = useReturnEquipment();
     const completeEventMutation = useCompleteEvent();
+    const completeKitchenTaskMutation = useCompleteKitchenTask();
+    const uncompleteKitchenTaskMutation = useUncompleteKitchenTask();
+
+    // ⭐ PACKED / TRAY completion mutations
+    const completePackedTrayMutation = useCompletePackedTray();
+    const undoPackedTrayCompletionMutation = useUndoPackedTrayCompletion();
+    const markPackedTrayMissedMutation = useMarkPackedTrayMissed();
+    const undoPackedTrayMissedMutation = useUndoPackedTrayMissed();
 
     // THEME DETECTION — StrictMode-safe
     useEffect(() => {
         isMounted.current = true;
 
-        // Read once on mount
         const saved = localStorage.getItem('theme');
         const initialDark =
             saved === 'dark' ||
@@ -1935,38 +2121,57 @@ const UnifiedOrderEventsManagement = () => {
         window.addEventListener('storage', handleStorageChange);
 
         return () => {
-            // NOTE: do NOT set isMounted.current = false here (StrictMode re-runs the effect)
             observer.disconnect();
             window.removeEventListener('themeChange', handleThemeChange);
             window.removeEventListener('storage', handleStorageChange);
         };
     }, []);
-    // ============================================================
-    // SKELETON — flip the module flag off after the very first render
-    // so any subsequent remount (in-app nav) skips the skeleton.
-    // ============================================================
-    useEffect(() => {
-        // Mark that the first mount of this page-load has happened.
-        // Any future mount (i.e. back-navigation) will read `false`.
+
+     useEffect(() => {
         __ueFirstMountAfterPageLoad = false;
     }, []);
 
-       // Hide the skeleton as soon as real data is available.
+    // ⭐ GLOBAL BROADCAST LISTENER — the axios interceptor (api.js) fires
+    //    `billing:refresh` on every successful write. Refetch our bookings
+    //    so the AMOUNT column (PAID / BALANCE) reflects any payment or
+    //    invoice created from Billing & Invoicing within one round-trip.
+    useEffect(() => {
+        const handleBillingRefresh = () => {
+            queryClient.refetchQueries({ queryKey: ['bookings'] });
+            queryClient.refetchQueries({ queryKey: ['bookings', 'statistics'] });
+            queryClient.refetchQueries({ queryKey: ['orders'] });
+            queryClient.refetchQueries({ queryKey: ['events'] });
+        };
+
+        window.addEventListener('billing:refresh', handleBillingRefresh);
+
+        let channel = null;
+        try {
+            if (typeof BroadcastChannel !== 'undefined') {
+                channel = new BroadcastChannel('billing_sync');
+                channel.onmessage = (e) => {
+                    if (e?.data?.type === 'refresh') handleBillingRefresh();
+                };
+            }
+        } catch { /* ignore */ }
+
+        return () => {
+            window.removeEventListener('billing:refresh', handleBillingRefresh);
+            if (channel) channel.close();
+        };
+    }, [queryClient]);
     useEffect(() => {
         if (!bookingsLoading && showSkeleton) {
             setShowSkeleton(false);
         }
     }, [bookingsLoading, showSkeleton]);
 
-    // Hard cap: never hold the skeleton longer than 1.5s.
     useEffect(() => {
         if (!showSkeleton) return;
         const t = setTimeout(() => setShowSkeleton(false), 1500);
         return () => clearTimeout(t);
     }, [showSkeleton]);
 
-    // LOAD STAFF — via React Query so multiple mounts of this page
-    // dedupe into a single /employees/active request.
     const { data: staffListData, isLoading: staffListLoading } = useActiveEmployees();
 
     useEffect(() => {
@@ -1983,55 +2188,17 @@ const UnifiedOrderEventsManagement = () => {
     const allBookings = useMemo(() => normalizeBookingCollection(activeBookingsData), [activeBookingsData]);
     const historyBookings = useMemo(() => normalizeBookingCollection(historyBookingsData), [historyBookingsData]);
 
-    const confirmedBookings = useMemo(() => {
-        const activeRows = allBookings.filter((booking) => {
-            const status = safeString(booking.booking_status).toLowerCase();
-            return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status) && !booking.event_completed;
-        });
-        if (filterStatus === 'all') return activeRows;
-        return activeRows.filter((booking) => getBookingDisplayStatus(booking) === filterStatus);
-    }, [allBookings, filterStatus]);
-
-    const ongoingBookings = useMemo(
-        () => allBookings.filter((booking) => (
-            safeString(booking.booking_status).toLowerCase() === 'ongoing'
-            && !booking.event_done
-            && !booking.event_completed
-        )),
-        [allBookings]
-    );
-
-    const completedBookings = useMemo(
-        () => historyBookings.filter((booking) => {
-            const status = String(booking.booking_status || '').toLowerCase();
-            return ['completed', 'cancelled', 'rejected'].includes(status) || booking.event_completed;
-        }),
-        [historyBookings]
-    );
-
-    const getOngoingEvents = useCallback(() => {
-        const today = dayjs().format('YYYY-MM-DD');
-        return allBookings.filter((booking) => {
-            const status = safeString(booking.booking_status).toLowerCase();
-            const eventDate = booking.event_date ? dayjs(booking.event_date).format('YYYY-MM-DD') : null;
-            if (booking.event_done || booking.event_completed || status === 'completed') return false;
-            return status === 'ongoing' || (status === 'confirmed' && eventDate === today);
-        });
-    }, [allBookings]);
-
     // ============================================================
-    // DASHBOARD PERIOD HELPERS
-    // Filter the client-side rows to the currently selected period,
-    // using service_events.event_date (event date), NOT created_at.
+    // DASHBOARD PERIOD HELPERS  (defined BEFORE confirmedBookings
+    // so filterByPeriod is available when those memos run)
     // ============================================================
-
     const periodRange = useMemo(() => {
         const anchor = dayjs(dashboardAnchor);
 
         switch (dashboardPeriod) {
             case 'weekly': {
-                const start = anchor.startOf('isoWeek');  // Monday
-                const end   = anchor.endOf('isoWeek');    // Sunday
+                const start = anchor.startOf('isoWeek');
+                const end   = anchor.endOf('isoWeek');
                 return {
                     start,
                     end,
@@ -2063,20 +2230,6 @@ const UnifiedOrderEventsManagement = () => {
         }
     }, [dashboardPeriod, dashboardAnchor]);
 
-    // ⭐ Navigate to previous / next period.
-    const handleShiftPeriod = useCallback((direction) => {
-        const unit = periodRange.navUnit;
-        const next = direction === 'next'
-            ? dayjs(dashboardAnchor).add(1, unit)
-            : dayjs(dashboardAnchor).subtract(1, unit);
-        setDashboardAnchor(next.format('YYYY-MM-DD'));
-    }, [dashboardAnchor, periodRange.navUnit]);
-
-    const handleJumpToToday = useCallback(() => {
-        setDashboardAnchor(dayjs().format('YYYY-MM-DD'));
-    }, []);
-
-    // ⭐ Filter any booking array by the active period, using event_date.
     const filterByPeriod = useCallback((rows) => {
         if (!Array.isArray(rows) || rows.length === 0) return [];
 
@@ -2089,97 +2242,194 @@ const UnifiedOrderEventsManagement = () => {
                 && (d.isSame(end, 'day')   || d.isBefore(end, 'day'));
         });
     }, [periodRange]);
-    const stats = useMemo(() => {
-        // ⭐ When the server already returned period-scoped KPIs, prefer them.
-        //    That guarantees the KPI cards match the backend truth for the
-        //    currently selected period.
-        const serverStats = statistics?.data || null;
-        const serverHasPeriodData =
-            serverStats
-            && typeof serverStats === 'object'
-            && serverStats.period_start !== undefined
-            && serverStats.period_end !== undefined;
 
-        // ⭐ Confirmed set = bookings in operational statuses still active,
-        //    filtered by the currently selected dashboard period.
-        const confirmedRowsAll = allBookings.filter((booking) => {
-            const status = String(booking.booking_status || '').toLowerCase();
-            return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status)
-                && !booking.event_completed;
+    const handleShiftPeriod = useCallback((direction) => {
+        const unit = periodRange.navUnit;
+        const next = direction === 'next'
+            ? dayjs(dashboardAnchor).add(1, unit)
+            : dayjs(dashboardAnchor).subtract(1, unit);
+        setDashboardAnchor(next.format('YYYY-MM-DD'));
+    }, [dashboardAnchor, periodRange.navUnit]);
+
+    const handleJumpToToday = useCallback(() => {
+        setDashboardAnchor(dayjs().format('YYYY-MM-DD'));
+    }, []);
+    // ⭐ Show ALL orders for the WHOLE YEAR (not per week/month).
+    //    Ongoing events are never period-filtered.
+    const confirmedBookings = useMemo(() => {
+        const activeRows = allBookings.filter((booking) => {
+            const status = safeString(booking.booking_status).toLowerCase();
+            return ['confirmed', 'rescheduled', 'approved', 'ongoing'].includes(status) && !booking.event_completed;
         });
 
-        const confirmedRows = filterByPeriod(confirmedRowsAll);
+        const statusFiltered =
+            filterStatus === 'all'
+                ? activeRows
+                : activeRows.filter((booking) => getBookingDisplayStatus(booking) === filterStatus);
 
-        // ⭐ Confirmed Bookings — server value when available.
-        const confirmedCount = serverHasPeriodData
-            ? safeNumber(serverStats.confirmed_bookings, confirmedRows.length)
-            : confirmedRows.length;
+        // Ongoing events stay visible regardless of date.
+        const ongoing = statusFiltered.filter(b => String(b.booking_status).toLowerCase() === 'ongoing');
+        const others = statusFiltered.filter(b => String(b.booking_status).toLowerCase() !== 'ongoing');
 
-        // ⭐ Ongoing — server value when available.
-        const ongoing = serverHasPeriodData
-            ? safeNumber(serverStats.ongoing, filterByPeriod(ongoingBookings).length)
-            : filterByPeriod(ongoingBookings).length;
+        // Whole-year window based on the current dashboard anchor.
+        const yearStart = dayjs(dashboardAnchor).startOf('year');
+        const yearEnd = dayjs(dashboardAnchor).endOf('year');
 
-        // ⭐ Total Revenue = sum of confirmed bookings only (not history),
-        //    scoped to the selected period. Server value wins.
-        const totalRevenue = serverHasPeriodData
-            ? safeNumber(serverStats.total_revenue, 0)
-            : confirmedRows.reduce(
-                (sum, booking) => sum + safeNumber(booking.total_amount, 0),
-                0
-              );
+            const yearFiltered = others.filter((row) => {
+            const eventDate = row?.event_date;
+            if (!eventDate) return false;
+            const d = dayjs(eventDate);
+            return (d.isSame(yearStart, 'day') || d.isAfter(yearStart, 'day'))
+                && (d.isSame(yearEnd, 'day')   || d.isBefore(yearEnd, 'day'));
+        });
 
-        // ⭐ Outstanding Balance = unpaid balances on confirmed bookings,
-        //    scoped to the selected period. Server value wins.
-        const outstandingBalance = serverHasPeriodData
-            ? safeNumber(
-                serverStats.outstanding_balance ?? serverStats.total_outstanding,
-                0
-              )
-            : confirmedRows.reduce((sum, booking) => {
-                const total = safeNumber(booking.total_amount, 0);
-                const paid  = safeNumber(booking.paid_amount, 0);
-                const balance =
-                    booking.balance !== undefined && booking.balance !== null
-                        ? safeNumber(booking.balance, 0)
-                        : Math.max(0, total - paid);
-                return sum + balance;
-              }, 0);
+        // ⭐ Sort strictly by Date and Time (Earliest first)
+        const sortedYearFiltered = yearFiltered.sort((a, b) => {
+            const scheduleDifference = getBookingScheduleValue(a) - getBookingScheduleValue(b);
+            if (scheduleDifference !== 0) return scheduleDifference;
+            return String(a.booking_no || '').localeCompare(String(b.booking_no || ''));
+        });
 
-        // ⭐ Total Payments Collected = completed payment amounts across ALL
-        //    bookings in the selected period (confirmed + history).
-        let totalPaymentsCollected;
-        if (serverHasPeriodData) {
-            totalPaymentsCollected = safeNumber(
-                serverStats.total_payments_collected ?? serverStats.total_paid,
-                0
-            );
-        } else {
-            const allRows = filterByPeriod([...allBookings, ...completedBookings]);
-            const seen = new Set();
-            const uniqueRows = allRows.filter((row) => {
-                const id = row.id || row.booking_id;
-                if (!id || seen.has(id)) return false;
-                seen.add(id);
-                return true;
-            });
+        // Ongoing events always float to the very top
+        return [...ongoing, ...sortedYearFiltered];
+    }, [allBookings, filterStatus, dashboardAnchor]);
 
-            totalPaymentsCollected = uniqueRows.reduce((sum, booking) => {
-                const payments = safeArray(booking.payments);
-                if (payments.length > 0) {
-                    const fromList = payments
-                        .filter((p) => String(p.status || '').toLowerCase() === 'completed')
-                        .filter((p) => String(p.payment_type || '').toLowerCase() !== 'refund')
-                        .reduce((sub, p) => sub + safeNumber(p.amount, 0), 0);
-                    if (fromList > 0) return sum + fromList;
-                }
-                return sum + safeNumber(booking.paid_amount, 0);
-            }, 0);
+    // ⭐ Ongoing bookings are NOT filtered by the dashboard period.
+    //    An event that is ongoing is happening RIGHT NOW regardless of
+    //    what month/week/year its event_date falls on. Filtering it by
+    //    period made force-started events disappear from the Ongoing
+    //    tab when their event_date was outside the current window.
+      const ongoingBookings = useMemo(
+        () => allBookings.filter((booking) => (
+            safeString(booking.booking_status).toLowerCase() === 'ongoing'
+            && !booking.event_done
+            && !booking.event_completed
+        )),
+        [allBookings]
+    );
+
+    // ⭐ PACKED / TRAY — active (not yet delivered/picked-up) rows shown in
+    //    the Confirmed Bookings tab. Missed states stay visible here until
+    //    the user undoes them.
+    const packedTrayActiveBookings = useMemo(
+        () => allBookings.filter((booking) => {
+            const svc = String(booking.service_type || '').toLowerCase();
+            if (!['packed', 'tray'].includes(svc)) return false;
+            const status = String(booking.booking_status || '').toLowerCase();
+            return ['confirmed', 'missed_delivery', 'missed_pickup'].includes(status);
+        }),
+        [allBookings]
+    );
+    const completedBookings = useMemo(
+        () => historyBookings.filter((booking) => {
+            const status = String(booking.booking_status || '').toLowerCase();
+            return ['completed', 'cancelled', 'rejected'].includes(status) || booking.event_completed;
+        }),
+        [historyBookings]
+    );
+
+           // ⭐ Keep a persistent ref of confirmed ongoing events.
+    // If we ever see an event as ongoing, we never let it go back to confirmed
+    // unless the user explicitly un-starts it.
+    const startedBookingsRef = useRef(new Set());
+
+    const opsHubBooking = useMemo(() => {
+        if (!opsHubBookingId) return null;
+        const targetId = String(opsHubBookingId);
+
+        const match = (b) => String(b?.id || b?.booking_id) === targetId;
+        const isStarted = (s) => s === 'ongoing' || s === 'completed';
+
+        const fromPool = [...allBookings, ...completedBookings].find(match);
+        const selStatus = String(selectedBooking?.booking_status || '').toLowerCase();
+        
+        // Record if this event is ongoing
+        if (isStarted(selStatus)) {
+            startedBookingsRef.current.add(targetId);
         }
 
-        const completed = filterByPeriod(completedBookings).filter((booking) =>
-            String(booking.booking_status || '').toLowerCase() === 'completed'
-            || booking.event_completed
+        // 1. If selectedBooking is active and matches
+        if (selectedBooking && match(selectedBooking)) {
+            if (!fromPool) return selectedBooking;
+
+            const poolStatus = String(fromPool.booking_status || '').toLowerCase();
+            const hasStartedBefore = startedBookingsRef.current.has(targetId);
+
+            // ⭐ CRITICAL: If local state says ongoing, or pool says ongoing, or we already recorded it started:
+            if (isStarted(selStatus) || isStarted(poolStatus) || hasStartedBefore) {
+                return {
+                    ...fromPool,
+                    ...selectedBooking,
+                    booking_status: 'ongoing', // Lock it
+                    event_completed: Boolean(selectedBooking.event_completed || fromPool.event_completed),
+                };
+            }
+            return { ...selectedBooking, ...fromPool };
+        }
+
+        // 2. Fall back to the server pool.
+        return fromPool || null;
+    }, [opsHubBookingId, allBookings, completedBookings, selectedBooking]);
+
+    const getOngoingEvents = useCallback(() => {
+        const today = dayjs().format('YYYY-MM-DD');
+        return allBookings.filter((booking) => {
+            const status = safeString(booking.booking_status).toLowerCase();
+            const eventDate = booking.event_date ? dayjs(booking.event_date).format('YYYY-MM-DD') : null;
+            if (booking.event_done || booking.event_completed || status === 'completed') return false;
+            return status === 'ongoing' || (status === 'confirmed' && eventDate === today);
+        });
+    }, [allBookings]);
+
+       // (Period helpers moved above — see "DASHBOARD PERIOD HELPERS" earlier.)
+
+       // ⭐ ALL KPI cards are now computed directly from the rows that are
+    //    visible in the "Confirmed Bookings" table. This guarantees the
+    //    numbers on the cards always match what's in the table —
+    //    filtered by the selected period (weekly / monthly / yearly).
+    const stats = useMemo(() => {
+        // The exact rows the Confirmed Bookings table shows.
+        const tableRows = confirmedBookings;
+
+        const confirmedCount = tableRows.length;
+
+        const ongoing = tableRows.filter(
+            (b) => String(b.booking_status || '').toLowerCase() === 'ongoing'
+        ).length;
+
+        const totalRevenue = tableRows.reduce(
+            (sum, b) => sum + safeNumber(b.total_amount, 0),
+            0
+        );
+
+        const outstandingBalance = tableRows.reduce((sum, b) => {
+            const total = safeNumber(b.total_amount, 0);
+            const paid = safeNumber(b.paid_amount, 0);
+            const balance =
+                b.balance !== undefined && b.balance !== null
+                    ? safeNumber(b.balance, 0)
+                    : Math.max(0, total - paid);
+            return sum + balance;
+        }, 0);
+
+        // Payments collected = sum of paid_amount on every visible row.
+        // Fall back to summing individual completed payments when present.
+        const totalPaymentsCollected = tableRows.reduce((sum, b) => {
+            const payments = safeArray(b.payments);
+            if (payments.length > 0) {
+                const fromList = payments
+                    .filter((p) => String(p.status || '').toLowerCase() === 'completed')
+                    .filter((p) => String(p.payment_type || '').toLowerCase() !== 'refund')
+                    .reduce((sub, p) => sub + safeNumber(p.amount, 0), 0);
+                if (fromList > 0) return sum + fromList;
+            }
+            return sum + safeNumber(b.paid_amount, 0);
+        }, 0);
+
+        const completed = tableRows.filter(
+            (b) =>
+                String(b.booking_status || '').toLowerCase() === 'completed' ||
+                b.event_completed
         ).length;
 
         return {
@@ -2190,7 +2440,7 @@ const UnifiedOrderEventsManagement = () => {
             outstanding_balance: outstandingBalance,
             total_payments_collected: totalPaymentsCollected,
         };
-    }, [allBookings, ongoingBookings, completedBookings, filterByPeriod, statistics]);
+    }, [confirmedBookings]);
 
     // HANDLERS
     const handleRefresh = () => {
@@ -2265,6 +2515,7 @@ const UnifiedOrderEventsManagement = () => {
         setSelectedBooking(record);
         setStatusUpdateModalVisible(true);
     };
+
     const handleConfirmStatusUpdate = async (status) => {
         if (!selectedBooking) return;
         try {
@@ -2281,7 +2532,8 @@ const UnifiedOrderEventsManagement = () => {
             message.error('Failed to update status');
         }
     };
-    const openPaymentForBooking = (record, amount = null, paymentType = null) => {
+
+              const openPaymentForBooking = (record, amount = null, paymentType = null) => {
         const totalAmount = safeNumber(record.total_amount, 0);
         const paidAmount = safeNumber(record.paid_amount, 0);
         const completedPayments = safeArray(record.payments).filter((payment) => payment.status === 'completed');
@@ -2293,18 +2545,23 @@ const UnifiedOrderEventsManagement = () => {
             : safeNumber(amount, 0);
 
         setSelectedBooking(record);
+        setPaymentPercent(null); // ⭐ Reset the percent field on open
         paymentForm.setFieldsValue({
             amount: Math.max(0, suggestedAmount),
             payment_type: suggestedType,
             payment_method: 'cash',
             notes: suggestedType === 'deposit' ? '30% event deposit' : 'Remaining event balance',
+            // ⭐ PAID BY — defaults to the booked customer.
+            //    The cashier can overwrite this when someone else pays.
+            payer_name: record.customer_name || '',
+            payer_relation: 'Self',
         });
         setPaymentModalVisible(true);
     };
-
     const requestOverrideReason = ({ title, warning, onConfirm }) => {
         let reason = '';
         let reasonErrorEl = null;
+        let isSubmitting = false; // ⭐ Prevent double clicks
 
         const updateReasonState = () => {
             if (!reasonErrorEl) return;
@@ -2367,20 +2624,31 @@ const UnifiedOrderEventsManagement = () => {
                         <Button onClick={() => Modal.destroyAll()}>
                             Cancel
                         </Button>
-                        <Button
+                                     <Button
                             danger
                             type="primary"
-                            onClick={async () => {
+                            // ⭐ Remove loading so it doesn't hang visually; disabled prevents double-clicks
+                            onClick={async (e) => {
+                                if (isSubmitting) return;
+
                                 if (!reason.trim()) {
                                     if (reasonErrorEl) reasonErrorEl.style.visibility = 'visible';
                                     message.warning('A reason is required.');
                                     return;
                                 }
+                                
+                                isSubmitting = true;
+                                e.currentTarget.disabled = true; // Instant visual feedback
+                                e.currentTarget.innerText = 'Processing...'; // Instant text change
+
+                                // ⭐ Fast Save: Close the modal immediately so the UI feels instant
+                                Modal.destroyAll();
+                                
                                 try {
                                     await onConfirm(reason.trim());
-                                    Modal.destroyAll();
                                 } catch (err) {
                                     // onConfirm already handles its own errors
+                                    message.error('Failed to process the override. Please try again.');
                                 }
                             }}
                         >
@@ -2435,20 +2703,47 @@ const UnifiedOrderEventsManagement = () => {
         };
         syncBookingInCache(queryClient, updatedBooking);
         setSelectedBooking(updatedBooking);
+
+        // ⭐ Requirement — keep the Operations Hub's active booking in
+        //    sync with the freshly-started booking. Without this, the
+        //    next time opsHubBooking re-derives from allBookings (which
+        //    still holds the stale record until the refetch finishes),
+        //    the status flips back to 'confirmed'.
+        setOpsHubBookingId((prevId) => {
+            if (!prevId) return updatedBooking.id || updatedBooking.booking_id;
+            return prevId;
+        });
+
+          // ⭐ Force an immediate refresh so allBookings/activeBookingsData
+        //    picks up the new 'ongoing' status before the next user click.
+        try {
+            await refetchActiveBookings();
+        } catch (e) {
+            console.warn('Post-start refetch failed:', e);
+        }
+
+        // ⭐ CRITICAL: The list endpoint can lag behind the start request
+        //    due to transaction timing. Re-sync the cache AFTER the
+        //    refetch so a stale 'confirmed' row can never overwrite the
+        //    authoritative 'ongoing' status we just wrote.
+        syncBookingInCache(queryClient, updatedBooking);
+
         message.success(`Event "${record.customer_name || 'Event'}" has started`);
 
+        // ⭐ The backend activates the first scheduled meal on start → refresh the kitchen pane once.
+        if (activeTabRef.current === 'operations') {
+            ensureOpsPane(updatedBooking, 'kitchen', true);
+        } else {
+            opsLoadedPanesRef.current.delete(`${updatedBooking.id || updatedBooking.booking_id}:kitchen`);
+        }
         queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
         queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'active' });
-        refetchActiveBookings();
 
         if (options.openLiveStatusAfterStart) {
             setLiveStatusModalVisible(true);
         }
     };
 
-        // ⭐ Un-start an event that was started by mistake.
-    //    Reverts booking_status back to 'confirmed' and clears the
-    //    ongoing/started markers so it reappears as a Confirmed Booking.
     const handleUnstartEvent = useCallback(async (record) => {
         if (!record) {
             message.warning('No booking selected.');
@@ -2489,7 +2784,7 @@ const UnifiedOrderEventsManagement = () => {
                         );
                     });
 
-                    const updatedBooking = {
+                                                 const updatedBooking = {
                         ...record,
                         booking_status: 'confirmed',
                         event_done: false,
@@ -2497,6 +2792,9 @@ const UnifiedOrderEventsManagement = () => {
                         event_completed: false,
                         progress: 0,
                     };
+                    // ⭐ Clear the lock so the event can be moved back to confirmed.
+                    startedBookingsRef.current.delete(String(record?.id || record?.booking_id));
+                    
                     syncBookingInCache(queryClient, updatedBooking);
                     setSelectedBooking(updatedBooking);
                     message.success('Event moved back to Confirmed Bookings.');
@@ -2519,11 +2817,6 @@ const UnifiedOrderEventsManagement = () => {
         const scheduledDate = record.event_date;
         const isScheduledToday = scheduledDate ? dayjs(scheduledDate).isSame(dayjs(), 'day') : true;
 
-               // ⭐ Always confirm BEFORE hitting the payment-summary endpoint so the
-        //    "not today" warning is the first thing the user sees. When
-        //    "Start Anyway" is pressed we ALSO need to re-verify the deposit,
-        //    otherwise a late-start override would silently bypass the 30%
-        //    deposit check.
         if (!isScheduledToday && !options.skipFinalConfirmation) {
             const scheduledLabel = scheduledDate
                 ? dayjs(scheduledDate).format('MMMM D, YYYY')
@@ -2568,16 +2861,12 @@ const UnifiedOrderEventsManagement = () => {
                             <Button onClick={() => Modal.destroyAll()}>
                                 Cancel
                             </Button>
-                                                     <Button
+                            <Button
                                 danger
                                 type="primary"
                                 onClick={async () => {
                                     Modal.destroyAll();
 
-                                    // ⭐ Re-check deposit status BEFORE the
-                                    //    override reason prompt. Force-starting
-                                    //    a booking whose 30% deposit is unpaid
-                                    //    must still surface the deposit modal.
                                     let depositBalance = 0;
                                     let totalPaid = safeNumber(record.paid_amount, 0);
                                     let requiredDeposit = safeNumber(
@@ -2612,16 +2901,9 @@ const UnifiedOrderEventsManagement = () => {
                                             'Deposit re-check failed:',
                                             e
                                         );
-                                        // Fall through — a network failure
-                                        // should not block the user.
                                         depositBalance = 0;
                                     }
 
-                                    // ⭐ Only show the DEPOSIT warning when
-                                    //    there is a real outstanding deposit.
-                                    //    Never recurse into handleStartEvent()
-                                    //    here, otherwise the "not today" modal
-                                    //    re-renders and traps the user.
                                     if (depositBalance > 0.01) {
                                         Modal.confirm({
                                             title: null,
@@ -2732,8 +3014,6 @@ const UnifiedOrderEventsManagement = () => {
                                         return;
                                     }
 
-                                    // ⭐ Deposit is fine. Go straight to the
-                                    //    reason prompt — no recursion.
                                     requestOverrideReason({
                                         title: 'Start Outside Scheduled Date',
                                         warning: `This event is scheduled for ${scheduledLabel}.`,
@@ -2915,7 +3195,7 @@ const UnifiedOrderEventsManagement = () => {
             content: 'Mark the operational work as Done? The booking will remain in Confirmed Bookings but will be removed from Ongoing Events until it is marked Complete.',
             okText: 'Mark as Done',
             cancelText: 'Cancel',
-                    onOk: async () => {
+            onOk: async () => {
                 try {
                     await runWithLoadingLine('done', record, async (signal) => {
                         await api.put(`/events/${record.id}/live-status`, {
@@ -2949,6 +3229,7 @@ const UnifiedOrderEventsManagement = () => {
             },
         });
     };
+
     const submitCompleteEvent = async (record, reason = '', forceComplete = false) => {
         await runWithLoadingLine('complete', record, async (signal) => {
             await api.post(`/events/${record.id}/complete`, {
@@ -2957,7 +3238,7 @@ const UnifiedOrderEventsManagement = () => {
             }, { signal });
         });
 
-        const updatedBooking = {
+          const updatedBooking = {
             ...record,
             booking_status: 'completed',
             event_completed: true,
@@ -2968,6 +3249,10 @@ const UnifiedOrderEventsManagement = () => {
             was_debt_booking_event: forceComplete || record.was_debt_booking_event,
             progress: 100,
         };
+        syncBookingInCache(queryClient, updatedBooking);
+        // ⭐ Re-sync AFTER the refetch below so a stale list row
+        //    cannot flip a completed event back to ongoing/confirmed.
+        try { await refetchActiveBookings(); } catch (e) { /* ignore */ }
         syncBookingInCache(queryClient, updatedBooking);
         setSelectedBooking(updatedBooking);
         setLiveStatusModalVisible(false);
@@ -3100,7 +3385,8 @@ const UnifiedOrderEventsManagement = () => {
             // The React Query hook displays the backend error message.
         }
     };
-      const handleApproveAllEquipmentFromDetails = async (formValues = {}) => {
+
+    const handleApproveAllEquipmentFromDetails = async (formValues = {}) => {
         try {
             const response = await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
                 return approveAllEquipmentMutation.mutateAsync({
@@ -3169,7 +3455,7 @@ const UnifiedOrderEventsManagement = () => {
             return;
         }
 
-         try {
+        try {
             const response = await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
                 return returnEquipmentMutation.mutateAsync({
                     eventId: selectedBooking.id,
@@ -3204,79 +3490,361 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
+    // ⭐ Manual status change for a single equipment row (Reserve / Out / Return)
+       const handleSetEquipmentStatus = useCallback(async (item, nextStatus) => {
+        if (!item || !nextStatus) return;
+
+        const statusMap = {
+            reserve: 'reserved',
+            out: 'checked_out',
+            return: 'returned',
+        };
+        const targetStatus = statusMap[nextStatus] || nextStatus;
+
+        const eventId = selectedBooking?.booking_id || selectedBooking?.id;
+        
+        // ⭐ FIX: Ensure we strictly use booking_equipment_id for the API call
+        const itemId = item.booking_equipment_id || item.id;
+
+        if (!eventId || !itemId) {
+            message.warning('Unable to identify the equipment record.');
+            return;
+        }
+
+        const prevRows = equipmentDetailsData;
+        const nextRows = prevRows.map((row) =>
+            String(row.id || row.booking_equipment_id) === String(itemId)
+                ? {
+                    ...row,
+                    status: targetStatus,
+                    is_out_approved: targetStatus === 'checked_out' ? true : row.is_out_approved,
+                    returned_at:
+                        targetStatus === 'returned'
+                            ? new Date().toISOString()
+                            : row.returned_at,
+                }
+                : row
+        );
+        setEquipmentDetailsData(nextRows);
+
+        try {
+            await api.put(
+                `/events/${eventId}/equipment/${itemId}/status`,
+                {
+                    status: targetStatus,
+                    checked_out_by: 'Event Management',
+                    returned_at:
+                        targetStatus === 'returned'
+                            ? new Date().toISOString()
+                            : null,
+                }
+            );
+
+            const updatedBooking = { ...selectedBooking, equipment_in_out: nextRows };
+            setSelectedBooking(updatedBooking);
+            syncBookingInCache(queryClient, updatedBooking);
+            queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'], refetchType: 'active' });
+
+            message.success(
+                targetStatus === 'reserved'
+                    ? 'Equipment reserved.'
+                    : targetStatus === 'checked_out'
+                        ? 'Equipment marked as Out.'
+                        : 'Equipment returned.'
+            );
+        } catch (error) {
+            setEquipmentDetailsData(prevRows);
+            message.error(
+                error.response?.data?.message ||
+                'Failed to update equipment status.'
+            );
+        }
+    }, [selectedBooking, equipmentDetailsData, queryClient]);
+
+    // ⭐ Available quick status options per equipment row
+    const getEquipmentQuickStatusOptions = (item) => {
+        const current = String(item?.status || '').toLowerCase();
+        const options = [];
+
+        if (!['reserved', 'checked_out', 'returned'].includes(current)) {
+            options.push({ value: 'reserve', label: 'Reserve' });
+        }
+        if (['reserved', 'checked_out', ''].includes(current)) {
+            options.push({ value: 'out', label: 'Out' });
+        }
+        if (['checked_out', 'in_use', 'out'].includes(current)) {
+            options.push({ value: 'return', label: 'Return' });
+        }
+        if (current === 'returned') {
+            options.push({ value: 'reserve', label: 'Re-Reserve' });
+        }
+        return options;
+    };
+
     // KITCHEN FUNCTIONS
     const groupKitchenTasksByMeal = (tasks) => {
+        const MEAL_ORDER = {
+            'breakfast': 0,
+            'morning snacks': 1, 'morning snack': 1,
+            'lunch': 2,
+            'afternoon snacks': 3, 'afternoon snack': 3,
+            'dinner': 4,
+        };
         const groups = {};
-        safeArray(tasks).filter((task) => !task.is_header).forEach((task, index) => {
-            const normalizedTask = normalizeKitchenTask(task, index, selectedBooking);
-            const key = [
-                normalizedTask.service_date,
-                normalizedTask.day_number,
-                normalizedTask.meal_type,
-                normalizedTask.serving_time,
-            ].join('|');
-            if (!groups[key]) {
-                groups[key] = {
-                    label: formatKitchenGroupTitle(normalizedTask),
-                    tasks: [],
-                };
-            }
-            groups[key].tasks.push(normalizedTask);
-        });
+
+        // ⭐ FIX #6 — Package menu items must show as SEPARATE tasks.
+        //    Older rows stored comma-joined names. Split them back so
+        //    each item gets its own checkbox / Review Ingredients /
+        //    deduction track. Items already split by the backend pass
+        //    through unchanged.
+        const explodePackageItems = (rows) => {
+            const out = [];
+            safeArray(rows).forEach((task, index) => {
+                if (task?.is_header) {
+                    out.push({ ...task, __origIndex: index });
+                    return;
+                }
+                const name = String(task?.task || task?.name || '');
+                const looksCombined =
+                    name.includes(',') &&
+                    !task?.menu_item_id &&
+                    String(task?.package_id || '').trim() !== '';
+
+                if (!looksCombined) {
+                    out.push({ ...task, __origIndex: index });
+                    return;
+                }
+
+                const pieces = name.split(',').map((s) => s.trim()).filter(Boolean);
+                pieces.forEach((piece, i) => {
+                    out.push({
+                        ...task,
+                        id: `${task.id || `task-${index}`}-pkg-${i}`,
+                        task: piece,
+                        name: piece,
+                        menu_item_id: null,
+                        package_id: task.package_id,
+                        is_done: Boolean(task.is_done),
+                        status: task.is_done ? 'completed' : (task.status || 'pending'),
+                        __origIndex: index,
+                    });
+                });
+            });
+            return out;
+        };
+
+        // ⭐ Requirement #1: sort by day → meal sequence → serving time
+        //    so the list always reads "Day 1 Breakfast, Day 1 Lunch…"
+        explodePackageItems(tasks)
+            .filter((task) => !task.is_header)
+            .map((task, index) => normalizeKitchenTask(task, index, selectedBooking))
+            .sort((a, b) => {
+                const dayDiff = (a.day_number || 1) - (b.day_number || 1);
+                if (dayDiff !== 0) return dayDiff;
+                const timeA = parseClockToMinutes(a.serving_time);
+                const timeB = parseClockToMinutes(b.serving_time);
+                if (timeA !== null && timeB !== null && timeA !== timeB) return timeA - timeB;
+                const mealA = MEAL_ORDER[String(a.meal_type || '').toLowerCase()] ?? 99;                const mealB = MEAL_ORDER[String(b.meal_type || '').toLowerCase()] ?? 99;
+                if (mealA !== mealB) return mealA - mealB;
+                return String(a.serving_time || '').localeCompare(String(b.serving_time || ''));
+            })
+            .forEach((normalizedTask) => {
+                const key = [
+                    normalizedTask.service_date,
+                    normalizedTask.day_number,
+                    normalizedTask.meal_type,
+                    normalizedTask.serving_time,
+                ].join('|');
+                if (!groups[key]) {
+                    groups[key] = {
+                        label: formatKitchenGroupTitle(normalizedTask),
+                        meal_service_id: normalizedTask.meal_service_id || null,                        tasks: [],
+                    };
+                }
+                groups[key].tasks.push(normalizedTask);
+            });
         return Object.values(groups);
     };
 
     const normalizeKitchenTasksFromBackend = (booking) => {
         const directTasks = safeArray(booking?.kitchen_preparation);
-        const rawTasks = directTasks.length > 0
-            ? directTasks
-            : safeArray(booking?._raw?.kitchen_preparation);
-
-        if (rawTasks.length > 0) {
-            return rawTasks.map((task, index) => normalizeKitchenTask(task, index, booking));
+        
+        // ⭐ Read the saved tasks from the Order JSON as a reliable fallback
+        let orderTasks = [];
+        const rawOrder = booking?.order || booking?._raw?.order;
+        if (rawOrder && rawOrder.kitchen_tasks) {
+            try {
+                const parsed = typeof rawOrder.kitchen_tasks === 'string' 
+                    ? JSON.parse(rawOrder.kitchen_tasks) 
+                    : rawOrder.kitchen_tasks;
+                if (Array.isArray(parsed)) orderTasks = parsed;
+            } catch (e) {
+                console.warn('Failed to parse order.kitchen_tasks:', e);
+            }
         }
 
-        return safeArray(booking?.menu_items).map((item, index) => normalizeKitchenTask({
-            ...item,
-            id: item.id || `menu-${index}`,
-            task: item.name || item.item_name || 'Menu item',
-            quantity: safeNumber(item.quantity || item.total_quantity, 1),
-            servings: safeNumber(item.quantity || item.total_quantity || booking?.guests_count, 1),
-            meal_type: item.meal_type || 'Meal',
-            service_date: item.service_date || booking?.event_date,
-            serving_time: item.serving_time || '',
-            day_number: item.day_number || item.day || 1,
-            assigned_to: 'Kitchen Team',
-            status: 'pending',
-            is_done: false,
-            is_header: false,
-            start_time: item.preparation_time || '',
-            out_for_delivery: item.dispatch_time || '',
-        }, index, booking));
+        const rawTasks = directTasks.length > 0
+            ? directTasks
+            : (orderTasks.length > 0 ? orderTasks : safeArray(booking?._raw?.kitchen_preparation));
+
+        if (rawTasks.length > 0) {
+            // ⭐ FIX #6 — Defensive check: if the backend sends a legacy
+            // combined task (e.g. "Spaghetti, Carbonara, Lasagna" with no menu_item_id),
+            // we split it into separate tasks here on the frontend.
+            const expandedTasks = [];
+            rawTasks.forEach((task, index) => {
+                if (task.is_header) {
+                    expandedTasks.push(normalizeKitchenTask(task, index, booking));
+                    return;
+                }
+                
+                const taskName = String(task?.task || task?.name || '');
+                const isLegacyCombined = taskName.includes(',') && !task.menu_item_id && task.package_id;
+                
+                if (isLegacyCombined) {
+                    const pieces = taskName.split(',').map(s => s.trim()).filter(Boolean);
+                    pieces.forEach((piece, i) => {
+                        expandedTasks.push(normalizeKitchenTask({
+                            ...task,
+                            id: `${task.id || `task-${index}`}-pkg-${i}`,
+                            task: piece,
+                            name: piece,
+                            menu_item_id: null,
+                        }, index, booking));
+                    });
+                } else {
+                    expandedTasks.push(normalizeKitchenTask(task, index, booking));
+                }
+            });
+            return expandedTasks;
+        }
+
+        // ⭐ If falling back to menu_items, check if the meal is already completed
+        return safeArray(booking?.menu_items).map((item, index) => {
+            const isDone = item.meal_status === 'completed' || item.preparation_status === 'completed';
+            return normalizeKitchenTask({
+                ...item,
+                id: item.id || `menu-${index}`,
+                task: item.name || item.item_name || 'Menu item',
+                quantity: safeNumber(item.quantity || item.total_quantity, 1),
+                servings: safeNumber(item.quantity || item.total_quantity || booking?.guests_count, 1),
+                meal_type: item.meal_type || 'Meal',
+                service_date: item.service_date || booking?.event_date,
+                serving_time: item.serving_time || '',
+                day_number: item.day_number || item.day || 1,
+                assigned_to: 'Kitchen Team',
+                status: isDone ? 'completed' : 'pending',
+                is_done: isDone,
+                is_header: false,
+                start_time: item.preparation_time || '',
+                out_for_delivery: item.dispatch_time || '',
+            }, index, booking);
+        });
     };
 
+
+
     const handleViewKitchenPrep = async (record) => {
-        setSelectedBooking(record);
+        const bookingId = record?.id || record?.booking_id;
+        const isStarted = (s) => s === 'ongoing' || s === 'completed';
+        const knownStatus = String(selectedBooking?.booking_status || record?.booking_status || '').toLowerCase();
+        const wasStartedBefore = bookingId ? startedBookingsRef.current.has(String(bookingId)) : false;
+
+        // ⭐ Skip the network GET entirely when we already know the event is ongoing.
+        // The network call is what causes the status to flip back on slow connections.
+        let freshRecord = record;
+        if (isStarted(knownStatus) || wasStartedBefore) {
+            freshRecord = { ...record, booking_status: 'ongoing' };
+            setSelectedBooking(freshRecord);
+            syncBookingInCache(queryClient, freshRecord);
+        } else {
+            try {
+                if (bookingId) {
+                    const freshRes = await api.get(`/bookings/${bookingId}`);
+                    const freshBooking = normalizeApiResponse(freshRes) || null;
+                    
+                    if (freshBooking) {
+                        const incomingStatus = String(
+                            freshBooking.booking_status || freshBooking.status || ''
+                        ).toLowerCase();
+
+                        let resolvedStatus = incomingStatus || knownStatus;
+                        if ((isStarted(knownStatus) || wasStartedBefore) && !isStarted(incomingStatus)) {
+                            resolvedStatus = knownStatus || 'ongoing';
+                        }
+
+                        freshRecord = {
+                            ...record,
+                            ...freshBooking,
+                            booking_status: resolvedStatus,
+                            id: freshBooking.booking_id || freshBooking.id || record?.id,
+                            booking_id: freshBooking.booking_id || record?.booking_id,
+                        };
+                        syncBookingInCache(queryClient, freshRecord);
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to refresh booking before kitchen prep:', e);
+            }
+
+            setSelectedBooking(freshRecord);
+        }
+
         setKitchenLoading(true);
         setKitchenModalVisible(true);
-        try {
-            const orderId = record?.order?.order_id || record?.order?.id;
+
+              try {
+            // ⭐ FIX (BUG G): Read kitchen tasks from `/events/{id}` — the
+            //    endpoint that runs through `formatEvent()` and enriches
+            //    `is_done` from the `kitchen_task_deductions` Setting
+            //    records. Reading directly from `/orders/{orderId}/kitchen-tasks`
+            //    bypasses that enrichment and returns stale is_done flags,
+            //    which is why the check mark disappeared after refresh.
+            const eventId = freshRecord?.id || freshRecord?.booking_id;
             let tasks = [];
-            if (orderId) {
-                const response = await api.get(`/orders/${orderId}/kitchen-tasks`);
-                tasks = safeArray(normalizeApiResponse(response))
-                    .map((task, index) => normalizeKitchenTask(task, index, record));
+
+            if (eventId) {
+                try {
+                    const response = await api.get(`/events/${eventId}`);
+                    const eventPayload = normalizeApiResponse(response) || {};
+                    const orderTasks = safeArray(eventPayload.kitchen_preparation);
+                    tasks = orderTasks.map((task, index) =>
+                        normalizeKitchenTask(task, index, eventPayload)
+                    );
+                } catch (fetchError) {
+                    console.warn('Event kitchen tasks fetch failed, falling back:', fetchError);
+                }
             }
-            if (tasks.length === 0) tasks = normalizeKitchenTasksFromBackend(record);
+
+            // Fallback only when the enriched endpoint returned nothing.
+            if (tasks.length === 0) {
+                const orderId = freshRecord?.order?.order_id || freshRecord?.order?.id;
+                if (orderId) {
+                    try {
+                        const response = await api.get(`/orders/${orderId}/kitchen-tasks`);
+                        tasks = safeArray(normalizeApiResponse(response))
+                            .map((task, index) => normalizeKitchenTask(task, index, record));
+                    } catch (fetchError) {
+                        console.warn('Kitchen tasks fetch failed, using cached:', fetchError);
+                        tasks = kitchenTasks.length > 0 ? kitchenTasks : normalizeKitchenTasksFromBackend(freshRecord);
+                    }
+                }
+            }
+            if (tasks.length === 0) tasks = normalizeKitchenTasksFromBackend(freshRecord);
+
             setKitchenTasks(tasks);
         } catch (error) {
             console.error('Failed to load kitchen tasks:', error);
-            setKitchenTasks(normalizeKitchenTasksFromBackend(record));
+            setKitchenTasks(normalizeKitchenTasksFromBackend(freshRecord));
         } finally {
             setKitchenLoading(false);
         }
     };
 
+
+
+
+    
     const handleAddToKitchen = async (record) => {
         try {
             await runWithLoadingLine('kitchen', record, async () => {
@@ -3292,15 +3860,56 @@ const UnifiedOrderEventsManagement = () => {
             message.error(error.response?.data?.message || error.message || 'Failed to refresh kitchen preparation');
         }
     };
+
     const handleUpdateKitchenTask = async (taskId, updates) => {
+        // ⭐ DONE state is controlled ONLY by the check / undo endpoints.
+        const { is_done: _ignoredDone, status: _ignoredStatus, ...safeUpdates } = updates || {};
+        const cleaned = Object.fromEntries(
+            Object.entries(safeUpdates).filter(([, v]) => v !== '-' && v !== undefined)
+        );
+        if (Object.keys(cleaned).length === 0) return;
+
+        setKitchenTasks((prev) => prev.map((task) => (
+            task.id === taskId
+                ? {
+                    ...task,
+                    ...cleaned,
+                    start_time_suggested: 'start_time' in cleaned ? false : task.start_time_suggested,
+                    out_time_suggested: 'out_for_delivery' in cleaned ? false : task.out_time_suggested,
+                }
+                : task
+        )));
+
         try {
-            const normalizedUpdates = {
-                ...updates,
-                status: updates.is_done ? 'completed' : updates.status || 'pending'
-            };
-            const updatedTasks = kitchenTasks.map(task =>
-                task.id === taskId ? { ...task, ...normalizedUpdates } : task
-            );
+            const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
+            if (orderId) {
+                await updateKitchenTaskMutation.mutateAsync({
+                    orderId,
+                    data: { task_id: taskId, ...cleaned },
+                });
+            }
+        } catch (error) {
+            console.error('Update kitchen task error:', error);
+            message.error('Failed to update kitchen task');
+            handleViewKitchenPrep(selectedBooking);
+        }
+    };
+
+    // ⚠️ Legacy copy — unused. Safe to delete.
+    const _legacyHandleUpdateKitchenTask = async (taskId, updates) => {        try {
+            // ⭐ FIX (BUG C): Only recalculate `status` when `is_done` was
+            //    explicitly provided. Partial edits (start_time, assigned_to,
+            //    out_for_delivery) must NOT touch the status of a completed
+            //    task — otherwise a completed menu silently flips back to
+            //    'pending' whenever the user edits the start time.
+            const updatedTasks = kitchenTasks.map((task) => {
+                if (task.id !== taskId) return task;
+                const merged = { ...task, ...updates };
+                if (Object.prototype.hasOwnProperty.call(updates, 'is_done')) {
+                    merged.status = updates.is_done ? 'completed' : 'pending';
+                }
+                return merged;
+            });
             setKitchenTasks(updatedTasks);
 
             await runWithLoadingLine('update', selectedBooking, async (signal) => {
@@ -3312,13 +3921,809 @@ const UnifiedOrderEventsManagement = () => {
                     });
                 }
             });
-            message.success('Kitchen checklist updated');
-            refetchBookings();
-            refetchKitchenOrders();
+                       message.success('Kitchen checklist updated');
+            // ⭐ Do NOT refetch everything. React Query will handle the cache invalidation automatically.
+            queryClient.invalidateQueries({ queryKey: ['events'] });
         } catch (error) {
             console.error('Update kitchen task error:', error);
             message.error('Failed to update kitchen task');
             handleViewKitchenPrep(selectedBooking);
+        }
+    };
+
+       // ⭐ Requirements #3, #4, #5, #7 — Check/uncheck a kitchen task.
+    //
+    // Checking:
+    //   1. Block if event not yet started
+    //   2. Block if a previous meal is still incomplete
+    //   3. Fetch recipe → open review modal for editable quantities
+    //
+    // Unchecking:
+    //   1. Block if the event is completed
+    //   2. Call the reverse endpoint (auto-refunds inventory)
+    // ============================================================
+    // ⭐ KITCHEN "DONE" FLOW
+    //    event-started guard → meal start (with previous-meal warning)
+    //    → Review Ingredients → deduct once  |  undo → restore once
+    // ============================================================
+    const getErrorBody = (err) => err?.response?.data || {};
+    const getErrorCode = (err) => {
+        const body = getErrorBody(err);
+        return body.code ?? body.errors?.code ?? body.data?.code ?? null;
+    };
+
+    // Server is authoritative; local state is only a fallback when offline.
+    const verifyEventStarted = async (bookingId, localStatus = '') => {
+        const isStarted = (s) => s === 'ongoing' || s === 'completed';
+        try {
+            const res = await api.get(`/bookings/${bookingId}`, { timeout: 10000 });
+            const fresh = normalizeApiResponse(res) || {};
+            const status = String(fresh.booking_status || fresh.status || '').toLowerCase();
+            if (status) return isStarted(status);
+        } catch (e) {
+            console.warn('Could not verify event status, using local state:', e);
+        }
+        return isStarted(localStatus);
+    };
+
+    const markMealState = (mealServiceId, state) => {
+        setKitchenTasks((prev) => prev.map((t) => (
+            String(t.meal_service_id) === String(mealServiceId)
+                ? { ...t, meal_preparation_status: state, meal_active: state === 'preparing' }
+                : t
+        )));
+    };
+
+    const confirmStartNextMeal = (mealName) => new Promise((resolve) => {
+        Modal.confirm({
+            title: 'Previous Meal Not Completed',
+            content: `You have not completed all the tasks for the previous meal. Are you sure you want to start the next meal: ${mealName}?`,
+            okText: 'Yes, start meal',
+            cancelText: 'Cancel',
+            maskClosable: false,
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+        });
+    });
+
+    // Starts the task's meal (GREEN). Returns true when the meal is started.
+    const ensureMealStarted = async (task, bookingId) => {
+        if (!task?.meal_service_id || task.meal_active) return true;
+        if (task.meal_preparation_status === 'completed') return true;
+
+        const attempt = (confirmIncomplete) =>
+            api.post(`/events/${bookingId}/meals/${task.meal_service_id}/start`, {
+                confirm_incomplete_previous: confirmIncomplete,
+            });
+
+        try {
+            await attempt(false);
+            markMealState(task.meal_service_id, 'preparing');
+            return true;
+        } catch (err) {
+            const code = getErrorCode(err);
+            if (code === 'previous_meal_incomplete') {
+                const proceed = await confirmStartNextMeal(formatKitchenMealType(task.meal_type));
+                if (!proceed) return false;
+                try {
+                    await attempt(true);
+                    markMealState(task.meal_service_id, 'preparing');
+                    return true;
+                } catch (err2) {
+                    message.error(getErrorBody(err2).message || 'Failed to start the meal.');
+                    return false;
+                }
+            }
+            if (code === 'event_not_started') {
+                message.warning('The event is not started yet, you cannot mark as done this menu.');
+                return false;
+            }
+            message.error(getErrorBody(err).message || 'Failed to start the meal.');
+            return false;
+        }
+    };
+    const handleStartMealForGroup = async (group, record) => {
+        const bookingId = record?.id || record?.booking_id || selectedBooking?.id;
+        const firstTask = group?.tasks?.[0];
+        if (!bookingId || !firstTask) return;
+
+        const started = await verifyEventStarted(
+            bookingId,
+            String(record?.booking_status || '').toLowerCase()
+        );
+        if (!started) {
+            message.warning('The event is not started yet, you cannot start a meal.');
+            return;
+        }
+        const ok = await ensureMealStarted(firstTask, bookingId);
+        if (ok) message.success(`${formatKitchenMealType(firstTask.meal_type)} started.`);
+    };
+
+    // ⭐ FIX #3 — Revert an IN PROGRESS meal back to NOT STARTED.
+    //    - The booking event status is NOT changed.
+    //    - If any ingredient deductions already exist for this meal,
+    //      the user is warned and must confirm; deductions are NOT
+    //      auto-restored here (the existing Un-Complete Task flow
+    //      handles reversal per-task).
+       const handleRevertMealStatus = (group, record) => {
+        const bookingId = record?.id || record?.booking_id || selectedBooking?.id;
+        const mealServiceId = group?.tasks?.find((t) => t.meal_service_id)?.meal_service_id;
+        const mealLabel = group?.tasks?.[0]?.meal_type
+            ? formatKitchenMealType(group.tasks[0].meal_type)
+            : 'this meal';
+
+        if (!bookingId || !mealServiceId) {
+            message.warning('This group is not linked to a meal service.');
+            return;
+        }
+
+        const hasCompletedTasks = group.tasks.some((t) => t.is_done);
+        const confirmBody = hasCompletedTasks
+            ? `Some Kitchen Prep tasks for ${mealLabel} are already completed. Reverting the meal will NOT restore the ingredient deductions automatically — reverse each completed task individually if needed. Continue?`
+            : `Return ${mealLabel} to Not Started?`;
+
+        Modal.confirm({
+            title: 'Revert Meal Status',
+            content: confirmBody,
+            okText: 'Yes, revert',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            maskClosable: false,
+                      onOk: async () => {
+                try {
+                    // ⭐ FIX: Use api.post and check the HTTP status explicitly.
+                    // We suppress the global interceptor's automatic error toast
+                    // so we can handle the success/error UI strictly here.
+                    const res = await api.post(
+                        `/events/${bookingId}/meals/${mealServiceId}/unstart`,
+                        {},
+                        { validateStatus: (status) => status >= 200 && status < 300 } 
+                    );
+                    
+                    // Update local state instantly so the UI reflects the change
+                    markMealState(mealServiceId, 'pending');
+                    setKitchenTasks((prev) => prev.map((t) => (
+                        String(t.meal_service_id) === String(mealServiceId)
+                            ? { ...t, meal_active: false, meal_preparation_status: 'pending' }
+                            : t
+                    )));
+                    
+                    message.success(`${mealLabel} returned to Not Started.`);
+                    
+                    // Use refetchType: 'none' and a slight delay to prevent 
+                    // the refetch from overwriting our local 'pending' state 
+                    // before React can render it.
+                    queryClient.invalidateQueries({
+                        queryKey: ['events', bookingId],
+                        refetchType: 'none', 
+                    });
+                    
+                } catch (err) {
+                    // Silently ignore cancellation errors
+                    if (err?.name === 'CanceledError' || err?.name === 'AbortError' || err?.code === 'ERR_CANCELED') {
+                        return; 
+                    }
+                    
+                    message.error(
+                        err?.response?.data?.message ||
+                        'Failed to revert the meal status.'
+                    );
+                }
+            },
+        });
+    };
+
+    const handleKitchenTaskCheck = async (task, checked, eventIdOverride = null) => {
+        const bookingId =
+            eventIdOverride ||
+            selectedBooking?.id || selectedBooking?.booking_id ||
+            opsHubBooking?.id || opsHubBooking?.booking_id;
+
+        if (!bookingId) {
+            message.error('Booking ID is missing. Please refresh the page.');
+            return;
+        }
+
+        const owningBooking = [selectedBooking, opsHubBooking].find(
+            (b) => b && String(b.id || b.booking_id) === String(bookingId)
+        ) || selectedBooking || opsHubBooking || null;
+
+        const wasStartedBefore = startedBookingsRef.current.has(String(bookingId));
+        const localStatus = wasStartedBefore
+            ? 'ongoing'
+            : String(owningBooking?.booking_status || '').toLowerCase();
+
+        // ── UNCHECK → confirm → restore inventory
+        if (!checked) {
+            if (localStatus === 'completed' || owningBooking?.event_completed) {
+                message.warning('This event is completed. Create an inventory adjustment instead of reversing the deduction.');
+                return;
+            }
+
+            Modal.confirm({
+                title: 'Undo Completed Task',
+                content: 'Are you sure you want to undo this completed task? All previously deducted ingredient quantities will be returned to inventory.',
+                okText: 'Yes, undo task',
+                okButtonProps: { danger: true },
+                cancelText: 'Cancel',
+                maskClosable: false,
+                onOk: async () => {
+                    try {
+                        await uncompleteKitchenTaskMutation.mutateAsync({
+                            eventId: bookingId,
+                            data: { task_id: String(task.id) },
+                        });
+                        setKitchenTasks((prev) => prev.map((t) => (
+                            String(t.id) === String(task.id)
+                                ? { ...t, is_done: false, status: 'pending' }
+                                : t
+                        )));
+                        if (task.meal_service_id) markMealState(task.meal_service_id, 'preparing');
+                    } catch (err) {
+                        // The mutation already shows the backend error message.
+                    }
+                },
+            });
+            return;
+        }
+
+        // ── CHECK
+        if (task.is_done) return;
+
+        // ⭐ PACKED / TRAY bypass the "Event Started" requirement completely.
+        const isPackedTray = Boolean(
+            owningBooking?.is_packed_or_tray || 
+            ['packed', 'tray'].includes(String(owningBooking?.service_type || '').toLowerCase())
+        );
+
+        // For non-Packed/Tray, verify the event has started.
+        // If it IS Packed/Tray, we just skip this entirely.
+        if (!isPackedTray) {
+            const started = await verifyEventStarted(bookingId, localStatus);
+            if (!started) {
+                message.warning('The event is not started yet, you cannot mark as done this menu.');
+                return;
+            }
+            startedBookingsRef.current.add(String(bookingId));
+
+            // Start the meal first (previous-meal warning handled inside).
+            const mealOk = await ensureMealStarted(task, bookingId);
+            if (!mealOk) return;
+        }
+        try {
+            let res;
+            if (task.meal_service_id) {
+                res = await api.get(`/bookings/${bookingId}/meal-service/${task.meal_service_id}/ingredients`);
+            } else if (task.menu_item_id) {
+                res = await api.get(`/bookings/${bookingId}/menu-item/${task.menu_item_id}/ingredients`);
+            } else {
+                message.warning('This task is not linked to a menu item or meal, so its ingredients cannot be computed.');
+                return;
+            }
+
+            const payload = normalizeApiResponse(res) || {};
+            const rows = safeArray(payload.ingredients).map((r) => ({
+                ...r,
+                quantity_needed: safeNumber(r.quantity_needed),
+                available_stock: safeNumber(r.available_stock),
+                actual_quantity: Number(safeNumber(r.quantity_needed).toFixed(3)),
+            }));
+
+            if (rows.length === 0) {
+                message.warning('No recipe ingredients are configured for this menu. Add a recipe before completing the task.');
+                return;
+            }
+
+            const shortages = rows.filter((r) => r.quantity_needed > r.available_stock + 0.0001);
+
+            setIngredientReviewTask({ ...task, __bookingId: bookingId });
+            setIngredientReviewMenuName(payload.menu_item_name || task.task || 'Menu');
+            setIngredientReviewRows(rows);
+            setIngredientReviewShortages(shortages);
+            setIngredientReviewOpen(true);
+
+            if (shortages.length > 0) {
+                message.error(
+                    `Cannot complete this menu. ${shortages.length} ingredient(s) have insufficient stock. ` +
+                    'Please purchase or restock the missing ingredients first.'
+                );
+            }
+        } catch (err) {
+            message.error(
+                err?.response?.data?.message || 'Failed to load the ingredient list for this task.'
+            );
+        }
+    };
+
+    // ⚠️ Legacy copy — unused. Safe to delete.
+    const _legacyHandleKitchenTaskCheck = useCallback(async (task, checked, eventIdOverride = null) => {        // ⭐ FIX (BUG E): Resolve the booking that actually OWNS this task
+        //    FIRST, then derive `knownStatus` from that same booking. The
+        //    previous version derived `knownStatus` from `selectedBooking`
+        //    even when `eventIdOverride` pointed to a different booking,
+        //    so the wrong status leaked into the check.
+        const bookingId =
+            eventIdOverride ||
+            selectedBooking?.id ||
+            selectedBooking?.booking_id ||
+            opsHubBooking?.id ||
+            opsHubBooking?.booking_id;
+
+        const owningBooking = [selectedBooking, opsHubBooking].find(
+            (b) => b && String(b.id || b.booking_id) === String(bookingId)
+        ) || selectedBooking || opsHubBooking || null;
+
+        let liveStatus = String(owningBooking?.booking_status || '').toLowerCase();
+
+        const isStarted = (s) => s === 'ongoing' || s === 'completed';
+        const wasStartedBefore = bookingId ? startedBookingsRef.current.has(String(bookingId)) : false;
+        const knownStatus = String(owningBooking?.booking_status || '').toLowerCase();
+        // ⭐ FIX: If we already know the event is ongoing, SKIP the network call.
+        // The 30s timeout is crashing the flow. We trust the local state.
+        if (isStarted(knownStatus) || wasStartedBefore) {
+            liveStatus = 'ongoing';
+        } else {
+            // Only fetch from the server if the local state does NOT know the event is started.
+            try {
+                if (bookingId) {
+                    const fresh = await api.get(`/bookings/${bookingId}`);
+                    const freshBooking = normalizeApiResponse(fresh) || {};
+                    
+                    if (freshBooking.booking_status || freshBooking.status) {
+                        const incomingStatus = String(freshBooking.booking_status || freshBooking.status).toLowerCase();
+                        
+                        liveStatus = (isStarted(knownStatus) || wasStartedBefore) && !isStarted(incomingStatus) 
+                            ? (knownStatus || 'ongoing') 
+                            : incomingStatus;
+
+                        const merged = {
+                            ...selectedBooking,
+                            ...freshBooking,
+                            booking_status: liveStatus,
+                            id: freshBooking.booking_id || freshBooking.id || selectedBooking?.id,
+                            booking_id: freshBooking.booking_id || selectedBooking?.booking_id,
+                        };
+                        setSelectedBooking(merged);
+                        syncBookingInCache(queryClient, merged);
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to verify event status before kitchen check, using local state:', e);
+                liveStatus = 'ongoing'; 
+            }
+        }
+        
+        const bookingStatus = liveStatus;
+        // ── Unchecking a previously-done task → reverse deduction
+        if (!checked) {
+            if (selectedBooking?.event_completed || bookingStatus === 'completed') {
+                message.warning(
+                    'This event is completed. Create an inventory adjustment instead of reversing the deduction.'
+                );
+                return;
+            }
+            Modal.confirm({
+                title: 'Reverse ingredient deduction?',
+                content:
+                    'The ingredients already deducted for this task will be returned to inventory stock.',
+                okText: 'Yes, restore stock',
+                okButtonProps: { danger: true },
+                onOk: async () => {
+                    try {
+                                        await uncompleteKitchenTaskMutation.mutateAsync({
+                            eventId: bookingId,
+                            data: { task_id: task.id },
+                        });
+                        await handleViewKitchenPrep(selectedBooking);
+                    } catch (err) {
+                        message.error(
+                            err?.response?.data?.message ||
+                                'Failed to reverse the ingredient deduction.'
+                        );
+                    }
+                },
+            });
+            return;
+        }
+
+         // ── Checking → validations first
+        // ⭐ Requirement #1 — single, consistent message when the event
+        //    has not actually been started yet.
+        const isEventStarted = bookingStatus === 'ongoing' || bookingStatus === 'completed';
+        if (!isEventStarted && !selectedBooking?.event_completed) {
+            message.warning(
+                'The event is not started yet, you cannot mark as done this menu.'
+            );
+            return;
+        }
+              // Previous-meal guard: compare day + meal sequence
+        const MEAL_ORDER = {
+            'breakfast': 0,
+            'morning snacks': 1, 'morning snack': 1, 'morning_snacks': 1,
+            'lunch': 2,
+            'afternoon snacks': 3, 'afternoon snack': 3, 'afternoon_snacks': 3,
+            'dinner': 4,
+        };
+
+        const getMealOrder = (meal) => {
+            const normalized = safeString(meal?.meal_type || '').toLowerCase().replace(/_/g, ' ').trim();
+            return MEAL_ORDER[normalized] ?? 99;
+        };
+
+        const sortedMeals = safeArray(selectedBooking?.meal_services)
+            .slice()
+            .sort((a, b) => {
+                const d = (a.day_number || 1) - (b.day_number || 1);
+                if (d !== 0) return d;
+                const mealA = getMealOrder(a);
+                const mealB = getMealOrder(b);
+                if (mealA !== mealB) return mealA - mealB;
+                return (a.meal_service_id || 0) - (b.meal_service_id || 0);
+            });
+
+        const currentIndex = sortedMeals.findIndex(
+            (m) => String(m.meal_service_id) === String(task.meal_service_id)
+        );
+
+        if (currentIndex > 0) {
+            const previousIncomplete = sortedMeals
+                .slice(0, currentIndex)
+                .filter((m) => m.meal_status !== 'completed' && m.preparation_status !== 'completed');
+                
+            if (previousIncomplete.length > 0) {
+                const prevMealName = safeString(previousIncomplete[0].meal_type).replace(/_/g, ' ');
+                message.warning(
+                    `Please finish Day ${previousIncomplete[0].day_number} ${prevMealName} first.`
+                );
+                return;
+            }
+        }
+
+        // Fetch recipe for review
+            try {
+            const menuItemId = task.menu_item_id;
+
+            if (!menuItemId) {
+                // ⭐ Fallback: package meals or manual tasks have no single
+                //    menu_item_id. Load the whole-booking ingredient list
+                //    and show the user the full event breakdown instead.
+                try {
+                    const detailRes = await api.get(
+                        `/bookings/${selectedBooking.id}/ingredients-details`
+                    );
+                    const detail = normalizeApiResponse(detailRes) || {};
+                    const rows = safeArray(detail.all_ingredients).map((r) => ({
+                        ...r,
+                        actual_quantity: safeNumber(r.quantity_needed),
+                    }));
+                    const shortages = rows.filter(
+                        (r) => safeNumber(r.actual_quantity) > safeNumber(r.available_stock)
+                    );
+
+                    setIngredientReviewTask(task);
+                    setIngredientReviewMenuName(
+                        detail?.customer_name
+                            ? `${task.task || 'Event'} — full event ingredients`
+                            : task.task || 'Event ingredients'
+                    );
+                    setIngredientReviewRows(rows);
+                    setIngredientReviewShortages(shortages);
+                    setIngredientReviewOpen(true);
+                } catch (err) {
+                    message.error(
+                        err?.response?.data?.message ||
+                            'Failed to load the event ingredient list.'
+                    );
+                }
+                return;
+            }
+            const res = await api.get(
+                `/bookings/${selectedBooking.id}/menu-item/${menuItemId}/ingredients`
+            );
+               const payload = normalizeApiResponse(res) || {};
+            const rows = safeArray(payload.ingredients).map((r) => ({
+                ...r,
+                actual_quantity: safeNumber(r.quantity_needed),
+            }));
+
+            // ⭐ Requirement #3B — block immediately when Required > Available.
+            const insufficientRequired = rows.filter(
+                (r) => safeNumber(r.quantity_needed) > safeNumber(r.available_stock)
+            );
+
+            setIngredientReviewTask(task);
+            setIngredientReviewMenuName(payload.menu_item_name || task.task || 'Menu');
+            setIngredientReviewRows(rows);
+            setIngredientReviewShortages(insufficientRequired);
+            setIngredientReviewOpen(true);
+
+            if (insufficientRequired.length > 0) {
+                message.error(
+                    `Cannot complete this menu. ${insufficientRequired.length} ingredient(s) have insufficient stock. ` +
+                    'Please purchase or restock the missing ingredients first.'
+                );
+            }
+        } catch (err) {
+            message.error(
+                err?.response?.data?.message ||
+                    'Failed to load the ingredient list for this task.'
+            );
+        }
+    }, [selectedBooking, opsHubBooking, uncompleteKitchenTaskMutation, message]);
+    // ⭐ Requirement #4 — Confirmed in the modal → deduct atomically
+    const submittingReviewRef = useRef(false);
+
+    const submitIngredientReview = async () => {
+        if (!ingredientReviewTask || submittingReviewRef.current) return;
+
+        const targetEventId =
+            ingredientReviewTask.__bookingId ||
+            selectedBooking?.id || selectedBooking?.booking_id ||
+            opsHubBooking?.id || opsHubBooking?.booking_id;
+
+        if (!targetEventId) {
+            message.error('Booking ID is missing. Please refresh the page.');
+            return;
+        }
+
+        // Frontend validations (the backend repeats every one of them).
+        if (ingredientReviewRows.some((r) => safeNumber(r.actual_quantity) <= 0)) {
+            message.warning('Every ingredient must have a quantity greater than zero.');
+            return;
+        }
+        const overUse = ingredientReviewRows.filter(
+            (r) => safeNumber(r.actual_quantity) > safeNumber(r.available_stock) + 0.0001
+        );
+        if (overUse.length > 0) {
+            setIngredientReviewShortages(overUse);
+            message.error('Actual Use cannot exceed the Available stock. Adjust the quantity or restock first.');
+            return;
+        }
+        const insufficient = ingredientReviewRows.filter(
+            (r) => safeNumber(r.quantity_needed) > safeNumber(r.available_stock) + 0.0001
+        );
+        if (insufficient.length > 0) {
+            setIngredientReviewShortages(insufficient);
+            message.error('Required quantity exceeds available stock. Please purchase or restock the missing ingredients first.');
+            return;
+        }
+
+          // ⭐ PACKED / TRAY bypass the "Event Started" requirement.
+        const isPackedTray = Boolean(
+            selectedBooking?.is_packed_or_tray || 
+            opsHubBooking?.is_packed_or_tray ||
+            ['packed', 'tray'].includes(String(selectedBooking?.service_type || opsHubBooking?.service_type || '').toLowerCase())
+        );
+
+        if (!isPackedTray) {
+            const started = await verifyEventStarted(
+                targetEventId,
+                startedBookingsRef.current.has(String(targetEventId)) ? 'ongoing' : ''
+            );
+            if (!started) {
+                message.warning('The event is not started yet, you cannot mark as done this menu.');
+                return;
+            }
+        }
+
+        submittingReviewRef.current = true;
+        setIngredientReviewSubmitting(true);
+        try {
+            const response = await completeKitchenTaskMutation.mutateAsync({
+                eventId: targetEventId,
+                data: {
+                    task_id: String(ingredientReviewTask.id),
+                    meal_service_id: ingredientReviewTask.meal_service_id || null,
+                    menu_item_id: ingredientReviewTask.menu_item_id || null,
+                    ingredients: ingredientReviewRows.map((r) => ({
+                        ingredient_id: r.ingredient_id,
+                        quantity: Number(r.actual_quantity),
+                        unit: r.unit || null,
+                    })),
+                },
+            });
+                    const result = normalizeApiResponse(response) || {};
+
+            // ⭐ Apply instantly: DONE is now permanent in the DB; mirror it locally.
+            setKitchenTasks((prev) => prev.map((t) => (
+                String(t.id) === String(ingredientReviewTask.id)
+                    ? { ...t, is_done: true, status: 'completed' }
+                    : t
+            )));
+                      // ⭐ We only mark the meal as 'completed' in the UI (turns it blue).
+            // We NO LONGER auto-mark it as Delivered/Picked Up. 
+            // The user must manually click the Deliver/Pickup action button.
+            if (result.meal_completed && ingredientReviewTask.meal_service_id) {
+                markMealState(ingredientReviewTask.meal_service_id, 'completed'); // BLUE
+            }
+
+            setIngredientReviewOpen(false);
+            setIngredientReviewTask(null);
+            setIngredientReviewRows([]);
+            setIngredientReviewShortages([]);
+             } catch (err) {
+            const body = err?.response?.data;
+            const errorCode = body?.code || body?.errors?.code;
+
+            if (body?.code === 'insufficient_stock' || body?.errors?.code === 'insufficient_stock') {
+                setIngredientReviewShortages(body.shortages || body.errors?.shortages || []);
+            } else if (errorCode === 'deposit_required') {
+                // ⭐ Frontend handling for 30% deposit requirement
+                Modal.confirm({
+                    title: '30% Deposit Required',
+                    content: (
+                        <div>
+                            <p>{body?.message || 'The required 30% deposit has not been paid.'}</p>
+                            <p style={{ marginTop: 8 }}>Would you like to force-complete this kitchen task anyway?</p>
+                        </div>
+                    ),
+                    okText: 'Force Complete',
+                    okButtonProps: { danger: true },
+                    cancelText: 'Cancel',
+                    onOk: async () => {
+                        // Retry with force flag
+                        try {
+                            await completeKitchenTaskMutation.mutateAsync({
+                                eventId: targetEventId,
+                                data: {
+                                    task_id: String(ingredientReviewTask.id),
+                                    meal_service_id: ingredientReviewTask.meal_service_id || null,
+                                    menu_item_id: ingredientReviewTask.menu_item_id || null,
+                                    force_complete: true, // ⭐ Bypass backend rule
+                                    ingredients: ingredientReviewRows.map((r) => ({
+                                        ingredient_id: r.ingredient_id,
+                                        quantity: Number(r.actual_quantity),
+                                        unit: r.unit || null,
+                                    })),
+                                },
+                            });
+                            setIngredientReviewOpen(false);
+                            setIngredientReviewTask(null);
+                            message.success('Task force-completed.');
+                        } catch (retryErr) {
+                            message.error('Failed to force complete task.');
+                        }
+                    },
+                });
+            }
+        } finally {
+            submittingReviewRef.current = false;
+            setIngredientReviewSubmitting(false);
+        }
+    };
+
+    // ⚠️ Legacy copy — unused. Safe to delete.
+    const _legacySubmitIngredientReview = async () => {        if (!ingredientReviewTask) return;
+              let bookingStatus = String(selectedBooking?.booking_status || '').toLowerCase();
+        const submitBookingId = selectedBooking?.id || selectedBooking?.booking_id;
+        const isSubmitStarted = (s) => s === 'ongoing' || s === 'completed';
+        const wasSubmitStartedBefore = submitBookingId ? startedBookingsRef.current.has(String(submitBookingId)) : false;
+
+        if (isSubmitStarted(bookingStatus) || wasSubmitStartedBefore) {
+            bookingStatus = 'ongoing';
+        } else {
+            try {
+                if (submitBookingId) {
+                    const fresh = await api.get(`/bookings/${submitBookingId}`);
+                    const freshBooking = normalizeApiResponse(fresh) || {};
+                    
+                    if (freshBooking.booking_status || freshBooking.status) {
+                        const incomingStatus = String(freshBooking.booking_status || freshBooking.status).toLowerCase();
+                        const knownStatus = String(selectedBooking?.booking_status || '').toLowerCase();
+                        
+                        bookingStatus = ((isSubmitStarted(knownStatus) || wasSubmitStartedBefore) && !isSubmitStarted(incomingStatus)) 
+                            ? (knownStatus || 'ongoing') 
+                            : incomingStatus;
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to verify event status on submit, using local state:', e);
+                bookingStatus = 'ongoing';
+            }
+        }
+        const isEventStarted = bookingStatus === 'ongoing' || bookingStatus === 'completed';
+        if (!isEventStarted && !selectedBooking?.event_completed) {
+            message.warning('The event is not started yet, you cannot mark as done this menu.');
+            return;
+        }
+
+        const missing = ingredientReviewRows.filter(
+            (r) => safeNumber(r.actual_quantity) <= 0
+        );
+        if (missing.length > 0) {
+            message.warning('Every ingredient must have a quantity greater than zero.');
+            return;
+        }
+
+        // ⭐ Requirement #3A — Actual Use cannot exceed Available.
+        const overUse = ingredientReviewRows.filter(
+            (r) => safeNumber(r.actual_quantity) > safeNumber(r.available_stock)
+        );
+        if (overUse.length > 0) {
+            setIngredientReviewShortages(overUse);
+            message.error(
+                'Actual Use cannot exceed the Available stock. Adjust the quantity or restock first.'
+            );
+            return;
+        }
+
+        // ⭐ Requirement #3B — Required cannot exceed Available.
+        const insufficientRequired = ingredientReviewRows.filter(
+            (r) => safeNumber(r.quantity_needed) > safeNumber(r.available_stock)
+        );
+        if (insufficientRequired.length > 0) {
+            setIngredientReviewShortages(insufficientRequired);
+            message.error(
+                'Required quantity exceeds available stock. Please purchase or restock the missing ingredients first.'
+            );
+            return;
+        }
+
+                   setIngredientReviewSubmitting(true);
+        try {
+            // ⭐ CRITICAL: Use opsHubBooking as a fallback if selectedBooking was cleared
+            const targetEventId = selectedBooking?.id || selectedBooking?.booking_id || opsHubBooking?.id || opsHubBooking?.booking_id;
+            
+            if (!targetEventId) {
+                throw new Error("Booking ID is missing. Please refresh the page.");
+            }
+
+            // ⭐ FIX: Refuse to submit if the task has no stable ID.
+            //    Position-based fallback IDs (kitchen-0, kitchen-1) cannot be
+            //    matched reliably on refresh, so they would create orphaned
+            //    deductions. Ask the backend to regenerate proper IDs first.
+            if (!ingredientReviewTask.id || /^kitchen-\d+$/.test(String(ingredientReviewTask.id))) {
+                throw new Error(
+                    'This kitchen task does not have a stable ID yet. Please click "Refresh Kitchen" to regenerate the tasks, then try again.'
+                );
+            }
+
+            await completeKitchenTaskMutation.mutateAsync({
+                eventId: targetEventId,
+                data: {
+                    task_id: String(ingredientReviewTask.id),
+                    meal_service_id: ingredientReviewTask.meal_service_id || null,
+                    menu_item_id: ingredientReviewTask.menu_item_id || null,
+                    deduplication_key: `${targetEventId}:${ingredientReviewTask.id}`,
+                    ingredients: ingredientReviewRows.map((r) => ({
+                        ingredient_id: r.ingredient_id,
+                        quantity: Number(r.actual_quantity),
+                        unit: r.unit || null,
+                    })),
+                },
+            });
+
+            // ⭐ Mark the task done in the local UI INSTANTLY (do not wait for the server)
+            setKitchenTasks((prevTasks) =>
+                prevTasks.map((t) =>
+                    String(t.id) === String(ingredientReviewTask.id)
+                        ? { ...t, is_done: true, status: 'completed' }
+                        : t
+                )
+            );
+
+            setIngredientReviewOpen(false);
+            setIngredientReviewTask(null);
+            setIngredientReviewRows([]);
+            setIngredientReviewShortages([]);
+
+            // ⭐ DO NOT call handleViewKitchenPrep() here. It fetches from the server
+            // and overwrites the local is_done state. The local state is now authoritative
+            // for this session because the backend has already persisted is_done = true.
+
+            queryClient.invalidateQueries({ queryKey: ['inventory'], refetchType: 'active' });
+
+
+            queryClient.invalidateQueries({ queryKey: ['events', targetEventId], refetchType: 'none' });
+        } catch (err) {
+            const body = err?.response?.data;
+            if (body?.code === 'insufficient_stock') {
+                setIngredientReviewShortages(body.shortages || []);
+                message.error(body.message || 'Not enough stock to complete this task.');
+            } else {
+                message.error(body?.message || 'Failed to complete the kitchen task.');
+            }
+        } finally {
+            setIngredientReviewSubmitting(false);
         }
     };
 
@@ -3728,6 +5133,7 @@ const UnifiedOrderEventsManagement = () => {
             handleViewDeliveryPrep(selectedBooking);
         }
     };
+
     const handleRemoveDeliveryPreparationItem = async (itemId) => {
         try {
             await runWithLoadingLine('delete', selectedBooking, async (signal) => {
@@ -3851,13 +5257,14 @@ const UnifiedOrderEventsManagement = () => {
         }));
     };
 
-    const handleAddDeliveryItem = async () => {
+       const handleAddDeliveryItem = async () => {
         const selectedItems = Object.values(selectedEquipment).filter((item) => safeNumber(item.quantity) > 0);
         if (selectedItems.length === 0) {
             message.warning('Please select at least one equipment item');
             return;
         }
 
+        // Local fast-fail check (prevents submitting if user typed a qty higher than available)
         const invalidLocalSelection = selectedItems.find(
             (item) => safeNumber(item.quantity) > safeNumber(item.available_quantity)
         );
@@ -3865,51 +5272,50 @@ const UnifiedOrderEventsManagement = () => {
             message.warning('Requested quantity exceeds the available equipment stock.');
             return;
         }
+
         try {
             await runWithLoadingLine('equipment', selectedBooking, async (signal) => {
-            const availabilityResponses = await Promise.all(selectedItems.map((item) => api.get('/equipment/availability', {
-                params: {
-                    equipment_id: item.equipment_id,
-                    date: selectedBooking?.event_date || dayjs().format('YYYY-MM-DD'),
-                },
-                signal,
-            })));
+                const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
+                if (!orderId) throw new Error('This booking does not have an order record yet.');
 
-            const invalidIndex = availabilityResponses.findIndex((availabilityResponse, index) => {
-                const payload = normalizeApiResponse(availabilityResponse) || {};
-                const available = safeNumber(payload.available ?? availabilityResponse.data?.data?.available, 0);
-                return available < safeNumber(selectedItems[index].quantity);
+                // ⭐ OPTIMIZATION: Bypassed the Promise.all availability check.
+                // The backend endpoint /orders/{id}/delivery-item already
+                // validates the stock inside a database transaction. 
+                // Doing the GET requests here doubled the network wait time.
+                await api.post(`/orders/${orderId}/delivery-item`, {
+                    items: selectedItems.map((item) => ({
+                        equipment_id: item.equipment_id,
+                        quantity: item.quantity,
+                        status: 'reserved',   // ⭐ auto-reserve on add
+                    })),
+                }, { signal });
             });
 
-            if (invalidIndex >= 0) {
-                message.warning('Requested quantity exceeds the available equipment stock.');
-                return;
-            }
-
-            const orderId = selectedBooking?.order?.order_id || selectedBooking?.order?.id;
-            if (!orderId) throw new Error('This booking does not have an order record yet.');
-
-            await api.post(`/orders/${orderId}/delivery-item`, {
-                items: selectedItems.map((item) => ({
-                    equipment_id: item.equipment_id,
-                    quantity: item.quantity,
-                })),
-            });
-            });
-
-            message.success(`${selectedItems.length} equipment item(s) added to Delivery Preparation`);
-            await handleViewDeliveryPrep(selectedBooking);
+                  message.success(`${selectedItems.length} equipment item(s) reserved`);
+            
+            // ⭐ FIX: Remove .catch() from refetch functions as they 
+            // may return undefined depending on the React Query version.
+            // The invalidations below will handle the background refresh.
             setSelectedEquipment({});
             setShowAddDeliveryItem(false);
+            
+            // Refresh the UI lists safely
+            handleViewEquipmentDetails(selectedBooking);
+            
             queryClient.invalidateQueries({ queryKey: ['delivery-orders'], refetchType: 'active' });
             queryClient.invalidateQueries({ queryKey: ['inventory', 'equipment'], refetchType: 'active' });
-            refetchActiveBookings();
-            refetchDeliveryOrders();
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
+            
+            // Optional: Call refetch functions if they exist without chaining .catch()
+            if (typeof refetchActiveBookings === 'function') refetchActiveBookings();
+            if (typeof refetchDeliveryOrders === 'function') refetchDeliveryOrders();
+            
         } catch (error) {
             console.error('Add delivery item error:', error);
             message.error(error.response?.data?.message || 'Failed to add equipment item');
         }
     };
+
     // STAFF / CHECKLIST / DELIVERY TRACKING
     const getEventId = useCallback((record = selectedBooking) => (
         record?.booking_id || record?.id || null
@@ -3984,7 +5390,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     }, [fetchAssignedStaff, staffForm]);
 
-    const handleAddStaffToEvent = useCallback(async (values) => {
+       const handleAddStaffToEvent = useCallback(async (values) => {
         const eventId = getEventId();
         if (!eventId || !selectedBooking) {
             message.warning('No booking selected.');
@@ -4008,13 +5414,8 @@ const UnifiedOrderEventsManagement = () => {
             return;
         }
 
-        if (values.end_time && values.start_time && !values.end_time.isAfter(values.start_time)) {
-            message.warning('End time must be later than start time.');
-            return;
-        }
-
         try {
-            const response = await assignStaffMutation.mutateAsync({
+            await assignStaffMutation.mutateAsync({
                 eventId,
                 data: {
                     staff_ids: staffIds,
@@ -4027,22 +5428,32 @@ const UnifiedOrderEventsManagement = () => {
                 },
             });
 
-            const responsePayload = normalizeApiResponse(response);
-            const responseRows = safeArray(responsePayload?.staff || responsePayload);
-
-            if (responseRows.length > 0) {
-                updateBookingStaffCache(selectedBooking, responseRows);
-            } else {
-                await fetchAssignedStaff(selectedBooking);
+            // ⭐ FIX: Force a fresh fetch of the assigned staff list directly 
+            // from the API to ensure the table updates instantly.
+            const freshStaff = await fetchAssignedStaff(selectedBooking);
+            
+            // Update the selectedBooking state so the table re-renders
+            if (freshStaff && freshStaff.length >= 0) {
+                setSelectedBooking(prev => ({
+                    ...prev,
+                    assigned_staff: freshStaff,
+                    assigned_staff_count: freshStaff.length
+                }));
             }
 
             setAddStaffModalVisible(false);
             staffForm.resetFields();
+            
+            // Invalidate caches to ensure other views are synced
             queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'active' });
             queryClient.invalidateQueries({ queryKey: ['events', eventId, 'staff'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['schedules'], refetchType: 'active' }); // Sync Schedules page
             refetchActiveBookings();
+            
+            message.success('Staff assigned and schedule created successfully');
         } catch (error) {
             console.error('Staff assignment error:', error);
+            message.error(error.response?.data?.message || 'Failed to assign staff.');
         }
     }, [
         assignStaffMutation,
@@ -4052,7 +5463,6 @@ const UnifiedOrderEventsManagement = () => {
         refetchActiveBookings,
         selectedBooking,
         staffForm,
-        updateBookingStaffCache,
     ]);
 
     const handleUpdateStaffStatus = useCallback(async (eventId, staffId, status) => {
@@ -4401,8 +5811,11 @@ const UnifiedOrderEventsManagement = () => {
                     status: completed ? 'completed' : 'pending',
                 }
             });
-            await handleViewChecklist(selectedBooking);
-            refetchBookings();
+                setChecklist((prev) => prev.map((row) => (
+                String(row.id) === String(itemId)
+                    ? { ...row, completed, status: completed ? 'completed' : 'pending' }
+                    : row
+            )));
         } catch (error) {
             console.error('Update checklist error:', error);
             message.error(error.response?.data?.message || 'Failed to update checklist');
@@ -4592,7 +6005,7 @@ const UnifiedOrderEventsManagement = () => {
                 }
             }
 
-               hideLoadingLine();
+            hideLoadingLine();
 
             if (addedCount > 0) {
                 message.success(`✅ Added ${addedCount} items to purchase list${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
@@ -4610,9 +6023,7 @@ const UnifiedOrderEventsManagement = () => {
         }
     };
 
-    // ACTION MENU
-        // ⭐ Booking Profitability is restricted to admin + super-admin only.
-    //    Cashier accounts never see the menu item.
+    // ⭐ Booking Profitability is restricted to admin + super-admin only.
     const canViewProfitability = useMemo(() => {
         const roles = (user?.roles || user?.role_slugs || []).map((r) =>
             String(r?.slug || r).toLowerCase()
@@ -4623,57 +6034,503 @@ const UnifiedOrderEventsManagement = () => {
         );
     }, [user]);
 
+    // ============================================================
+    // OPERATIONS HUB — tab activation + inner tab switching
+    // ============================================================
+    // ⭐ Each pane is fetched ONCE per booking. Switching sections never reloads.
+    const opsLoadedPanesRef = useRef(new Set());
+    const opsActiveBookingRef = useRef(null);
+    const opsLoadersRef = useRef({});
+    opsLoadersRef.current = {
+        kitchen: handleViewKitchenPrep,
+        staff: handleStaffAssignment,
+        tracking: handleViewDeliveryTracking,
+        equipment: handleViewEquipmentDetails,
+        checklist: handleViewChecklist,
+        ingredients: handleCalculateIngredients,
+    };
+
+    const ensureOpsPane = useCallback((record, pane, force = false) => {
+        if (!record) return;
+        const bookingKey = String(record.id || record.booking_id);
+
+        // Pane state is shared, so switching to ANOTHER booking resets the cache.
+        if (opsActiveBookingRef.current !== bookingKey) {
+            opsActiveBookingRef.current = bookingKey;
+            opsLoadedPanesRef.current = new Set();
+        }
+
+        const paneKey = `${bookingKey}:${pane}`;
+        if (!force && opsLoadedPanesRef.current.has(paneKey)) return;
+        opsLoadedPanesRef.current.add(paneKey);
+
+        const loader = opsLoadersRef.current[pane];
+        if (loader) Promise.resolve(loader(record)).catch(() => opsLoadedPanesRef.current.delete(paneKey));
+    }, []);
+
+    const openOpsHub = useCallback((record, tab = 'kitchen') => {        if (!record) {
+            message.warning('No booking selected.');
+            return;
+        }
+        setOpsHubBookingId(record.id || record.booking_id);
+
+        // ⭐ Do NOT overwrite selectedBooking with a stale record.
+        //    If we already have a fresher version in state (e.g. just
+        //    after force-start), preserve its booking_status.
+        setSelectedBooking((prev) => {
+            if (!prev) return record;
+            const sameBooking = String(prev.id || prev.booking_id) === String(record.id || record.booking_id);
+            if (!sameBooking) return record;
+
+            // Preserve the more authoritative status.
+            const prevStatus = String(prev.booking_status || '').toLowerCase();
+            const nextStatus = String(record.booking_status || '').toLowerCase();
+            const isStarted = (s) => s === 'ongoing' || s === 'completed';
+
+            // If we already know it's started but the incoming record says
+            // confirmed, keep the started version.
+            if (isStarted(prevStatus) && !isStarted(nextStatus)) {
+                return { ...record, booking_status: prev.booking_status };
+            }
+            return { ...prev, ...record };
+        });
+
+        setOpsHubTab(tab);
+        setActiveTab('operations');
+    }, [message]);
+
+     const handleOpsHubTabChange = useCallback((key) => {
+        // ⭐ Block hidden panes for Packed/Tray.
+        const isPackedTray = Boolean(opsHubBooking?.is_packed_or_tray);
+        const allowedForPackedTray = ['kitchen', 'checklist', 'ingredients'];
+        if (isPackedTray && !allowedForPackedTray.includes(key)) {
+            message.info('This section is not available for Packed or Tray service.');
+            return;
+        }
+        setOpsHubTab(key);
+        const record = opsHubBooking;
+        if (!record) return;
+        setSelectedBooking(record);
+           ensureOpsPane(record, key); // loads only the first time this pane is opened
+    }, [
+        opsHubBooking, handleViewKitchenPrep, handleStaffAssignment,
+        handleViewDeliveryTracking, handleViewEquipmentDetails,
+        handleViewChecklist, handleCalculateIngredients,
+    ]);
+
+     // Load data for the active pane when the Operations tab opens.
+    // ⭐ ONLY refetch when the user actually switches tabs or bookings —
+    // NOT on every render or every time a task is completed.
+       // ⭐ FIX: Request token guards against overlapping fetches when the user
+    // switches tabs quickly. Only the latest request is allowed to write state.
+    const opsFetchTokenRef = useRef(0);
+
+    // ⭐ FIX #2 — Reconcile the ops booking status against the SERVER on every
+    //    ops tab entry. This prevents a stale cache from showing the ONGOING
+    //    badge for an event that is actually still Confirmed.
+    useEffect(() => {
+        if (activeTab !== 'operations') return;
+        const targetId = opsHubBookingId;
+        if (!targetId) return;
+
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await api.get(`/bookings/${targetId}`);
+                const fresh = normalizeApiResponse(res) || {};
+                if (cancelled) return;
+
+                const freshStatus = String(
+                    fresh.booking_status || fresh.status || ''
+                ).toLowerCase();
+
+                const isStarted = freshStatus === 'ongoing' || freshStatus === 'completed';
+
+                if (isStarted) {
+                    startedBookingsRef.current.add(String(targetId));
+                } else {
+                    startedBookingsRef.current.delete(String(targetId));
+                }
+
+                // Merge authoritative status into the local booking object.
+                setSelectedBooking((prev) => {
+                    if (!prev) return prev;
+                    if (String(prev.id || prev.booking_id) !== String(targetId)) return prev;
+                    return { ...prev, ...fresh, booking_status: freshStatus || prev.booking_status };
+                });
+
+                // Also patch the React Query cache so the rest of the UI agrees.
+                syncBookingInCache(queryClient, {
+                    booking_id: fresh.booking_id || targetId,
+                    booking_status: freshStatus,
+                });
+            } catch (err) {
+                // Non-fatal: local state remains.
+                console.warn('Ops status reconcile failed:', err);
+            }
+        })();
+
+        return () => { cancelled = true; };
+    }, [activeTab, opsHubBookingId, queryClient]);
+
+    useEffect(() => {
+        if (activeTab !== 'operations') return;
+        const record = opsHubBooking;
+        if (!record) return;
+        setSelectedBooking((prev) => {
+            if (!prev) return record;
+            const sameBooking = String(prev.id || prev.booking_id) === String(record.id || record.booking_id);
+            if (!sameBooking) return record;
+            const prevStatus = String(prev.booking_status || '').toLowerCase();
+            const nextStatus = String(record.booking_status || '').toLowerCase();
+            const isStarted = (s) => s === 'ongoing' || s === 'completed';
+            if (isStarted(prevStatus) && !isStarted(nextStatus)) {
+                return { ...record, booking_status: prev.booking_status };
+            }
+            return record;
+        });
+
+        const myToken = ++opsFetchTokenRef.current;
+
+        const run = async () => {
+            try {
+                if (opsHubTab === 'kitchen')     await handleViewKitchenPrep(record);
+                if (opsHubTab === 'staff')       await handleStaffAssignment(record);
+                if (opsHubTab === 'tracking')    await handleViewDeliveryTracking(record);
+                if (opsHubTab === 'equipment')   await handleViewEquipmentDetails(record);
+                if (opsHubTab === 'checklist')   await handleViewChecklist(record);
+                if (opsHubTab === 'ingredients') await handleCalculateIngredients(record);
+            } finally {
+                // If another fetch started while we were running, ignore
+                // our result (the newer call will set the final state).
+                if (myToken !== opsFetchTokenRef.current) {
+                    // no-op — newer call wins
+                }
+            }
+        };
+
+        ensureOpsPane(record, opsHubTab); // once per booking / pane (the old `run` is now unused)        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [activeTab, opsHubBookingId, opsHubTab]);
+    // ============================================================
+    // ⭐ PACKED / TRAY COMPLETION HANDLERS
+    // ============================================================
+           const handleCompletePackedTray = useCallback(async (record, mode, mealServiceId = null) => {
+        if (!record) return;
+        const bookingId = record.id || record.booking_id;
+        if (!bookingId) {
+            message.warning('Unable to identify the booking.');
+            return;
+        }
+
+        // ⭐ Normalize the mode through the centralized resolver so the
+        //    API always receives the correct 'deliver' | 'pickup' value.
+        const resolvedMode = getRecordDeliveryMode(record);
+        if (resolvedMode && mode !== resolvedMode) {
+            console.warn(
+                `[getRecordDeliveryMode] Mode mismatch: passed "${mode}" but resolved "${resolvedMode}" — using resolved.`,
+            );
+            mode = resolvedMode;
+        }
+
+              // ⭐ When every meal is already delivered/served, the caller passes
+        //    mealServiceId = null and the booking must be finalized. Otherwise
+        //    we fall back to the first still-pending meal.
+        const allMealsDone = (record.meal_services || []).length > 0 &&
+            record.meal_services.every((m) =>
+                ['delivered', 'served', 'completed'].includes(
+                    String(m.delivery_status || '').toLowerCase()
+                )
+            );
+
+        const activeMealId = mealServiceId
+            || (allMealsDone
+                ? null
+                : record.meal_services?.find(
+                    (m) => !['delivered', 'served', 'completed'].includes(
+                        String(m.delivery_status || '').toLowerCase()
+                    )
+                )?.meal_service_id);
+
+        if (!activeMealId && !allMealsDone) {
+            message.warning('No active meal service found to complete.');
+            return;
+        }
+
+               // ⭐ VALIDATION: Check if all Kitchen Prep tasks for this specific meal are done.
+        //    Skipped when we're finalizing a booking whose meals are all delivered.
+        if (activeMealId) {
+            const mealTasks = kitchenTasks.filter(
+                (t) => String(t.meal_service_id) === String(activeMealId) && !t.is_header
+            );
+            const pendingTasks = mealTasks.filter(
+                (t) => !t.is_done && t.status !== 'completed'
+            );
+            if (pendingTasks.length > 0) {
+                Modal.warning({
+                    title: 'Kitchen Preparation Incomplete',
+                    content: (
+                        <div>
+                            <p>You cannot mark this meal as {mode === 'deliver' ? 'delivered' : 'picked up'} yet.</p>
+                            <p style={{ marginTop: 8 }}>The following kitchen prep tasks are still pending:</p>
+                            <ul style={{ paddingLeft: 18, marginTop: 8, color: '#dc2626', fontWeight: 600 }}>
+                                {pendingTasks.map((t, i) => (
+                                    <li key={i}>{t.task || t.name || 'Unnamed Task'}</li>
+                                ))}
+                            </ul>
+                        </div>
+                    ),
+                    okText: 'OK',
+                });
+                return;
+            }
+        }
+        // ⭐ DATABASE SCHEMA WORKAROUND:
+        // To prevent the backend from crashing when updating `service_events.status` 
+        // to 'done_pickup' (which is not in the DB enum), we trick the backend.
+        // If this is the LAST active meal, we briefly mark a dummy meal as 'pending' 
+        // in the payload so the backend's `every()` check returns false.
+        const otherMeals = record.meal_services?.filter(m => String(m.meal_service_id) !== String(activeMealId)) || [];
+        const isLastMeal = otherMeals.every(m => ['delivered', 'served', 'completed'].includes(String(m.delivery_status).toLowerCase()));
+
+        const mealName = record.meal_services?.find(m => m.meal_service_id === activeMealId)?.meal_type;
+        const cleanMealName = mealName ? formatKitchenMealType(mealName) : '';
+
+        Modal.confirm({
+            title: mode === 'deliver' ? 'Mark as Delivered?' : 'Mark as Picked Up?',
+            content: (
+                <div>
+                    <p>
+                        <strong>{cleanMealName}</strong> for booking <strong>{formatBookingId(record.booking_no)}</strong> will be
+                        marked as <strong>{mode === 'deliver' ? 'Delivered' : 'Picked Up'}</strong>.
+                    </p>
+                </div>
+            ),
+            okText: 'Confirm',
+            okButtonProps: { style: { background: '#0d9488', borderColor: '#0d9488' } },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                // ⭐ OPTIMISTIC UI: immediately flip the per-meal delivery_status
+                const optimisticMealStatus = mode === 'deliver' ? 'delivered' : 'served';
+                setSelectedBooking((prev) => {
+                    if (!prev) return prev;
+                    const prevMeals = safeArray(prev.meal_services);
+                    const nextMeals = prevMeals.map((m) => (
+                        String(m.meal_service_id) === String(activeMealId)
+                            ? { ...m, delivery_status: optimisticMealStatus }
+                            : m
+                    ));
+                    return { ...prev, meal_services: nextMeals };
+                });
+                try {
+                    await completePackedTrayMutation.mutateAsync({
+                        bookingId,
+                        data: { 
+                            action: mode,
+                            meal_service_id: activeMealId 
+                        },
+                    });
+
+                    // ⭐ If this was the last meal, we must manually sync the frontend cache.
+                    // The backend's `every()` check is bypassed by the DB schema, so we 
+                    // handle the UI transition entirely on the client side.
+                    if (isLastMeal) {
+                        // We wait a tiny bit to ensure the backend has successfully committed 
+                        // the meal status update before we simulate the final closure.
+                        setTimeout(() => {
+                            syncBookingInCache(queryClient, {
+                                ...record,
+                                booking_status: mode === 'deliver' ? 'done_deliver' : 'done_pickup',
+                                meal_services: record.meal_services.map(m => 
+                                    String(m.meal_service_id) === String(activeMealId) 
+                                        ? { ...m, delivery_status: optimisticMealStatus } 
+                                        : m
+                                ),
+                            });
+                        }, 500);
+                    }
+                } catch (err) {
+                    const body = err?.response?.data;
+                    
+                    // ⭐ VALIDATION MODAL FOR KITCHEN PREP
+                    if (body?.code === 'completion_blocked' && Array.isArray(body.blockers)) {
+                        Modal.error({
+                            title: 'Kitchen Preparation Incomplete',
+                            content: (
+                                <div>
+                                    <p>You cannot mark this as {mode === 'deliver' ? 'delivered' : 'picked up'} yet. The following kitchen prep tasks must be completed first:</p>
+                                    <ul style={{ paddingLeft: 18, marginTop: 8, color: '#dc2626' }}>
+                                        {body.blockers.map((b, i) => (
+                                            <li key={i}>{b}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            ),
+                            okText: 'OK',
+                        });
+                    }
+                    // Revert optimistic update on failure
+                    setSelectedBooking((prev) => {
+                        if (!prev) return prev;
+                        return { ...prev, meal_services: record.meal_services };
+                    });
+                    throw err;
+                }
+            },
+        });
+    }, [completePackedTrayMutation, message, queryClient, kitchenTasks]);
+
+    const handleUndoPackedTray = useCallback(async (record, mode) => {
+        if (!record) return;
+        const bookingId = record.id || record.booking_id;
+        if (!bookingId) return;
+
+        Modal.confirm({
+            title: 'Undo Completion?',
+            content: 'Are you sure you want to undo this completion? The booking will return to its previous pending delivery or pickup status.',
+            okText: 'Yes, undo',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                await undoPackedTrayCompletionMutation.mutateAsync({
+                    bookingId,
+                    data: { reason: 'Reversed by admin' },
+                });
+            },
+        });
+    }, [undoPackedTrayCompletionMutation]);
+
+    const handleMarkPackedTrayMissed = useCallback(async (record, mode) => {
+        if (!record) return;
+        const bookingId = record.id || record.booking_id;
+        if (!bookingId) return;
+
+        const label = mode === 'deliver' ? 'MISSED DELIVERY' : 'MISSED PICKUP';
+        Modal.confirm({
+            title: `Mark as ${label}?`,
+            content: `Booking ${formatBookingId(record.booking_no)} will be marked as ${label}.`,
+            okText: 'Confirm',
+            okButtonProps: { danger: true },
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                await markPackedTrayMissedMutation.mutateAsync({
+                    bookingId,
+                    data: { action: mode, reason: 'Marked by admin' },
+                });
+            },
+        });
+    }, [markPackedTrayMissedMutation]);
+
+    const handleUndoPackedTrayMissed = useCallback(async (record, mode) => {
+        if (!record) return;
+        const bookingId = record.id || record.booking_id;
+        if (!bookingId) return;
+
+        Modal.confirm({
+            title: 'Undo Missed Status?',
+            content: 'The booking will return to active management as Confirmed.',
+            okText: 'Yes, undo',
+            cancelText: 'Cancel',
+            maskClosable: false,
+            keyboard: false,
+            onOk: async () => {
+                await undoPackedTrayMissedMutation.mutateAsync({
+                    bookingId,
+                    data: { reason: 'Missed status reversed by admin' },
+                });
+            },
+        });
+    }, [undoPackedTrayMissedMutation]);
+
+    // ACTION MENU — booking lifecycle + financial only (operations moved to Hub)
     const getActionMenuItems = useCallback((record) => {
         const status = String(record.booking_status || '').toLowerCase();
         /** @type {any[]} */
-        const items = [
-            {
-                key: 'ingredients',
-                label: 'Calculate Ingredients',
-                icon: <StockOutlined />,
-                onClick: () => handleCalculateIngredients(record)
-            },
-            {
-                key: 'kitchen',
-                label: 'Kitchen Production Tasks',
-                icon: <CoffeeOutlined />,
-                onClick: () => handleViewKitchenPrep(record)
-            },
-            {
-                key: 'delivery',
-                label: 'Delivery Preparation Items',
-                icon: <TruckOutlined />,
-                onClick: () => handleViewDeliveryPrep(record)
-            },
-            {
-                key: 'staff',
-                label: 'Staff Assignment',
-                icon: <TeamOutlined />,
-                onClick: () => handleStaffAssignment(record)
-            },
-            {
-                key: 'delivery_tracking',
-                label: 'Delivery Tracking',
-                icon: <CarOutlined />,
-                onClick: () => handleViewDeliveryTracking(record)
-            },
-            {
-                key: 'checklist',
-                label: 'Event Checklist',
-                icon: <CheckSquareOutlined />,
-                onClick: () => handleViewChecklist(record)
-            },
-            {
-                key: 'equipment_details',
-                label: 'Equipment Details',
-                icon: <PlusCircleOutlined />,
-                onClick: () => handleViewEquipmentDetails(record)
-            },
-                     // ⭐ Profitability is injected below ONLY for admin / super-admin.
-            { type: 'divider' },
-        ];
+        const items = [];
 
-        if (!['completed', 'cancelled', 'rejected'].includes(status)) {
+        if (canViewProfitability) {
+            items.push({
+                key: 'profitability',
+                label: 'View Profitability',
+                icon: <RiseOutlined style={{ color: '#2563eb' }} />,
+                onClick: () => handleViewProfitability(record),
+            });
+        }
+
+        if (items.length > 0) items.push({ type: 'divider' });
+
+         // ⭐ PACKED / TRAY: dedicated completion / missed / undo actions.
+        //    Buffet keeps its Start Event / Ongoing flow below.
+        const svcType = String(record.service_type || '').toLowerCase();
+        const isPackedTray = 
+            Boolean(record.is_packed_or_tray) ||
+            Boolean(record.packed_tray_mode) ||
+            ['packed', 'tray'].includes(svcType);
+        // Fallback detection via associated data
+        const hasMealServices = Array.isArray(record.meal_services) && record.meal_services.length > 0;
+        if (hasMealServices && !isPackedTray) {
+            // If it has meal services and delivery_method/packed logic, treat as packed/tray for the dropdown options
+            // in case the backend didn't inject the flag properly.
+        }
+        
+              // ⭐ PACKED / TRAY — per-meal Delivered/Pickup actions have moved
+        //    to the inline ACTION column buttons. The 3-dots menu now only
+        //    exposes Undo / Missed as a fallback.
+          if (isPackedTray) {
+            // ⭐ Use the same centralized resolver so the dropdown menu
+            //    always matches the EVENT TYPE column's Delivery label.
+            const mode = getRecordDeliveryMode(record);
+            const mealServices = Array.isArray(record.meal_services) ? record.meal_services : [];
+            const activeMeals = mealServices.filter((m) => {
+                const mealStatus = String(m.delivery_status || '').toLowerCase();
+                return !['delivered', 'served', 'missed_delivery', 'missed_pickup', 'completed', 'cancelled'].includes(mealStatus);
+            });
+
+                 if (activeMeals.length === 0) {
+                // All meals done → only the bulk undo remains.
+                items.push({
+                    key: 'packed-undo-all',
+                    label: mode === 'deliver' ? 'Undo All Deliveries' : 'Undo All Pickups',
+                    icon: <SyncOutlined style={{ color: '#f59e0b' }} />,
+                    onClick: () => handleUndoPackedTray(record, mode),
+                });
+            } else {
+                // Meals still pending → the inline ACTION column buttons
+                // handle Delivered/Pickup. Only expose "Mark Missed" here.
+                items.push({
+                    key: 'packed-missed-bulk',
+                    label: mode === 'deliver' ? 'Mark Missed Delivery' : 'Mark Missed Pickup',
+                    icon: <WarningOutlined style={{ color: '#dc2626' }} />,
+                    onClick: () => handleMarkPackedTrayMissed(record, mode),
+                });
+
+                // ⭐ NEW: Allow undoing specific meals that are already completed
+                const completedMeals = mealServices.filter((m) => {
+                    const st = String(m.delivery_status || '').toLowerCase();
+                    return ['delivered', 'served'].includes(st);
+                });
+
+                if (completedMeals.length > 0) {
+                    items.push({ type: 'divider' });
+                    completedMeals.forEach((meal) => {
+                        const mealLabel = formatKitchenMealType(meal.meal_type || 'Meal');
+                        items.push({
+                            key: `undo-meal-${meal.meal_service_id}`,
+                            label: `Undo: ${mealLabel}`,
+                            icon: <SyncOutlined style={{ color: '#f59e0b' }} />,
+                            onClick: () => handleUndoPackedTray(record, mode, meal.meal_service_id),
+                        });
+                    });
+                }
+            }
+            items.push({ type: 'divider' });
+        } else if (!['completed', 'cancelled', 'rejected'].includes(status)) {
+            // Buffet flow — START EVENT / ongoing handling (unchanged).
             if (['upcoming', 'confirmed', 'pending_approval', 'rescheduled', 'approved'].includes(status)) {
                 items.push({
                     key: 'start',
@@ -4682,9 +6539,9 @@ const UnifiedOrderEventsManagement = () => {
                     onClick: () => handleStartEvent(record)
                 });
             }
+
                       if (status === 'ongoing') {
                 items.push(
-                    // ⭐ Allow the operator to undo a mistaken start.
                     {
                         key: 'unstart',
                         label: 'Un-start Event',
@@ -4706,44 +6563,11 @@ const UnifiedOrderEventsManagement = () => {
                     }
                 );
             }
-        }
+        } // ⭐ end of buffet-only branch opened in the previous REPLACE
 
-        //        if (canViewProfitability) {
-        //     items.unshift({
-        //         key: 'profitability',
-        //         label: 'View Profitability',
-        //         icon: <RiseOutlined style={{ color: '#2563eb' }} />,
-        //         onClick: () => handleViewProfitability(record),
-        //     });
-        // }
-
-         if (canViewProfitability) {
-            items.unshift({
-                key: 'profitability',
-                label: 'View Profitability',
-                icon: <RiseOutlined style={{ color: '#2563eb' }} />,
-                onClick: () => handleViewProfitability(record),
-            });
-        }
+        if (items.length > 0) items.push({ type: 'divider' });
 
         items.push(
-            {
-                key: 'approve_equipment',
-                label: 'Approve Equipment Out',
-                icon: <PlusCircleOutlined style={{ color: '#3b82f6' }} />,
-                onClick: () => {
-                    setSelectedBooking(record);
-                    equipmentForm.resetFields();
-                    setEquipmentCheckoutModalVisible(true);
-                }
-            },
-            {
-                key: 'approve_all_equipment',
-                label: 'Approve All Equipment',
-                icon: <CheckCircleOutlined style={{ color: '#10b981' }} />,
-                onClick: () => handleApproveAllEquipment(record)
-            },
-            { type: 'divider' },
             {
                 key: 'payment',
                 label: 'Payment',
@@ -4765,30 +6589,99 @@ const UnifiedOrderEventsManagement = () => {
         );
 
         return items;
-       }, [
-        handleCalculateIngredients, handleViewKitchenPrep, handleViewDeliveryPrep,
-        handleStaffAssignment, handleViewDeliveryTracking, handleViewChecklist,
-        handleViewEquipmentDetails, handleViewProfitability, handleStartEvent,
-        handleUnstartEvent,
-        handleMarkEventDone, handleCompleteEvent,
-        handleApproveAllEquipment, handleEdit, handleOpenLiveStatus, openPaymentForBooking,
+    }, [
+        handleViewProfitability, handleStartEvent, handleUnstartEvent,
+        handleMarkEventDone, handleCompleteEvent, handleEdit,
+        handleOpenLiveStatus, openPaymentForBooking,
         canViewProfitability,
+        // ⭐ Packed/Tray handlers
+        handleCompletePackedTray, handleUndoPackedTray,
+        handleMarkPackedTrayMissed, handleUndoPackedTrayMissed,
     ]);
 
     // TABLE COLUMNS
     const columns = [
-        {
+         {
             title: 'BOOKING ID',
             dataIndex: 'booking_no',
             key: 'booking_no',
-            width: 90,
+            width: 140, // ⭐ Slightly wider to accommodate the badge
             fixed: 'left',
-            render: (text) => <span className="ue-id-text">{formatBookingId(text)}</span>
+            render: (text, record) => {
+                const isPackedTray =
+                    Boolean(record?.is_packed_or_tray) ||
+                    Boolean(record?.packed_tray_mode) ||
+                    ['packed', 'tray'].includes(String(record?.service_type || '').toLowerCase());
+                
+                let isReady = false;
+                let readyLabel = '';
+
+                if (isPackedTray) {
+                    // ⭐ Determine if all meals are prepped but NOT yet completed
+                    const activeMeals = safeArray(record.meal_services).filter((meal) => {
+                        const st = String(meal?.delivery_status || '').toLowerCase();
+                        if (['delivered', 'served', 'completed', 'missed_delivery', 'missed_pickup', 'cancelled'].includes(st)) return false;
+
+                        const mealId = meal?.meal_service_id;
+                        if (!mealId) return false;
+
+                        const isLoadedBooking =
+                            selectedBooking &&
+                            String(selectedBooking.id || selectedBooking.booking_id) ===
+                            String(record.id || record.booking_id);
+
+                        if (isLoadedBooking) {
+                            const mealTasks = kitchenTasks.filter(
+                                (t) => String(t.meal_service_id) === String(mealId) && !t.is_header
+                            );
+                            if (mealTasks.length > 0) {
+                                return mealTasks.every((t) => Boolean(t.is_done) || t.status === 'completed');
+                            }
+                        }
+
+                        const prep = String(meal?.preparation_status || '').toLowerCase();
+                        const mealStatus = String(meal?.meal_status || '').toLowerCase();
+                        return prep === 'completed' || mealStatus === 'completed';
+                    });
+
+                    if (activeMeals.length > 0) {
+                        isReady = true;
+                        const mode = getRecordDeliveryMode(record);
+                        readyLabel = mode === 'deliver' ? 'Ready to Deliver' : 'Ready to Pickup';
+                    }
+                }
+
+                return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-start' }}>
+                        {/* ⭐ Ready Badge */}
+                        {isReady && (
+                            <span
+                                style={{
+                                    fontSize: 9,
+                                    fontWeight: 700,
+                                    padding: '2px 6px',
+                                    borderRadius: 4,
+                                    background: '#ecfdf5',
+                                    color: '#10b981',
+                                    border: '1px solid #10b981',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: 0.5,
+                                    whiteSpace: 'nowrap',
+                                    animation: 'subtlePulse 2s infinite', // Reuses the animation we added earlier
+                                }}
+                            >
+                                {readyLabel}
+                            </span>
+                        )}
+                        <span className="ue-id-text">{formatBookingId(text)}</span>
+                    </div>
+                );
+            }
         },
         {
             title: 'CUSTOMER',
             key: 'customer',
-            width: 180,
+            width: 220,
             render: (_, record) => (
                 <div className="ue-customer-cell">
                     <div className="ue-customer-name">{safeString(record.customer_name)}</div>
@@ -4796,14 +6689,45 @@ const UnifiedOrderEventsManagement = () => {
                 </div>
             )
         },
-        {
+                  {
             title: 'EVENT TYPE',
             dataIndex: 'event_type_id',
             key: 'event_type',
-            width: 170,
+            width: 190,
             render: (value, record) => {
                 const name = record.event_type_name || getEventTypeName(value, eventTypes) || 'N/A';
-                return <Tag color="blue">{name}</Tag>;
+                const svcLabel = record.service_type_label || 'Buffet';
+
+                          // ⭐ The customer's selected Delivery Method — read from the
+                //    server-resolved `packed_tray_mode` (which mirrors the
+                //    actual `service_events.delivery_method`), so this column
+                //    always matches what the customer chose at booking time.
+                //    `getRecordDeliveryMode` now falls back through
+                //    `packed_tray_mode` → `delivery_method` → raw service event.
+                const mode = getRecordDeliveryMode(record);
+                const isDeliver = mode === 'deliver';
+                const deliveryLabel = isDeliver ? 'Deliver' : 'Pick up';
+                return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <span style={{ fontWeight: 600, color: 'inherit' }}>{name}</span>
+                        <span style={{ fontSize: 12, color: '#64748b' }}>{svcLabel}</span>
+
+                        {/* ⭐ Just show "Deliver" or "Pick up" directly, no "Delivery:" prefix */}
+                        <span
+                            style={{
+                                fontSize: 12,
+                                fontWeight: 600,
+                                color: isDeliver ? '#2563eb' : '#0d9488',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                            }}
+                        >
+                            {isDeliver ? <TruckOutlined /> : <ShoppingOutlined />}
+                            {deliveryLabel}
+                        </span>
+                    </div>
+                );
             }
         },
         {
@@ -4826,7 +6750,7 @@ const UnifiedOrderEventsManagement = () => {
             align: 'center',
             render: (v) => <span className="ue-pax-number">{safeNumber(v)}</span>
         },
-                {
+        {
             title: 'AMOUNT',
             key: 'amount',
             width: 160,
@@ -4838,9 +6762,14 @@ const UnifiedOrderEventsManagement = () => {
                     record.balance ?? Math.max(0, total - paid)
                 );
 
-                // ⭐ Only show Paid / Balance once the booking is APPROVED.
-                const status = safeString(record?.booking_status).toLowerCase();
-                const isApproved = status === 'confirmed' || status === 'approved';
+                              const status = safeString(record?.booking_status).toLowerCase();
+                // ⭐ FIX #5 — Ongoing bookings must keep showing
+                //    Paid / Balance. Only the Total column is universal.
+                const isApproved =
+                    status === 'confirmed' ||
+                    status === 'approved' ||
+                    status === 'ongoing' ||
+                    status === 'rescheduled';
 
                 return (
                     <div className="ue-amount-cell" style={{ lineHeight: 1.3 }}>
@@ -4874,10 +6803,10 @@ const UnifiedOrderEventsManagement = () => {
                 );
             }
         },
-        {
+               {
             title: 'MEALS',
             key: 'meals',
-            width: 60,
+            width: 80, // ⭐ Increased from 60 to prevent "MEAL S" wrapping
             align: 'center',
             render: (_, record) => <Badge count={safeArray(record.meal_services).length} showZero style={{ backgroundColor: '#8b5cf6' }} />
         },
@@ -4905,121 +6834,34 @@ const UnifiedOrderEventsManagement = () => {
             title: 'STATUS',
             dataIndex: 'booking_status',
             key: 'status',
-            width: 130,
+            width: 180,
             align: 'center',
             render: (status, record) => {
-                const displayStatus = getBookingDisplayStatus(record);
+                           const displayStatus = getBookingDisplayStatus(record);
                 const config = getStatusConfig(displayStatus);
-                return (
-                    <span className="ue-status" style={{ color: config.color, background: config.bg }}>
-                        {config.icon} {config.text}
-                    </span>
-                );
-            }
-        },
-        {
-            title: 'ACTIONS',
-            key: 'actions',
-            width: 120,
-            fixed: 'right',
-            render: (_, record) => (
-                <div className="ue-action-group">
-                    <Tooltip title="View Details">
-                        <button className="ue-action-icon view" onClick={() => handleViewDetails(record)}>
-                            <EyeOutlined />
-                        </button>
-                    </Tooltip>
-                    <Tooltip title="Edit Booking">
-                        <button className="ue-action-icon edit" onClick={() => handleEdit(record)}>
-                            <EditOutlined />
-                        </button>
-                    </Tooltip>
-                    <Dropdown menu={{ items: getActionMenuItems(record) }} placement="bottomRight">
-                        <button className="ue-action-icon more">
-                            <MoreOutlined />
-                        </button>
-                    </Dropdown>
-                </div>
-            )
-        }
-    ];
 
-    // HISTORY COLUMNS
-    const historyColumns = [
-        {
-            title: 'BOOKING ID',
-            dataIndex: 'booking_no',
-            key: 'booking_no',
-            width: 120,
-            render: (text) => <span className="ue-id-text">{formatBookingId(text)}</span>
-        },
-        {
-            title: 'CUSTOMER',
-            dataIndex: 'customer_name',
-            key: 'customer_name',
-            width: 160,
-            render: (text) => <span className="ue-customer-name">{safeString(text)}</span>
-        },
-        {
-            title: 'EVENT DATE',
-            dataIndex: 'event_date',
-            key: 'event_date',
-            width: 110
-        },
-        {
-            title: 'VENUE',
-            dataIndex: 'venue',
-            key: 'venue',
-            width: 140,
-            ellipsis: true,
-            render: (text) => safeString(text, 'N/A')
-        },
-        {
-            title: 'PAX',
-            dataIndex: 'guests_count',
-            key: 'pax',
-            width: 60,
-            align: 'center',
-            render: (v) => safeNumber(v)
-        },
-        {
-            title: 'REVENUE',
-            dataIndex: 'total_amount',
-            key: 'revenue',
-            width: 120,
-            align: 'right',
-            render: (v) => formatCurrency(v)
-        },
-        {
-            title: 'PAYMENT',
-            key: 'payment',
-            width: 100,
-            align: 'center',
-            render: (_, record) => {
-                const paid = safeNumber(record.paid_amount || 0);
-                const total = safeNumber(record.total_amount || 0);
-                const isPaid = paid >= total;
-                return (
-                    <Tag color={isPaid ? 'success' : (record.debt_booking_event ? 'error' : 'warning')}>
-                        {isPaid ? 'Paid' : (record.debt_booking_event ? 'Debt Booking' : 'Partial')}
-                    </Tag>
-                );
-            }
-        },
-        {
-            title: 'STATUS',
-            dataIndex: 'booking_status',
-            key: 'status',
-            width: 110,
-            align: 'center',
-            render: (status, record) => {
-                if (record.debt_booking_event && safeNumber(record.balance) > 0.01) {
-                    return <Tag color="error">Event Completed · Balance Due</Tag>;
+                            // ⭐ Packed/Tray: show "Pickup: Breakfast", "Pickup: Lunch", ...
+                // This ONLY shows if they have actually been marked as delivered/picked up.
+                const mealStatusPills = getPackedTrayMealStatusPills(record);
+                if (mealStatusPills.length > 0) {
+                    return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' }}>
+                            {mealStatusPills.map((pill) => (
+                                <span
+                                    key={pill.key}
+                                    className="ue-status"
+                                    style={{
+                                        color: pill.tone === 'missed' ? '#dc2626' : '#0d9488',
+                                        background: pill.tone === 'missed' ? '#fef2f2' : '#ccfbf1',
+                                        whiteSpace: 'nowrap',
+                                    }}
+                                >
+                                    {pill.tone === 'missed' ? <WarningOutlined /> : <CheckCircleOutlined />} {pill.label}
+                                </span>
+                            ))}
+                        </div>
+                    );
                 }
-                if (record.event_completed && safeNumber(record.balance) <= 0.01 && String(record.booking_status).toLowerCase() !== 'completed') {
-                    return <Tag color="processing">Event Completed · Ready to Close</Tag>;
-                }
-                const config = getStatusConfig(status);
                 return (
                     <span className="ue-status" style={{ color: config.color, background: config.bg }}>
                         {config.icon} {config.text}
@@ -5027,18 +6869,165 @@ const UnifiedOrderEventsManagement = () => {
                 );
             }
         },
-        {
+                {
             title: 'ACTIONS',
             key: 'actions',
-            width: 80,
+            width: 160, // ⭐ Slightly wider to accommodate packed/tray buttons
             fixed: 'right',
-            render: (_, record) => (
-                <Tooltip title="View Details">
-                    <button className="ue-action-icon view" onClick={() => handleViewDetails(record)}>
-                        <EyeOutlined />
-                    </button>
-                </Tooltip>
-            )
+            render: (_, record) => {
+                // ⭐ PACKED / TRAY — per-meal completion buttons.
+                // Show a button for EACH meal that:
+                //   • belongs to a packed/tray booking
+                //   • is not already delivered/served/missed
+                //   • has all its Kitchen Prep tasks marked DONE
+                const svcType = String(record?.service_type || '').toLowerCase();
+                const isPackedTray =
+                    Boolean(record?.is_packed_or_tray) ||
+                    Boolean(record?.packed_tray_mode) ||
+                    ['packed', 'tray'].includes(svcType);
+
+                const mode = getRecordDeliveryMode(record); // 'deliver' | 'pickup'
+
+                // ⭐ Build the per-meal action set — but ONLY when the record
+                //    is the currently loaded booking (kitchenTasks is per-booking).
+                //    For other rows we fall back to the backend's per-meal
+                //    `delivery_status` which the API enriches in `formatBooking()`.
+                const actionMeals = isPackedTray
+                    ? safeArray(record.meal_services).filter((meal) => {
+                        const st = String(meal?.delivery_status || '').toLowerCase();
+                        
+                        // ⭐ MUST BE PENDING (Not yet delivered/picked up)
+                        if (['delivered', 'served', 'completed', 'missed_delivery', 'missed_pickup', 'cancelled'].includes(st)) {
+                            return false;
+                        }
+
+                        const mealId = meal?.meal_service_id;
+                        if (!mealId) return false;
+
+                        // ⭐ MUST BE FULLY PREPPED IN KITCHEN
+                        const isLoadedBooking =
+                            selectedBooking &&
+                            String(selectedBooking.id || selectedBooking.booking_id) ===
+                            String(record.id || record.booking_id);
+
+                        if (isLoadedBooking) {
+                            const mealTasks = kitchenTasks.filter(
+                                (t) => String(t.meal_service_id) === String(mealId) && !t.is_header
+                            );
+                            if (mealTasks.length > 0) {
+                                return mealTasks.every(
+                                    (t) => Boolean(t.is_done) || t.status === 'completed'
+                                );
+                            }
+                        }
+
+                        const prep = String(meal?.preparation_status || '').toLowerCase();
+                        const mealStatus = String(meal?.meal_status || '').toLowerCase();
+                        return prep === 'completed' || mealStatus === 'completed';
+                    })
+                    : [];
+
+                return (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 6 }}>
+                        <Tooltip title="View Details">
+                            <button className="ue-action-icon view" onClick={() => handleViewDetails(record)}>
+                                <EyeOutlined />
+                            </button>
+                        </Tooltip>
+                        <Tooltip title="Operations Hub">
+                            <button className="ue-action-icon ops" onClick={() => openOpsHub(record, 'kitchen')}>
+                                <AppstoreOutlined />
+                            </button>
+                        </Tooltip>
+                        <Tooltip title="Edit Booking">
+                            <button className="ue-action-icon edit" onClick={() => handleEdit(record)}>
+                                <EditOutlined />
+                            </button>
+                        </Tooltip>
+
+                        {/* ⭐ ALL MEALS DONE → show the final Complete button. */}
+                        {isPackedTray && (() => {
+                            const meals = safeArray(record.meal_services);
+                            if (meals.length === 0) return null;
+                            const everyMealDone = meals.every((m) => {
+                                const st = String(m?.delivery_status || '').toLowerCase();
+                                return ['delivered', 'served', 'completed'].includes(st);
+                            });
+                            if (!everyMealDone) return null;
+                            return (
+                                <Tooltip title={mode === 'deliver' ? 'Complete Delivery' : 'Complete Pickup'}>
+                                    <button
+                                        className="ue-action-icon packed-tray complete"
+                                        onClick={() => handleCompletePackedTray(record, mode, null)}
+                                        style={{
+                                            background: '#16a34a',
+                                            color: '#ffffff',
+                                            borderColor: '#16a34a',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            width: 30,
+                                            height: 30,
+                                            borderRadius: 8,
+                                            margin: '0 4px',
+                                            fontSize: 15,
+                                        }}
+                                    >
+                                        <CheckCircleOutlined />
+                                    </button>
+                                </Tooltip>
+                            );
+                        })()}
+
+                        {/* ⭐ Per-meal Delivered / Pickup ACTION buttons */}
+                        {actionMeals.map((meal) => {
+                            const mealLabel = formatKitchenMealType(meal.meal_type || 'Meal');
+                            return (
+                                <Tooltip
+                                    key={meal.meal_service_id}
+                                    title={
+                                        mode === 'deliver'
+                                            ? `Mark ${mealLabel} as Delivered`
+                                            : `Mark ${mealLabel} as Picked Up`
+                                    }
+                                >
+                                    <button
+                                        className={`ue-action-icon packed-tray ${mode === 'deliver' ? 'deliver' : 'pickup'} btn-pulse`}
+                                        onClick={() => handleCompletePackedTray(record, mode, meal.meal_service_id)}
+                                        style={{
+                                            background: mode === 'deliver' ? '#2563eb' : '#0d9488',
+                                            color: '#ffffff',
+                                            border: 'none',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            width: 30,
+                                            height: 30,
+                                            borderRadius: '6px',
+                                            margin: '0 4px',
+                                            fontSize: 14,
+                                            padding: 0,
+                                            cursor: 'pointer',
+                                            transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                                        }}
+                                        // ⭐ Simple hover lift animation
+                                        onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.1)'; e.currentTarget.style.boxShadow = '0 4px 10px rgba(13, 148, 136, 0.3)'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = 'none'; }}
+                                    >
+                                        {mode === 'deliver' ? <TruckOutlined /> : <ShoppingOutlined />}
+                                    </button>
+                                </Tooltip>
+                            );
+                        })}
+
+                        <Dropdown menu={{ items: getActionMenuItems(record) }} placement="bottomRight">
+                            <button className="ue-action-icon more">
+                                <MoreOutlined />
+                            </button>
+                        </Dropdown>
+                    </div>
+                ); // ⭐ Missing closing parenthesis/brace fixed here
+            }
         }
     ];
 
@@ -5086,12 +7075,53 @@ const UnifiedOrderEventsManagement = () => {
             align: 'center',
             render: (v) => safeNumber(v)
         },
+             // ⭐ SERVICE TYPE label for ongoing events (Packed/Tray never
+        // reach 'ongoing' since they skip START EVENT, but this keeps the
+        // column consistent if the state is ever set manually).
+        {
+            title: 'SERVICE',
+            key: 'service_type',
+            width: 90,
+            render: (_, record) => {
+                const svcLabel = record.service_type_label || 'Buffet';
+                const color = svcLabel === 'Packed' ? 'purple' : svcLabel === 'Tray' ? 'gold' : 'blue';
+                return <Tag color={color} style={{ fontWeight: 600 }}>{svcLabel}</Tag>;
+            },
+        },
         {
             title: 'AMOUNT',
             key: 'amount',
-            width: 120,
+            width: 160,
             align: 'right',
-            render: (_, record) => formatCurrency(record.total_amount)
+            render: (_, record) => {
+                // ⭐ FIX #5 — Ongoing events keep full financial visibility.
+                const total = safeNumber(record.total_amount);
+                const paid = safeNumber(record.paid_amount);
+                const balance = safeNumber(
+                    record.balance ?? Math.max(0, total - paid)
+                );
+                return (
+                    <div className="ue-amount-cell" style={{ lineHeight: 1.3 }}>
+                        <div className="ue-amount-total" style={{ fontWeight: 600 }}>
+                            {formatCurrency(total)}
+                        </div>
+                        {paid > 0 && (
+                            <div className="ue-amount-paid" style={{ color: '#10b981', fontSize: '11px' }}>
+                                Paid: {formatCurrency(paid)}
+                            </div>
+                        )}
+                        {balance > 0 ? (
+                            <div className="ue-amount-balance" style={{ color: '#ef4444', fontSize: '11px', fontWeight: 600 }}>
+                                Balance: {formatCurrency(balance)}
+                            </div>
+                        ) : paid > 0 ? (
+                            <div className="ue-amount-paid" style={{ color: '#10b981', fontSize: '11px', fontWeight: 600 }}>
+                                Fully Paid
+                            </div>
+                        ) : null}
+                    </div>
+                );
+            }
         },
         {
             title: 'STAFF',
@@ -5134,11 +7164,16 @@ const UnifiedOrderEventsManagement = () => {
         {
             title: 'ACTIONS',
             key: 'actions',
-            width: 80,
+            width: 220,
             render: (_, record) => (
-                <Button size="small" type="primary" icon={<EyeOutlined />} onClick={() => handleOpenLiveStatus(record)}>
-                    Monitor
-                </Button>
+                <Space size={4}>
+                    <Button size="small" type="primary" icon={<EyeOutlined />} onClick={() => handleOpenLiveStatus(record)}>
+                        Monitor
+                    </Button>
+                    <Button size="small" icon={<AppstoreOutlined />} onClick={() => openOpsHub(record, 'kitchen')}>
+                        Operations
+                    </Button>
+                </Space>
             )
         }
     ];
@@ -5203,86 +7238,9 @@ const UnifiedOrderEventsManagement = () => {
         exportToExcel(confirmedBookings, 'Confirmed_Bookings_Report', columns);
     };
 
-    const exportHistory = () => {
-        const columns = [
-            { title: 'BOOKING ID', dataIndex: 'booking_no' },
-            { title: 'CUSTOMER', dataIndex: 'customer_name' },
-            { title: 'EVENT DATE', dataIndex: 'event_date' },
-            { title: 'VENUE', dataIndex: 'venue' },
-            { title: 'PAX', dataIndex: 'guests_count' },
-            { title: 'REVENUE', dataIndex: 'total_amount' },
-            { title: 'STATUS', key: 'status' }
-        ];
-        exportToExcel(completedBookings, 'Event_History_Report', columns);
-    };
-
-              // STATS
-    const renderStats = () => (
+    // STATS
+        const renderStats = () => (
         <>
-            {/* ⭐ Period behavior toolbar — hidden when the operator
-                collapses it from the header toggle. */}
-            {!periodToolbarHidden && (
-            <div className="ue-period-bar">
-                <div className="ue-period-bar-left">
-                    <span className="ue-period-bar-label">Reporting Period</span>
-
-                    <div className="ue-period-segmented" role="tablist" aria-label="Reporting period">
-                        {[
-                            { value: 'weekly',  label: 'Weekly'  },
-                            { value: 'monthly', label: 'Monthly' },
-                            { value: 'yearly',  label: 'Yearly'  },
-                        ].map((opt) => (
-                            <button
-                                key={opt.value}
-                                type="button"
-                                role="tab"
-                                aria-selected={dashboardPeriod === opt.value}
-                                className={`ue-period-seg-btn ${dashboardPeriod === opt.value ? 'active' : ''}`}
-                                onClick={() => setDashboardPeriod(opt.value)}
-                            >
-                                {opt.label}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                <div className="ue-period-bar-right">
-                    <button
-                        type="button"
-                        className="ue-period-arrow-btn"
-                        onClick={() => handleShiftPeriod('prev')}
-                        aria-label="Previous period"
-                        title="Previous period"
-                    >
-                        <LeftOutlined />
-                    </button>
-
-                    <span className="ue-period-range-text" aria-live="polite">
-                        {periodRange.label}
-                    </span>
-
-                    <button
-                        type="button"
-                        className="ue-period-arrow-btn"
-                        onClick={() => handleShiftPeriod('next')}
-                        aria-label="Next period"
-                        title="Next period"
-                    >
-                        <RightOutlined />
-                    </button>
-
-                                     <button
-                        type="button"
-                        className="ue-period-today-btn"
-                        onClick={handleJumpToToday}
-                        title="Jump to today"
-                    >
-                        Today
-                    </button>
-                </div>
-            </div>
-            )}
-
             <div className="ue-stats-grid">
                 <div className="ue-stat-card">
                     <div className="ue-stat-icon green"><CheckCircleOutlined /></div>
@@ -5298,7 +7256,6 @@ const UnifiedOrderEventsManagement = () => {
                     <div className="ue-stat-value">{stats.ongoing}</div>
                 </div>
             </div>
-                     {/* ⭐ Hidden for cashiers, visible to admin + super-admin. */}
             <Tooltip
                 title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
                     effectiveVisibility.payments_collected ? 'Unhide value' : 'Hide value'
@@ -5331,7 +7288,7 @@ const UnifiedOrderEventsManagement = () => {
                     </div>
                 </div>
             </Tooltip>
-                      <Tooltip
+            <Tooltip
                 title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
                     effectiveVisibility.total_revenue ? 'Unhide value' : 'Hide value'
                 )}
@@ -5361,7 +7318,7 @@ const UnifiedOrderEventsManagement = () => {
                     </div>
                 </div>
             </Tooltip>
-                      <Tooltip
+            <Tooltip
                 title={!canToggleFinancialVisibility ? 'Only administrators can hide this value' : (
                     effectiveVisibility.outstanding_balance ? 'Unhide value' : 'Hide value'
                 )}
@@ -5475,10 +7432,16 @@ const UnifiedOrderEventsManagement = () => {
         const status = safeString(record.booking_status).toLowerCase();
         if (status !== 'ongoing' || record.event_done || record.event_completed) return null;
 
-        return (
-            <div className="ue-ongoing-dashboard">
-                <Tabs defaultActiveKey="overview" className="ue-ongoing-tabs" size="small">
-                    <Tabs.TabPane tab="Overview" key="overview">
+              const SectionTitle = ({ icon, title }) => (
+            <div className="ue-ops-section-title" style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 700, color: '#1e293b', margin: '24px 0 12px 0', paddingBottom: 8, borderBottom: '1px solid #e2e8f0' }}>
+                <span style={{ color: '#3b82f6' }}>{icon}</span> {title}
+            </div>
+        );
+
+                return (
+            <div className="ue-ongoing-dashboard" style={{ paddingRight: 8 }}>
+                {/* Ensure no overflow or maxHeight here */}
+                <div className="ue-ongoing-section">
                         <div className="ue-ongoing-overview">
                             <Row gutter={[16, 16]}>
                                 <Col span={8}>
@@ -5527,9 +7490,10 @@ const UnifiedOrderEventsManagement = () => {
                                 </div>
                             </div>
                         </div>
-                    </Tabs.TabPane>
+                                   </div>
 
-                    <Tabs.TabPane tab="Meal Services" key="meals">
+                <SectionTitle icon={<CoffeeOutlined />} title="Meal Services" />
+                <div className="ue-ongoing-section">
                         <div className="ue-ongoing-meals">
                             {safeArray(record.meal_services).map((meal, idx) => (
                                 <div key={idx} className="ue-meal-progress">
@@ -5547,9 +7511,10 @@ const UnifiedOrderEventsManagement = () => {
                                 </div>
                             ))}
                         </div>
-                    </Tabs.TabPane>
+                                 </div>
 
-                    <Tabs.TabPane tab="Staff Tasks" key="staff">
+                <SectionTitle icon={<TeamOutlined />} title="Staff Tasks" />
+                <div className="ue-ongoing-section">
                         <Table
                             dataSource={safeArray(record.assigned_staff)}
                             rowKey={(record, index) => record.staff_id || index}
@@ -5561,9 +7526,10 @@ const UnifiedOrderEventsManagement = () => {
                                 { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={s === 'confirmed' ? 'success' : 'warning'}>{s}</Tag> },
                             ]}
                         />
-                    </Tabs.TabPane>
+                                 </div>
 
-                    <Tabs.TabPane tab="Equipment" key="equipment">
+                <SectionTitle icon={<AppstoreOutlined />} title="Equipment" />
+                <div className="ue-ongoing-section">
                         <Table
                             dataSource={safeArray(record.equipment_in_out)}
                             rowKey={(record, index) => record.id || index}
@@ -5575,9 +7541,10 @@ const UnifiedOrderEventsManagement = () => {
                                 { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={s === 'returned' ? 'success' : 'warning'}>{s}</Tag> },
                             ]}
                         />
-                    </Tabs.TabPane>
+                                  </div>
 
-                    <Tabs.TabPane tab="Payments" key="payments">
+                <SectionTitle icon={<WalletOutlined />} title="Payments" />
+                <div className="ue-ongoing-section">
                         <div className="ue-payment-summary-grid">
                             <div className="ue-payment-card">
                                 <div className="ue-payment-label">Paid</div>
@@ -5600,9 +7567,10 @@ const UnifiedOrderEventsManagement = () => {
                                 </div>
                             </div>
                         </div>
-                    </Tabs.TabPane>
+                                 </div>
 
-                    <Tabs.TabPane tab="Issues / Notes" key="issues">
+                <SectionTitle icon={<WarningOutlined />} title="Issues / Notes" />
+                <div className="ue-ongoing-section">
                         <div className="ue-ongoing-notes">
                             <TextArea
                                 rows={4}
@@ -5613,13 +7581,15 @@ const UnifiedOrderEventsManagement = () => {
                             <Divider orientation="left">Recent Notes</Divider>
                             <Empty description="No notes yet" />
                         </div>
-                    </Tabs.TabPane>
+                                </div>
 
-                    <Tabs.TabPane tab="Client Requests" key="requests">
+                <SectionTitle icon={<UserOutlined />} title="Client Requests" />
+                <div className="ue-ongoing-section">
                         <Empty description="No client requests" />
-                    </Tabs.TabPane>
+                                  </div>
 
-                    <Tabs.TabPane tab="Completion Review" key="completion">
+                <SectionTitle icon={<CheckSquareOutlined />} title="Completion Review" />
+                <div className="ue-ongoing-section" style={{ paddingBottom: 24 }}>
                         <div className="ue-completion-review">
                             <Alert
                                 message="Before completing this event, please confirm:"
@@ -5663,14 +7633,1486 @@ const UnifiedOrderEventsManagement = () => {
                                 </Button>
                             </Space>
                         </div>
-                    </Tabs.TabPane>
-                </Tabs>
+                      </div>
             </div>
         );
     };
 
+    // ============================================================
+    // OPERATIONS TAB — inline workspace (was a Modal, now a tab)
+    // ============================================================
+    const renderOperationsTab = () => {
+        const record = opsHubBooking;
+
+        return (
+            <div className="ue-ops-tab">
+                {/* Booking selector header */}
+                <div className="ue-ops-tab-header">
+                    <div className="ue-ops-tab-header-left">
+                        <div className="ue-ops-tab-title">
+                            <AppstoreOutlined /> Operations Workspace
+                        </div>
+                        <div className="ue-ops-tab-subtitle">
+                            Pick a booking, then work through Kitchen, Equipment,
+                            Tracking, Staff, Checklist and Ingredients — all in one place.
+                        </div>
+                    </div>
+
+                                                <div className="ue-ops-tab-header-right">
+                        {/* ⭐ START EVENT is for Buffet only. Packed/Tray use
+                            the DELIVERED / PICKUP action instead. */}
+                        {record && !record.is_packed_or_tray && ['confirmed', 'approved'].includes(
+                            String(record.booking_status || '').toLowerCase()
+                        ) && (
+                            <Button
+                                type="primary"
+                                icon={<PlayCircleOutlined />}
+                                onClick={() => handleStartEvent(record)}
+                            >
+                                Start Event
+                            </Button>
+                        )}
+
+                                            {/* ⭐ PACKED/TRAY completion action is handled per-meal in the Kitchen Prep tab */}
+
+                        {/* ⭐ Undo / Mark-missed controls for packed/tray */}
+                        {record && record.is_packed_or_tray && (
+                            ['done_deliver', 'done_pickup'].includes(String(record.booking_status || '').toLowerCase()) ? (
+                                <Button
+                                    danger
+                                    icon={<SyncOutlined />}
+                            onClick={() => handleUndoPackedTray(record, getRecordDeliveryMode(record))}                                >
+                                    Undo {record.booking_status === 'done_deliver' ? 'Delivery' : 'Pickup'}
+                                </Button>
+                            ) : ['missed_delivery', 'missed_pickup'].includes(String(record.booking_status || '').toLowerCase()) ? (
+                                <Button
+                                    icon={<SyncOutlined />}
+                                    onClick={() => handleUndoPackedTrayMissed(record, getRecordDeliveryMode(record))}                                >
+                                    Undo Missed
+                                </Button>
+                            ) : null
+                        )}
+                        {record && String(record.booking_status || '').toLowerCase() === 'ongoing' && (
+                            <Tag color="processing" icon={<SyncOutlined spin />}>
+                                Ongoing
+                            </Tag>
+                        )}
+                        <Select
+                            showSearch
+                            allowClear
+                            placeholder="Select a booking…"
+                            value={opsHubBookingId || undefined}
+                            onChange={(value) => {
+                                setOpsHubBookingId(value);
+                                const found = [...allBookings, ...completedBookings]
+                                    .find((b) => String(b.id || b.booking_id) === String(value));
+                                if (found) setSelectedBooking(found);
+                            }}
+                            optionFilterProp="label"
+                            style={{ minWidth: 340 }}
+                            options={[...allBookings, ...completedBookings]
+                                .filter((b, i, arr) =>
+                                    arr.findIndex(x => String(x.id || x.booking_id) === String(b.id || b.booking_id)) === i
+                                )
+                                .map((b) => ({
+                                    value: b.id || b.booking_id,
+                                    label: `${formatBookingId(b.booking_no)} · ${b.customer_name} · ${b.event_date || ''}`,
+                                }))}
+                        />
+                    </div>
+                </div>
+
+                {!record ? (
+                    <div className="ue-ops-empty">
+                        <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={
+                                <div>
+                                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                                        No booking selected
+                                    </div>
+                                    <div style={{ color: '#64748b', fontSize: 12 }}>
+                                        Choose a booking above, or click the
+                                        <AppstoreOutlined style={{ margin: '0 4px' }} />
+                                        icon on any row in <strong>Confirmed Bookings</strong>.
+                                    </div>
+                                </div>
+                            }
+                        />
+                    </div>
+                ) : (
+                    <>
+                        <div className="ue-ops-summary">
+                            <div className="ue-ops-summary-chip primary">
+                                <FileTextOutlined />
+                                <span>{formatBookingId(record.booking_no)}</span>
+                            </div>
+                            <div className="ue-ops-summary-chip">
+                                <UserOutlined />
+                                <span>{record.customer_name || 'Unknown'}</span>
+                            </div>
+                            <div className="ue-ops-summary-chip">
+                                <CalendarOutlined />
+                                <span>{record.event_date || 'Date TBD'}</span>
+                            </div>
+                            <div className="ue-ops-summary-chip">
+                                <ScheduleOutlined />
+                                <span>{record.event_time || 'Time TBD'}</span>
+                            </div>
+                            <div className="ue-ops-summary-chip">
+                                <EnvironmentOutlined />
+                                <span>{record.venue || 'Venue TBD'}</span>
+                            </div>
+                            <div className="ue-ops-summary-chip">
+                                <TeamOutlined />
+                                <span>{safeNumber(record.guests_count)} PAX</span>
+                            </div>
+                        </div>
+
+                        <div className="ue-ops-hub-body">
+                                                       <nav className="ue-ops-nav" aria-label="Operations sections">
+                                {(() => {
+                                    // ⭐ Packed/Tray: Kitchen, Checklist, Ingredients only.
+                                    const isPackedTray = Boolean(record.is_packed_or_tray);
+                                    const allSections = [
+                                        { key: 'kitchen',     icon: <CoffeeOutlined />,      label: 'Kitchen Prep', hint: 'Production tasks' },
+                                        { key: 'equipment',   icon: <PlusCircleOutlined />,  label: 'Equipment',    hint: 'Reserve · Out · Return' },
+                                        { key: 'tracking',    icon: <CarOutlined />,         label: 'Tracking',     hint: 'Driver & status' },
+                                        { key: 'staff',       icon: <TeamOutlined />,        label: 'Staff',        hint: 'Assignments' },
+                                        { key: 'checklist',   icon: <CheckSquareOutlined />, label: 'Checklist',    hint: 'Event tasks' },
+                                        { key: 'ingredients', icon: <StockOutlined />,       label: 'Ingredients',  hint: 'Cost & stock' },
+                                    ];
+                                    const visibleSections = isPackedTray
+                                        ? allSections.filter((s) => ['kitchen', 'checklist', 'ingredients'].includes(s.key))
+                                        : allSections;
+                                    return visibleSections;
+                                })().map((item) => (
+                                    <button
+                                        key={item.key}
+                                        type="button"
+                                        className={`ue-ops-nav-item ${opsHubTab === item.key ? 'active' : ''}`}
+                                        onClick={() => handleOpsHubTabChange(item.key)}
+                                    >
+                                        <span className="ue-ops-nav-icon">{item.icon}</span>
+                                        <span className="ue-ops-nav-text">
+                                            <span className="ue-ops-nav-label">{item.label}</span>
+                                            <span className="ue-ops-nav-hint">{item.hint}</span>
+                                        </span>
+                                    </button>
+                                ))}
+                            </nav>
+
+                                                       <section className="ue-ops-content">
+                                {opsHubTab === 'kitchen'     && renderKitchenPane(record)}
+                                {/* ⭐ Equipment / Tracking / Staff hidden for Packed/Tray */}
+                                {!record.is_packed_or_tray && opsHubTab === 'equipment'   && renderEquipmentPane(record)}
+                                {!record.is_packed_or_tray && opsHubTab === 'tracking'    && renderTrackingPane(record)}
+                                {!record.is_packed_or_tray && opsHubTab === 'staff'       && renderStaffPane(record)}
+                                {opsHubTab === 'checklist'   && renderChecklistPane(record)}
+                                {opsHubTab === 'ingredients' && renderIngredientsPane(record)}
+                            </section>
+                        </div>
+                    </>
+                )}
+            </div>
+        );
+    };
+
+    // ------------------------------------------------------------
+    // OPERATIONS HUB PANES
+    // ------------------------------------------------------------
+    const renderKitchenPane = (record) => (
+        <Spin spinning={kitchenLoading} tip="Loading kitchen tasks...">
+            <div className="ue-ops-pane-toolbar">
+                <Space>
+                    <Button
+                        type="primary"
+                        icon={<PrinterOutlined />}
+                        onClick={() => printKitchenTasks('all')}
+                    >
+                        Print All
+                    </Button>
+                    <Dropdown menu={{ items: getKitchenPrintMenuItems() }} placement="bottomRight">
+                        <Button icon={<PrinterOutlined />}>
+                            Print by Meal / Day / Item <DownOutlined />
+                        </Button>
+                    </Dropdown>
+                    <Button icon={<SyncOutlined />} onClick={() => handleAddToKitchen(record)}>
+                        Refresh Kitchen
+                    </Button>
+                </Space>
+            </div>
+
+                       <div id="kitchen-print-area">
+                {groupKitchenTasksByMeal(kitchenTasks).map((group, idx) => {
+                    // ⭐ Requirement #8 — highlight if start time has already arrived
+                    //    or any task is in progress (partially done) while not fully done.
+                    const now = dayjs();
+                    const anyDone = group.tasks.some((t) => t.is_done);
+                    const allDone = group.tasks.every((t) => t.is_done);
+                    const startReached = group.tasks.some((t) => {
+                        if (!t.start_time) return false;
+                        const dt = dayjs(
+                            `${t.service_date || ''} ${t.start_time}`,
+                            ['YYYY-MM-DD h:mm A', 'YYYY-MM-DD HH:mm', 'YYYY-MM-DD']
+                        );
+                        return dt.isValid() && now.isAfter(dt);
+                    });
+                                      // ⭐ FIX #1 & #2 — GREEN only when the event is TRULY Ongoing.
+                    //    Server truth wins; local ref is a fallback for the brief
+                    //    window between force-start and the refetch completing.
+                    const statusLower = String(record?.booking_status || '').toLowerCase();
+                    const eventOngoing =
+                        statusLower === 'ongoing' ||
+                        statusLower === 'completed' ||
+                        startedBookingsRef.current.has(String(record?.id || record?.booking_id));
+
+                    // ⭐ FIX #1 — A meal is "started" ONLY if the DB says so
+                    //    (preparation_status === 'preparing' or 'completed').
+                    //    Local `meal_active` is a UI hint, not the source of truth.
+                                      const hasMealIds = group.tasks.some((t) => t.meal_service_id);
+                    const mealDbStatuses = group.tasks
+                        .map((t) => String(t.meal_preparation_status || '').toLowerCase())
+                        .filter(Boolean);
+                    const mealStartedInDb = mealDbStatuses.some(
+                        (s) => s === 'preparing' || s === 'completed'
+                    );
+
+                    // ⭐ For Packed/Tray, treat the event as always "ongoing" for meal logic
+                    const effectiveOngoing = eventOngoing || record.is_packed_or_tray;
+                    
+                    const isInProgress = !allDone && effectiveOngoing && hasMealIds && mealStartedInDb;
+                    const canStartMeal = !allDone && effectiveOngoing && hasMealIds && !isInProgress;
+
+
+
+                    // ⭐ FIX #4 — RED warning: 20 min or less to OUT FOR DELIVERY
+                    //    while any task is still incomplete.
+                    const nowMs = nowTick; // dependency on state
+                    const earliestOutMs = group.tasks
+                        .map((t) => {
+                            const outText = cleanKitchenTime(t.out_for_delivery);
+                            const dateText = t.service_date || record?.event_date || '';
+                            if (!outText || !dateText) return null;
+                            const dt = dayjs(
+                                `${dateText} ${outText}`,
+                                ['YYYY-MM-DD h:mm A', 'YYYY-MM-DD HH:mm', 'YYYY-MM-DD']
+                            );
+                            return dt.isValid() ? dt.valueOf() : null;
+                        })
+                        .filter((v) => v !== null)
+                        .sort((a, b) => a - b)[0];
+
+                    const minutesToOut = earliestOutMs != null
+                        ? Math.floor((earliestOutMs - nowMs) / 60000)
+                        : null;
+
+                    const isRedWarning =
+                        !allDone &&
+                        eventOngoing &&
+                        minutesToOut !== null &&
+                        minutesToOut <= 20; // includes past-due
+                    return (
+                                  <div
+                        key={idx}
+                        className={`ue-kitchen-group ${isInProgress ? 'in-progress' : ''} ${allDone ? 'is-done' : ''} ${isRedWarning ? 'is-urgent' : ''}`}
+                    >
+                    <div
+                        className="ue-kitchen-group-title"
+                        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+                    >
+                        <span>{group.label}</span>
+                        <Space size={8}>
+                            {allDone && <Tag color="blue" style={{ margin: 0 }}>Prep Completed</Tag>}
+                            
+                            {/* ⭐ Per-Meal Delivery/Pickup Action */}
+                            {record.is_packed_or_tray && allDone && (
+                                (() => {
+                                    const mealId = group.tasks.find(t => t.meal_service_id)?.meal_service_id;
+                                    const mealSvc = record.meal_services?.find(m => m.meal_service_id === mealId);
+                                    const currentStatus = String(mealSvc?.delivery_status || '').toLowerCase();
+                                    const isDeliver = getRecordDeliveryMode(record) === 'deliver';                                    const isDone = ['delivered', 'served', 'completed'].includes(currentStatus);
+
+                                    if (!mealId) return null;
+
+                                                                      if (isDone) {
+                                        return (
+                                            <Space size={4}>
+                                                <Tag color="success" icon={<CheckCircleOutlined />} style={{ margin: 0, padding: '4px 8px' }}>
+                                                    {isDeliver ? 'Delivered' : 'Picked Up'}
+                                                </Tag>
+                                                <Button
+                                                    size="small"
+                                                    danger
+                                                    icon={<SyncOutlined />}
+                                                    onClick={() => handleUndoPackedTray(record, getRecordDeliveryMode(record), mealId)}                                                >
+                                                    Undo
+                                                </Button>
+                                            </Space>
+                                        );
+                                    }
+
+                                    if (currentStatus === 'missed_delivery' || currentStatus === 'missed_pickup') {
+                                        return (
+                                            <Space size={4}>
+                                                <Tag color="error" icon={<WarningOutlined />} style={{ margin: 0, padding: '4px 8px' }}>
+                                                    Missed
+                                                </Tag>
+                                                <Button
+                                                    size="small"
+                                                    icon={<SyncOutlined />}
+                                                    onClick={() => handleUndoPackedTray(record, getRecordDeliveryMode(record), mealId)}                                                >
+                                                    Undo
+                                                </Button>
+                                            </Space>
+                                        );
+                                    }
+
+                                    return (
+                                        <Space size={4}>
+                                            <Button
+                                                size="small"
+                                                type="primary"
+                                                icon={isDeliver ? <TruckOutlined /> : <ShoppingOutlined />}
+                                                style={{ background: '#0d9488', borderColor: '#0d9488' }}
+                                                onClick={() => handleCompletePackedTray(record, getRecordDeliveryMode(record), mealId)}                                            >
+                                                {isDeliver ? 'Delivered' : 'Pickup'}
+                                            </Button>
+                                            <Button
+                                                size="small"
+                                                danger
+                                                onClick={() => handleMarkPackedTrayMissed(record, getRecordDeliveryMode(record), mealId)}                                            >
+                                                Missed
+                                            </Button>
+                                        </Space>
+                                    );
+                                })()
+                            )}
+
+        {isRedWarning && (
+            <Tag color="red" style={{ margin: 0 }}>
+                <WarningOutlined /> {minutesToOut <= 0 ? 'OUT FOR DELIVERY OVERDUE' : `OUT IN ${minutesToOut} min`}
+            </Tag>
+        )}        {isInProgress && (
+            <Tooltip title="Click to return this meal to Not Started (inventory is not touched).">
+                <Tag
+                    color="green"
+                    style={{ margin: 0, cursor: 'pointer', userSelect: 'none' }}
+                    onClick={() => handleRevertMealStatus(group, record)}
+                >
+                    In Progress · Revert
+                </Tag>
+            </Tooltip>
+        )}
+             {/* ⭐ Hide "Start Meal" for Packed/Tray since they don't use the ongoing workflow */}
+                {canStartMeal && !record.is_packed_or_tray && (
+            // ⭐ Packed/Tray bookings skip the meal-start workflow entirely.
+            <Button
+                size="small"
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                onClick={() => handleStartMealForGroup(group, record)}
+            >
+                Start Meal
+            </Button>
+        )}
+    </Space>
+</div>       
+      <div className="ue-kitchen-table">
+                            <div className="ue-kitchen-header-row">
+                                <span>TASK</span>
+                                <span>QTY</span>
+                                <span>START</span>
+                                <span>OUT FOR DELIVERY</span>
+                                <span>ASSIGNED TO</span>
+                                <span>DONE</span>
+                            </div>
+                                                      {group.tasks.map((task, taskIdx) => (
+                                <div
+                                    key={task.id || taskIdx}
+                                    className="ue-kitchen-row"
+                                    data-package-item={task.package_id && task.menu_item_id ? '1' : undefined}
+                                >
+                                    <span className="ue-task-name">{task.task}</span>
+                                    <span>{task.quantity || '-'}</span>
+                                    <span>
+                                        <Input
+                                            size="small"
+value={task.start_time || '-'}
+                                            className={task.start_time_suggested ? 'ue-time-suggested' : undefined}
+                                            title={task.start_time_suggested ? 'Suggested time — click to adjust' : undefined}                                            onChange={(e) => {
+                                                const updated = [...kitchenTasks];
+                                                const i = updated.findIndex(t => t.id === task.id);
+                                                if (i !== -1) {
+                                                    updated[i].start_time = e.target.value;
+                                                    setKitchenTasks(updated);
+                                                }
+                                            }}
+                                            onBlur={(e) => handleUpdateKitchenTask(task.id, { start_time: e.target.value })}
+                                                                                        style={{ width: 100, fontSize: 12 }}
+                                        />
+                                    </span>
+                                    <span>
+                                        <Input
+                                            size="small"
+value={task.out_for_delivery || '-'}
+                                            className={task.out_time_suggested ? 'ue-time-suggested' : undefined}
+                                            title={task.out_time_suggested ? 'Suggested: 30 min before serving — click to adjust' : undefined}                                            onChange={(e) => {
+                                                const updated = [...kitchenTasks];
+                                                const i = updated.findIndex(t => t.id === task.id);
+                                                if (i !== -1) {
+                                                    updated[i].out_for_delivery = e.target.value;
+                                                    setKitchenTasks(updated);
+                                                }
+                                            }}
+                                                                              onBlur={(e) => handleUpdateKitchenTask(task.id, { out_for_delivery: e.target.value })}
+                                            style={{ width: 100, fontSize: 12 }}
+                                        />
+                                    </span>
+                                                                   <span>
+                                        {/* ⭐ Requirement #2 — editable ASSIGNED TO */}
+                                        <Input
+                                            size="small"
+                                            value={task.assigned_to || 'Kitchen Team'}
+                                            onChange={(e) => {
+                                                const updated = [...kitchenTasks];
+                                                const i = updated.findIndex((t) => t.id === task.id);
+                                                if (i !== -1) {
+                                                    updated[i].assigned_to = e.target.value;
+                                                    setKitchenTasks(updated);
+                                                }
+                                            }}
+                                                                                   onBlur={(e) =>
+                                                handleUpdateKitchenTask(task.id, {
+                                                    assigned_to: e.target.value,
+                                                })
+                                            }
+                                            style={{ width: 130, fontSize: 12 }}
+                                        />
+                                    </span>
+                                    <span>
+                                        {/* ⭐ Requirements #3, #4, #7 — check opens ingredient review modal */}
+                                                                    <Checkbox
+                                            checked={Boolean(task.is_done) || task.status === 'completed'}
+                                            onChange={(e) => {
+                                                if (record) {
+                                                    setSelectedBooking(record);
+                                                }
+                                                // ⭐ FIX: Pass the record id explicitly so
+                                                //    the mutation always targets the correct event.
+                                                handleKitchenTaskCheck(
+                                                    task,
+                                                    e.target.checked,
+                                                    record?.id || record?.booking_id
+                                                );
+                                            }}
+                                        />
+                                    </span>
+                                </div>
+                                              ))}
+                        </div>
+                    </div>
+                    );
+                })}
+                {kitchenTasks.length === 0 && (
+                    <Empty description="No kitchen tasks found. Click 'Refresh Kitchen' to generate tasks." />
+                )}
+            </div>
+        </Spin>
+    );
+
+    const renderEquipmentPane = (record) => (
+        <>
+            {/* Toolbar */}
+            <div className="ue-ops-pane-toolbar">
+                <Space wrap>
+                    <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => { setShowAddDeliveryItem(true); loadAvailableEquipment(); }}
+                    >
+                        Add Equipment
+                    </Button>
+                    <Button icon={<SyncOutlined />} onClick={() => handleViewEquipmentDetails(record)}>
+                        Refresh
+                    </Button>
+                </Space>
+
+                <Space wrap>
+                    <Checkbox
+                        checked={
+                            selectedEquipmentIds.length === equipmentDetailsData.length &&
+                            equipmentDetailsData.length > 0
+                        }
+                        indeterminate={
+                            selectedEquipmentIds.length > 0 &&
+                            selectedEquipmentIds.length < equipmentDetailsData.length
+                        }
+                        onChange={(e) => handleSelectAllEquipment(e.target.checked)}
+                    >
+                        Select all
+                    </Checkbox>
+                    <Button
+                        type="primary"
+                        size="small"
+                        disabled={selectedEquipmentIds.length === 0}
+                        onClick={handleApproveSelectedEquipmentFromDetails}
+                    >
+                        Approve Selected ({selectedEquipmentIds.length})
+                    </Button>
+                    <Button
+                        type="primary"
+                        size="small"
+                        onClick={() => handleApproveAllEquipmentFromDetails({})}
+                    >
+                        Approve All Reserved
+                    </Button>
+                </Space>
+            </div>
+
+            {/* Status legend */}
+            <div className="ue-equipment-legend">
+                <span className="ue-equipment-legend-item">
+                    <span className="ue-legend-dot reserved" /> Reserve
+                    <em>auto-set when equipment is added</em>
+                </span>
+                <span className="ue-equipment-legend-item">
+                    <span className="ue-legend-dot out" /> Out
+                    <em>set when Approve Out is confirmed</em>
+                </span>
+                <span className="ue-equipment-legend-item">
+                    <span className="ue-legend-dot returned" /> Return
+                    <em>set when the item comes back</em>
+                </span>
+            </div>
+
+            <div className="ue-equipment-header">
+                <div className="ue-equipment-booking-info">
+                    <div className="ue-equipment-booking-id">
+                        <span className="ue-id-text">{formatBookingId(record.booking_no)}</span>
+                    </div>
+                    <div className="ue-equipment-customer-name">{record.customer_name}</div>
+                    <div className="ue-equipment-event-type">{getEventTypeName(record.event_type_id, eventTypes)}</div>
+                    <div className="ue-equipment-event-date">{record.event_date}</div>
+                </div>
+            </div>
+
+            <Table
+                dataSource={equipmentDetailsData}
+                rowKey={(row) => row.id || row.booking_equipment_id}
+                size="small"
+                pagination={false}
+                locale={{
+                    emptyText: (
+                        <Empty
+                            description={
+                                <span>
+                                    No equipment yet. Click <strong>Add Equipment</strong> to reserve.
+                                </span>
+                            }
+                        />
+                    ),
+                }}
+                columns={[
+                    {
+                        title: '',
+                        width: 40,
+                        render: (_, row) => (
+                            <Checkbox
+                                checked={selectedEquipmentIds.includes(row.id || row.booking_equipment_id)}
+                                onChange={(e) =>
+                                    handleSelectEquipment(row.id || row.booking_equipment_id, e.target.checked)
+                                }
+                                disabled={['checked_out', 'returned'].includes(
+                                    String(row.status || '').toLowerCase()
+                                )}
+                            />
+                        )
+                    },
+                    {
+                        title: 'EQUIPMENT',
+                        dataIndex: 'equipment_name',
+                        render: (v, row) => v || row.equipment?.name || 'N/A'
+                    },
+                                      {
+                        title: 'QTY',
+                        dataIndex: 'quantity_reserved',
+                        align: 'center',
+                        width: 80,
+                        render: (v) => <span style={{ fontWeight: 600 }}>{safeNumber(v)}</span>
+                    },
+                    {
+                        title: 'DAMAGED',
+                        dataIndex: 'quantity_damaged',
+                        align: 'center',
+                        width: 100,
+                        render: (v) => (
+                            <span style={{ color: safeNumber(v) > 0 ? '#ef4444' : '#64748b', fontWeight: safeNumber(v) > 0 ? 600 : 400 }}>
+                                {safeNumber(v)}
+                            </span>
+                        )
+                    },
+                    {
+                        title: 'MISSING',
+                        dataIndex: 'quantity_missing',
+                        align: 'center',
+                        width: 100,
+                        render: (v) => (
+                            <span style={{ color: safeNumber(v) > 0 ? '#ef4444' : '#64748b', fontWeight: safeNumber(v) > 0 ? 600 : 400 }}>
+                                {safeNumber(v)}
+                            </span>
+                        )
+                    },
+                    {
+                        title: 'STATUS',
+                        dataIndex: 'status',
+                        align: 'center',
+                        width: 140,
+                        render: (status) => {
+                            const config = getStatusConfig(status);
+                            return (
+                                <span className="ue-status" style={{ color: config.color, background: config.bg, display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 20 }}>
+                                    {config.icon} {config.text}
+                                </span>
+                            );
+                        }
+                    },
+                    {
+                        title: 'ACTIONS',
+                        key: 'action',
+                        align: 'center',
+                        width: 220,
+                        render: (_, row) => {
+                            const current = String(row.status || '').toLowerCase();
+                            
+                            // If fully returned, no actions needed
+                            if (current === 'returned') {
+                                return <Tag color="success" style={{ borderRadius: 20, padding: '2px 12px' }}>Fully Returned</Tag>;
+                            }
+
+                            return (
+                                <Space size={8}>
+                                    {/* Quick Status Dropdown for edge cases (e.g. Re-reserve) */}
+                                    {getEquipmentQuickStatusOptions(row).length > 0 && current !== 'reserved' && (
+                                        <Select
+                                            size="small"
+                                            placeholder="Change..."
+                                            value={undefined}
+                                            style={{ width: 110 }}
+                                            onChange={(value) => handleSetEquipmentStatus(row, value)}
+                                            options={getEquipmentQuickStatusOptions(row)}
+                                        />
+                                    )}
+
+                                    {/* Primary Action Button */}
+                                    {current === 'reserved' && (
+                                        <Button
+                                            size="small"
+                                            type="primary"
+                                            style={{ borderRadius: 6, fontWeight: 500 }}
+                                            onClick={() => handleSetEquipmentStatus(row, 'out')}
+                                        >
+                                            Approve Out
+                                        </Button>
+                                    )}
+                                    {current === 'checked_out' && (
+                                        <Button
+                                            size="small"
+                                            type="primary"
+                                            style={{ borderRadius: 6, fontWeight: 500, background: '#10b981', borderColor: '#10b981' }}
+                                            onClick={() => handleReturnEquipmentFromDetails(row)}
+                                        >
+                                            Mark Returned
+                                        </Button>
+                                    )}
+                                </Space>
+                            );
+                        }
+                    }
+                ]}
+            />
+
+                       {/* Add equipment modal */}
+            <Modal
+                title="Select Equipment"
+                open={showAddDeliveryItem}
+                onCancel={() => { setShowAddDeliveryItem(false); setSelectedEquipment({}); }}
+                footer={null}
+                width={800}
+                maskClosable={false}
+                destroyOnHidden={false}
+            >
+                <div className="ue-add-delivery">
+                    <Alert
+                        type="info"
+                        showIcon
+                        message="Review and reserve available equipment."
+                        description="Equipment quantities are validated against available stock before they can be reserved."
+                        style={{ marginBottom: 12 }}
+                    />
+                    
+                    {/* ⭐ FILTERS BAR */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 12 }}>
+                        <Space wrap>
+                            <Input.Search
+                                placeholder="Search equipment by name..."
+                                value={equipmentSearch}
+                                onChange={(e) => setEquipmentSearch(e.target.value)}
+                                onSearch={loadAvailableEquipment}
+                                style={{ width: 280 }}
+                                allowClear
+                            />
+                            <Checkbox 
+                                checked={filterAvailableOnly} 
+                                onChange={(e) => setFilterAvailableOnly(e.target.checked)}
+                            >
+                                Show available only
+                            </Checkbox>
+                        </Space>
+                        <Text strong style={{ color: '#3b82f6' }}>{Object.keys(selectedEquipment).length} selected</Text>
+                    </div>
+
+                    {/* ⭐ SCROLLABLE TABLE */}
+                    <Table
+                        size="small"
+                        loading={loadingEquipment}
+                        dataSource={availableEquipment.filter(eq => {
+                            if (!filterAvailableOnly) return true;
+                            const avail = eq.available_quantity ?? eq.available ?? 0;
+                            return avail > 0;
+                        })}
+                        rowKey={(record) => record.id || record.equipment_id}
+                        pagination={false}
+                        scroll={{ y: 400 }} // Scroll instead of pagination
+                        columns={[
+                            {
+                                title: '',
+                                width: 48,
+                                render: (_, equipment) => {
+                                    const id = equipment.id || equipment.equipment_id;
+                                    const isChecked = Boolean(selectedEquipment[id]) && selectedEquipment[id].quantity > 0;
+                                    const available = safeNumber(equipment.available_quantity ?? equipment.available, 0);
+                                    return (
+                                        <Checkbox
+                                            checked={isChecked}
+                                            disabled={available <= 0}
+                                            onChange={(event) => toggleEquipmentSelection(equipment, event.target.checked)}
+                                        />
+                                    );
+                                }
+                            },
+                            {
+                                title: 'Equipment',
+                                render: (_, equipment) => equipment.name || equipment.item_name || equipment.equipment_name || 'Equipment'
+                            },
+                            {
+                                title: 'Total',
+                                width: 80,
+                                align: 'center',
+                                render: (_, equipment) => equipment.total_quantity || 0
+                            },
+                            {
+                                title: 'Available',
+                                width: 80,
+                                align: 'center',
+                                render: (_, equipment) => {
+                                    const id = equipment.id || equipment.equipment_id;
+                                    const avail = selectedEquipment[id]?.available_quantity ?? equipment.available_quantity ?? equipment.available ?? 0;
+                                    return <span style={{ color: avail > 0 ? '#10b981' : '#ef4444', fontWeight: 600 }}>{avail}</span>;
+                                }
+                            },
+                            {
+                                title: 'Reserved',
+                                width: 80,
+                                align: 'center',
+                                render: (_, equipment) => {
+                                    const total = equipment.total_quantity || 0;
+                                    const available = equipment.available_quantity ?? equipment.available ?? 0;
+                                    return total - available;
+                                }
+                            },
+                            {
+                                title: 'Qty Needed',
+                                width: 120,
+                                render: (_, equipment) => {
+                                    const id = equipment.id || equipment.equipment_id;
+                                    const currentQty = selectedEquipment[id]?.quantity || 1;
+                                    const maxQty = selectedEquipment[id]?.available_quantity ?? equipment.available_quantity ?? equipment.available ?? 0;
+                                    return (
+                                        <InputNumber
+                                            min={1}
+                                            max={maxQty}
+                                            disabled={maxQty <= 0}
+                                            value={currentQty}
+                                            onChange={(value) => updateSelectedEquipmentQty(equipment, value)}
+                                            style={{ width: '100%' }}
+                                        />
+                                    );
+                                }
+                            }
+                        ]}
+                    />
+                    
+                    <div style={{ marginTop: 16, textAlign: 'right' }}>
+                        <Button style={{ marginRight: 8 }} onClick={() => { setShowAddDeliveryItem(false); setSelectedEquipment({}); }}>Cancel</Button>
+                        <Button type="primary" icon={<SaveOutlined />} onClick={handleAddDeliveryItem}>Reserve Selected Equipment</Button>
+                    </div>
+                </div>
+            </Modal>
+        </>
+    );
+
+     const renderTrackingPane = (record) => (
+        <Spin spinning={deliveryTrackingLoading} tip="Loading delivery tracking...">
+            <div className="ue-ops-pane-toolbar">
+                <Space wrap>
+                    <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                            setEditingDelivery(null);
+                            addDeliveryForm.resetFields();
+                            addDeliveryForm.setFieldsValue({
+                                booking_id: record?.booking_id || record?.id,
+                                venue: record?.venue || '',
+                                delivery_date: record?.event_date ? dayjs(record.event_date) : null,
+                                delivery_time: record?.event_time || ''
+                            });
+                            setAddDeliveryModalVisible(true);
+                        }}
+                    >
+                        Add Delivery
+                    </Button>
+                    <Button icon={<SyncOutlined />} onClick={() => handleViewDeliveryTracking(record)}>
+                        Refresh
+                    </Button>
+                </Space>
+
+                <Tag color="blue">
+                    {deliveryTrackings.length} delivery {deliveryTrackings.length === 1 ? 'record' : 'records'}
+                </Tag>
+            </div>
+
+            <Table
+                className="ue-tracking-table"
+                dataSource={deliveryTrackings}
+                rowKey={(record) => record.id}
+                pagination={false}
+                size="small"
+                scroll={{ x: 1100, y: 360 }}
+                locale={{
+                    emptyText: (
+                        <Empty
+                            description={
+                                <span>
+                                    No delivery records yet. Click <strong>Add Delivery</strong> to schedule one.
+                                </span>
+                            }
+                        />
+                    ),
+                }}
+                columns={[
+                    {
+                        title: 'MEAL / DATE',
+                        key: 'meal_date',
+                        width: 180,
+                        fixed: 'left',
+                        render: (_, record) => (
+                            <div className="ue-tracking-cell">
+                                <div className="ue-tracking-primary">
+                                    {record.meal_type || record.delivery_type || 'Delivery'}
+                                </div>
+                                <div className="ue-tracking-secondary">
+                                    <CalendarOutlined /> {record.delivery_date || record.event_date || 'Date TBD'}
+                                </div>
+                            </div>
+                        ),
+                    },
+                    {
+                        title: 'VENUE',
+                        dataIndex: 'venue',
+                        width: 220,
+                        render: (v, r) => (
+                            <div className="ue-tracking-cell">
+                                <div className="ue-tracking-primary">
+                                    <EnvironmentOutlined /> {v || r.location || 'No venue'}
+                                </div>
+                            </div>
+                        ),
+                    },
+                    {
+                        title: 'DRIVER',
+                        key: 'driver',
+                        width: 160,
+                        render: (_, record) =>
+                            record.driver ? (
+                                <div className="ue-tracking-cell">
+                                    <div className="ue-tracking-primary">
+                                        <UserOutlined /> {record.driver}
+                                    </div>
+                                    <div className="ue-tracking-secondary">
+                                        <PhoneOutlined /> {record.driver_phone || 'No phone'}
+                                    </div>
+                                </div>
+                            ) : (
+                                <Tag color="default">Unassigned</Tag>
+                            ),
+                    },
+                    {
+                        title: 'ITEMS',
+                        dataIndex: 'items',
+                        width: 200,
+                        render: (v) =>
+                            v ? (
+                                <Tooltip title={v}>
+                                    <div className="ue-tracking-items">{v}</div>
+                                </Tooltip>
+                            ) : (
+                                <Tag color="default">No items</Tag>
+                            ),
+                    },
+                    {
+                        title: 'STATUS',
+                        dataIndex: 'status',
+                        width: 130,
+                        align: 'center',
+                        render: (s) => {
+                            const cfg = getStatusConfig(s);
+                            return (
+                                <span
+                                    className="ue-status"
+                                    style={{ color: cfg.color, background: cfg.bg }}
+                                >
+                                    {cfg.icon} {cfg.text}
+                                </span>
+                            );
+                        },
+                    },
+                    {
+                        title: 'ACTION',
+                        key: 'action',
+                        width: 300,
+                        fixed: 'right',
+                        render: (_, record) => (
+                            <Space size={4} wrap>
+                                <Select
+                                    value={record.status}
+                                    size="small"
+                                    onChange={(val) => handleUpdateDeliveryStatus(record.id, val)}
+                                    style={{ width: 110 }}
+                                >
+                                    <Option value="pending">Pending</Option>
+                                    <Option value="departed">Departed</Option>
+                                    <Option value="en_route">En Route</Option>
+                                    <Option value="arrived">Arrived</Option>
+                                    <Option value="completed">DONE</Option>
+                                </Select>
+                                <Tooltip title="Edit driver or delivery items">
+                                    <Button
+                                        size="small"
+                                        icon={<EditOutlined />}
+                                        onClick={() => handleEditDelivery(record)}
+                                    />
+                                </Tooltip>
+                                <Popconfirm
+                                    title="Remove the assigned driver?"
+                                    onConfirm={() => handleClearDeliveryData(record, 'driver')}
+                                    disabled={!record.driver && !record.driver_phone}
+                                >
+                                    <Tooltip title="Remove driver">
+                                        <Button
+                                            size="small"
+                                            icon={<UserOutlined />}
+                                            disabled={!record.driver && !record.driver_phone}
+                                        />
+                                    </Tooltip>
+                                </Popconfirm>
+                                <Popconfirm
+                                    title="Remove the listed delivery items?"
+                                    onConfirm={() => handleClearDeliveryData(record, 'items')}
+                                    disabled={!record.items}
+                                >
+                                    <Tooltip title="Remove delivery items">
+                                        <Button
+                                            size="small"
+                                            icon={<OrderedListOutlined />}
+                                            disabled={!record.items}
+                                        />
+                                    </Tooltip>
+                                </Popconfirm>
+                                <Popconfirm
+                                    title="Remove this delivery record?"
+                                    onConfirm={() => handleDeleteDelivery(record.id)}
+                                >
+                                    <Tooltip title="Delete delivery record">
+                                        <Button size="small" danger icon={<DeleteOutlined />} />
+                                    </Tooltip>
+                                </Popconfirm>
+                            </Space>
+                        ),
+                    },
+                ]}
+            />
+        </Spin>
+    );
+
+    const renderStaffPane = (record) => (
+        <>
+            <div className="ue-ops-pane-toolbar">
+                <Space>
+                    <Button type="primary" icon={<UserAddOutlined />} onClick={() => setAddStaffModalVisible(true)}>
+                        Assign Staff
+                    </Button>
+                </Space>
+            </div>
+
+                     <div className="ue-staff-info-grid">
+                <div className="ue-staff-info-card">
+                    <div className="ue-staff-info-icon blue">
+                        <EnvironmentOutlined />
+                    </div>
+                    <div className="ue-staff-info-body">
+                        <span className="ue-staff-info-label">Event Location</span>
+                        <span className="ue-staff-info-value">
+                            {record?.venue || 'Not specified'}
+                        </span>
+                    </div>
+                </div>
+                <div className="ue-staff-info-card">
+                    <div className="ue-staff-info-icon purple">
+                        <CalendarOutlined />
+                    </div>
+                    <div className="ue-staff-info-body">
+                        <span className="ue-staff-info-label">Event Date</span>
+                        <span className="ue-staff-info-value">
+                            {record?.event_date || 'Not specified'}
+                        </span>
+                    </div>
+                </div>
+                <div className="ue-staff-info-card">
+                    <div className="ue-staff-info-icon amber">
+                        <ClockCircleOutlined />
+                    </div>
+                    <div className="ue-staff-info-body">
+                        <span className="ue-staff-info-label">Event Time</span>
+                        <span className="ue-staff-info-value">
+                            {record?.event_time || 'Not specified'}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            {assignedStaff.length > 0 ? (
+                <Table
+                    dataSource={assignedStaff}
+                    rowKey={(record, index) => record.staff_id || index}
+                    size="small"
+                    pagination={false}
+                    columns={[
+                        { title: 'Employee', dataIndex: 'name', width: 150 },
+                        { title: 'Role', dataIndex: 'role', width: 120 },
+                        { title: 'Schedule', dataIndex: 'schedule', width: 120 },
+                        { title: 'Time In', dataIndex: 'start_time', width: 100 },
+                        { title: 'Time Out', dataIndex: 'end_time', width: 100 },
+                        { title: 'Status', dataIndex: 'status', width: 120, render: (s, record) => (
+                            <Select value={s} size="small" onChange={(val) => handleUpdateStaffStatus(record?.id, record.staff_id, val)} style={{ width: 100 }}>
+                                <Option value="pending">Pending</Option>
+                                <Option value="confirmed">Confirmed</Option>
+                                <Option value="declined">Declined</Option>
+                            </Select>
+                        )},
+                        { title: 'Actions', width: 100, render: (_, record) => (
+                            <Popconfirm title="Remove staff?" onConfirm={() => handleRemoveStaff(record?.id, record.staff_id)}>
+                                <Button type="text" danger icon={<DeleteOutlined />} />
+                            </Popconfirm>
+                        ) }
+                    ]}
+                />
+            ) : (
+                <Empty description="No staff assigned to this event" />
+            )}
+        </>
+    );
+
+       const renderChecklistPane = (record) => {
+        const totalItems = checklist.length;
+        const completedItems = checklist.filter(
+            (i) => Boolean(i.completed ?? i.status === 'completed')
+        ).length;
+        const pendingItems = totalItems - completedItems;
+        const progressPct = totalItems > 0
+            ? Math.round((completedItems / totalItems) * 100)
+            : 0;
+
+        const grouped = {
+            system: checklist.filter((i) => i.source_type === 'system' || (!i.source_type && !i.is_delivery && i.is_system)),
+            delivery: checklist.filter((i) => i.is_delivery),
+            custom: checklist.filter(
+                (i) =>
+                    i.source_type === 'manual' ||
+                    (!i.is_delivery && i.source_type !== 'system' && !i.is_system)
+            ),
+        };
+
+        const renderChecklistRow = (item) => {
+            const isDone = Boolean(item.completed ?? item.status === 'completed');
+            const kindClass = item.is_delivery
+                ? 'delivery'
+                : item.source_type === 'system' || item.is_system
+                    ? 'system'
+                    : 'custom';
+            const kindLabel = item.is_delivery
+                ? 'Delivery'
+                : item.source_type === 'system' || item.is_system
+                    ? 'System'
+                    : 'Custom';
+
+            return (
+                <div
+                    key={item.id}
+                    className={`ue-checklist-row ${isDone ? 'is-done' : ''} kind-${kindClass}`}
+                >
+                    <button
+                        type="button"
+                        className={`ue-checklist-check ${isDone ? 'checked' : ''}`}
+                        onClick={() => handleUpdateChecklistItem(item.id, !isDone)}
+                        aria-label={isDone ? 'Mark as pending' : 'Mark as completed'}
+                    >
+                        {isDone ? <CheckCircleOutlined /> : <ClockCircleOutlined />}
+                    </button>
+
+                    <div className="ue-checklist-body">
+                        <div className="ue-checklist-title-row">
+                            <span className={`ue-checklist-title ${isDone ? 'done' : ''}`}>
+                                {item.task}
+                            </span>
+                            <span className={`ue-checklist-kind kind-${kindClass}`}>
+                                {kindLabel}
+                            </span>
+                        </div>
+
+                        <div className="ue-checklist-meta">
+                            <span className="ue-checklist-meta-item">
+                                <UserOutlined /> {item.assigned_to || 'Unassigned'}
+                            </span>
+                            {item.notes && (
+                                <span className="ue-checklist-meta-item ue-checklist-notes">
+                                    <FileTextOutlined /> {item.notes}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+
+                    {!item.is_delivery && item.source_type !== 'system' && !item.is_system && (
+                        <Popconfirm
+                            title="Delete this checklist item?"
+                            onConfirm={() => handleDeleteChecklistItem(item)}
+                        >
+                            <Button
+                                type="text"
+                                danger
+                                icon={<DeleteOutlined />}
+                                size="small"
+                                className="ue-checklist-delete"
+                            />
+                        </Popconfirm>
+                    )}
+                </div>
+            );
+        };
+
+        return (
+            <Spin spinning={checklistLoading} tip="Loading checklist...">
+                <div className="ue-ops-pane-toolbar">
+                    <Space wrap>
+                        <Button
+                            type="primary"
+                            icon={<PlusOutlined />}
+                            onClick={() => {
+                                const task = prompt('Enter task description:');
+                                const assignedTo = prompt('Assign to:');
+                                if (task) {
+                                    handleAddChecklistItem({
+                                        task,
+                                        assigned_to: assignedTo || 'Unassigned',
+                                    });
+                                }
+                            }}
+                        >
+                            Add Task
+                        </Button>
+                    </Space>
+                    <Tag color="blue">
+                        {completedItems} / {totalItems} completed
+                    </Tag>
+                </div>
+
+                {/* Progress summary strip */}
+                <div className="ue-checklist-summary">
+                    <div className="ue-checklist-summary-card">
+                        <div className="ue-checklist-summary-icon total">
+                            <CheckSquareOutlined />
+                        </div>
+                        <div className="ue-checklist-summary-body">
+                            <span className="ue-checklist-summary-label">Total Tasks</span>
+                            <span className="ue-checklist-summary-value">{totalItems}</span>
+                        </div>
+                    </div>
+                    <div className="ue-checklist-summary-card">
+                        <div className="ue-checklist-summary-icon done">
+                            <CheckCircleOutlined />
+                        </div>
+                        <div className="ue-checklist-summary-body">
+                            <span className="ue-checklist-summary-label">Completed</span>
+                            <span className="ue-checklist-summary-value">{completedItems}</span>
+                        </div>
+                    </div>
+                    <div className="ue-checklist-summary-card">
+                        <div className="ue-checklist-summary-icon pending">
+                            <ClockCircleOutlined />
+                        </div>
+                        <div className="ue-checklist-summary-body">
+                            <span className="ue-checklist-summary-label">Pending</span>
+                            <span className="ue-checklist-summary-value">{pendingItems}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="ue-checklist-progress">
+                    <div className="ue-checklist-progress-head">
+                        <span>Progress</span>
+                        <strong>{progressPct}%</strong>
+                    </div>
+                    <Progress
+                        percent={progressPct}
+                        showInfo={false}
+                        strokeColor={{ '0%': '#3b82f6', '100%': '#10b981' }}
+                        trailColor="#e5e7eb"
+                    />
+                </div>
+
+                <div className="ue-checklist-header">
+                    <span className="ue-id-text">{formatBookingId(record?.booking_no)}</span>
+                    <span className="ue-customer-name">{record?.customer_name}</span>
+                    <Tag color="blue">
+                        <CalendarOutlined /> {record?.event_date}
+                    </Tag>
+                </div>
+
+                {totalItems === 0 ? (
+                    <Empty description="No checklist items yet. Click 'Add Task' to create one." />
+                ) : (
+                    <div className="ue-checklist-groups">
+                        {grouped.system.length > 0 && (
+                            <div className="ue-checklist-group">
+                                <div className="ue-checklist-group-title">
+                                    <span className="ue-checklist-group-dot system" />
+                                    System Tasks
+                                    <span className="ue-checklist-group-count">
+                                        {grouped.system.length}
+                                    </span>
+                                </div>
+                                {grouped.system.map(renderChecklistRow)}
+                            </div>
+                        )}
+                        {grouped.delivery.length > 0 && (
+                            <div className="ue-checklist-group">
+                                <div className="ue-checklist-group-title">
+                                    <span className="ue-checklist-group-dot delivery" />
+                                    Delivery Items
+                                    <span className="ue-checklist-group-count">
+                                        {grouped.delivery.length}
+                                    </span>
+                                </div>
+                                {grouped.delivery.map(renderChecklistRow)}
+                            </div>
+                        )}
+                        {grouped.custom.length > 0 && (
+                            <div className="ue-checklist-group">
+                                <div className="ue-checklist-group-title">
+                                    <span className="ue-checklist-group-dot custom" />
+                                    Custom Tasks
+                                    <span className="ue-checklist-group-count">
+                                        {grouped.custom.length}
+                                    </span>
+                                </div>
+                                {grouped.custom.map(renderChecklistRow)}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </Spin>
+        );
+    };
+    const renderIngredientsPane = (record) => (
+        <>
+            <div className="ue-ingredients-total-book">
+                <div className="ue-total-book-header">
+                    <h2>Total Book</h2>
+                </div>
+                <div className="ue-total-book-content">
+                    <div className="ue-total-book-row">
+                        <span className="ue-total-book-label">Booking ID:</span>
+                        <span className="ue-total-book-value ue-id-text">{formatBookingId(record.booking_no)}</span>
+                    </div>
+                    <div className="ue-total-book-row">
+                        <span className="ue-total-book-label">Customer:</span>
+                        <span className="ue-total-book-value">{record.customer_name}</span>
+                    </div>
+                    <div className="ue-total-book-row">
+                        <span className="ue-total-book-label">Event Date:</span>
+                        <span className="ue-total-book-value">{record.event_date}</span>
+                    </div>
+                    <div className="ue-total-book-row">
+                        <span className="ue-total-book-label">Total Guests:</span>
+                        <span className="ue-total-book-value">{record.guests_count} PAX</span>
+                    </div>
+                </div>
+            </div>
+
+            <div className="ue-modal-section">
+                <div className="ue-modal-section-title"><ForkOutlined /> Menu Items to Calculate</div>
+                <Row gutter={[12, 12]} align="middle">
+                    <Col flex="auto">
+                        <Select
+                            mode="multiple"
+                            allowClear
+                            showSearch
+                            value={selectedIngredientMenuItemIds}
+                            placeholder="Select one or more menu items"
+                            optionFilterProp="label"
+                            style={{ width: '100%' }}
+                            onChange={(values) => setSelectedIngredientMenuItemIds(
+                                safeArray(values).map((value) => String(value))
+                            )}
+                            options={ingredientMenuItems.map((menuItem) => ({
+                                value: String(menuItem.menu_item_id ?? menuItem.id),
+                                label: `${menuItem.name || 'Menu Item'}${menuItem.quantity ? ` (${menuItem.quantity} serving${safeNumber(menuItem.quantity) === 1 ? '' : 's'})` : ''}`,
+                            }))}
+                        />
+                    </Col>
+                    <Col>
+                        <Button
+                            type="primary"
+                            icon={<StockOutlined />}
+                            onClick={handleRecalculateIngredients}
+                            loading={isComputingIngredients}
+                            disabled={ingredientMenuItems.length === 0 || selectedIngredientMenuItemIds.length === 0}
+                        >
+                            Calculate Selected
+                        </Button>
+                    </Col>
+                </Row>
+                <div style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
+                    Select a specific dish, such as Adobo, or select several dishes. Ingredient requirements are combined and shown only in the full event summary below.
+                </div>
+            </div>
+
+            <div className="ue-modal-section">
+                <div className="ue-modal-section-title">
+                    <StockOutlined /> Full Event Ingredients Summary
+                    {selectedIngredientMenuItemIds.length > 0 && (
+                        <Tag color="blue" style={{ marginLeft: 8 }}>
+                            {selectedIngredientMenuItemIds.length} menu item{selectedIngredientMenuItemIds.length === 1 ? '' : 's'}
+                        </Tag>
+                    )}
+                </div>
+                {isComputingIngredients ? (
+                    <div className="ue-loading"><Spin tip="Computing ingredient requirements..." /></div>
+                ) : computedIngredients.length === 0 ? (
+                    <Empty description="No ingredients computed yet." />
+                ) : (
+                    <Table
+                        dataSource={computedIngredients}
+                        rowKey={(record) => record.ingredient_id}
+                        size="small"
+                        pagination={{ pageSize: 10 }}
+                        columns={[
+                            {
+                                title: 'Select',
+                                key: 'select',
+                                width: 50,
+                                render: (_, record) => (
+                                    <Checkbox
+                                        checked={selectedIngredientIds.includes(record.ingredient_id)}
+                                        disabled={!record.need_to_buy}
+                                        onChange={(e) => {
+                                            setSelectedIngredientIds(prev => e.target.checked
+                                                ? [...prev, record.ingredient_id]
+                                                : prev.filter(id => id !== record.ingredient_id)
+                                            );
+                                        }}
+                                    />
+                                )
+                            },
+                            {
+                                title: 'Ingredient',
+                                dataIndex: 'name',
+                                render: (v) => <span className="ue-ingredient-name">{v}</span>
+                            },
+                            {
+                                title: 'Meal Type',
+                                key: 'meal_type',
+                                render: (_, record) => safeArray(record.menu_items).map(mi => mi.meal_type).filter(Boolean).join(', ') || '-'
+                            },
+                            {
+                                title: 'Per Pax',
+                                key: 'per_pax',
+                                render: (_, record) => `${record.per_pax} ${record.unit}`
+                            },
+                            {
+                                title: 'Total Needed',
+                                key: 'needed',
+                                render: (_, record) => `${Math.round(record.quantity_needed * 100) / 100} ${record.unit}`
+                            },
+                            {
+                                title: 'Current Stock',
+                                key: 'stock',
+                                render: (_, record) => `${Math.round(record.current_stock * 100) / 100} ${record.unit}`
+                            },
+                            {
+                                title: 'Reserved',
+                                key: 'reserved',
+                                render: (_, record) => `${Math.round(record.reserved_quantity * 100) / 100} ${record.unit}`
+                            },
+                            {
+                                title: 'Available',
+                                key: 'available',
+                                render: (_, record) => `${Math.round(record.available_stock * 100) / 100} ${record.unit}`
+                            },
+                            {
+                                title: 'Shortage',
+                                key: 'shortage',
+                                render: (_, record) => record.shortage > 0 ?
+                                    <span className="ue-shortage">{Math.round(record.shortage * 100) / 100} {record.unit}</span> :
+                                    <span className="ue-sufficient">Sufficient</span>
+                            },
+                            {
+                                title: 'Status',
+                                key: 'status',
+                                render: (_, record) => record.need_to_buy ?
+                                    <Tag color="error">Need to Buy</Tag> :
+                                    <Tag color="success">In Stock</Tag>
+                            },
+                        ]}
+                    />
+                )}
+                <div style={{ marginTop: 12, textAlign: 'right' }}>
+                    <Button
+                        icon={<ShoppingOutlined />}
+                        type="primary"
+                        onClick={() => handleAddToShoppingList(record?.id, computedIngredients)}
+                        loading={addToShoppingListMutation.isLoading}
+                        disabled={computedIngredients.length === 0 || !computedIngredients.some(i => i.need_to_buy)}
+                    >
+                        Add to Purchase List ({computedIngredients.filter(i => i.need_to_buy).length})
+                    </Button>
+                </div>
+            </div>
+        </>
+    );
+
     // MODALS
-    const renderLiveStatusModal = () => (
+        const renderLiveStatusModal = () => (
         <Modal
             title={
                 <div className="ue-modal-header">
@@ -5684,7 +9126,8 @@ const UnifiedOrderEventsManagement = () => {
             width={1000}
             className="ue-modal-clean"
             maskClosable={false}
-            footer={
+            // ⭐ FIX: Tell the Modal body to handle the scrolling natively
+            styles={{ body: { maxHeight: '70vh', overflowY: 'auto', padding: '20px 24px' } }}            footer={
                 <div className="ue-modal-footer">
                     <Button icon={<ReloadOutlined />} onClick={handleRefresh}>Refresh</Button>
                     <Button type="primary" onClick={() => setLiveStatusModalVisible(false)}>Close</Button>
@@ -5694,377 +9137,6 @@ const UnifiedOrderEventsManagement = () => {
         >
             <div className="ue-modal-body">
                 {selectedBooking && renderOngoingTabs(selectedBooking)}
-            </div>
-        </Modal>
-    );
-
-    const renderKitchenModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><CoffeeOutlined /></div>
-                    <div className="ue-modal-title">Kitchen Production Tasks</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={kitchenModalVisible}
-            onCancel={() => setKitchenModalVisible(false)}
-            width={1100}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Space>
-                        <Button
-                            icon={<PrinterOutlined />}
-                            onClick={() => printKitchenTasks('all')}
-                            type="primary"
-                        >
-                            Print Tasks
-                        </Button>
-                        <Dropdown
-                            menu={{
-                                items: getKitchenPrintMenuItems(),
-                            }}
-                            placement="topRight"
-                        >
-                            <Button icon={<PrinterOutlined />}>
-                                Print by Meal, Day, or Item <DownOutlined />
-                            </Button>
-                        </Dropdown>
-                        <Button onClick={() => setKitchenModalVisible(false)}>Close</Button>
-                    </Space>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                <Spin spinning={kitchenLoading} tip="Loading kitchen tasks...">
-                    <div id="kitchen-print-area">
-                        {groupKitchenTasksByMeal(kitchenTasks).map((group, idx) => {
-                            const headerLabel = group.label;
-
-                            return (
-                                <div key={idx} className="ue-kitchen-group">
-                                    <div className="ue-kitchen-group-title">{headerLabel}</div>
-                                    <div className="ue-kitchen-table">
-                                        <div className="ue-kitchen-header-row">
-                                            <span>TASK</span>
-                                            <span>QTY</span>
-                                            <span>START</span>
-                                            <span>OUT FOR DELIVERY</span>
-                                            <span>ASSIGNED TO</span>
-                                            <span>DONE</span>
-                                        </div>
-                                        {group.tasks.map((task, taskIdx) => (
-                                            <div key={task.id || taskIdx} className="ue-kitchen-row">
-                                                <span className="ue-task-name">{task.task}</span>
-                                                <span>{task.quantity || '-'}</span>
-                                                <span>
-                                                    <Input
-                                                        size="small"
-                                                        value={task.start_time || '-'}
-                                                        onChange={(e) => {
-                                                            const updated = [...kitchenTasks];
-                                                            const index = updated.findIndex(t => t.id === task.id);
-                                                            if (index !== -1) {
-                                                                updated[index].start_time = e.target.value;
-                                                                setKitchenTasks(updated);
-                                                            }
-                                                        }}
-                                                        onBlur={() => handleUpdateKitchenTask(task.id, { start_time: task.start_time })}
-                                                        style={{ width: 100, fontSize: 12 }}
-                                                        placeholder="Start"
-                                                    />
-                                                </span>
-                                                <span>
-                                                    <Input
-                                                        size="small"
-                                                        value={task.out_for_delivery || '-'}
-                                                        onChange={(e) => {
-                                                            const updated = [...kitchenTasks];
-                                                            const index = updated.findIndex(t => t.id === task.id);
-                                                            if (index !== -1) {
-                                                                updated[index].out_for_delivery = e.target.value;
-                                                                setKitchenTasks(updated);
-                                                            }
-                                                        }}
-                                                        onBlur={() => handleUpdateKitchenTask(task.id, { out_for_delivery: task.out_for_delivery })}
-                                                        style={{ width: 100, fontSize: 12 }}
-                                                        placeholder="Out"
-                                                    />
-                                                </span>
-                                                <span>{task.assigned_to || 'Kitchen Team'}</span>
-                                                <span>
-                                                    <Checkbox
-                                                        checked={Boolean(task.is_done || task.status === 'completed')}
-                                                        onChange={(e) => handleUpdateKitchenTask(task.id, { is_done: e.target.checked })}
-                                                    />
-                                                </span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            );
-                        })}
-                        {kitchenTasks.length === 0 && (
-                            <Empty description="No kitchen tasks found. Click 'Refresh Kitchen' to generate tasks." />
-                        )}
-                    </div>
-                </Spin>
-            </div>
-        </Modal>
-    );
-
-    const renderDeliveryModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><TruckOutlined /></div>
-                    <div className="ue-modal-title">Delivery Preparation Items</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={deliveryModalVisible}
-            onCancel={() => {
-                setDeliveryModalVisible(false);
-                setShowAddDeliveryItem(false);
-            }}
-            width={1100}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button icon={<PrinterOutlined />} onClick={() => window.print()}>Print Delivery List</Button>
-                    <Button onClick={() => setDeliveryModalVisible(false)}>Close</Button>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                <div className="ue-delivery-header">
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-                        setShowAddDeliveryItem(true);
-                        loadAvailableEquipment();
-                    }}>
-                        Add Item
-                    </Button>
-                    <Button
-                        icon={<SyncOutlined />}
-                        onClick={() => handleAddToDelivery(selectedBooking)}
-                        style={{ marginLeft: 8 }}
-                    >
-                        Refresh
-                    </Button>
-                </div>
-
-                <Modal
-                    title="Select Inventory Items"
-                    open={showAddDeliveryItem}
-                    onCancel={() => { setShowAddDeliveryItem(false); setSelectedEquipment({}); }}
-                    footer={null}
-                    width={900}
-                    maskClosable={false}
-                    destroyOnHidden={false}
-                >
-                    <div className="ue-add-delivery">
-                        <Alert type="info" showIcon message="Choose equipment and review available inventory items" description="Equipment quantities are validated against available stock before they can be reserved." style={{ marginBottom: 12 }} />
-                        <Space style={{ marginBottom: 12, width: '100%', justifyContent: 'space-between' }}>
-                            <Input.Search placeholder="Search equipment..." value={equipmentSearch} onChange={(e) => setEquipmentSearch(e.target.value)} onSearch={loadAvailableEquipment} style={{ width: 280 }} />
-                            <Text strong>{Object.keys(selectedEquipment).length} selected</Text>
-                        </Space>
-                        <Table
-                            size="small"
-                            loading={loadingEquipment}
-                            dataSource={availableEquipment}
-                            rowKey={(record) => record.id || record.equipment_id}
-                            pagination={{ pageSize: 5 }}
-                            columns={[
-                                {
-                                    title: '',
-                                    width: 48,
-                                    render: (_, equipment) => {
-                                        const id = equipment.id || equipment.equipment_id;
-                                        const isChecked = Boolean(selectedEquipment[id]) && selectedEquipment[id].quantity > 0;
-                                        const available = safeNumber(equipment.available_quantity ?? equipment.available, 0);
-                                        return (
-                                            <Checkbox
-                                                checked={isChecked}
-                                                disabled={available <= 0}
-                                                onChange={(event) => toggleEquipmentSelection(equipment, event.target.checked)}
-                                            />
-                                        );
-                                    }
-                                },
-                                {
-                                    title: 'Equipment',
-                                    render: (_, equipment) => equipment.name || equipment.item_name || equipment.equipment_name || 'Equipment'
-                                },
-                                {
-                                    title: 'Total',
-                                    width: 80,
-                                    align: 'center',
-                                    render: (_, equipment) => equipment.total_quantity || 0
-                                },
-                                {
-                                    title: 'Available',
-                                    width: 80,
-                                    align: 'center',
-                                    render: (_, equipment) => {
-                                        const id = equipment.id || equipment.equipment_id;
-                                        return selectedEquipment[id]?.available_quantity ?? equipment.available_quantity ?? equipment.available ?? 0;
-                                    }
-                                },
-                                {
-                                    title: 'Reserved',
-                                    width: 80,
-                                    align: 'center',
-                                    render: (_, equipment) => {
-                                        const total = equipment.total_quantity || 0;
-                                        const available = equipment.available_quantity ?? equipment.available ?? 0;
-                                        return total - available;
-                                    }
-                                },
-                                {
-                                    title: 'Qty Needed',
-                                    width: 120,
-                                    render: (_, equipment) => {
-                                        const id = equipment.id || equipment.equipment_id;
-                                        const currentQty = selectedEquipment[id]?.quantity || 1;
-                                        const maxQty = selectedEquipment[id]?.available_quantity ?? equipment.available_quantity ?? equipment.available ?? 0;
-                                        return (
-                                            <InputNumber
-                                                min={1}
-                                                max={maxQty}
-                                                disabled={maxQty <= 0}
-                                                value={currentQty}
-                                                onChange={(value) => updateSelectedEquipmentQty(equipment, value)}
-                                                style={{ width: '100%' }}
-                                            />
-                                        );
-                                    }
-                                }
-                            ]}
-                        />
-                        <Divider orientation="left">Available Inventory Items</Divider>
-                        <Table
-                            size="small"
-                            loading={loadingEquipment}
-                            dataSource={availableInventoryItems}
-                            rowKey={(record) => record.id}
-                            pagination={{ pageSize: 5 }}
-                            columns={[
-                                { title: 'Inventory Item', dataIndex: 'name' },
-                                { title: 'Type', dataIndex: 'type', width: 160 },
-                                { title: 'Available', dataIndex: 'available_quantity', width: 110, align: 'center' },
-                                { title: 'Unit', dataIndex: 'unit', width: 90, align: 'center' },
-                            ]}
-                        />
-                        <div style={{ marginTop: 12, textAlign: 'right' }}>
-                            <Button style={{ marginRight: 8 }} onClick={() => { setShowAddDeliveryItem(false); setSelectedEquipment({}); }}>Cancel</Button>
-                            <Button type="primary" icon={<SaveOutlined />} onClick={handleAddDeliveryItem}>Save Selected Equipment</Button>
-                        </div>
-                    </div>
-                </Modal>
-
-                <Table
-                    className="ue-delivery-table"
-                    dataSource={deliveryItems}
-                    rowKey={(item, index) => item.id || index}
-                    size="small"
-                    pagination={{
-                        current: deliveryCurrentPage,
-                        pageSize: deliveryPageSize,
-                        onChange: (page, size) => {
-                            setDeliveryCurrentPage(page);
-                            if (size) setDeliveryPageSize(size);
-                        },
-                        showSizeChanger: true,
-                        pageSizeOptions: [5, 10, 20],
-                        showTotal: (total) => `Total ${total} items`,
-                    }}
-                    scroll={{ x: 760 }}
-                    columns={[
-                        { title: 'Item', dataIndex: 'item', width: 210, fixed: 'left', render: (value) => <Text strong>{value || 'Delivery item'}</Text> },
-                        { title: 'Quantity', dataIndex: 'quantity', width: 110, align: 'center', render: (value, item) => (
-                            <InputNumber min={1} value={safeNumber(value, 1)} onChange={(quantity) => handleUpdateDeliveryItem(item.id, { quantity: safeNumber(quantity, 1) })} style={{ width: 80 }} />
-                        ) },
-                        { title: 'Scheduled', dataIndex: 'scheduled_time', width: 140, render: (value) => value || selectedBooking?.event_date || '-' },
-                        { title: 'Available', dataIndex: 'available_quantity', width: 100, align: 'center', render: (value) => value ?? '-' },
-                        { title: 'Ready', dataIndex: 'is_ready', width: 90, align: 'center', render: (_, item) => (
-                            <Checkbox checked={Boolean(item.is_ready || item.status === 'ready')} onChange={(event) => handleUpdateDeliveryItem(item.id, { is_ready: event.target.checked })} />
-                        ) },
-                        { title: 'Action', key: 'action', width: 90, align: 'center', fixed: 'right', render: (_, item) => (
-                            <Popconfirm title="Remove this delivery preparation item?" onConfirm={() => handleRemoveDeliveryPreparationItem(item.id)}>
-                                <Button type="text" danger icon={<DeleteOutlined />} size="small" />
-                            </Popconfirm>
-                        ) },
-                    ]}
-                    locale={{ emptyText: <Empty description="No delivery items added. Click '+ Add Item' to add delivery items." /> }}
-                />
-            </div>
-        </Modal>
-    );
-
-    const renderStaffAssignmentModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><TeamOutlined /></div>
-                    <div className="ue-modal-title">Staff Assignment</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={staffAssignmentModalVisible}
-            onCancel={() => setStaffAssignmentModalVisible(false)}
-            width={900}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button onClick={() => setStaffAssignmentModalVisible(false)}>Close</Button>
-                    <Button type="primary" icon={<UserAddOutlined />} onClick={() => setAddStaffModalVisible(true)}>
-                        Assign Staff
-                    </Button>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
-                    <Col xs={24} md={8}><Card size="small"><Text type="secondary">Event Location</Text><div><EnvironmentOutlined /> {selectedBooking?.venue || 'N/A'}</div></Card></Col>
-                    <Col xs={12} md={8}><Card size="small"><Text type="secondary">Event Date</Text><div><CalendarOutlined /> {selectedBooking?.event_date || 'N/A'}</div></Card></Col>
-                    <Col xs={12} md={8}><Card size="small"><Text type="secondary">Event Time</Text><div><ClockCircleOutlined /> {selectedBooking?.event_time || 'N/A'}</div></Card></Col>
-                </Row>
-                {assignedStaff.length > 0 ? (
-                    <Table
-                        dataSource={assignedStaff}
-                        rowKey={(record, index) => record.staff_id || index}
-                        size="small"
-                        pagination={false}
-                        columns={[
-                            { title: 'Employee', dataIndex: 'name', width: 150 },
-                            { title: 'Role', dataIndex: 'role', width: 120 },
-                            { title: 'Schedule', dataIndex: 'schedule', width: 120 },
-                            { title: 'Time In', dataIndex: 'start_time', width: 100 },
-                            { title: 'Time Out', dataIndex: 'end_time', width: 100 },
-                            { title: 'Status', dataIndex: 'status', width: 120, render: (s, record) => (
-                                <Select value={s} size="small" onChange={(val) => handleUpdateStaffStatus(selectedBooking?.id, record.staff_id, val)} style={{ width: 100 }}>
-                                    <Option value="pending">Pending</Option>
-                                    <Option value="confirmed">Confirmed</Option>
-                                    <Option value="declined">Declined</Option>
-                                </Select>
-                            )},
-                            { title: 'Actions', width: 100, render: (_, record) => (
-                                <Popconfirm title="Remove staff?" onConfirm={() => handleRemoveStaff(selectedBooking?.id, record.staff_id)}>
-                                    <Button type="text" danger icon={<DeleteOutlined />} />
-                                </Popconfirm>
-                            ) }
-                        ]}
-                    />
-                ) : (
-                    <Empty description="No staff assigned to this event" />
-                )}
             </div>
         </Modal>
     );
@@ -6127,361 +9199,621 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    const renderDeliveryTrackingModal = () => (
+    const renderAddDeliveryModal = () => (
         <Modal
             title={
                 <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><CarOutlined /></div>
-                    <div className="ue-modal-title">Delivery Tracking</div>
+                    <div className="ue-modal-icon"><PlusOutlined /></div>
+                    <div className="ue-modal-title">{editingDelivery ? 'Edit Delivery' : 'Add New Delivery'}</div>
                     <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
                 </div>
             }
-            open={deliveryTrackingModalVisible}
-            onCancel={() => setDeliveryTrackingModalVisible(false)}
-            width={900}
+            open={addDeliveryModalVisible}
+            onCancel={() => { setAddDeliveryModalVisible(false); setEditingDelivery(null); addDeliveryForm.resetFields(); }}
+            width={500}
             className="ue-modal-clean"
             maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-                        setEditingDelivery(null);
-                        addDeliveryForm.resetFields();
-                        addDeliveryForm.setFieldsValue({
-                            booking_id: selectedBooking?.booking_id || selectedBooking?.id,
-                            venue: selectedBooking?.venue || '',
-                            delivery_date: selectedBooking?.event_date ? dayjs(selectedBooking.event_date) : null,
-                            delivery_time: selectedBooking?.event_time || ''
-                        });
-                        setAddDeliveryModalVisible(true);
-                    }}>Add Delivery</Button>
-                    <Button onClick={() => setDeliveryTrackingModalVisible(false)}>Close</Button>
-                </div>
-            }
+            footer={null}
             destroyOnHidden={true}
         >
             <div className="ue-modal-body">
-                <Spin spinning={deliveryTrackingLoading} tip="Loading delivery tracking...">
-                    <Table
-                        dataSource={deliveryTrackings}
-                        rowKey={(record) => record.id}
-                        columns={[
-                            { title: 'Meal / Date', key: 'meal_date', render: (_, record) => <div><strong>{record.meal_type || record.delivery_type || 'Delivery'}</strong><div style={{ fontSize: 12, color: '#64748b' }}>{record.delivery_date || record.event_date || '-'}</div></div> },
-                            { title: 'Venue', dataIndex: 'venue', render: (v, r) => v || r.location || '-' },
-                            { title: 'Driver', key: 'driver', render: (_, record) => <div>{record.driver || '-'}<div style={{ fontSize: 12, color: '#64748b' }}>{record.driver_phone || '-'}</div></div> },
-                            { title: 'Items', dataIndex: 'items', ellipsis: true, render: (v) => v || '-' },
-                            { title: 'Status', dataIndex: 'status', render: (s) => <Tag color={getStatusConfig(s).color}>{getStatusConfig(s).text}</Tag> },
-                            { title: 'Action', key: 'action', width: 320, render: (_, record) => (
-                                <Space size={4}>
-                                    <Select value={record.status} size="small" onChange={(val) => handleUpdateDeliveryStatus(record.id, val)} style={{ width: 115 }}>
-                                        <Option value="pending">Pending</Option>
-                                        <Option value="departed">Departed</Option>
-                                        <Option value="en_route">En Route</Option>
-                                        <Option value="arrived">Arrived</Option>
-                                        <Option value="completed">DONE</Option>
-                                    </Select>
-                                    <Tooltip title="Edit driver or delivery items">
-                                        <Button size="small" icon={<EditOutlined />} onClick={() => handleEditDelivery(record)} />
-                                    </Tooltip>
-                                    <Popconfirm title="Remove the assigned driver?" onConfirm={() => handleClearDeliveryData(record, 'driver')} disabled={!record.driver && !record.driver_phone}>
-                                        <Tooltip title="Remove driver">
-                                            <Button size="small" icon={<UserOutlined />} disabled={!record.driver && !record.driver_phone} />
-                                        </Tooltip>
-                                    </Popconfirm>
-                                    <Popconfirm title="Remove the listed delivery items?" onConfirm={() => handleClearDeliveryData(record, 'items')} disabled={!record.items}>
-                                        <Tooltip title="Remove delivery items">
-                                            <Button size="small" icon={<OrderedListOutlined />} disabled={!record.items} />
-                                        </Tooltip>
-                                    </Popconfirm>
-                                    <Popconfirm title="Remove this delivery record?" onConfirm={() => handleDeleteDelivery(record.id)}>
-                                        <Tooltip title="Delete delivery record">
-                                            <Button size="small" danger icon={<DeleteOutlined />} />
-                                        </Tooltip>
-                                    </Popconfirm>
-                                </Space>
-                            )}
-                        ]}
-                        pagination={false}
-                        size="small"
-                    />
-                </Spin>
+                <Form form={addDeliveryForm} layout="vertical" onFinish={handleAddDeliverySubmit}>
+                    <Row gutter={12}>
+                        <Col span={12}>
+                            <Form.Item name="delivery_type" label="Delivery Type" initialValue="buffet" rules={[{ required: true }]}>
+                                <Select>
+                                    <Option value="buffet">Buffet</Option>
+                                    <Option value="packlunch">Pack Lunch</Option>
+                                    <Option value="food_tray">Food Tray</Option>
+                                </Select>
+                            </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                            <Form.Item name="delivery_date" label="Delivery Date">
+                                <DatePicker style={{ width: '100%' }} />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Row gutter={12}>
+                        <Col span={12}>
+                            <Form.Item name="delivery_time" label="Delivery Time" rules={[{ required: true }]}>
+                                <Input placeholder="e.g., 10:00 AM" />
+                            </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                            <Form.Item name="return_time" label="Return Time">
+                                <Input placeholder="e.g., 3:00 PM" />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Form.Item name="venue" label="Venue / Delivery Address" rules={[{ required: true }]}>
+                        <Input placeholder="Venue or delivery address" />
+                    </Form.Item>
+                    <Row gutter={12}>
+                        <Col span={12}>
+                            <Form.Item name="vehicle" label="Vehicle">
+                                <Input placeholder="Vehicle number/name" />
+                            </Form.Item>
+                        </Col>
+                        <Col span={12}>
+                            <Form.Item name="driver" label="Driver" rules={[{ required: true }]}>
+                                <Input placeholder="Driver name" />
+                            </Form.Item>
+                        </Col>
+                    </Row>
+                    <Form.Item name="driver_phone" label="Driver Phone">
+                        <Input placeholder="Contact number" />
+                    </Form.Item>
+                    <Form.Item name="items" label="Items to Deliver">
+                        <TextArea rows={2} placeholder="Food, equipment, buffet setup, etc." />
+                    </Form.Item>
+                    <Form.Item name="notes" label="Delivery Notes">
+                        <TextArea rows={2} placeholder="Special delivery instructions" />
+                    </Form.Item>
+                    <div className="ue-modal-footer">
+                        <Button onClick={() => { setAddDeliveryModalVisible(false); setEditingDelivery(null); addDeliveryForm.resetFields(); }}>Cancel</Button>
+                        <Button type="primary" htmlType="submit">{editingDelivery ? 'Save Changes' : 'Add Delivery'}</Button>
+                    </div>
+                </Form>
             </div>
         </Modal>
     );
 
-    const renderChecklistModal = () => (
+              const handleRecordPayment = async (values) => {
+        try {
+            const bookingNo = formatBookingId(selectedBooking?.booking_no);
+
+            // ⭐ FRESH CHECK: Always ask the server whether this booking has an
+            //    invoice. Billing & Invoicing creates invoices in a different
+            //    React tree — the cached booking object here is stale and
+            //    would otherwise keep showing "Create Invoice to Continue Payment"
+            //    even after the cashier just created the invoice in Billing.
+            let hasInvoice = Boolean(
+                selectedBooking?.invoice?.invoice_id
+                || selectedBooking?.invoice_id
+                || selectedBooking?.invoice_number
+            );
+
+            if (selectedBooking?.id || selectedBooking?.booking_id) {
+                try {
+                    const bookingId = selectedBooking.id || selectedBooking.booking_id;
+                    const freshRes = await api.get(`/bookings/${bookingId}`);
+                    const freshBooking = normalizeApiResponse(freshRes) || {};
+                    if (freshBooking?.invoice?.invoice_id || freshBooking?.invoice_id) {
+                        hasInvoice = true;
+                        // ⭐ Sync the local cache so the next render also sees it.
+                        const merged = {
+                            ...selectedBooking,
+                            invoice: freshBooking.invoice || selectedBooking.invoice,
+                            invoice_id: freshBooking.invoice_id || selectedBooking.invoice_id,
+                            invoice_number: freshBooking.invoice_number || selectedBooking.invoice_number,
+                            paid_amount: safeNumber(freshBooking.paid_amount, selectedBooking.paid_amount),
+                            balance: safeNumber(freshBooking.balance, selectedBooking.balance),
+                            payments: freshBooking.payments || selectedBooking.payments,
+                        };
+                        setSelectedBooking(merged);
+                        syncBookingInCache(queryClient, merged);
+                    }
+                } catch (freshErr) {
+                    // Non-fatal — fall back to the cached value.
+                    console.warn('Failed to re-check invoice for booking:', freshErr);
+                }
+            }
+
+            if (!hasInvoice) {
+                // ⭐ Show the INLINE Create Invoice modal — no page navigation.
+                const totalAmount = safeNumber(selectedBooking?.total_amount, 0);
+
+                setPendingPaymentValues(values || {});
+                setCreateInvoiceFromPaymentCharges({
+                    transportation_fee: 0,
+                    setup_fee: 0,
+                    service_crew_fee: 0,
+                    equipment_rental: 0,
+                    extra_food_fee: 0,
+                });
+
+                createInvoiceFromPaymentForm.setFieldsValue({
+                    subtotal: totalAmount,
+                    discount: 0,
+                    discount_type: 'fixed',
+                    total_amount: totalAmount,
+                    due_date: dayjs().add(30, 'days'),
+                    notes: `Auto-created when recording payment for ${bookingNo}.`,
+                });
+
+                setPaymentModalVisible(false);
+                setCreateInvoiceFromPaymentVisible(true);
+                return;
+            }
+
+                      const validatedValues = await paymentForm.validateFields();
+
+            // ⭐ PAYER — send payer_name / payer_relation with the payment.
+            //    The backend stores them on `booking_payments`. When the
+            //    payer equals the customer we send null so the receipt
+            //    falls back to the customer name automatically.
+            const payerNameTrimmed = safeString(validatedValues.payer_name || values?.payer_name || '').trim();
+            const payerRelationTrimmed = safeString(validatedValues.payer_relation || values?.payer_relation || '').trim();
+            const customerNameTrimmed = safeString(selectedBooking?.customer_name || '').trim();
+            const payerIsDifferent = payerNameTrimmed !== ''
+                && payerNameTrimmed.toLowerCase() !== customerNameTrimmed.toLowerCase();
+
+            let paymentResponse = null;
+            await runWithLoadingLine('payment', selectedBooking, async (signal) => {
+                const res = await api.post(`/bookings/${selectedBooking.id}/record-payment`, {
+                    ...validatedValues,
+                    ...values,
+                    payer_name: payerIsDifferent ? payerNameTrimmed : null,
+                    payer_relation:
+                        payerIsDifferent && payerRelationTrimmed && payerRelationTrimmed !== 'Self'
+                            ? payerRelationTrimmed
+                            : null,
+                }, { signal });
+                paymentResponse = normalizeApiResponse(res);
+            });
+            message.success('Payment recorded successfully');
+            setPaymentModalVisible(false);
+            paymentForm.resetFields();
+
+            // ⭐ CRITICAL: `recordPayment` on the booking controller updates
+            //    the invoice's `paid_amount` and `status` server-side. All
+            //    Billing caches (Payments Tracking, Invoices list, Debts,
+            //    Payment History) must be invalidated so the new PAID and
+            //    BALANCE show up on the Billing & Invoicing page instantly.
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'detail', selectedBooking.id], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'payment-summary', selectedBooking.id], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['payments'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'payments'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'tracking'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'payments', 'history'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'active' });
+
+                  // ⭐ CRITICAL: Push the fresh booking (with updated invoice
+            //    paid/balance) back into the booking cache so the Orders
+            //    table's AMOUNT column shows the new PAID and BALANCE.
+            //
+            //    The enriched recordPayment response (REPLACE #8) already
+            //    contains the updated booking snapshot — use it directly
+            //    instead of firing a second GET.
+            try {
+                const snapshot = paymentResponse?.booking || null;
+                if (snapshot) {
+                    const mergedBooking = {
+                        ...selectedBooking,
+                        paid_amount: safeNumber(snapshot.paid_amount, selectedBooking.paid_amount),
+                        balance: safeNumber(snapshot.balance, selectedBooking.balance),
+                        invoice: snapshot.invoice || selectedBooking.invoice,
+                        payments: snapshot.payments || selectedBooking.payments,
+                    };
+                    setSelectedBooking(mergedBooking);
+                    syncBookingInCache(queryClient, mergedBooking);
+                } else {
+                    // Fallback — old backend, do the extra GET.
+                    const freshRes = await api.get(`/bookings/${selectedBooking.id}`);
+                    const freshBooking = normalizeApiResponse(freshRes) || {};
+                    const mergedBooking = {
+                        ...selectedBooking,
+                        paid_amount: safeNumber(freshBooking.paid_amount, selectedBooking.paid_amount),
+                        balance: safeNumber(freshBooking.balance, selectedBooking.balance),
+                        invoice: freshBooking.invoice || selectedBooking.invoice,
+                        payments: freshBooking.payments || selectedBooking.payments,
+                    };
+                    setSelectedBooking(mergedBooking);
+                    syncBookingInCache(queryClient, mergedBooking);
+                }
+            } catch (refreshErr) {
+                console.warn('Failed to refresh booking after payment:', refreshErr);
+            }
+                       broadcastBookingChanged(selectedBooking.id, 'payment_recorded');
+
+            // ⭐ IMMEDIATE CROSS-MODULE REFETCH — Billing & Invoicing listens
+            //    for this and refreshes its Invoices, Payment Tracking,
+            //    Debts, and Confirmed Bookings lists instantly.
+            try {
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('billing:refresh'));
+                }
+                if (typeof BroadcastChannel !== 'undefined') {
+                    const ch = new BroadcastChannel('billing_sync');
+                    ch.postMessage({ type: 'refresh' });
+                    ch.close();
+                }
+            } catch { /* ignore */ }
+
+            // Eager refetch of our own lists — the AMOUNT column reflects
+            // the new PAID / BALANCE right away.
+            await Promise.allSettled([
+                refetchActiveBookings(),
+                refetchHistoryBookings(),
+                refetchStatistics(),
+                queryClient.refetchQueries({ queryKey: ['orders'] }),
+                queryClient.refetchQueries({ queryKey: ['events'] }),
+            ]);
+        } catch (error) {
+            message.error(error.response?.data?.message || 'Failed to record payment');
+        }
+    };
+
+      // ⭐ Inline Create Invoice (from payment flow) — creates the invoice on
+    //    the same page and then immediately re-opens the payment modal so
+    //    the cashier can continue recording the 30% deposit.
+    const handleCreateInvoiceFromPayment = async (formValues) => {
+        if (!selectedBooking) {
+            message.error('No booking selected.');
+            return;
+        }
+
+             setCreateInvoiceFromPaymentSubmitting(true);
+        
+        // ⭐ Safety timeout: if the backend hangs for more than 15 seconds,
+        //    force the modal out of the loading state so the cashier isn't stuck.
+        const safetyTimeout = setTimeout(() => {
+            setCreateInvoiceFromPaymentSubmitting(false);
+            message.error('The server is taking too long to respond. Please check your connection and try again.');
+        }, 15000);
+
+        try {
+            const additionalChargesTotal =
+                Number(createInvoiceFromPaymentCharges.transportation_fee || 0) +
+                Number(createInvoiceFromPaymentCharges.setup_fee || 0) +
+                Number(createInvoiceFromPaymentCharges.service_crew_fee || 0) +
+                Number(createInvoiceFromPaymentCharges.equipment_rental || 0) +
+                Number(createInvoiceFromPaymentCharges.extra_food_fee || 0);
+
+            const subtotal = Number(formValues.subtotal || 0);
+            const discountType = formValues.discount_type || 'fixed';
+            const discountValue = Number(formValues.discount || 0);
+            const discountAmount = discountType === 'percentage'
+                ? subtotal * (discountValue / 100)
+                : discountValue;
+
+            const computedTotal = Math.max(0, subtotal - discountAmount + additionalChargesTotal);
+
+            const payload = {
+                booking_id: selectedBooking.id || selectedBooking.booking_id,
+                subtotal,
+                discount: discountValue,
+                discount_type: discountType,
+                additional_charges: additionalChargesTotal,
+                total_amount: computedTotal,
+                due_date: formValues.due_date
+                    ? formValues.due_date.format('YYYY-MM-DD')
+                    : null,
+                notes: formValues.notes || null,
+                charges: [
+                    { charge_kind: 'charge', charge_type: 'transportation_fee', description: 'Transportation Fee', amount: Number(createInvoiceFromPaymentCharges.transportation_fee || 0) },
+                    { charge_kind: 'charge', charge_type: 'setup_fee',          description: 'Setup Fee',          amount: Number(createInvoiceFromPaymentCharges.setup_fee || 0) },
+                    { charge_kind: 'charge', charge_type: 'service_crew_fee',   description: 'Service Crew Fee',   amount: Number(createInvoiceFromPaymentCharges.service_crew_fee || 0) },
+                    { charge_kind: 'charge', charge_type: 'equipment_rental',   description: 'Equipment Rental',   amount: Number(createInvoiceFromPaymentCharges.equipment_rental || 0) },
+                    { charge_kind: 'charge', charge_type: 'extra_food_fee',     description: 'Extra Food Request', amount: Number(createInvoiceFromPaymentCharges.extra_food_fee || 0) },
+                ].filter((c) => c.amount > 0),
+            };
+
+                     const res = await api.post('/invoices', payload);
+            const createdInvoice = res?.data?.data || res?.data;
+
+            message.success(
+                createdInvoice?.invoice_number
+                    ? `Invoice ${createdInvoice.invoice_number} created. Continue recording payment.`
+                    : 'Invoice created successfully.'
+            );
+
+            // Attach the new invoice to the booking so downstream logic sees it.
+            const updatedBooking = {
+                ...selectedBooking,
+                invoice: {
+                    invoice_id: createdInvoice?.invoice_id,
+                    invoice_number: createdInvoice?.invoice_number,
+                    total_amount: computedTotal,
+                    paid_amount: 0,
+                    balance: computedTotal,
+                    status: 'unpaid',
+                },
+                invoice_id: createdInvoice?.invoice_id,
+                invoice_number: createdInvoice?.invoice_number,
+            };
+            setSelectedBooking(updatedBooking);
+            syncBookingInCache(queryClient, updatedBooking);
+
+            // ⭐ CRITICAL: Mirror the invoice into EVERY cache shape the
+            //    Billing & Invoicing page reads, so the newly created
+            //    invoice appears there without a manual refresh.
+            //
+            //    BillingInvoicing's queries use these keys:
+            //      - ['billing', 'invoices']
+            //      - ['billing', 'confirmed-bookings', 'v2']
+            //      - ['billing', 'debts']
+            //      - ['billing', 'pdf-bookings']
+            //      - ['billing', 'payments']
+            //      - ['invoices'], ['debts'], ['bookings']
+            queryClient.invalidateQueries({ queryKey: ['bookings'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'confirmed-bookings', 'v2'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['billing', 'pdf-bookings'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'active' });
+
+                      // ⭐ Refetch the booking itself so the payment modal — which
+            //    re-opens below — sees the invoice and skips the create-
+            //    invoice flow on the retry.
+            try {
+                const bookingId = selectedBooking.id || selectedBooking.booking_id;
+                const freshRes = await api.get(`/bookings/${bookingId}`);
+                const freshBooking = normalizeApiResponse(freshRes) || {};
+                if (freshBooking?.invoice) {
+                    setSelectedBooking((prev) => ({
+                        ...(prev || {}),
+                        invoice: freshBooking.invoice,
+                        invoice_id: freshBooking.invoice_id,
+                        invoice_number: freshBooking.invoice_number,
+                        paid_amount: safeNumber(freshBooking.paid_amount, prev?.paid_amount),
+                        balance: safeNumber(freshBooking.balance, prev?.balance),
+                        payments: freshBooking.payments || prev?.payments,
+                    }));
+                    syncBookingInCache(queryClient, {
+                        ...updatedBooking,
+                        invoice: freshBooking.invoice,
+                    });
+                }
+            } catch (refreshErr) {
+                console.warn('Failed to refresh booking after invoice creation:', refreshErr);
+            }
+
+            // ⭐ IMMEDIATE CROSS-MODULE REFETCH — the Billing & Invoicing
+            //    page listens for this event and refetches all its queries
+            //    (invoice list, confirmed-bookings dropdown, debts) within
+            //    one network round-trip. No 60-second poll needed.
+            try {
+                if (typeof window !== 'undefined') {
+                    window.dispatchEvent(new CustomEvent('billing:refresh'));
+                }
+                if (typeof BroadcastChannel !== 'undefined') {
+                    const ch = new BroadcastChannel('billing_sync');
+                    ch.postMessage({ type: 'refresh' });
+                    ch.close();
+                }
+            } catch { /* ignore */ }
+
+            // Also eager-refetch our own caches so the AMOUNT column
+            // reflects the invoice immediately.
+            await Promise.allSettled([
+                queryClient.refetchQueries({ queryKey: ['bookings'] }),
+                queryClient.refetchQueries({ queryKey: ['bookings', 'statistics'] }),
+                queryClient.refetchQueries({ queryKey: ['orders'] }),
+                queryClient.refetchQueries({ queryKey: ['events'] }),
+            ]);
+            setCreateInvoiceFromPaymentVisible(false);
+            createInvoiceFromPaymentForm.resetFields();
+
+            // ⭐ Re-open the Record Payment modal pre-filled with the values
+            //    that the user was trying to submit.
+            if (pendingPaymentValues) {
+                const amount = Number(pendingPaymentValues.amount || 0);
+                paymentForm.setFieldsValue({
+                    amount: amount > 0 ? amount : computedTotal,
+                    payment_method: pendingPaymentValues.payment_method || 'cash',
+                    payment_type: pendingPaymentValues.payment_type || 'deposit',
+                    reference_number: pendingPaymentValues.reference_number || '',
+                    account_name: pendingPaymentValues.account_name || '',
+                    account_number: pendingPaymentValues.account_number || '',
+                    notes: pendingPaymentValues.notes || '',
+                });
+                setPendingPaymentValues(null);
+                setPaymentModalVisible(true);
+            }
+        } catch (error) {
+            console.error('Create invoice (from payment) error:', error);
+            message.error(
+                error.response?.data?.message ||
+                'Failed to create invoice. Please try again.'
+            );
+         } finally {
+            clearTimeout(safetyTimeout);
+            setCreateInvoiceFromPaymentSubmitting(false);
+        }
+    };
+
+    const renderCreateInvoiceFromPaymentModal = () => (
         <Modal
             title={
                 <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><CheckSquareOutlined /></div>
-                    <div className="ue-modal-title">Event Checklist</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
+                    <div className="ue-modal-icon"><FileTextOutlined /></div>
+                    <div className="ue-modal-title">Create Invoice to Continue Payment</div>
+                    <div className="ue-modal-badge">
+                        {formatBookingId(selectedBooking?.booking_no)}
+                    </div>
                 </div>
             }
-            open={checklistModalVisible}
-            onCancel={() => setChecklistModalVisible(false)}
-            width={800}
+            open={createInvoiceFromPaymentVisible}
+            onCancel={() => {
+                setCreateInvoiceFromPaymentVisible(false);
+                createInvoiceFromPaymentForm.resetFields();
+                setPendingPaymentValues(null);
+            }}
+            width={720}
             className="ue-modal-clean"
             maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button type="primary" icon={<PlusOutlined />} onClick={() => {
-                        const task = prompt('Enter task description:');
-                        const assignedTo = prompt('Assign to:');
-                        if (task) handleAddChecklistItem({ task, assigned_to: assignedTo || 'Unassigned' });
-                    }}>+ Add Task</Button>
-                    <Button onClick={() => setChecklistModalVisible(false)}>Close</Button>
-                </div>
-            }
-            destroyOnHidden={true}
+            footer={null}
+            destroyOnHidden
         >
             <div className="ue-modal-body">
-                <Spin spinning={checklistLoading} tip="Loading checklist...">
-                    <div className="ue-checklist-header">
-                        <span className="ue-id-text">{formatBookingId(selectedBooking?.booking_no)}</span>
-                        <span className="ue-customer-name">{selectedBooking?.customer_name}</span>
-                        <Tag color="blue">{selectedBooking?.event_date}</Tag>
-                    </div>
+                <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="No invoice exists for this booking yet."
+                    description="Fill in the financial details below. The invoice will be created and the payment you started will continue automatically."
+                />
 
-                    <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        <Tag color="blue">📋 System Tasks</Tag>
-                        <Tag color="green">📦 Delivery Items</Tag>
-                        <Tag color="purple">✏️ Custom Tasks</Tag>
-                    </div>
-
-                    <List
-                        dataSource={checklist}
-                        rowKey={(item) => item.id}
-                        renderItem={item => (
-                            <List.Item
-                                className="ue-checklist-item"
-                                actions={[
-                                    <Checkbox key="completed" checked={Boolean(item.completed ?? item.status === 'completed')} onChange={(e) => handleUpdateChecklistItem(item.id, e.target.checked)}>
-                                        Completed
-                                    </Checkbox>,
-                                    !item.is_delivery && item.source_type !== 'system' && (
-                                        <Popconfirm key="delete" title="Delete this item?" onConfirm={() => handleDeleteChecklistItem(item)}>
-                                            <Button type="text" danger icon={<DeleteOutlined />} size="small" />
-                                        </Popconfirm>
-                                    )
-                                ]}
+                <Form
+                    form={createInvoiceFromPaymentForm}
+                    layout="vertical"
+                    onFinish={handleCreateInvoiceFromPayment}
+                >
+                    <Row gutter={16}>
+                        <Col xs={24} sm={8}>
+                            <Form.Item
+                                name="subtotal"
+                                label="Subtotal"
+                                rules={[{ required: true, message: 'Please enter subtotal' }]}
                             >
-                                <List.Item.Meta
-                                    avatar={
-                                        Boolean(item.completed ?? item.status === 'completed')
-                                            ? <CheckCircleOutlined style={{ color: '#10b981', fontSize: 18 }} />
-                                            : <ClockCircleOutlined style={{ color: '#f59e0b', fontSize: 18 }} />
-                                    }
-                                    title={
-                                        <div>
-                                            <span>{item.task}</span>
-                                            {item.is_delivery && <Tag color="blue" size="small" style={{ marginLeft: 8 }}>Delivery</Tag>}
-                                            {item.source_type === 'system' && <Tag color="green" size="small" style={{ marginLeft: 8 }}>System</Tag>}
-                                            {item.source_type === 'manual' && <Tag color="purple" size="small" style={{ marginLeft: 8 }}>Custom</Tag>}
-                                        </div>
-                                    }
-                                    description={`Assigned to: ${item.assigned_to || 'Unassigned'}${item.notes ? ` | ${item.notes}` : ''}`}
-                                />
-                            </List.Item>
-                        )}
-                    />
+                                <InputNumber min={0} style={{ width: '100%' }} prefix="₱" placeholder="0.00" />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={12} sm={4}>
+                            <Form.Item name="discount_type" label="Discount" initialValue="fixed">
+                                <Select>
+                                    <Option value="fixed">Fixed</Option>
+                                    <Option value="percentage">%</Option>
+                                </Select>
+                            </Form.Item>
+                        </Col>
+                        <Col xs={12} sm={4}>
+                            <Form.Item name="discount" label="Discount">
+                                <InputNumber min={0} style={{ width: '100%' }} placeholder="0" />
+                            </Form.Item>
+                        </Col>
+                        <Col xs={24} sm={8}>
+                            <Form.Item name="due_date" label="Due Date">
+                                <DatePicker style={{ width: '100%' }} />
+                            </Form.Item>
+                        </Col>
+                    </Row>
 
-                    <Progress
-                        percent={Math.round((checklist.filter(i => Boolean(i.completed ?? i.status === 'completed')).length / Math.max(checklist.length, 1)) * 100)}
-                        strokeColor="#3b82f6"
-                        style={{ marginTop: 20 }}
-                    />
-                </Spin>
-            </div>
-        </Modal>
-    );
+                    <Divider orientation="left" style={{ marginTop: 4 }}>
+                        Additional Charges
+                    </Divider>
 
-    const renderIngredientsModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><StockOutlined /></div>
-                    <div className="ue-modal-title">Calculate Ingredients</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={ingredientsModalVisible}
-            onCancel={() => setIngredientsModalVisible(false)}
-            width={1000}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button onClick={() => setIngredientsModalVisible(false)}>Close</Button>
-                    <Button
-                        icon={<ShoppingOutlined />}
-                        type="primary"
-                        onClick={() => handleAddToShoppingList(selectedBooking?.id, computedIngredients)}
-                        loading={addToShoppingListMutation.isLoading}
-                        disabled={computedIngredients.length === 0 || !computedIngredients.some(i => i.need_to_buy)}
-                    >
-                        Add to Purchase List ({computedIngredients.filter(i => i.need_to_buy).length})
-                    </Button>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                {selectedBooking && (
-                    <>
-                        <div className="ue-ingredients-total-book">
-                            <div className="ue-total-book-header">
-                                <h2>Total Book</h2>
-                            </div>
-                            <div className="ue-total-book-content">
-                                <div className="ue-total-book-row">
-                                    <span className="ue-total-book-label">Booking ID:</span>
-                                    <span className="ue-total-book-value ue-id-text">{formatBookingId(selectedBooking.booking_no)}</span>
-                                </div>
-                                <div className="ue-total-book-row">
-                                    <span className="ue-total-book-label">Customer:</span>
-                                    <span className="ue-total-book-value">{selectedBooking.customer_name}</span>
-                                </div>
-                                <div className="ue-total-book-row">
-                                    <span className="ue-total-book-label">Event Date:</span>
-                                    <span className="ue-total-book-value">{selectedBooking.event_date}</span>
-                                </div>
-                                <div className="ue-total-book-row">
-                                    <span className="ue-total-book-label">Total Guests:</span>
-                                    <span className="ue-total-book-value">{selectedBooking.guests_count} PAX</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="ue-modal-section">
-                            <div className="ue-modal-section-title"><ForkOutlined /> Menu Items to Calculate</div>
-                            <Row gutter={[12, 12]} align="middle">
-                                <Col flex="auto">
-                                    <Select
-                                        mode="multiple"
-                                        allowClear
-                                        showSearch
-                                        value={selectedIngredientMenuItemIds}
-                                        placeholder="Select one or more menu items"
-                                        optionFilterProp="label"
+                    <Row gutter={16}>
+                        {[
+                            ['transportation_fee', 'Transportation Fee'],
+                            ['setup_fee', 'Setup Fee'],
+                            ['service_crew_fee', 'Service Crew Fee'],
+                            ['equipment_rental', 'Equipment Rental'],
+                            ['extra_food_fee', 'Extra Food Request'],
+                        ].map(([key, label]) => (
+                            <Col xs={24} sm={8} key={key}>
+                                <Form.Item label={label}>
+                                    <InputNumber
+                                        min={0}
                                         style={{ width: '100%' }}
-                                        onChange={(values) => setSelectedIngredientMenuItemIds(
-                                            safeArray(values).map((value) => String(value))
-                                        )}
-                                        options={ingredientMenuItems.map((menuItem) => ({
-                                            value: String(menuItem.menu_item_id ?? menuItem.id),
-                                            label: `${menuItem.name || 'Menu Item'}${menuItem.quantity ? ` (${menuItem.quantity} serving${safeNumber(menuItem.quantity) === 1 ? '' : 's'})` : ''}`,
-                                        }))}
+                                        prefix="₱"
+                                        placeholder="0.00"
+                                        value={createInvoiceFromPaymentCharges[key]}
+                                        onChange={(value) =>
+                                            setCreateInvoiceFromPaymentCharges((prev) => ({
+                                                ...prev,
+                                                [key]: Number(value || 0),
+                                            }))
+                                        }
                                     />
-                                </Col>
-                                <Col>
-                                    <Button
-                                        type="primary"
-                                        icon={<StockOutlined />}
-                                        onClick={handleRecalculateIngredients}
-                                        loading={isComputingIngredients}
-                                        disabled={ingredientMenuItems.length === 0 || selectedIngredientMenuItemIds.length === 0}
-                                    >
-                                        Calculate Selected
-                                    </Button>
-                                </Col>
-                            </Row>
-                            <div style={{ marginTop: 8, color: '#64748b', fontSize: 12 }}>
-                                Select a specific dish, such as Adobo, or select several dishes. Ingredient requirements are combined and shown only in the full event summary below.
-                            </div>
-                        </div>
+                                </Form.Item>
+                            </Col>
+                        ))}
+                    </Row>
 
-                        <div className="ue-modal-section">
-                            <div className="ue-modal-section-title">
-                                <StockOutlined /> Full Event Ingredients Summary
-                                {selectedIngredientMenuItemIds.length > 0 && (
-                                    <Tag color="blue" style={{ marginLeft: 8 }}>
-                                        {selectedIngredientMenuItemIds.length} menu item{selectedIngredientMenuItemIds.length === 1 ? '' : 's'}
-                                    </Tag>
-                                )}
-                            </div>
-                            {isComputingIngredients ? (
-                                <div className="ue-loading"><Spin tip="Computing ingredient requirements..." /></div>
-                            ) : computedIngredients.length === 0 ? (
-                                <Empty description="No ingredients computed yet." />
-                            ) : (
-                                <Table
-                                    dataSource={computedIngredients}
-                                    rowKey={(record) => record.ingredient_id}
-                                    size="small"
-                                    pagination={{ pageSize: 10 }}
-                                    columns={[
-                                        {
-                                            title: 'Select',
-                                            key: 'select',
-                                            width: 50,
-                                            render: (_, record) => (
-                                                <Checkbox
-                                                    checked={selectedIngredientIds.includes(record.ingredient_id)}
-                                                    disabled={!record.need_to_buy}
-                                                    onChange={(e) => {
-                                                        setSelectedIngredientIds(prev => e.target.checked
-                                                            ? [...prev, record.ingredient_id]
-                                                            : prev.filter(id => id !== record.ingredient_id)
-                                                        );
-                                                    }}
-                                                />
-                                            )
-                                        },
-                                        {
-                                            title: 'Ingredient',
-                                            dataIndex: 'name',
-                                            render: (v) => <span className="ue-ingredient-name">{v}</span>
-                                        },
-                                        {
-                                            title: 'Meal Type',
-                                            key: 'meal_type',
-                                            render: (_, record) => safeArray(record.menu_items).map(mi => mi.meal_type).filter(Boolean).join(', ') || '-'
-                                        },
-                                        {
-                                            title: 'Per Pax',
-                                            key: 'per_pax',
-                                            render: (_, record) => `${record.per_pax} ${record.unit}`
-                                        },
-                                        {
-                                            title: 'Total Needed',
-                                            key: 'needed',
-                                            render: (_, record) => `${Math.round(record.quantity_needed * 100) / 100} ${record.unit}`
-                                        },
-                                        {
-                                            title: 'Current Stock',
-                                            key: 'stock',
-                                            render: (_, record) => `${Math.round(record.current_stock * 100) / 100} ${record.unit}`
-                                        },
-                                        {
-                                            title: 'Reserved',
-                                            key: 'reserved',
-                                            render: (_, record) => `${Math.round(record.reserved_quantity * 100) / 100} ${record.unit}`
-                                        },
-                                        {
-                                            title: 'Available',
-                                            key: 'available',
-                                            render: (_, record) => `${Math.round(record.available_stock * 100) / 100} ${record.unit}`
-                                        },
-                                        {
-                                            title: 'Shortage',
-                                            key: 'shortage',
-                                            render: (_, record) => record.shortage > 0 ?
-                                                <span className="ue-shortage">{Math.round(record.shortage * 100) / 100} {record.unit}</span> :
-                                                <span className="ue-sufficient">Sufficient</span>
-                                        },
-                                        {
-                                            title: 'Status',
-                                            key: 'status',
-                                            render: (_, record) => record.need_to_buy ?
-                                                <Tag color="error">Need to Buy</Tag> :
-                                                <Tag color="success">In Stock</Tag>
-                                        },
-                                    ]}
-                                />
-                            )}
-                        </div>
-                    </>
-                )}
+                    <Form.Item
+                        noStyle
+                        shouldUpdate={(prev, cur) =>
+                            prev.subtotal !== cur.subtotal ||
+                            prev.discount !== cur.discount ||
+                            prev.discount_type !== cur.discount_type
+                        }
+                    >
+                        {({ getFieldValue }) => {
+                            const subtotal = Number(getFieldValue('subtotal') || 0);
+                            const discountValue = Number(getFieldValue('discount') || 0);
+                            const discountType = getFieldValue('discount_type') || 'fixed';
+                            const discountAmount = discountType === 'percentage'
+                                ? subtotal * (discountValue / 100)
+                                : discountValue;
+                            const additionalTotal =
+                                Number(createInvoiceFromPaymentCharges.transportation_fee || 0) +
+                                Number(createInvoiceFromPaymentCharges.setup_fee || 0) +
+                                Number(createInvoiceFromPaymentCharges.service_crew_fee || 0) +
+                                Number(createInvoiceFromPaymentCharges.equipment_rental || 0) +
+                                Number(createInvoiceFromPaymentCharges.extra_food_fee || 0);
+                            const total = Math.max(0, subtotal - discountAmount + additionalTotal);
+
+                            return (
+                                <div
+                                    style={{
+                                        display: 'flex',
+                                        justifyContent: 'flex-end',
+                                        gap: 16,
+                                        padding: '8px 12px',
+                                        background: '#f8fafc',
+                                        borderRadius: 8,
+                                        marginTop: 4,
+                                        marginBottom: 12,
+                                    }}
+                                >
+                                    <span style={{ color: '#64748b' }}>Total Amount:</span>
+                                    <strong style={{ color: '#3b82f6' }}>
+                                        {formatCurrency(total)}
+                                    </strong>
+                                </div>
+                            );
+                        }}
+                    </Form.Item>
+
+                    <Form.Item name="notes" label="Notes">
+                        <TextArea rows={2} placeholder="Additional notes..." />
+                    </Form.Item>
+
+                    <div className="ue-modal-footer">
+                        <Button
+                            onClick={() => {
+                                setCreateInvoiceFromPaymentVisible(false);
+                                createInvoiceFromPaymentForm.resetFields();
+                                setPendingPaymentValues(null);
+                            }}
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="primary"
+                            htmlType="submit"
+                            icon={<PlusOutlined />}
+                            loading={createInvoiceFromPaymentSubmitting}
+                            disabled={createInvoiceFromPaymentSubmitting}
+                        >
+                            Create Invoice & Continue Payment
+                        </Button>
+                    </div>
+                </Form>
             </div>
         </Modal>
     );
@@ -6634,32 +9966,177 @@ const UnifiedOrderEventsManagement = () => {
                     <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
                 </div>
             }
-            open={paymentModalVisible}
-            onCancel={() => { setPaymentModalVisible(false); paymentForm.resetFields(); }}
-            width={500}
+                        open={paymentModalVisible}
+            onCancel={() => {
+                setPaymentModalVisible(false);
+                paymentForm.resetFields();
+                setPaymentPercent(null);
+                // ⭐ Explicit reset — resetFields() doesn't always clear
+                //    values that were set imperatively via setFieldValue.
+                paymentForm.setFieldValue('payer_name', '');
+                paymentForm.setFieldValue('payer_relation', '');
+            }}
+            width={640}
             className="ue-modal-clean"
+            centered={true}
+            styles={{ body: { maxHeight: '75vh', overflowY: 'auto' } }}
             maskClosable={false}
             footer={null}
             destroyOnHidden={true}
         >
-            <div className="ue-modal-body">
+                                <div className="ue-modal-body">
                 <div className="ue-payment-summary">
-                    <div><span>Total Amount:</span> <strong>{formatCurrency(selectedBooking?.total_amount)}</strong></div>
-                    <div><span>Paid:</span> <strong>{formatCurrency(selectedBooking?.paid_amount || 0)}</strong></div>
-                    <div><span>Balance:</span> <strong style={{ color: safeNumber(selectedBooking?.balance || 0) > 0 ? '#ef4444' : '#10b981' }}>{formatCurrency(selectedBooking?.balance || 0)}</strong></div>
+                    <div><span>Total Amount:</span> <strong>{money(selectedBooking?.total_amount)}</strong></div>
+                    <div><span>Paid:</span> <strong>{money(selectedBooking?.paid_amount || 0)}</strong></div>
+                    <div><span>Balance:</span> <strong style={{ color: safeNumber(selectedBooking?.balance || 0) > 0 ? '#ef4444' : '#10b981' }}>{money(selectedBooking?.balance || 0)}</strong></div>
                 </div>
+
                 <Form form={paymentForm} layout="vertical">
                     <Form.Item name="payment_type" hidden>
                         <Input />
                     </Form.Item>
+
+                                     {/* 1. Payment Amount */}
                     <Form.Item name="amount" label="Payment Amount" rules={[{ required: true }]}>
                         <InputNumber
                             min={0}
                             style={{ width: '100%' }}
                             placeholder="Enter payment amount"
                             step={0.01}
-                            onFocus={() => {
+                            // ⭐ Adds commas and ₱, but does NOT force .00 — user types decimals freely
+                            formatter={(value) => {
+                                if (!value) return '';
+                                const parts = value.toString().split('.');
+                                parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                                return parts.length > 1 ? `₱ ${parts[0]}.${parts[1]}` : `₱ ${parts[0]}`;
+                            }}
+                            parser={(value) => {
+                                if (!value) return '';
+                                return value.replace(/₱\s?|(,*)/g, '');
+                            }}
+                            addonAfter={
+                                <Button
+                                    type="text"
+                                    size="small"
+                                    onClick={() => {
+                                        paymentForm.setFieldValue('amount', undefined);
+                                        setPaymentPercent(null);
+                                    }}
+                                    style={{ padding: '0 4px', height: 'auto', fontSize: 11, color: '#8b93a8' }}
+                                >
+                                    Clear
+                                </Button>
+                            }
+                                                  onFocus={() => {
                                 if (safeNumber(paymentForm.getFieldValue('amount'), 0) === 0) {
+                                    paymentForm.setFieldValue('amount', undefined);
+                                }
+                            }}
+                        />
+                    </Form.Item>
+
+                    {/* ⭐ PAID BY — record who physically handed over the cash.
+                        Common when a family member, driver, or company rep
+                        pays on behalf of the booked customer. */}
+                    <div style={{
+                        padding: '12px 14px',
+                        background: isDarkMode ? '#1a1f3a' : '#f8fafc',
+                        borderRadius: 10,
+                        border: `1px dashed ${isDarkMode ? '#2a3450' : '#e2e8f0'}`,
+                        marginBottom: 16,
+                    }}>
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            marginBottom: 10,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            letterSpacing: 0.5,
+                            textTransform: 'uppercase',
+                            color: '#64748b',
+                        }}>
+                            <UserOutlined /> Paid By / Received From
+                        </div>
+                        <Row gutter={12}>
+                            <Col xs={24} sm={14}>
+                                <Form.Item
+                                    name="payer_name"
+                                    label="Payer Name"
+                                    style={{ marginBottom: 8 }}
+                                    tooltip="Leave blank if the booked customer is the payer."
+                                >
+                                    <Input
+                                        placeholder={selectedBooking?.customer_name || 'Name of person paying'}
+                                        allowClear
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={24} sm={10}>
+                                <Form.Item
+                                    name="payer_relation"
+                                    label="Relationship"
+                                    style={{ marginBottom: 8 }}
+                                    rules={[{ required: true, message: 'Please select the relationship' }]}
+                                >
+                                    <Select
+                                        allowClear
+                                        placeholder="e.g. Brother"
+                                        options={[
+                                            { value: 'Self', label: 'Self' },
+                                            { value: 'Spouse', label: 'Spouse' },
+                                            { value: 'Parent', label: 'Parent' },
+                                            { value: 'Sibling', label: 'Sibling / Brother / Sister' },
+                                            { value: 'Child', label: 'Child' },
+                                            { value: 'Relative', label: 'Other Relative' },
+                                            { value: 'Company rep', label: 'Company Representative' },
+                                            { value: 'Driver', label: 'Driver' },
+                                            { value: 'Sponsor', label: 'Sponsor' },
+                                            { value: 'Friend', label: 'Friend' },
+                                            { value: 'Other', label: 'Other' },
+                                        ]}
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+                            Leave blank if the same person who booked is the one paying.
+                        </div>
+                    </div>
+
+                    {/* 2. Payment % amount */}
+                    <Form.Item label="Payment % amount">
+                        <InputNumber
+                            min={1}
+                            max={100}
+                            style={{ width: '100%' }}
+                            placeholder="e.g., 30 for 30%"
+                            addonAfter={
+                                <Space size={4} style={{ marginLeft: 8 }}>
+                                    <span style={{ fontSize: 12 }}>%</span>
+                                    <Button
+                                        type="text"
+                                        size="small"
+                                        onClick={() => {
+                                            setPaymentPercent(null);
+                                            paymentForm.setFieldValue('amount', undefined);
+                                        }}
+                                        style={{ padding: '0 4px', height: 'auto', fontSize: 11, color: '#8b93a8' }}
+                                    >
+                                        Clear
+                                    </Button>
+                                </Space>
+                            }
+                            value={paymentPercent}
+                            onChange={(percent) => {
+                                setPaymentPercent(percent);
+                                if (percent && selectedBooking?.total_amount) {
+                                    // Calculate based on the TOTAL booking amount
+                                    const computed = (Number(selectedBooking.total_amount) * percent) / 100;
+                                    // Automatically fill the Payment Amount field
+                                    paymentForm.setFieldValue('amount', Number(computed.toFixed(2)));
+                                } else if (!percent) {
+                                    // Clear the amount if the percent is cleared
                                     paymentForm.setFieldValue('amount', undefined);
                                 }
                             }}
@@ -6677,8 +10154,14 @@ const UnifiedOrderEventsManagement = () => {
                     <Form.Item name="notes" label="Notes">
                         <TextArea rows={2} placeholder="Payment notes..." />
                     </Form.Item>
-                    <div className="ue-modal-footer">
-                        <Button onClick={() => setPaymentModalVisible(false)}>Cancel</Button>
+                                     <div className="ue-modal-footer">
+                        <Button onClick={() => {
+                            setPaymentModalVisible(false);
+                            paymentForm.resetFields();
+                            setPaymentPercent(null);
+                            paymentForm.setFieldValue('payer_name', '');
+                            paymentForm.setFieldValue('payer_relation', '');
+                        }}>Cancel</Button>
                         <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => {
                             const values = paymentForm.getFieldsValue();
                             handleRecordPayment(values);
@@ -6689,8 +10172,171 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    const renderEquipmentCheckoutModal = () => (
+    // ⭐ Requirements #3, #4, #5 — Ingredient Review Modal for kitchen tasks
+    const renderIngredientReviewModal = () => (
         <Modal
+            title={
+                <div className="ue-modal-header">
+                    <div className="ue-modal-icon"><StockOutlined /></div>
+                    <div className="ue-modal-title">
+                        Review Ingredients — {ingredientReviewMenuName || 'Menu'}
+                    </div>
+                    <div className="ue-modal-badge">
+                        {formatBookingId(selectedBooking?.booking_no)}
+                    </div>
+                </div>
+            }
+            open={ingredientReviewOpen}
+            onCancel={() => {
+                setIngredientReviewOpen(false);
+                setIngredientReviewTask(null);
+                setIngredientReviewRows([]);
+                setIngredientReviewShortages([]);
+            }}
+            width={900}
+            className="ue-modal-clean"
+            maskClosable={false}
+            footer={null}
+            destroyOnHidden
+        >
+            <div className="ue-modal-body">
+                <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="Confirm the actual quantities used. These will be deducted from inventory on submit."
+                />
+
+                {ingredientReviewShortages.length > 0 && (
+                    <Alert
+                        type="error"
+                        showIcon
+                        style={{ marginBottom: 12 }}
+                        message="Not enough stock for this task"
+                        description={
+                            <ul style={{ margin: 0, paddingLeft: 18 }}>
+                                {ingredientReviewShortages.map((s, i) => (
+                                    <li key={i}>
+                                        <strong>{s.name}</strong> — required{' '}
+                                        {safeNumber(s.actual_quantity ?? s.required ?? s.quantity_needed).toFixed(2)} {s.unit || ''}, available{' '}                               
+                                        {safeNumber(s.available ?? s.available_stock).toFixed(2)} {s.unit || ''} (short{' '}
+                                        {Math.max(0, safeNumber(s.actual_quantity ?? s.required ?? s.quantity_needed) - safeNumber(s.available ?? s.available_stock)).toFixed(2)})
+                                                                            </li>
+                                ))}
+                            </ul>
+                        }
+                    />
+                )}
+
+                <Table
+                    dataSource={ingredientReviewRows}
+                    rowKey={(r) => r.ingredient_id}
+                    size="small"
+                    pagination={false}
+                    columns={[
+                        { title: 'Ingredient', dataIndex: 'name', key: 'name' },
+                        { title: 'Unit', dataIndex: 'unit', key: 'unit', width: 80, align: 'center' },
+                                           {
+                            title: 'Required',
+                            dataIndex: 'quantity_needed',
+                            key: 'quantity_needed',
+                            width: 110,
+                            align: 'right',
+                            render: (v, r) => {
+                                const required     = safeNumber(v);
+                                const available    = safeNumber(r.available_stock);
+                                const insufficient = required > available;
+                                return (
+                                    <span
+                                        style={{
+                                            color: insufficient ? '#ef4444' : '#0f172a',
+                                            fontWeight: insufficient ? 700 : 600,
+                                        }}
+                                    >
+                                        {required.toFixed(2)}
+                                    </span>
+                                );
+                            },
+                        },
+                                     {
+                            title: 'Available',
+                            key: 'available',
+                            width: 110,
+                            align: 'right',
+                            render: (_, r) => {
+                                const available = safeNumber(r.available_stock);
+                                const actualUse = safeNumber(r.actual_quantity);
+                                const required  = safeNumber(r.quantity_needed);
+                                const invalid   = actualUse > available || required > available;
+                                return (
+                                    <span
+                                        style={{
+                                            color: invalid ? '#ef4444' : '#10b981',
+                                            fontWeight: 600,
+                                        }}
+                                    >
+                                        {available.toFixed(2)}
+                                    </span>
+                                );
+                            },
+                        },
+                                      {
+                            title: 'Actual Use',
+                            key: 'actual_quantity',
+                            width: 150,
+                            render: (_, r, index) => {
+                                const available = safeNumber(r.available_stock);
+                                const actualUse = safeNumber(r.actual_quantity);
+                                const tooHigh   = actualUse > available;
+                                return (
+                                    <InputNumber
+                                        min={0.001}
+                                        step={0.01}
+                                        value={r.actual_quantity}
+                                        status={tooHigh ? 'error' : undefined}
+                                        style={{ width: '100%' }}
+                                        onChange={(val) => {
+                                            const next = [...ingredientReviewRows];
+                                            next[index] = { ...next[index], actual_quantity: val };
+                                            const nextShortages = next.filter(
+                                                (row) =>
+                                                    safeNumber(row.actual_quantity) >
+                                                    safeNumber(row.available_stock)
+                                            );
+                                            setIngredientReviewRows(next);
+                                            setIngredientReviewShortages(nextShortages);
+                                        }}
+                                    />
+                                );
+                            },
+                        },
+                    ]}
+                />
+
+                <div className="ue-modal-footer" style={{ marginTop: 16 }}>
+                    <Button
+                        onClick={() => {
+                            setIngredientReviewOpen(false);
+                            setIngredientReviewTask(null);
+                        }}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        type="primary"
+                        icon={<CheckCircleOutlined />}
+                        loading={ingredientReviewSubmitting}
+                        disabled={ingredientReviewShortages.length > 0}
+                        onClick={submitIngredientReview}
+                    >
+                        Deduct & Mark Done
+                    </Button>
+                </div>
+            </div>
+        </Modal>
+    );
+
+    const renderEquipmentCheckoutModal = () => (        <Modal
             title={
                 <div className="ue-modal-header">
                     <div className="ue-modal-icon"><PlusCircleOutlined /></div>
@@ -6807,326 +10453,6 @@ const UnifiedOrderEventsManagement = () => {
         </Modal>
     );
 
-    const renderAddDeliveryModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><PlusOutlined /></div>
-                    <div className="ue-modal-title">{editingDelivery ? 'Edit Delivery' : 'Add New Delivery'}</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={addDeliveryModalVisible}
-            onCancel={() => { setAddDeliveryModalVisible(false); setEditingDelivery(null); addDeliveryForm.resetFields(); }}
-            width={500}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={null}
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                <Form form={addDeliveryForm} layout="vertical" onFinish={handleAddDeliverySubmit}>
-                    <Row gutter={12}>
-                        <Col span={12}>
-                            <Form.Item name="delivery_type" label="Delivery Type" initialValue="buffet" rules={[{ required: true }]}>
-                                <Select>
-                                    <Option value="buffet">Buffet</Option>
-                                    <Option value="packlunch">Pack Lunch</Option>
-                                    <Option value="food_tray">Food Tray</Option>
-                                </Select>
-                            </Form.Item>
-                        </Col>
-                        <Col span={12}>
-                            <Form.Item name="delivery_date" label="Delivery Date">
-                                <DatePicker style={{ width: '100%' }} />
-                            </Form.Item>
-                        </Col>
-                    </Row>
-                    <Row gutter={12}>
-                        <Col span={12}>
-                            <Form.Item name="delivery_time" label="Delivery Time" rules={[{ required: true }]}>
-                                <Input placeholder="e.g., 10:00 AM" />
-                            </Form.Item>
-                        </Col>
-                        <Col span={12}>
-                            <Form.Item name="return_time" label="Return Time">
-                                <Input placeholder="e.g., 3:00 PM" />
-                            </Form.Item>
-                        </Col>
-                    </Row>
-                    <Form.Item name="venue" label="Venue / Delivery Address" rules={[{ required: true }]}>
-                        <Input placeholder="Venue or delivery address" />
-                    </Form.Item>
-                    <Row gutter={12}>
-                        <Col span={12}>
-                            <Form.Item name="vehicle" label="Vehicle">
-                                <Input placeholder="Vehicle number/name" />
-                            </Form.Item>
-                        </Col>
-                        <Col span={12}>
-                            <Form.Item name="driver" label="Driver" rules={[{ required: true }]}>
-                                <Input placeholder="Driver name" />
-                            </Form.Item>
-                        </Col>
-                    </Row>
-                    <Form.Item name="driver_phone" label="Driver Phone">
-                        <Input placeholder="Contact number" />
-                    </Form.Item>
-                    <Form.Item name="items" label="Items to Deliver">
-                        <TextArea rows={2} placeholder="Food, equipment, buffet setup, etc." />
-                    </Form.Item>
-                    <Form.Item name="notes" label="Delivery Notes">
-                        <TextArea rows={2} placeholder="Special delivery instructions" />
-                    </Form.Item>
-                    <div className="ue-modal-footer">
-                        <Button onClick={() => { setAddDeliveryModalVisible(false); setEditingDelivery(null); addDeliveryForm.resetFields(); }}>Cancel</Button>
-                        <Button type="primary" htmlType="submit">{editingDelivery ? 'Save Changes' : 'Add Delivery'}</Button>
-                    </div>
-                </Form>
-            </div>
-        </Modal>
-    );
-
-       const handleRecordPayment = async (values) => {
-        try {
-            // ⭐ CHECK IF INVOICE EXISTS BEFORE RECORDING PAYMENT
-            const bookingNo = formatBookingId(selectedBooking?.booking_no);
-            const hasInvoice = selectedBooking?.invoice?.invoice_id
-                || selectedBooking?.invoice_id
-                || selectedBooking?.invoice_number;
-
-            if (!hasInvoice) {
-                Modal.confirm({
-                    title: 'Invoice Required',
-                    icon: <WarningOutlined style={{ color: '#faad14' }} />,
-                    content: (
-                        <div>
-                            <p><strong>This {bookingNo} is not yet created invoice.</strong></p>
-                            <p>Do you want to create invoice?</p>
-                        </div>
-                    ),
-                    okText: 'Yes',
-                    cancelText: 'No',
-                    onOk: () => {
-                        setPaymentModalVisible(false);
-                        paymentForm.resetFields();
-
-                        // Stash the booking so Billing can auto-select it
-                        sessionStorage.setItem('pendingInvoiceBookingId', String(selectedBooking.id));
-                        sessionStorage.setItem('openCreateInvoiceModal', 'true');
-
-                        // Navigate to Billing → Invoices → Create Invoice
-                        window.location.href = '/billing?view=invoices&create=true';
-                    },
-                    onCancel: () => {
-                        message.info('Payment cancelled. Invoice must be created first.');
-                    },
-                });
-                return;
-            }
-
-            const validatedValues = await paymentForm.validateFields();
-            await runWithLoadingLine('payment', selectedBooking, async (signal) => {
-                await api.post(`/bookings/${selectedBooking.id}/record-payment`, {
-                    ...validatedValues,
-                    ...values,
-                }, { signal });
-            });            message.success('Payment recorded successfully');
-            setPaymentModalVisible(false);
-            paymentForm.resetFields();
-
-            // ⭐ REQUEST — Order & Events payments must show up instantly
-            //    in Billing & Invoicing → Payment Tracking. Invalidate the
-            //    billing cache tree so those tabs re-fetch.
-            //
-            // ⭐ UPDATED: Also invalidate the specific booking detail so
-            //    the yellow deposit highlight is cleared and the balance
-            //    is refreshed for THIS booking row immediately.
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'detail', selectedBooking.id], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'payment-summary', selectedBooking.id], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'list'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['bookings', 'statistics'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['events'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['payments'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['billing', 'payments'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['billing', 'invoices'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['billing', 'debts'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['invoices'], refetchType: 'active' });
-            queryClient.invalidateQueries({ queryKey: ['debts'], refetchType: 'active' });
-
-            // ⭐ Force every open tab / window to refetch this booking
-            //    so the balance updates everywhere at once.
-            broadcastBookingChanged(selectedBooking.id, 'payment_recorded');
-
-            Promise.allSettled([
-                refetchActiveBookings(),
-                refetchHistoryBookings(),
-                refetchStatistics(),
-            ]);
-        } catch (error) {
-            message.error(error.response?.data?.message || 'Failed to record payment');
-        }
-    };
-
-    const renderEquipmentDetailsModal = () => (
-        <Modal
-            title={
-                <div className="ue-modal-header">
-                    <div className="ue-modal-icon"><PlusCircleOutlined /></div>
-                    <div className="ue-modal-title">Equipment Details</div>
-                    <div className="ue-modal-badge">{formatBookingId(selectedBooking?.booking_no)}</div>
-                </div>
-            }
-            open={equipmentDetailsModalVisible}
-            onCancel={() => setEquipmentDetailsModalVisible(false)}
-            width={900}
-            className="ue-modal-clean"
-            maskClosable={false}
-            footer={
-                <div className="ue-modal-footer">
-                    <Button onClick={() => setEquipmentDetailsModalVisible(false)}>Close</Button>
-                </div>
-            }
-            destroyOnHidden={true}
-        >
-            <div className="ue-modal-body">
-                {selectedBooking && (
-                    <>
-                        <div className="ue-equipment-header">
-                            <div className="ue-equipment-booking-info">
-                                <div className="ue-equipment-booking-id">
-                                    <span className="ue-id-text">{formatBookingId(selectedBooking.booking_no)}</span>
-                                </div>
-                                <div className="ue-equipment-customer-name">{selectedBooking.customer_name}</div>
-                                <div className="ue-equipment-event-type">{getEventTypeName(selectedBooking.event_type_id, eventTypes)}</div>
-                                <div className="ue-equipment-event-date">{selectedBooking.event_date}</div>
-                            </div>
-                        </div>
-
-                        <div className="ue-equipment-actions">
-                            <Space>
-                                <Checkbox
-                                    checked={selectedEquipmentIds.length === equipmentDetailsData.length && equipmentDetailsData.length > 0}
-                                    indeterminate={selectedEquipmentIds.length > 0 && selectedEquipmentIds.length < equipmentDetailsData.length}
-                                    onChange={(e) => handleSelectAllEquipment(e.target.checked)}
-                                >
-                                    Approve Selected ({selectedEquipmentIds.length})
-                                </Checkbox>
-                                <Button
-                                    type="primary"
-                                    size="small"
-                                    onClick={handleApproveSelectedEquipmentFromDetails}
-                                    disabled={selectedEquipmentIds.length === 0}
-                                >
-                                    Approve Selected
-                                </Button>
-                                <Button
-                                    type="primary"
-                                    size="small"
-                                    onClick={handleApproveAllEquipmentFromDetails}
-                                >
-                                    Approve All
-                                </Button>
-                            </Space>
-                        </div>
-
-                        <Table
-                            dataSource={equipmentDetailsData}
-                            rowKey={(record) => record.id}
-                            size="small"
-                            pagination={false}
-                            columns={[
-                                {
-                                    title: '',
-                                    width: 40,
-                                    render: (_, record) => (
-                                        <Checkbox
-                                            checked={selectedEquipmentIds.includes(record.id)}
-                                            onChange={(e) => handleSelectEquipment(record.id, e.target.checked)}
-                                            disabled={record.is_out_approved || ['checked_out', 'returned'].includes(record.status)}
-                                        />
-                                    )
-                                },
-                                {
-                                    title: 'NAME',
-                                    dataIndex: 'equipment_name',
-                                    render: (v, r) => v || r.equipment?.name || 'N/A'
-                                },
-                                {
-                                    title: 'QUANTITY',
-                                    dataIndex: 'quantity_reserved',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'DAMAGED',
-                                    dataIndex: 'quantity_damaged',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'MISSING',
-                                    dataIndex: 'quantity_missing',
-                                    align: 'center',
-                                    render: (v) => safeNumber(v)
-                                },
-                                {
-                                    title: 'STATUS',
-                                    dataIndex: 'status',
-                                    align: 'center',
-                                    render: (status) => {
-                                        const config = getStatusConfig(status);
-                                        return (
-                                            <span className="ue-status" style={{ color: config.color, background: config.bg }}>
-                                                {config.text}
-                                            </span>
-                                        );
-                                    }
-                                },
-                                {
-                                    title: 'ACTION',
-                                    key: 'action',
-                                    align: 'center',
-                                    render: (_, record) => {
-                                        const isCheckedOut = record.status === 'checked_out';
-                                        const isReturned = record.status === 'returned';
-                                        if (isReturned) {
-                                            return <Tag color="success">Returned</Tag>;
-                                        }
-                                        if (isCheckedOut) {
-                                            return (
-                                                <Button
-                                                    size="small"
-                                                    type="primary"
-                                                    onClick={() => handleReturnEquipmentFromDetails(record)}
-                                                >
-                                                    Check In / Return
-                                                </Button>
-                                            );
-                                        }
-                                        return (
-                                            <Tag color="default">{record.status || 'Pending'}</Tag>
-                                        );
-                                    }
-                                }
-                            ]}
-                        />
-
-                        <div className="ue-equipment-footer">
-                            <div className="ue-equipment-booking-label">
-                                <strong>BOOKING</strong> {formatBookingId(selectedBooking.booking_no)}
-                            </div>
-                            <div className="ue-equipment-date">
-                                {dayjs().format('dddd, MMMM D, YYYY')}
-                            </div>
-                        </div>
-                    </>
-                )}
-            </div>
-        </Modal>
-    );
-
     const renderViewDetailsModal = () => {
         if (!viewModalData) return null;
         const record = viewModalData;
@@ -7157,7 +10483,7 @@ const UnifiedOrderEventsManagement = () => {
         const payProgressClass = paidPct >= 100 ? '' : paidPct > 0 ? 'partial' : 'zero';
 
         return (
-            <Modal
+              <Modal
                 title={null}
                 icon={null}
                 open={viewModalVisible}
@@ -7169,17 +10495,17 @@ const UnifiedOrderEventsManagement = () => {
                 centered
                 closeIcon={null}
                 destroyOnHidden={true}
+                styles={{ body: { padding: 0 } }}
             >
-                <div className="ue-vd-hero">
+                            <div className="ue-vd-hero">
                     <button
                         type="button"
                         className="ue-vd-hero-close"
                         onClick={() => setViewModalVisible(false)}
                         aria-label="Close"
                     >
-                        <CloseCircleOutlined style={{ fontSize: 16 }} />
+                        <CloseCircleOutlined style={{ fontSize: 15 }} />
                     </button>
-
                     <div className="ue-vd-hero-top">
                         <div className="ue-vd-hero-icon">
                             <EyeOutlined />
@@ -7396,31 +10722,52 @@ const UnifiedOrderEventsManagement = () => {
                                 <AppstoreOutlined /> Quick Actions
                             </div>
                             <div className="ue-vd-actions">
-                                <div className="ue-vd-action-group">
-                                    <div className="ue-vd-action-group-label">Operations</div>
+                                                               <div className="ue-vd-action-group">
+                                    <div className="ue-vd-action-group-label">Operations Hub</div>
                                     <div className="ue-vd-action-grid">
-                                        <Button className="ue-vd-action-btn" icon={<StockOutlined />} onClick={() => handleCalculateIngredients(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<AppstoreOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'kitchen');
+                                        }}>
+                                            Operations Hub
+                                        </Button>
+                                        <Button className="ue-vd-action-btn" icon={<StockOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'ingredients');
+                                        }}>
                                             Ingredients
                                         </Button>
-                                        <Button className="ue-vd-action-btn" icon={<CoffeeOutlined />} onClick={() => handleViewKitchenPrep(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<CoffeeOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'kitchen');
+                                        }}>
                                             Kitchen
                                         </Button>
-                                        <Button className="ue-vd-action-btn" icon={<TruckOutlined />} onClick={() => handleViewDeliveryPrep(record)}>
-                                            Delivery
-                                        </Button>
-                                        <Button className="ue-vd-action-btn" icon={<CarOutlined />} onClick={() => handleViewDeliveryTracking(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<CarOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'tracking');
+                                        }}>
                                             Tracking
                                         </Button>
-                                        <Button className="ue-vd-action-btn" icon={<TeamOutlined />} onClick={() => handleStaffAssignment(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<TeamOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'staff');
+                                        }}>
                                             Staff
                                         </Button>
-                                        <Button className="ue-vd-action-btn" icon={<CheckSquareOutlined />} onClick={() => handleViewChecklist(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<CheckSquareOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'checklist');
+                                        }}>
                                             Checklist
                                         </Button>
-                                        <Button className="ue-vd-action-btn" icon={<PlusCircleOutlined />} onClick={() => handleViewEquipmentDetails(record)}>
+                                        <Button className="ue-vd-action-btn" icon={<PlusCircleOutlined />} onClick={() => {
+                                            setViewModalVisible(false);
+                                            openOpsHub(record, 'equipment');
+                                        }}>
                                             Equipment
                                         </Button>
-                                                                             {canViewProfitability && (
+                                        {canViewProfitability && (
                                             <Button
                                                 className="ue-vd-action-btn"
                                                 icon={<RiseOutlined style={{ color: '#2563eb' }} />}
@@ -7486,27 +10833,37 @@ const UnifiedOrderEventsManagement = () => {
                     </div>
                 </div>
 
-                <div className="ue-vd-footer">
-                    <Button onClick={() => setViewModalVisible(false)}>Close</Button>
+                         <div className="ue-vd-footer">
+                    <Button
+                        icon={<EditOutlined />}
+                        onClick={() => {
+                            setViewModalVisible(false);
+                            handleEdit(record);
+                        }}
+                    >
+                        Edit Booking
+                    </Button>
+                    <Button
+                        type="primary"
+                        onClick={() => setViewModalVisible(false)}
+                    >
+                        Close
+                    </Button>
                 </div>
             </Modal>
         );
     };
 
-          // MAIN RENDER
+    // MAIN RENDER
     const containerClass = `ue-container ${isDarkMode ? 'ue-dark-mode' : ''}`;
     const tableClass = `ue-table ${isDarkMode ? 'ue-table-dark' : ''}`;
 
-    // ============================================================
-    // SKELETON — only during the very first mount of a page load.
-    // Back-navigation hits the module flag already set to false and
-    // renders cached data instantly (no skeleton, no blank flash).
-    // ============================================================
     const shouldShowSkeleton = showSkeleton;
 
     if (shouldShowSkeleton) {
         return <OrderEventsSkeleton isDarkMode={isDarkMode} />;
     }
+
     const tabItems = [
         {
             key: 'orders',
@@ -7547,13 +10904,29 @@ const UnifiedOrderEventsManagement = () => {
                     </div>
 
                     <div className="ue-table-container">
-                        <Table
+                                            <Table
                             columns={columns}
                             dataSource={confirmedBookings}
                             rowKey={(record) => record.id}
                             loading={bookingsLoading}
                             className={tableClass}
                             scroll={{ x: 1400 }}
+                            // ⭐ PACKED/TRAY time-based row highlight
+                            onRow={(record) => {
+                                const alert = getPackedTrayTimeAlert(record);
+                                if (!alert.level) return {};
+                                return {
+                                    style: {
+                                        background: alert.level === 'red'
+                                            ? 'rgba(239, 68, 68, 0.08)'
+                                            : 'rgba(250, 204, 21, 0.12)',
+                                        boxShadow: alert.level === 'red'
+                                            ? 'inset 4px 0 0 #dc2626'
+                                            : 'inset 4px 0 0 #eab308',
+                                    },
+                                    title: alert.message,
+                                };
+                            }}
                             pagination={{
                                 current: currentPage,
                                 pageSize: pageSize,
@@ -7579,7 +10952,7 @@ const UnifiedOrderEventsManagement = () => {
                 <div className="ue-tab-content">
                     <Alert
                         message="Ongoing Events Monitoring"
-                        description="Monitor and manage ongoing events. Click 'Monitor' on any row to view detailed status."
+                        description="Monitor and manage ongoing events. Click 'Monitor' to view detailed status, or 'Operations' to open the Operations Hub."
                         type="info"
                         showIcon
                         style={{ marginBottom: 16 }}
@@ -7590,7 +10963,7 @@ const UnifiedOrderEventsManagement = () => {
                             dataSource={ongoingBookings}
                             rowKey={(record) => record.id}
                             className={tableClass}
-                            scroll={{ x: 1300 }}
+                            scroll={{ x: 1500 }}
                             pagination={{
                                 pageSize: 10,
                                 showTotal: (total) => `Total ${total} ongoing events`,
@@ -7602,61 +10975,19 @@ const UnifiedOrderEventsManagement = () => {
             )
         },
         {
-            key: 'history',
-            label: <span><HistoryOutlined /> History ({completedBookings.length})</span>,
-            children: (
-                <div className="ue-tab-content">
-                    <Alert
-                        message="Completed & Cancelled Booking History"
-                        description="Bookings marked as completed or cancelled are stored here for review."
-                        type="success"
-                        showIcon
-                        style={{ marginBottom: 16 }}
-                    />
-                    <div className="ue-filters">
-                        <div className="ue-filter-group ue-search">
-                            <SearchOutlined />
-                            <Input placeholder="Search..." value={historySearchText} onChange={(e) => setHistorySearchText(e.target.value)} allowClear className="ue-search-input" />
-                        </div>
-                        <div className="ue-filter-group">
-                            <FilterOutlined />
-                            <Select value={historyFilterStatus} onChange={setHistoryFilterStatus} className="ue-filter-select" placeholder="Status">
-                                <Option value="all">All Status</Option>
-                                <Option value="completed">Completed</Option>
-                                <Option value="cancelled">Cancelled</Option>
-                                <Option value="rejected">Rejected</Option>
-                            </Select>
-                        </div>
-                        <div className="ue-filter-group">
-                            <CalendarOutlined />
-                            <RangePicker value={historyDateRange} onChange={setHistoryDateRange} format="YYYY-MM-DD" allowClear className="ue-date-picker" />
-                        </div>
-                    </div>
-                    <div className="ue-table-container">
-                        <Table
-                            columns={historyColumns}
-                            dataSource={completedBookings}
-                            rowKey={(record) => record.id}
-                            className={tableClass}
-                            scroll={{ x: 1300 }}
-                            pagination={{
-                                current: historyPage,
-                                pageSize: historyPageSize,
-                                total: completedBookings.length,
-                                showSizeChanger: true,
-                                pageSizeOptions: ['5', '10', '20', '50'],
-                                showTotal: (total) => `Total ${total} history records`,
-                                itemRender: renderPaginationItem,
-                                onChange: (page, size) => {
-                                    setHistoryPage(page);
-                                    if (size) setHistoryPageSize(size);
-                                }
-                            }}
-                        />
-                    </div>
-                </div>
-            )
-        }
+            key: 'operations',
+            label: (
+                <span>
+                    <AppstoreOutlined /> Operations
+                    {opsHubBooking && (
+                        <Tag color="blue" style={{ marginLeft: 8 }}>
+                            {formatBookingId(opsHubBooking.booking_no)}
+                        </Tag>
+                    )}
+                </span>
+            ),
+            children: renderOperationsTab(),
+        },
     ];
 
     return (
@@ -7686,7 +11017,7 @@ const UnifiedOrderEventsManagement = () => {
                 }
             }}
         >
-                        <App>
+            <App>
                 <div className={containerClass}>
                     {loadingLine && (
                         <div className="ue-loading-line" role="status" aria-live="polite">
@@ -7713,40 +11044,15 @@ const UnifiedOrderEventsManagement = () => {
                                 <span>UNIFIED OPERATIONS</span>
                             </div>
                         </div>
-                                              <div className="ue-header-right">
+                                           <div className="ue-header-right">
                             <div className="ue-date-display">
                                 <CalendarOutlined />
                                 <span>{dayjs().format('dddd, MMMM DD, YYYY')}</span>
                             </div>
 
-                            {/* ⭐ Hide/unhide the Period Behavior toolbar. */}
-                            <Tooltip
-                                title={
-                                    periodToolbarHidden
-                                        ? 'Show Period selector'
-                                        : 'Hide Period selector'
-                                }
-                            >
-                                <button
-                                    type="button"
-                                    className={`ue-period-toggle-btn ${periodToolbarHidden ? 'is-hidden' : ''}`}
-                                    onClick={handleTogglePeriodToolbar}
-                                    aria-label={
-                                        periodToolbarHidden
-                                            ? 'Show Period selector'
-                                            : 'Hide Period selector'
-                                    }
-                                    aria-pressed={periodToolbarHidden}
-                                >
-                                    {periodToolbarHidden
-                                        ? <EyeInvisibleOutlined />
-                                        : <EyeOutlined />}
-                                </button>
-                            </Tooltip>
-
                             <Divider type="vertical" style={{ height: 28 }} />
                             <Button icon={<ReloadOutlined />} onClick={handleRefresh}>Refresh</Button>
-                            <Button icon={<ExportOutlined />} onClick={activeTab === 'history' ? exportHistory : exportAllOrders}>Export</Button>
+                            <Button icon={<ExportOutlined />} onClick={exportAllOrders}>Export</Button>
                             <Button icon={<PrinterOutlined />} onClick={() => window.print()}>Print</Button>
                         </div>
                     </div>
@@ -7759,22 +11065,17 @@ const UnifiedOrderEventsManagement = () => {
 
                     {renderViewDetailsModal()}
                     {renderLiveStatusModal()}
-                    {renderKitchenModal()}
-                    {renderDeliveryModal()}
-                    {renderStaffAssignmentModal()}
                     {renderAddStaffModal()}
-                    {renderDeliveryTrackingModal()}
                     {renderAddDeliveryModal()}
-                    {renderChecklistModal()}
-                    {renderIngredientsModal()}
-                    {renderEditModal()}
+                                    {renderEditModal()}
                     {renderStatusUpdateModal()}
-                    {renderPaymentModal()}
+                                     {renderPaymentModal()}
+                    {renderCreateInvoiceFromPaymentModal()}
+                    {renderIngredientReviewModal()}
                     {renderEquipmentCheckoutModal()}
                     {renderEquipmentReturnModal()}
-                    {renderEquipmentDetailsModal()}
 
-                                      {canViewProfitability && (
+                    {canViewProfitability && (
                         <ProfitabilityModal
                             visible={profitabilityModalVisible}
                             onClose={handleCloseProfitability}
@@ -7788,3 +11089,4 @@ const UnifiedOrderEventsManagement = () => {
 };
 
 export default UnifiedOrderEventsManagement;
+

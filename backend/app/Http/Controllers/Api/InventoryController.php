@@ -74,7 +74,7 @@ class InventoryController extends Controller
         ]);
     }
 
-        public function movements(Request $request)
+    public function movements(Request $request)
     {
         $limit = min(max($request->integer('per_page', 200), 1), 500);
         $query = InventoryMovement::with(['ingredient', 'performedBy.person'])->latest('movement_id');
@@ -98,7 +98,7 @@ class InventoryController extends Controller
             $query->whereDate('created_at', '<=', $request->input('date_to'));
         }
 
-        $ingredientMovements = $query->limit($limit)->get()->map(fn (InventoryMovement $movement) => $this->formatMovement($movement));
+        $ingredientMovements = $query->limit($limit)->get()->map(fn(InventoryMovement $movement) => $this->formatMovement($movement));
 
         $equipmentQuery = BookingEquipment::with(['equipment', 'booking.serviceEvent.customer.person'])
             ->whereIn('status', ['reserved', 'checked_out', 'returned', 'damaged', 'missing']);
@@ -115,11 +115,11 @@ class InventoryController extends Controller
             ->latest('updated_at')
             ->limit($limit)
             ->get()
-            ->map(fn (BookingEquipment $tracking) => $this->formatEquipmentMovement($tracking));
+            ->map(fn(BookingEquipment $tracking) => $this->formatEquipmentMovement($tracking));
 
         $rows = $ingredientMovements
             ->concat($equipmentMovements)
-            ->sortByDesc(fn ($row) => $row['movement_at'] ?? '')
+            ->sortByDesc(fn($row) => $row['movement_at'] ?? '')
             ->take($limit)
             ->values();
 
@@ -176,7 +176,7 @@ class InventoryController extends Controller
         $rows = WasteRecord::with(['ingredient', 'recorder.person'])
             ->latest('waste_record_id')
             ->paginate(min(max($request->integer('per_page', 20), 1), 500));
-        $rows->getCollection()->transform(fn (WasteRecord $record) => $this->formatWaste($record));
+        $rows->getCollection()->transform(fn(WasteRecord $record) => $this->formatWaste($record));
 
         return $this->ok($rows);
     }
@@ -198,8 +198,8 @@ class InventoryController extends Controller
                     ->where('ingredient_id', $data['ingredient_id'])
                     ->when(
                         array_key_exists('booking_id', $data),
-                        fn ($query) => $query->where('booking_id', $data['booking_id']),
-                        fn ($query) => $query->whereNull('booking_id')
+                        fn($query) => $query->where('booking_id', $data['booking_id']),
+                        fn($query) => $query->whereNull('booking_id')
                     )
                     ->whereIn('status', ['pending', 'approved', 'ordered'])
                     ->lockForUpdate()
@@ -217,7 +217,7 @@ class InventoryController extends Controller
                     return [$existing, false];
                 }
 
-                            $user = auth()->user();
+                $user = auth()->user();
                 $adminRoles = ['admin', 'administrator', 'super_admin', 'superadmin', 'super-admin', 'owner'];
                 $isAdmin = $user && $user->hasAnyRole($adminRoles);
                 $isShortage = ! empty($data['booking_id']);
@@ -263,15 +263,15 @@ class InventoryController extends Controller
             $search = trim((string) $request->input('search'));
             $query->where(function ($builder) use ($search) {
                 $builder->where('pr_number', 'like', "%{$search}%")
-                    ->orWhereHas('ingredient', fn ($ingredient) => $ingredient->where('name', 'like', "%{$search}%"))
-                    ->orWhereHas('supplier', fn ($supplier) => $supplier->where('name', 'like', "%{$search}%"))
-                    ->orWhereHas('booking', fn ($booking) => $booking->where('booking_no', 'like', "%{$search}%"));
+                    ->orWhereHas('ingredient', fn($ingredient) => $ingredient->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('supplier', fn($supplier) => $supplier->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('booking', fn($booking) => $booking->where('booking_no', 'like', "%{$search}%"));
             });
         }
 
         $rows = $query->latest('purchase_request_id')
             ->paginate(min(max($request->integer('per_page', 20), 1), 500));
-        $rows->getCollection()->transform(fn (PurchaseRequest $purchaseRequest) => $this->formatPurchaseRequest($purchaseRequest));
+        $rows->getCollection()->transform(fn(PurchaseRequest $purchaseRequest) => $this->formatPurchaseRequest($purchaseRequest));
 
         return $this->ok($rows);
     }
@@ -332,7 +332,7 @@ class InventoryController extends Controller
             })
             ->latest('booking_id')
             ->get()
-            ->filter(fn (Booking $booking) => ! $inventoryService->hasDeductedInventory($booking));
+            ->filter(fn(Booking $booking) => ! $inventoryService->hasDeductedInventory($booking));
 
         $suggestions = [];
         foreach ($bookings as $booking) {
@@ -434,7 +434,7 @@ class InventoryController extends Controller
 
     public function equipmentWarnings()
     {
-        $rows = Equipment::with(['reservations' => fn ($query) => $query->whereIn('status', ['reserved', 'checked_out'])])->get();
+        $rows = Equipment::with(['reservations' => fn($query) => $query->whereIn('status', ['reserved', 'checked_out'])])->get();
         $warnings = $rows->map(function (Equipment $equipment) {
             $reserved = (int) $equipment->reservations->sum('quantity_reserved');
             $available = max(0, (int) $equipment->total_quantity - $reserved);
@@ -446,27 +446,35 @@ class InventoryController extends Controller
                 'available_quantity' => $available,
                 'severity' => $available <= 0 ? 'critical' : ($available <= 5 ? 'warning' : 'ok'),
             ];
-        })->filter(fn ($row) => $row['severity'] !== 'ok')->values();
+        })->filter(fn($row) => $row['severity'] !== 'ok')->values();
 
         return $this->ok($warnings);
     }
 
     public function reservations(Request $request)
     {
-        $query = BookingEquipment::with(['booking.serviceEvent.customer.person', 'booking.serviceEvent.eventType', 'equipment'])
-            ->whereIn('status', ['reserved', 'checked_out']);
+        // ⭐ FIX: Only show 'reserved' and 'checked_out'. 
+        // Once an item is 'returned', it disappears from this table.
+        // ⭐ FIX: Only fetch 'reserved' and 'checked_out'. 
+        // Any 'returned' item is completely ignored.
+        $query = BookingEquipment::with([
+            'booking.serviceEvent.customer.person',
+            'booking.serviceEvent.eventType',
+            'equipment'
+        ])->whereIn('status', ['reserved', 'checked_out']);
 
-        if (! $request->boolean('include_all')) {
+        // Allow explicit filtering if the frontend asks for it
+        if ($request->boolean('active_only')) {
             $query->whereDate('rental_end_date', '>=', today()->toDateString());
         }
 
-        $rows = $query->orderBy('rental_start_date')
-            ->paginate(min(max($request->integer('per_page', 20), 1), 500));
-        $rows->getCollection()->transform(fn (BookingEquipment $tracking) => $this->formatReservation($tracking));
+        $rows = $query->latest('booking_equipment_id')
+            ->paginate(min(max($request->integer('per_page', 500), 1), 500));
+
+        $rows->getCollection()->transform(fn(BookingEquipment $tracking) => $this->formatReservation($tracking));
 
         return $this->ok($rows);
     }
-
     public function storeReservation(Request $request, EquipmentService $equipmentService)
     {
         $request->merge([
@@ -510,7 +518,7 @@ class InventoryController extends Controller
             ->latest('audit_id');
 
         $rows = $query->paginate(min(max($request->integer('per_page', 20), 1), 500));
-        $rows->getCollection()->transform(fn (AuditLog $record) => $this->formatMaintenance($record));
+        $rows->getCollection()->transform(fn(AuditLog $record) => $this->formatMaintenance($record));
 
         return $this->ok($rows);
     }
@@ -578,7 +586,7 @@ class InventoryController extends Controller
     public function expiringSoon()
     {
         return $this->ok(InventoryStock::with('ingredient')
-            ->whereHas('ingredient', fn ($query) => $query->where('is_active', true))
+            ->whereHas('ingredient', fn($query) => $query->where('is_active', true))
             ->whereNotNull('expiry_date')
             ->whereDate('expiry_date', '<=', now()->addDays(7))
             ->whereDate('expiry_date', '>=', now())
@@ -615,275 +623,287 @@ class InventoryController extends Controller
      * Get equipment tracking records with filters
      */
     public function equipmentTracking(Request $request)
-{
-    $query = BookingEquipment::with([
-        'equipment',
-        'booking.serviceEvent.customer.person',
-    ]);
+    {
+        $query = BookingEquipment::with([
+            'equipment',
+            'booking.serviceEvent.customer.person',
+        ]);
 
-    if ($request->filled('date')) {
-        $date = $request->input('date');
-        $query->whereDate('rental_start_date', '<=', $date)
-            ->whereDate('rental_end_date', '>=', $date);
+        if ($request->filled('date')) {
+            $date = $request->input('date');
+            $query->whereDate('rental_start_date', '<=', $date)
+                ->whereDate('rental_end_date', '>=', $date);
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->input('status'));
+        }
+
+        if ($request->filled('equipment_id')) {
+            $query->where('equipment_id', $request->input('equipment_id'));
+        }
+
+        if ($request->filled('booking_id')) {
+            $query->where('booking_id', $request->input('booking_id'));
+        }
+
+        return $this->ok($query->latest('booking_equipment_id')->paginate($request->integer('per_page', 20)));
     }
-
-    if ($request->filled('status')) {
-        $query->where('status', $request->input('status'));
-    }
-
-    if ($request->filled('equipment_id')) {
-        $query->where('equipment_id', $request->input('equipment_id'));
-    }
-
-    if ($request->filled('booking_id')) {
-        $query->where('booking_id', $request->input('booking_id'));
-    }
-
-    return $this->ok($query->latest('booking_equipment_id')->paginate($request->integer('per_page', 20)));
-}
     /**
      * Get equipment availability for a specific date
      */
     public function equipmentAvailability(Request $request)
-{
-    $request->validate([
-        'equipment_id' => 'required|exists:equipment,equipment_id',
-        'date' => 'required|date',
-    ]);
+    {
+        $request->validate([
+            'equipment_id' => 'required|exists:equipment,equipment_id',
+            'date' => 'required|date',
+        ]);
 
-    $equipmentId = (int) $request->input('equipment_id');
-    $date = $request->input('date');
+        $equipmentId = (int) $request->input('equipment_id');
+        $date = $request->input('date');
 
-    $total = Equipment::where('equipment_id', $equipmentId)->value('total_quantity') ?? 0;
+        $total = Equipment::where('equipment_id', $equipmentId)->value('total_quantity') ?? 0;
 
-    $checkedOut = BookingEquipment::where('equipment_id', $equipmentId)
-        ->whereIn('status', ['reserved', 'checked_out'])
-        ->whereDate('rental_start_date', '<=', $date)
-        ->whereDate('rental_end_date', '>=', $date)
-        ->sum('quantity_reserved');
-
-    $available = max(0, $total - $checkedOut);
-
-    return $this->ok([
-        'equipment_id' => $equipmentId,
-        'total' => $total,
-        'reserved' => (int) $checkedOut,
-        'checked_out' => (int) $checkedOut,
-        'available' => $available,
-        'is_available' => $available > 0,
-        'date' => $date,
-    ]);
-}
-
-    /**
-     * Get all equipment availability for a date
-     */
-  public function equipmentAvailabilityAll(Request $request)
-{
-    $request->validate([
-        'date' => 'required|date',
-    ]);
-
-    $date = $request->input('date');
-    $equipment = Equipment::where('is_active', true)->get();
-
-    $result = $equipment->map(function ($item) use ($date) {
-        $checkedOut = BookingEquipment::where('equipment_id', $item->equipment_id)
+        $checkedOut = BookingEquipment::where('equipment_id', $equipmentId)
             ->whereIn('status', ['reserved', 'checked_out'])
             ->whereDate('rental_start_date', '<=', $date)
             ->whereDate('rental_end_date', '>=', $date)
             ->sum('quantity_reserved');
 
-        $total = (int) $item->total_quantity;
-        $available = max(0, $total - (int) $checkedOut);
+        $available = max(0, $total - $checkedOut);
 
-        return [
-            'equipment_id' => $item->equipment_id,
-            'name' => $item->name,
-            'category' => $item->category,
+        return $this->ok([
+            'equipment_id' => $equipmentId,
             'total' => $total,
+            'reserved' => (int) $checkedOut,
             'checked_out' => (int) $checkedOut,
             'available' => $available,
             'is_available' => $available > 0,
-            'condition' => $item->condition,
-        ];
-    });
+            'date' => $date,
+        ]);
+    }
 
-    return $this->ok($result);
-}
+    /**
+     * Get all equipment availability for a date
+     */
+    public function equipmentAvailabilityAll(Request $request)
+    {
+        $request->validate([
+            'date' => 'required|date',
+        ]);
+
+        $date = $request->input('date');
+        $equipment = Equipment::where('is_active', true)->get();
+
+        $result = $equipment->map(function ($item) use ($date) {
+            $checkedOut = BookingEquipment::where('equipment_id', $item->equipment_id)
+                ->whereIn('status', ['reserved', 'checked_out'])
+                ->whereDate('rental_start_date', '<=', $date)
+                ->whereDate('rental_end_date', '>=', $date)
+                ->sum('quantity_reserved');
+
+            $total = (int) $item->total_quantity;
+            $available = max(0, $total - (int) $checkedOut);
+
+            return [
+                'equipment_id' => $item->equipment_id,
+                'name' => $item->name,
+                'category' => $item->category,
+                'total' => $total,
+                'checked_out' => (int) $checkedOut,
+                'available' => $available,
+                'is_available' => $available > 0,
+                'condition' => $item->condition,
+            ];
+        });
+
+        return $this->ok($result);
+    }
     /**
      * Checkout equipment (create tracking record in booking_equipment)
      */
-   public function equipmentCheckout(Request $request)
-{
-    $data = $request->validate([
-        'equipment_id' => 'required|exists:equipment,equipment_id',
-        'booking_id' => 'nullable|exists:bookings,booking_id',
-        'quantity' => 'required|integer|min:1',
-        'expected_return_date' => 'required|date|after_or_equal:today',
-        'condition_notes_out' => 'nullable|string',
-        'notes' => 'nullable|string',
-    ]);
+    public function equipmentCheckout(Request $request)
+    {
+        $data = $request->validate([
+            'equipment_id' => 'required|exists:equipment,equipment_id',
+            'booking_id' => 'nullable|exists:bookings,booking_id',
+            'quantity' => 'required|integer|min:1',
+            'expected_return_date' => 'required|date|after_or_equal:today',
+            'condition_notes_out' => 'nullable|string',
+            'notes' => 'nullable|string',
+        ]);
 
-    $equipment = Equipment::findOrFail($data['equipment_id']);
-    $booking = $data['booking_id'] ? Booking::find($data['booking_id']) : null;
+        $equipment = Equipment::findOrFail($data['equipment_id']);
+        $booking = $data['booking_id'] ? Booking::find($data['booking_id']) : null;
 
-    // Check availability for the date range
-    $available = $this->getAvailableQuantity($data['equipment_id'], $data['expected_return_date']);
-    
-    if ($available < $data['quantity']) {
-        return response()->json([
-            'success' => false,
-            'message' => "Not enough equipment available. Available: {$available}, Requested: {$data['quantity']}",
-        ], 422);
+        // Check availability for the date range
+        $available = $this->getAvailableQuantity($data['equipment_id'], $data['expected_return_date']);
+
+        if ($available < $data['quantity']) {
+            return response()->json([
+                'success' => false,
+                'message' => "Not enough equipment available. Available: {$available}, Requested: {$data['quantity']}",
+            ], 422);
+        }
+
+        // Equipment availability is derived from booking_equipment rows.
+
+        // Create tracking record
+        $tracking = BookingEquipment::create([
+            'equipment_id' => $data['equipment_id'],
+            'booking_id' => $data['booking_id'],
+            'quantity_reserved' => $data['quantity'],
+            'quantity_used' => 0,
+            'quantity_damaged' => 0,
+            'quantity_missing' => 0,
+            'rental_start_date' => now(),
+            'rental_end_date' => $data['expected_return_date'],
+            'rental_price_at_booking' => 0,
+            'checked_out_date' => now(),
+            'condition_notes_out' => $data['condition_notes_out'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'status' => 'checked_out',
+        ]);
+
+        return $this->ok(
+            $tracking->load(['equipment', 'booking.serviceEvent.customer.person']),
+            'Equipment checked out successfully.'
+        );
     }
-
-    // Equipment availability is derived from booking_equipment rows.
-
-    // Create tracking record
-    $tracking = BookingEquipment::create([
-        'equipment_id' => $data['equipment_id'],
-        'booking_id' => $data['booking_id'],
-        'quantity_reserved' => $data['quantity'],
-        'quantity_used' => 0,
-        'quantity_damaged' => 0,
-        'quantity_missing' => 0,
-        'rental_start_date' => now(),
-        'rental_end_date' => $data['expected_return_date'],
-        'rental_price_at_booking' => 0,
-        'checked_out_date' => now(),
-        'condition_notes_out' => $data['condition_notes_out'] ?? null,
-        'notes' => $data['notes'] ?? null,
-        'status' => 'checked_out',
-    ]);
-
-    return $this->ok(
-        $tracking->load(['equipment', 'booking.serviceEvent.customer.person']),
-        'Equipment checked out successfully.'
-    );
-}
 
 
     /**
      * Check-in equipment (return)
      */
- public function equipmentCheckIn(Request $request, BookingEquipment $tracking)
-{
-    $data = $request->validate([
-        'quantity_used' => 'nullable|integer|min:0',
-        'quantity_damaged' => 'nullable|integer|min:0',
-        'quantity_missing' => 'nullable|integer|min:0',
-        'condition_notes_in' => 'nullable|string',
-        'notes' => 'nullable|string',
-    ]);
+    public function equipmentCheckIn(Request $request, BookingEquipment $tracking)
+    {
+        $data = $request->validate([
+            'quantity_used' => 'nullable|integer|min:0',
+            'quantity_damaged' => 'nullable|integer|min:0',
+            'quantity_missing' => 'nullable|integer|min:0',
+            'condition_notes_in' => 'nullable|string',
+            'notes' => 'nullable|string',
+        ]);
 
-    if ($tracking->status === 'returned') {
-        return response()->json([
-            'success' => false,
-            'message' => 'This equipment has already been returned.',
-        ], 422);
+        if ($tracking->status === 'returned') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This equipment has already been returned.',
+            ], 422);
+        }
+
+        $quantityReturned = ($data['quantity_used'] ?? 0) + ($data['quantity_damaged'] ?? 0) + ($data['quantity_missing'] ?? 0);
+
+        // Equipment availability is derived from booking_equipment rows; no equipment counters are updated here.
+
+        // Update tracking record
+        $tracking->update([
+            'quantity_used' => $data['quantity_used'] ?? 0,
+            'quantity_damaged' => $data['quantity_damaged'] ?? 0,
+            'quantity_missing' => $data['quantity_missing'] ?? 0,
+            'checked_in_date' => now(),
+            'condition_notes_in' => $data['condition_notes_in'] ?? null,
+            'notes' => $data['notes'] ?? ($tracking->notes ? $tracking->notes . "\n" : '') . "Returned: " . ($data['notes'] ?? ''),
+            'status' => $quantityReturned < $tracking->quantity_reserved ? 'damaged' : 'returned',
+        ]);
+
+        return $this->ok(
+            $this->formatReservation($tracking->load(['equipment', 'booking.serviceEvent.customer.person', 'booking.serviceEvent.eventType'])),
+            'Equipment checked in successfully.'
+        );
     }
-
-    $quantityReturned = ($data['quantity_used'] ?? 0) + ($data['quantity_damaged'] ?? 0) + ($data['quantity_missing'] ?? 0);
-    
-    // Equipment availability is derived from booking_equipment rows; no equipment counters are updated here.
-    
-    // Update tracking record
-    $tracking->update([
-        'quantity_used' => $data['quantity_used'] ?? 0,
-        'quantity_damaged' => $data['quantity_damaged'] ?? 0,
-        'quantity_missing' => $data['quantity_missing'] ?? 0,
-        'checked_in_date' => now(),
-        'condition_notes_in' => $data['condition_notes_in'] ?? null,
-        'notes' => $data['notes'] ?? ($tracking->notes ? $tracking->notes . "\n" : '') . "Returned: " . ($data['notes'] ?? ''),
-        'status' => $quantityReturned < $tracking->quantity_reserved ? 'damaged' : 'returned',
-    ]);
-
-    return $this->ok(
-        $this->formatReservation($tracking->load(['equipment', 'booking.serviceEvent.customer.person', 'booking.serviceEvent.eventType'])),
-        'Equipment checked in successfully.'
-    );
-}
 
     /**
      * Update tracking record (edit quantity or return date)
      */
-   public function updateTracking(Request $request, BookingEquipment $tracking)
-{
-    $data = $request->validate([
-        'quantity_reserved' => 'nullable|integer|min:1',
-        'rental_end_date' => 'nullable|date',
-        'notes' => 'nullable|string',
-    ]);
+    public function updateTracking(Request $request, BookingEquipment $tracking)
+    {
+        $data = $request->validate([
+            'quantity_reserved' => 'nullable|integer|min:1',
+            'rental_end_date' => 'nullable|date',
+            'notes' => 'nullable|string',
+        ]);
 
-    if ($tracking->status === 'returned') {
-        return response()->json([
-            'success' => false,
-            'message' => 'Cannot update returned equipment.',
-        ], 422);
+        if ($tracking->status === 'returned') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot update returned equipment.',
+            ], 422);
+        }
+
+        // Quantity changes are saved on booking_equipment only; equipment counters are computed.
+
+
+        $tracking->update($data);
+
+        return $this->ok(
+            $this->formatReservation($tracking->load(['equipment', 'booking.serviceEvent.customer.person', 'booking.serviceEvent.eventType'])),
+            'Tracking record updated successfully.'
+        );
     }
-
-    // Quantity changes are saved on booking_equipment only; equipment counters are computed.
-
-
-    $tracking->update($data);
-
-    return $this->ok(
-        $this->formatReservation($tracking->load(['equipment', 'booking.serviceEvent.customer.person', 'booking.serviceEvent.eventType'])),
-        'Tracking record updated successfully.'
-    );
-}
 
     /**
      * Get equipment summary with checked out counts
      */
     public function equipmentSummary(Request $request)
-{
-    $date = $request->input('date', now()->toDateString());
-    
-    $total = Equipment::sum('total_quantity');
-    $checkedOut = BookingEquipment::whereIn('status', ['checked_out'])
-        ->whereDate('rental_start_date', '<=', $date)
-        ->whereDate('rental_end_date', '>=', $date)
-        ->sum('quantity_reserved');
+    {
+        $date = $request->input('date', now()->toDateString());
 
-    $reserved = BookingEquipment::where('status', 'reserved')
-        ->whereDate('rental_start_date', '<=', $date)
-        ->whereDate('rental_end_date', '>=', $date)
-        ->sum('quantity_reserved');
+        $total = Equipment::sum('total_quantity');
+        $checkedOut = BookingEquipment::whereIn('status', ['checked_out'])
+            ->whereDate('rental_start_date', '<=', $date)
+            ->whereDate('rental_end_date', '>=', $date)
+            ->sum('quantity_reserved');
 
-    return $this->ok([
-        'total_equipment' => (int) $total,
-        'reserved' => (int) $reserved,
-        'checked_out' => (int) $checkedOut,
-        'available' => max(0, (int) $total - (int) $checkedOut - (int) $reserved),
-        'date' => $date,
-        'by_category' => Equipment::select('category')
-            ->selectRaw('SUM(total_quantity) as total')
-            ->selectRaw('COUNT(*) as count')
-            ->groupBy('category')
-            ->get(),
-    ]);
-}
+        $reserved = BookingEquipment::where('status', 'reserved')
+            ->whereDate('rental_start_date', '<=', $date)
+            ->whereDate('rental_end_date', '>=', $date)
+            ->sum('quantity_reserved');
+
+        return $this->ok([
+            'total_equipment' => (int) $total,
+            'reserved' => (int) $reserved,
+            'checked_out' => (int) $checkedOut,
+            'available' => max(0, (int) $total - (int) $checkedOut - (int) $reserved),
+            'date' => $date,
+            'by_category' => Equipment::select('category')
+                ->selectRaw('SUM(total_quantity) as total')
+                ->selectRaw('COUNT(*) as count')
+                ->groupBy('category')
+                ->get(),
+        ]);
+    }
     /**
      * Get available quantity helper
      */
-   private function getAvailableQuantity(int $equipmentId, string $endDate): int
-{
-    $total = Equipment::where('equipment_id', $equipmentId)->value('total_quantity') ?? 0;
-    
-    $checkedOut = BookingEquipment::where('equipment_id', $equipmentId)
-        ->whereIn('status', ['reserved', 'checked_out'])
-        ->whereDate('rental_start_date', '<=', now())
-        ->whereDate('rental_end_date', '>=', now())
-        ->whereDate('rental_end_date', '<=', $endDate)
-        ->sum('quantity_reserved');
+    private function getAvailableQuantity(int $equipmentId, string $endDate): int
+    {
+        $total = Equipment::where('equipment_id', $equipmentId)->value('total_quantity') ?? 0;
 
-    return max(0, $total - $checkedOut);
-}
+        $checkedOut = BookingEquipment::where('equipment_id', $equipmentId)
+            ->whereIn('status', ['reserved', 'checked_out'])
+            ->whereDate('rental_start_date', '<=', now())
+            ->whereDate('rental_end_date', '>=', now())
+            ->whereDate('rental_end_date', '<=', $endDate)
+            ->sum('quantity_reserved');
+
+        return max(0, $total - $checkedOut);
+    }
     private function formatMovement(InventoryMovement $movement): array
     {
         [$source, $reference] = $this->resolveMovementSource($movement);
+
+        // ⭐ Pull the "KTD-…" deduction id (if present) out of the reason
+        //    so the Inventory UI can show it and link back to
+        //    EventController::uncompleteKitchenTask() for reversal.
+        $deductionId = null;
+        $bookingNo = null;
+        if (preg_match('/\[(KTD-[A-Za-z0-9\-]+)\]/', (string) $movement->reason, $m)) {
+            $deductionId = $m[1];
+        }
+        if (preg_match('/booking\s+(BK-\d+)/i', (string) $movement->reason, $bm)) {
+            $bookingNo = $bm[1];
+        }
 
         $type = match ($movement->movement_type) {
             'purchase', 'return', 'restock', 'stock_in' => 'stock_in',
@@ -912,6 +932,9 @@ class InventoryController extends Controller
             'reference' => $reference,
             'reference_type' => $movement->reference_type,
             'reference_id' => $movement->reference_id,
+            // ⭐ Kitchen-task linkage (null on other movement kinds)
+            'deduction_id' => $deductionId,
+            'booking_no' => $bookingNo,
             'updated_by' => $user?->person?->full_name ?? $user?->email ?? 'System',
             'performed_by' => $movement->performed_by,
             'movement_at' => optional($movement->created_at)->toISOString(),
@@ -924,6 +947,29 @@ class InventoryController extends Controller
         $type = $movement->movement_type;
         $reason = strtolower((string) $movement->reason);
         $refType = $movement->reference_type;
+
+        // ⭐ Kitchen task deduction — writes `reference_type = 'KitchenTaskDeduction'`
+        //    from EventController::completeKitchenTask(). Surface it BEFORE the
+        //    generic "usage/booking" branch so the Inventory UI can show it as
+        //    "Kitchen Task" instead of lumping it under "Order".
+        if ($refType === 'KitchenTaskDeduction' || str_contains($reason, 'kitchen task completed')) {
+            $bookingNo = null;
+            if (preg_match('/booking\s+(BK-\d+)/i', (string) $movement->reason, $m)) {
+                $bookingNo = $m[1];
+            }
+            return ['Kitchen Task', $bookingNo ? "Booking {$bookingNo}" : '—'];
+        }
+
+        // ⭐ Kitchen task reversal — writes `reference_type = 'KitchenTaskReversal'`
+        //    from EventController::uncompleteKitchenTask(). Must appear BEFORE
+        //    the generic `return` branch below.
+        if ($refType === 'KitchenTaskReversal' || str_contains($reason, 'kitchen task reversed')) {
+            $bookingNo = null;
+            if (preg_match('/booking\s+(BK-\d+)/i', (string) $movement->reason, $m)) {
+                $bookingNo = $m[1];
+            }
+            return ['Kitchen Task (Reversed)', $bookingNo ? "Booking {$bookingNo}" : '—'];
+        }
 
         if ($type === 'waste' || str_contains($reason, 'waste')) {
             return ['Waste Management', $refType ? "{$refType} #{$movement->reference_id}" : 'Waste Record'];
@@ -1141,14 +1187,14 @@ class InventoryController extends Controller
             $search = trim((string) $request->input('search'));
             $query->where(function ($builder) use ($search) {
                 $builder->where('pr_number', 'like', "%{$search}%")
-                    ->orWhereHas('ingredient', fn ($i) => $i->where('name', 'like', "%{$search}%"));
+                    ->orWhereHas('ingredient', fn($i) => $i->where('name', 'like', "%{$search}%"));
             });
         }
 
         $rows = $query->latest('purchase_request_id')
             ->paginate(min(max($request->integer('per_page', 50), 1), 500));
 
-        $rows->getCollection()->transform(fn (PurchaseRequest $pr) => $this->formatPurchaseRequest($pr));
+        $rows->getCollection()->transform(fn(PurchaseRequest $pr) => $this->formatPurchaseRequest($pr));
 
         return $this->ok($rows);
     }
@@ -1163,7 +1209,7 @@ class InventoryController extends Controller
             ->orderBy('created_at')
             ->get();
 
-        $grouped = $rows->groupBy(fn ($pr) => optional($pr->created_at)->toDateString());
+        $grouped = $rows->groupBy(fn($pr) => optional($pr->created_at)->toDateString());
 
         // ⭐ Read custom file names from settings so admin edits persist.
         $customNames = \App\Models\Setting::getValue('inventory', 'approved_request_file_names', []);
@@ -1178,7 +1224,7 @@ class InventoryController extends Controller
                 'name' => $customNames[$date] ?? $defaultName,
                 'request_count' => $items->count(),
                 'total_quantity' => (float) $items->sum('quantity'),
-                'requests' => $items->map(fn ($pr) => $this->formatPurchaseRequest($pr))->values(),
+                'requests' => $items->map(fn($pr) => $this->formatPurchaseRequest($pr))->values(),
             ];
         })->values();
 

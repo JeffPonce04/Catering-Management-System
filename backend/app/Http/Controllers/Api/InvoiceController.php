@@ -209,19 +209,61 @@ class InvoiceController extends Controller
             $totalAmount = $this->calculateTotalAmount($subtotal, $discount, $discountType, $additionalCharges);
 
             $invoice = DB::transaction(function () use ($booking, $data, $subtotal, $discount, $discountType, $additionalCharges, $totalAmount) {
-                $invoice = Invoice::create([
-                    'invoice_number'     => $this->generateInvoiceNumber(),
-                    'booking_id'         => $booking->booking_id,
-                    'subtotal'           => $subtotal,
-                    'discount'           => $discount,
-                    'discount_type'      => $discountType,
-                    'additional_charges' => $additionalCharges,
-                    'total_amount'       => $totalAmount,
-                    'paid_amount'        => 0,
-                    'status'             => 'unpaid',
-                    'due_date'           => $data['due_date'] ?? now()->addDays(30)->toDateString(),
-                    'notes'              => $data['notes'] ?? null,
-                ]);
+                // ⭐ Retry on duplicate-key (MySQL 1062). Two scenarios
+                //    cause a duplicate:
+                //      a) Another request took the invoice_number between
+                //         nextInvoiceNumber() and the INSERT.
+                //      b) Another request created an invoice for the SAME
+                //         booking at the same time (e.g. cashier clicked
+                //         "Record Payment" from Orders & Events while the
+                //         Billing page was creating the invoice).
+                $invoice    = null;
+                $lastError  = null;
+
+                for ($attempt = 1; $attempt <= 5; $attempt++) {
+                    try {
+                        $invoice = Invoice::create([
+                            'invoice_number'     => $this->generateInvoiceNumber(),
+                            'booking_id'         => $booking->booking_id,
+                            'subtotal'           => $subtotal,
+                            'discount'           => $discount,
+                            'discount_type'      => $discountType,
+                            'additional_charges' => $additionalCharges,
+                            'total_amount'       => $totalAmount,
+                            'paid_amount'        => 0,
+                            'status'             => 'unpaid',
+                            'due_date'           => $data['due_date'] ?? now()->addDays(30)->toDateString(),
+                            'notes'              => $data['notes'] ?? null,
+                        ]);
+                        break;
+                    } catch (\Illuminate\Database\QueryException $e) {
+                        $lastError = $e;
+
+                        // Only retry MySQL duplicate-key errors.
+                        if (($e->errorInfo[1] ?? 0) !== 1062) {
+                            throw $e;
+                        }
+
+                        // ⭐ If another request already created an invoice
+                        //    for this booking, return it instead of
+                        //    creating a second one.
+                        $existingForBooking = Invoice::where('booking_id', $booking->booking_id)->first();
+                        if ($existingForBooking) {
+                            return $existingForBooking;
+                        }
+
+                        // Short backoff before retrying the number.
+                        usleep(50_000 * $attempt); // 50ms → 250ms
+                    }
+                }
+
+                if (! $invoice) {
+                    throw $lastError ?? new \RuntimeException('Failed to generate a unique invoice number.');
+                }
+
+                // ⭐ Persist the per-fee line items into booking_charges
+                //    so they show up in the Invoice Details modal and
+                //    stay in sync with the invoice total.
 
                 // ⭐ Persist the per-fee line items into booking_charges
                 //    so they show up in the Invoice Details modal and
@@ -253,14 +295,51 @@ class InvoiceController extends Controller
                 return $invoice;
             });
 
-            return $this->ok(
-                $this->formatInvoice($invoice->fresh('booking')),
-                'Invoice created successfully.'
+            $freshInvoice = $invoice->fresh([
+                'booking.serviceEvent.customer.person',
+                'booking.serviceEvent.eventType',
+                'booking.items.menuItem',
+                'booking.charges',
+                'booking.payments',
+            ]);
+
+            $formatted = $this->formatInvoice($freshInvoice);
+
+            // ⭐ EXPLICIT TOP-LEVEL KEYS — the Orders & Events frontend
+            //    patches its `booking.invoice` mirror using these fields.
+            //    Never let a formatter change hide them.
+            $formatted['invoice_id']     = $freshInvoice->invoice_id;
+            $formatted['invoice_number'] = $freshInvoice->invoice_number;
+            $formatted['booking_id']     = $freshInvoice->booking_id;
+            $formatted['status']         = $freshInvoice->status;
+            $formatted['paid_amount']    = (float) $freshInvoice->paid_amount;
+            $formatted['total_amount']   = (float) $freshInvoice->total_amount;
+            $formatted['balance']        = (float) max(
+                0,
+                (float) $freshInvoice->total_amount - (float) $freshInvoice->paid_amount
             );
+            return $this->ok($formatted, 'Invoice created successfully.');
         } catch (\Illuminate\Validation\ValidationException $e) {
+            Log::warning('Invoice store validation failed', ['errors' => $e->errors()]);
             return $this->fail('Validation failed', 422, $e->errors());
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('Invoice store DB error: ' . $e->getMessage(), [
+                'sql' => $e->getSql(),
+                'bindings' => $e->getBindings(),
+            ]);
+
+            // ⭐ If it's a duplicate key (1062) even after retries, return a clean message.
+            if (($e->errorInfo[1] ?? 0) === 1062) {
+                return $this->fail(
+                    'An invoice for this booking was just created by another process. Please refresh the page and check the Billing list.',
+                    409, // Conflict
+                    ['code' => 'duplicate_invoice']
+                );
+            }
+
+            return $this->fail('Failed to create invoice due to a database error.', 500);
         } catch (\Exception $e) {
-            Log::error('Invoice store error: ' . $e->getMessage(), [
+            Log::error('Invoice store general error: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString(),
             ]);
             return $this->fail('Failed to create invoice: ' . $e->getMessage(), 500);
@@ -748,12 +827,15 @@ class InvoiceController extends Controller
             })->values(),
             // ⭐ Charge + discount rows so the Billing UI can render the
             //    breakdown beneath the invoice total.
-            //    Guarded against a missing booking_charges table.
-            'charges'            => Schema::hasTable('booking_charges')
-                ? ($booking->relationLoaded('charges')
+            'charges'            => (function () use ($invoice, $booking) {
+                if (!Schema::hasTable('booking_charges')) return collect();
+
+                $rawCharges = $booking->relationLoaded('charges')
                     ? $booking->charges
-                    : ($booking->charges()->get() ?? collect()))
-                ->map(function ($charge) {
+                    : ($booking->charges()->get() ?? collect());
+
+                // 1. Map existing rows
+                $mapped = $rawCharges->map(function ($charge) {
                     return [
                         'id'          => $charge->booking_charge_id,
                         'kind'        => $charge->charge_kind,
@@ -761,8 +843,28 @@ class InvoiceController extends Controller
                         'description' => $charge->description,
                         'amount'      => (float) $charge->amount,
                     ];
-                })->values()
-                : collect(),
+                })->values();
+
+                // 2. Identify unaccounted "Additional Charges" (like Glass damage)
+                $standardTotal = $rawCharges->where('charge_kind', 'charge')->sum('amount');
+                $invoiceAdditional = (float) $invoice->additional_charges;
+
+                $difference = $invoiceAdditional - $standardTotal;
+
+                // If the invoice additional_charges is higher than the sum of the saved rows,
+                // it means there are custom/legacy charges that need a virtual row.
+                if ($difference > 0.01) {
+                    $mapped->push([
+                        'id'          => 'virtual-custom',
+                        'kind'        => 'charge',
+                        'type'        => 'other',
+                        'description' => 'Other Custom Charges',
+                        'amount'      => $difference,
+                    ]);
+                }
+
+                return $mapped;
+            })(),
             'payments' => ($booking->relationLoaded('payments')
                 ? $booking->payments
                 : ($booking->payments()->get() ?? collect()))

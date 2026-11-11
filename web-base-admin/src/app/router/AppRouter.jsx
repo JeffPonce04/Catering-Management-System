@@ -30,13 +30,15 @@
   const OrdersManagementPage = lazy(() => import('../../features/orders/pages/OrdersManagementPage'));
   const EventsManagementPage = lazy(() => import('../../features/events/pages/EventsManagementPage'));
   const PaymentPage = lazy(() => import('../../features/billing/pages/PaymentPage'));
-  const BookingQuotationManagementPage = lazy(() => import('../../features/bookings/pages/BookingQuotationManagementPage'));
-  const CustomerManagementPage = lazy(() => import('../../features/customers/pages/CustomerManagementPage'));
+const BookingQuotationManagementPage = lazy(() => import('../../features/bookings/pages/BookingQuotationManagementPage'));
+const BookingCalendarPage = lazy(() => import('../../features/bookings/pages/BookingCalendarPage'));  const CustomerManagementPage = lazy(() => import('../../features/customers/pages/CustomerManagementPage'));
   const SettingsPage = lazy(() => import('../../features/settings/pages/SettingsPage'));
   const NotificationsPage = lazy(() => import('../../features/notifications/pages/NotificationsPage'));
   const StaffDirectoryPage = lazy(() => import('../../features/staff/pages/StaffDirectoryPage'));
   const StaffSchedulingPage = lazy(() => import('../../features/staff/pages/StaffSchedulingPage'));
   const StaffAttendancePage = lazy(() => import('../../features/staff/pages/StaffAttendancePage'));
+  const FaceEnrollmentPage = lazy(() => import('../../features/staff/pages/FaceEnrollmentPage'));
+  const FaceAttendancePage = lazy(() => import('../../features/staff/pages/FaceAttendancePage'));
   const StaffPayrollPage = lazy(() => import('../../features/staff/pages/StaffPayrollPage'));
   const StockLevels = lazy(() => import('../../features/inventory/pages/StockLevels'));
   const Movements = lazy(() => import('../../features/inventory/pages/Movements'));
@@ -136,12 +138,14 @@
         />
 
         <Route path="/billing" element={<ProtectedPage allowedRoles={BILLING_ROLES}><PaymentPage /></ProtectedPage>} />
-        <Route path="/booking" element={<ProtectedPage allowedRoles={BOOKING_ROLES}><BookingQuotationManagementPage /></ProtectedPage>} />
-        <Route path="/customer-feedback" element={<ProtectedPage allowedRoles={CUSTOMER_ROLES}><CustomerManagementPage /></ProtectedPage>} />
+<Route path="/booking" element={<ProtectedPage allowedRoles={BOOKING_ROLES}><BookingQuotationManagementPage /></ProtectedPage>} />
+<Route path="/booking/calendar" element={<ProtectedPage allowedRoles={BOOKING_ROLES}><BookingCalendarPage /></ProtectedPage>} />        <Route path="/customer-feedback" element={<ProtectedPage allowedRoles={CUSTOMER_ROLES}><CustomerManagementPage /></ProtectedPage>} />
 
         <Route path="/staff" element={<ProtectedPage allowedRoles={STAFF_ROLES}><StaffDirectoryPage /></ProtectedPage>} />
         <Route path="/staff/directory" element={<ProtectedPage allowedRoles={STAFF_ROLES}><StaffDirectoryPage /></ProtectedPage>} />
         <Route path="/staff/attendance" element={<ProtectedPage allowedRoles={STAFF_ROLES}><StaffAttendancePage /></ProtectedPage>} />
+        <Route path="/staff/face-enrollment" element={<ProtectedPage allowedRoles={STAFF_ROLES}><FaceEnrollmentPage /></ProtectedPage>} />
+        <Route path="/attendance/face-clock" element={<ProtectedPage allowedRoles={["employee"]}><FaceAttendancePage /></ProtectedPage>} />
         <Route path="/staff/payroll" element={<ProtectedPage allowedRoles={PAYROLL_PREPARATION_ROLES}><StaffPayrollPage /></ProtectedPage>} />
         <Route path="/staff/schedule" element={<ProtectedPage allowedRoles={STAFF_ROLES}><StaffSchedulingPage /></ProtectedPage>} />
 

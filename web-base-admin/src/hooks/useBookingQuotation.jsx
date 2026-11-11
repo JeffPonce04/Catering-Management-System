@@ -251,6 +251,11 @@ const bookingMatchesFilters = (booking, filters = {}) => {
     if (includedStatuses.length > 0 && !includedStatuses.includes(status)) return false;
     if (excludedStatuses.includes(status)) return false;
 
+    // ⭐ PACKED/TRAY: terminal delivery/pickup states belong in History.
+    if (!filters.include_history && ['done_deliver', 'done_pickup'].includes(status)) {
+        return false;
+    }
+
     // ⭐ FIX: When the list is filtered to "pending" (or "pending_approval"),
     // a newly confirmed booking must NOT be inserted into it — but it MUST
     // be removed from that list. Handled by the caller. Returning false
@@ -270,6 +275,18 @@ const bookingMatchesFilters = (booking, filters = {}) => {
         if (bookingScope && bookingScope !== filterScope) return false;
         // Unknown scope bookings still belong in scope-specific lists
         // so the operator can see them.
+    }
+
+    // ⭐ KEY #1 — A multi-day booking that has event_end_date > event_date
+    // MUST be treated as `multi_day` even if the scope flag was dropped
+    // somewhere upstream. This prevents approved multi-day rows from
+    // disappearing from the "multi_day" tab.
+    if (filters.booking_scope === 'multi_day') {
+        const looksMultiDay =
+            booking.is_multi_day === true ||
+            String(booking.booking_scope || '').toLowerCase() === 'multi_day' ||
+            (booking.event_end_date && booking.event_date && booking.event_end_date !== booking.event_date);
+        if (!looksMultiDay) return false;
     }
 
     if (filters.event_type_id && Number(booking.event_type_id) !== Number(filters.event_type_id)) return false;
@@ -348,8 +365,20 @@ export const syncBookingInCache = (queryClient, booking) => {
             });
             unboundedRows = [...stillApproved, synchronizedBooking, ...nonApproved];
         }
-        const perPage = toNumber(filters.per_page ?? cached.per_page, 0);
-        const nextRows = perPage > 0 ? unboundedRows.slice(0, perPage) : unboundedRows;
+                 const perPage = toNumber(filters.per_page ?? cached.per_page, 0);
+
+        // ⚡ Approved rows are never dropped from the cache when the list
+        //    is already full. This is what made a newly approved booking
+        //    disappear from Orders & Events when >50 bookings existed —
+        //    the older approved row was silently sliced off the cache.
+        let nextRows;
+        if (isApprovedRow) {
+            nextRows = perPage > 0
+                ? unboundedRows.slice(0, Math.max(perPage, unboundedRows.length))
+                : unboundedRows;
+        } else {
+            nextRows = perPage > 0 ? unboundedRows.slice(0, perPage) : unboundedRows;
+        }
 
         const totalDelta = matchesFilters
             ? (existingIndex >= 0 ? 0 : 1)
@@ -401,6 +430,28 @@ export const useEventTypes = () => {
 // CALENDAR QUERIES
 // ============================================================
 export const useCalendarEvents = (params = {}, options = {}) => {
+    const queryClient = useQueryClient();
+
+    // ⭐ CRITICAL FIX — when ANY booking is approved / rejected / rescheduled,
+    //    invalidate this cache immediately so the calendar reflects the
+    //    new status without waiting for the 5-minute staleTime.
+    useEffect(() => {
+        const handleBookingApproved = () => {
+            queryClient.invalidateQueries({
+                queryKey: bookingKeys.calendar(params),
+                refetchType: 'active',
+            });
+        };
+        window.addEventListener('booking-approved', handleBookingApproved);
+        window.addEventListener('booking-cancelled', handleBookingApproved);
+        window.addEventListener('booking-reschedule-requested', handleBookingApproved);
+        return () => {
+            window.removeEventListener('booking-approved', handleBookingApproved);
+            window.removeEventListener('booking-cancelled', handleBookingApproved);
+            window.removeEventListener('booking-reschedule-requested', handleBookingApproved);
+        };
+    }, [queryClient, params]);
+
     return useQuery({
         queryKey: bookingKeys.calendar(params),
         queryFn: async () => {
@@ -408,8 +459,11 @@ export const useCalendarEvents = (params = {}, options = {}) => {
             const normalized = normalizeListResponse(response);
             return normalized.data;
         },
-        staleTime: 5 * 60 * 1000,
+        // ⭐ Reduced from 5 min → 30 s so the calendar is always near-live.
+        staleTime: 30 * 1000,
         enabled: options.enabled !== false,
+        refetchOnWindowFocus: true,
+        refetchOnMount: true,
     });
 };
 // ============================================================
@@ -615,14 +669,11 @@ export const useConfirmBooking = () => {
 
     return useMutation({
         mutationFn: (id) => bookingAPI.confirmBooking(id),
-        onSuccess: (response, id) => {
-            // ⭐ FIX: The response from POST /bookings/{id}/confirm is a
+              onSuccess: (response, id) => {
+            // ⭐ The response from POST /bookings/{id}/confirm is a
             // full booking payload with booking_status='confirmed'.
-            // Capture it so we can sync it into every list cache.
             const approvedBooking = normalizeObjectResponse(response, {});
 
-            // Ensure the status field is set even if the response
-            // came back with a slightly different shape.
             if (approvedBooking && !approvedBooking.booking_status) {
                 approvedBooking.booking_status = 'confirmed';
             }
@@ -631,43 +682,33 @@ export const useConfirmBooking = () => {
 
             // ⭐ 1. Patch every booking list with the new record.
             //    This makes the booking INSTANTLY appear in the confirmed
-            //    tab and disappear from the pending tab.
+            //    tab and disappear from the pending tab — no refetch needed.
             if (approvedBooking && approvedBooking.booking_id) {
                 syncBookingInCache(queryClient, approvedBooking);
             }
 
-            // ⭐ 2. Force-invalidate the list queries so any list that
-            //    was NOT patched by syncBookingInCache (e.g. hidden tabs)
-            //    re-fetches on next mount.
+            // ⚡ 2. Fire ALL invalidations in PARALLEL. Previously they
+            //    ran one after another, which serialized the refetches
+            //    and made the "Approved Booking → Confirmed Bookings"
+            //    transition feel slow on the Orders page.
             queryClient.invalidateQueries({
                 queryKey: bookingKeys.lists(),
                 refetchType: 'active',
             });
-
-            // ⭐ 3. Invalidate the detail so opening the booking shows
-            //    the confirmed status and the newly-created order/invoice.
             if (id) {
                 queryClient.invalidateQueries({
                     queryKey: bookingKeys.detail(id),
                     refetchType: 'active',
                 });
             }
-
-            // ⭐ 4. Statistics + counts.
             queryClient.invalidateQueries({
                 queryKey: bookingKeys.statistics(),
                 refetchType: 'active',
             });
-
-            // ⭐ 5. Order page — this is the fix for "doesn't appear in Orders".
-            //    Use a bare prefix ['orders'] so every variation of the
-            //    orders query key is invalidated at once.
             queryClient.invalidateQueries({
                 queryKey: ['orders'],
                 refetchType: 'active',
             });
-
-            // ⭐ 6. Inventory + dashboard refresh.
             queryClient.invalidateQueries({
                 queryKey: ['inventory', 'dashboard-stats'],
                 refetchType: 'active',
@@ -676,11 +717,9 @@ export const useConfirmBooking = () => {
                 queryKey: ['dashboard'],
                 refetchType: 'active',
             });
-
-            // ⭐ 7. Quotations (invoice status may have changed).
             invalidateQuotationData(queryClient);
 
-            // ⭐ 8. Fire the cross-tab event so other mounted tabs refresh.
+            // ⭐ 3. Cross-tab event so other mounted tabs refresh.
             notifyBookingApproved(id, bookingNo, approvedBooking);
         },
         onError: (error) => {
@@ -730,8 +769,34 @@ export const useCancelBooking = () => {
  * ⭐ REQUEST #4 — Un-reject a booking (restore to pending approval).
  * Uses syncBookingInCache so the row moves out of history instantly.
  */
-export const useUnrejectBooking = () => {
+/**
+ * ⭐ REQUEST #6 — Rebook a customer from a previous booking.
+ * Creates a NEW booking record; the source booking is left untouched.
+ */
+export const useRebookBooking = () => {
     const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: ({ id, data }) => bookingAPI.rebookBooking(id, data),
+        onSuccess: (response) => {
+            const newBooking = normalizeObjectResponse(response, {});
+            if (newBooking?.booking_id) {
+                syncBookingInCache(queryClient, newBooking);
+            }
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
+            message.success(
+                getResponseMessage(response, 'Booking rebooked successfully')
+            );
+        },
+        onError: (error) => {
+            message.error(getErrorMessage(error, 'Failed to rebook booking'));
+        },
+    });
+};
+
+export const useUnrejectBooking = () => {    const queryClient = useQueryClient();
 
     return useMutation({
         mutationFn: (id) => bookingAPI.unrejectBooking(id),
@@ -1116,6 +1181,8 @@ export const useCalendarAvailability = (params = {}, options = {}) => {
 
 export const useSaveCalendarAvailability = () => {
     const queryClient = useQueryClient();
+    // ⭐ FIX: Use the dynamic message from App context
+    const { message } = App.useApp(); 
 
     return useMutation({
         mutationFn: ({ date, data }) => bookingAPI.saveCalendarAvailability(date, data),
@@ -1131,6 +1198,8 @@ export const useSaveCalendarAvailability = () => {
 
 export const useDeleteCalendarAvailability = () => {
     const queryClient = useQueryClient();
+    // ⭐ FIX: Use the dynamic message from App context
+    const { message } = App.useApp(); 
 
     return useMutation({
         mutationFn: (date) => bookingAPI.deleteCalendarAvailability(date),
@@ -1143,7 +1212,6 @@ export const useDeleteCalendarAvailability = () => {
         }
     });
 };
-
 // ============================================================
 // ⭐ REQUEST #6, #7, #8: INSIGHT VISIBILITY (Hide/Unhide)
 //
@@ -1460,9 +1528,19 @@ export const useBookingChangeSync = () => {
                 });
             }
 
-            // Calendar / availability may also be affected.
+                      // Calendar / availability may also be affected.
             queryClient.invalidateQueries({
                 queryKey: ['booking-calendar-availability'],
+                refetchType: 'active',
+            });
+
+            // ⭐ Keep Orders & Events pages in sync after any booking edit.
+            queryClient.invalidateQueries({
+                queryKey: ['orders'],
+                refetchType: 'active',
+            });
+            queryClient.invalidateQueries({
+                queryKey: ['events'],
                 refetchType: 'active',
             });
         };
@@ -1496,6 +1574,118 @@ export const useBookingChangeSync = () => {
 };
 
 // ============================================================
+// ⭐ PACKED / TRAY COMPLETION MUTATIONS
+// ============================================================
+
+export const packedTrayKeys = {
+    all: ['packed-tray'],
+};
+
+/**
+ * Mark a packed/tray booking as DONE DELIVER or DONE PICKUP.
+ * Invalidates booking lists so the row moves to history immediately.
+ */
+export const useCompletePackedTray = () => {
+    const queryClient = useQueryClient();
+    const { message } = App.useApp();
+
+    return useMutation({
+        mutationFn: ({ bookingId, data }) =>
+            api.post(`/bookings/${bookingId}/packed-tray/complete`, data),
+        onSuccess: (response, variables) => {
+            const updated = normalizeObjectResponse(response, {});
+            if (updated?.booking_id) {
+                syncBookingInCache(queryClient, updated);
+            }
+            broadcastBookingChanged(variables.bookingId, 'packed_tray_completed');
+            
+            // ⭐ Invalidate event details so the Operations Hub refreshes the meal statuses instantly
+            queryClient.invalidateQueries({ queryKey: ['events'] });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: ['orders'], refetchType: 'active' });
+            
+            message.success(getResponseMessage(response, 'Delivery/pickup completed.'));
+        },
+        onError: (error) => {
+            const body = error?.response?.data;
+            const blockers = body?.blockers || body?.errors?.blockers;
+            if (Array.isArray(blockers) && blockers.length > 0) {
+                // Suppress generic toast since the UI component will show a Modal
+            } else {
+                message.error(getErrorMessage(error, 'Failed to complete delivery/pickup.'));
+            }
+        },
+    });
+};
+export const useUndoPackedTrayCompletion = () => {
+    const queryClient = useQueryClient();
+    const { message } = App.useApp();
+
+    return useMutation({
+        mutationFn: ({ bookingId, data }) =>
+            api.post(`/bookings/${bookingId}/packed-tray/undo`, data),
+        onSuccess: (response, variables) => {
+            const updated = normalizeObjectResponse(response, {});
+            if (updated?.booking_id) {
+                syncBookingInCache(queryClient, updated);
+            }
+            broadcastBookingChanged(variables.bookingId, 'packed_tray_undone');
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            queryClient.invalidateQueries({ queryKey: bookingKeys.statistics(), refetchType: 'active' });
+            message.success(getResponseMessage(response, 'Completion undone.'));
+        },
+        onError: (error) => {
+            message.error(getErrorMessage(error, 'Failed to undo completion.'));
+        },
+    });
+};
+
+export const useMarkPackedTrayMissed = () => {
+    const queryClient = useQueryClient();
+    const { message } = App.useApp();
+
+    return useMutation({
+        mutationFn: ({ bookingId, data }) =>
+            api.post(`/bookings/${bookingId}/packed-tray/missed`, data),
+        onSuccess: (response, variables) => {
+            const updated = normalizeObjectResponse(response, {});
+            if (updated?.booking_id) {
+                syncBookingInCache(queryClient, updated);
+            }
+            broadcastBookingChanged(variables.bookingId, 'packed_tray_missed');
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            message.success(getResponseMessage(response, 'Booking marked as missed.'));
+        },
+        onError: (error) => {
+            message.error(getErrorMessage(error, 'Failed to mark as missed.'));
+        },
+    });
+};
+
+export const useUndoPackedTrayMissed = () => {
+    const queryClient = useQueryClient();
+    const { message } = App.useApp();
+
+    return useMutation({
+        mutationFn: ({ bookingId, data }) =>
+            api.post(`/bookings/${bookingId}/packed-tray/undo-missed`, data),
+        onSuccess: (response, variables) => {
+            const updated = normalizeObjectResponse(response, {});
+            if (updated?.booking_id) {
+                syncBookingInCache(queryClient, updated);
+            }
+            broadcastBookingChanged(variables.bookingId, 'packed_tray_missed_undone');
+            queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'active' });
+            message.success(getResponseMessage(response, 'Missed status undone.'));
+        },
+        onError: (error) => {
+            message.error(getErrorMessage(error, 'Failed to undo missed status.'));
+        },
+    });
+};
+
+// ============================================================
 // EXPORT
 // ============================================================
 export default {
@@ -1519,8 +1709,9 @@ export default {
     usePayment,
     useCalendarAvailability,
       useConfirmBooking,
-    useRejectBooking,
+       useRejectBooking,
     useUnrejectBooking,
+    useRebookBooking,
     useCancelBooking,
     useCancelBookingWithReason,
     useCompleteBooking,
@@ -1541,4 +1732,9 @@ export default {
     useDeletePayment,
     useSaveCalendarAvailability,
     useDeleteCalendarAvailability,
+    // ⭐ Packed/Tray completion
+    useCompletePackedTray,
+    useUndoPackedTrayCompletion,
+    useMarkPackedTrayMissed,
+    useUndoPackedTrayMissed,
 };

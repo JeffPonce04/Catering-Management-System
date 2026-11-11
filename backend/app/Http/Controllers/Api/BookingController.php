@@ -149,6 +149,52 @@ class BookingController extends Controller
         return $relations;
     }
 
+    // ============================================================
+    // ⭐ PACKED / TRAY SERVICE HELPERS
+    // ============================================================
+
+    /**
+     * A booking is "packed/tray" when its service_event.service_type is
+     * packed or tray. These two service types use a simplified workflow:
+     *   • No START EVENT (no ongoing monitoring)
+     *   • No Equipment / Tracking / Staff tabs
+     *   • Completion via DELIVERED or PICKUP
+     */
+    private function isPackedOrTrayService(Booking $booking): bool
+    {
+        // ⭐ Allow checking from a raw array (e.g., before a serviceEvent
+        //    relation is loaded) by accepting an array or an object.
+        if (is_array($booking)) {
+            $serviceType = strtolower(trim((string) ($booking['service_type'] ?? '')));
+        } else {
+            $serviceType = strtolower(trim((string) ($booking->serviceEvent?->service_type ?? '')));
+        }
+
+        return in_array($serviceType, ['packed', 'tray'], true);
+    }
+
+    /**
+     * Resolve the completion mode for a packed/tray booking from its
+     * delivery_method: 'delivery' → deliver, 'pickup' → pickup.
+     */
+    private function resolvePackedTrayMode(Booking $booking): ?string
+    {
+        if (! $this->isPackedOrTrayService($booking)) {
+            return null;
+        }
+
+        // ⭐ Normalize every possible spelling into 'delivery' or 'pickup'.
+        $raw = strtolower(trim((string) ($booking->serviceEvent?->delivery_method ?? '')));
+        $normalized = str_replace([' ', '-'], '_', $raw);
+
+        if (in_array($normalized, ['delivery', 'deliver', 'delivered'], true)) {
+            return 'deliver';
+        }
+
+        // Any other value (including 'pickup', 'pick_up', empty, or null)
+        // falls through to pickup as the safe default.
+        return 'pickup';
+    }
     private function loadedRelationCollection(Booking $booking, string $relation): Collection
     {
         return $booking->relationLoaded($relation)
@@ -184,6 +230,11 @@ class BookingController extends Controller
                 $q->where('booking_no', 'not like', 'HIST-%')
                     ->orWhere('booking_status', 'rejected');
             });
+
+            // ⭐ PACKED/TRAY: completed deliver/pickup bookings move OUT of
+            // the active list and belong to Booking History. Exclude them
+            // unless the caller explicitly includes history.
+            $query->whereNotIn('booking_status', ['done_deliver', 'done_pickup']);
         }
 
         if ($request->filled('status_in')) {
@@ -249,6 +300,11 @@ class BookingController extends Controller
             });
         }
 
+        // ⭐ REQUEST: filter by booking source
+        if ($request->filled('booking_source') && $request->string('booking_source')->toString() !== 'all') {
+            $query->where('booking_source', $request->string('booking_source')->toString());
+        }
+
         if ($request->filled('booking_scope')) {
             $scope = $request->string('booking_scope')->toString();
             if ($scope === 'multi_day') {
@@ -290,8 +346,12 @@ class BookingController extends Controller
         );
 
         if ($request->string('sort')->toString() === 'event_schedule') {
+            // ⭐ REQUEST #2.2 — Guard against duplicate rows when joining.
+            //    `service_event_id` is 1:1 with `bookings`, but `distinct()`
+            //    makes the intent explicit and protects future changes.
             $query->leftJoin('service_events as schedule_events', 'bookings.service_event_id', '=', 'schedule_events.service_event_id')
                 ->select('bookings.*')
+                ->distinct()
                 ->orderByRaw('CASE WHEN schedule_events.event_date IS NULL THEN 1 ELSE 0 END')
                 ->orderBy('schedule_events.event_date');
 
@@ -434,9 +494,46 @@ class BookingController extends Controller
     // STORE / APPROVE / UPDATE / DESTROY
     // ============================================================
 
+    /**
+     * ⭐ Best-effort detection of where a booking came from.
+     *    Clients can override by sending booking_source explicitly.
+     */
+    private function detectBookingSource(Request $request): string
+    {
+        $ua = strtolower((string) $request->userAgent());
+
+        // Mobile app always includes 'okhttp' or the app name
+        if (
+            str_contains($ua, 'okhttp') ||
+            str_contains($ua, 'dart') ||
+            str_contains($ua, 'flutter') ||
+            str_contains($ua, 'dear_babs_app')
+        ) {
+            return 'mobile';
+        }
+
+        // Admin/staff token → walk-in
+        $user = $request->user();
+        if ($user && method_exists($user, 'hasAnyRole')) {
+            if ($user->hasAnyRole(['admin', 'administrator', 'owner', 'super-admin', 'super_admin', 'superadmin', 'cashier', 'finance', 'finance-staff', 'finance_staff'])) {
+                return 'walk_in';
+            }
+        }
+
+        // Otherwise assume web
+        return 'web';
+    }
+
+
     public function store(BookingRequest $request, BookingService $service): JsonResponse
     {
         try {
+            // ⭐ Auto-detect the source when the client doesn't send it.
+            if (! $request->filled('booking_source')) {
+                $request->merge([
+                    'booking_source' => $this->detectBookingSource($request),
+                ]);
+            }
             $customer = null;
             if ($request->has('customer_id')) {
                 $customer = \App\Models\Customer::find($request->customer_id);
@@ -659,6 +756,35 @@ class BookingController extends Controller
 
             $oldData = $booking->toArray();
 
+            // ⭐ An Ongoing event can only be reverted with the Un-start Event action.
+            if (
+                strtolower((string) $booking->booking_status) === 'ongoing'
+                && $request->filled('booking_status')
+                && in_array(strtolower((string) $request->input('booking_status')), [
+                    'pending',
+                    'pending_approval',
+                    'draft',
+                    'approved',
+                    'confirmed',
+                    'rescheduled',
+                ], true)
+            ) {
+                return $this->fail(
+                    'This event is Ongoing. Use "Un-start Event" to revert it.',
+                    422,
+                    ['code' => 'event_ongoing_locked']
+                );
+            }
+
+            // ⭐ REQUEST #8: history is immutable.
+            if (in_array(strtolower((string) $booking->booking_status), ['completed', 'cancelled', 'rejected'], true)) {
+                return $this->fail(
+                    'This booking is in history and cannot be edited.',
+                    422,
+                    ['code' => 'booking_locked']
+                );
+            }
+
             if ($request->has('meal_services') || $request->has('charges') || $request->has('transportation_fee') || $request->has('event_date')) {
                 $booking = $service->updateBookingFromAdmin($booking, $request->all());
             } else {
@@ -676,7 +802,9 @@ class BookingController extends Controller
                     'cancellation_reason',
                 ]));
 
-                $booking->serviceEvent?->update($request->only([
+                // ⭐ KEY #1 — Write both dates so a multi-day edit doesn't
+                // accidentally collapse the event back to a single day.
+                $eventUpdate = $request->only([
                     'event_date',
                     'event_end_date',
                     'event_time',
@@ -686,7 +814,23 @@ class BookingController extends Controller
                     'delivery_method',
                     'special_requests',
                     'delivery_address',
-                ]));
+                ]);
+
+                // Derive end_date from `days` when the client only sends a count.
+                if (
+                    empty($eventUpdate['event_end_date'])
+                    && $request->filled('event_date')
+                    && ($request->filled('days') || $request->filled('total_days'))
+                ) {
+                    $daysCount = (int) ($request->input('days') ?? $request->input('total_days') ?? 1);
+                    if ($daysCount > 1) {
+                        $eventUpdate['event_end_date'] = \Carbon\Carbon::parse($eventUpdate['event_date'])
+                            ->addDays($daysCount - 1)
+                            ->format('Y-m-d');
+                    }
+                }
+
+                $booking->serviceEvent?->update($eventUpdate);
             }
 
             $this->logCustom(
@@ -790,6 +934,141 @@ class BookingController extends Controller
     /**
      * ⭐ REQUEST #4, #5 — Restore a rejected booking back to pending approval.
      */
+    /**
+     * ⭐ REQUEST #6 — Create a NEW booking from a previous booking,
+     * keeping the original record untouched.
+     */
+    public function rebook(Request $request, Booking $booking, BookingService $service): JsonResponse
+    {
+        try {
+            $booking->loadMissing(['serviceEvent.customer.person', 'quotation', 'mealServices.customItems']);
+
+            $customer = $booking->serviceEvent?->customer;
+            if (! $customer) {
+                return $this->fail('Source booking has no customer record.', 422);
+            }
+
+            $data = $request->all();
+
+            if (empty($data['event_date'])) {
+                return $this->fail('A new event date is required for rebooking.', 422);
+            }
+
+            // ⭐ REQUEST #1.4 + #1.6 — Rebooking ALWAYS reuses the existing
+            //    customer account. If the admin changed the email during
+            //    rebooking, resolve the correct customer for that email
+            //    instead of letting the service create a new Person row.
+            $submittedEmail = strtolower(trim((string) ($data['customer_email'] ?? '')));
+            $originalEmail  = strtolower(trim((string) ($customer->person?->email ?? '')));
+
+            if ($submittedEmail !== '' && $submittedEmail !== $originalEmail) {
+                $existingPerson = \App\Models\Person::with('customer')
+                    ->whereRaw('LOWER(email) = ?', [$submittedEmail])
+                    ->first();
+
+                if ($existingPerson?->customer) {
+                    // ⭐ Reuse the OTHER existing customer record.
+                    $customer = $existingPerson->customer;
+                    // Keep the requested email in sync with that account.
+                    $data['customer_email'] = $existingPerson->email;
+                } else {
+                    // New email → normal walk-in path will create a fresh
+                    // Person + Customer + login. Nothing else to do here.
+                    $data['customer_email'] = $submittedEmail;
+                }
+            } else {
+                // ⭐ Same email as the original → force the source customer
+                //    so `createCustomerFromData` takes the reuse branch.
+                $data['customer_email'] = $originalEmail;
+            }
+
+            // ⭐ Always pass the resolved customer so the service never
+            //    accidentally creates a second Customer for the same person.
+            $newBooking = $service->requestBooking($customer, $data);
+
+            $this->logCustom(
+                'rebook',
+                'bookings',
+                $newBooking->booking_id,
+                "Booking {$newBooking->booking_no} rebooked from {$booking->booking_no}",
+                [
+                    'source_booking_no' => $booking->booking_no,
+                    'new_booking_no'    => $newBooking->booking_no,
+                    'customer_id'       => $customer->customer_id,
+                ]
+            );
+
+            return $this->ok(
+                $this->formatBooking($newBooking->fresh($this->bookingRelations())),
+                'Booking rebooked successfully.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail(
+                $e->validator->errors()->first('booking')
+                    ?: $e->validator->errors()->first()
+                    ?: 'Rebooking does not satisfy the current booking policy.',
+                422,
+                $e->errors()
+            );
+        } catch (\Throwable $e) {
+            Log::error('Rebook error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to rebook: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * ⭐ REQUEST #4: Look up an existing customer by email.
+     *    Used by the admin frontend before submitting a walk-in booking
+     *    so it can warn: "This email has booked before. Use it again?"
+     */
+    public function findCustomerByEmail(Request $request): JsonResponse
+    {
+        $email = strtolower(trim((string) $request->input('email', '')));
+
+        if ($email === '') {
+            return $this->fail('Email is required.', 422);
+        }
+
+        $person = \App\Models\Person::with('customer')
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->first();
+
+        if (! $person) {
+            return $this->ok(['found' => false, 'customer' => null]);
+        }
+
+        $customer = $person->customer;
+
+        // ⭐ Count how many bookings this customer already has so the
+        //    frontend can show "3 previous bookings" in the warning.
+        $bookingCount = $customer
+            ? \App\Models\Booking::whereHas('serviceEvent', function ($q) use ($customer) {
+                $q->where('customer_id', $customer->customer_id);
+            })->count()
+            : 0;
+
+        return $this->ok([
+            'found' => true,
+            'customer' => [
+                'customer_id'   => $customer?->customer_id,
+                'customer_code' => $customer?->customer_code,
+                'full_name'     => $person->full_name,
+                'email'         => $person->email,
+                'phone'         => $person->phone,
+                'address_line_1' => $person->address_line_1,
+                'city'          => $person->city,
+                'province'      => $person->province,
+                'postal_code'   => $person->postal_code,
+                'has_login'     => (bool) $customer?->user_id,
+                'booking_count' => $bookingCount,
+                // ⭐ REQUEST #1.6 — the frontend uses these to prefill the
+                //    rebook form and to decide whether to show the "do you
+                //    want to use another email?" confirmation.
+                'is_rebooking'  => $bookingCount > 0,
+            ],
+        ]);
+    }
+
     public function unreject(Request $request, Booking $booking): JsonResponse
     {
         try {
@@ -2187,6 +2466,10 @@ class BookingController extends Controller
                 'reference'        => ['nullable', 'string'],
                 'reference_number' => ['nullable', 'string'],
                 'notes'            => ['nullable', 'string'],
+                // ⭐ PAID BY — captured when the payer is a third party
+                //    (family member, driver, sponsor, etc.).
+                'payer_name'       => ['nullable', 'string', 'max:150'],
+                'payer_relation'   => ['nullable', 'string', 'max:100'],
             ]);
 
             $method = strtolower(str_replace(' ', '_', $validated['payment_method'] ?? $validated['method'] ?? 'cash'));
@@ -2258,7 +2541,7 @@ class BookingController extends Controller
             }
 
             $payment = DB::transaction(function () use ($booking, $validated, $method, $resolvedPaymentType) {
-                return BookingPayment::create([
+                $paymentData = [
                     'booking_id'       => $booking->booking_id,
                     // ⭐ 4-digit sequential format — same as Invoice & Mobile payment.
                     'payment_number'   => $this->nextPaymentNumber(),
@@ -2271,7 +2554,19 @@ class BookingController extends Controller
                     'payment_date'     => now(),
                     'verified_by'      => auth()->id(),
                     'verified_at'      => now(),
-                ]);
+                ];
+
+                // ⭐ PAID BY — only saved when it's actually a different
+                //    person from the booked customer. Sending null means
+                //    "same as customer" and the receipt falls back.
+                if (! empty($validated['payer_name'])) {
+                    $paymentData['payer_name'] = trim((string) $validated['payer_name']);
+                }
+                if (! empty($validated['payer_relation'])) {
+                    $paymentData['payer_relation'] = trim((string) $validated['payer_relation']);
+                }
+
+                return BookingPayment::create($paymentData);
             });
 
             // ⭐ Sync AFTER commit so the just-inserted row is visible to the
@@ -2322,7 +2617,37 @@ class BookingController extends Controller
                 "/admin/payments"
             );
 
-            return $this->ok($payment, 'Payment recorded.');
+            // ⭐ Return EVERYTHING the frontend needs to sync BOTH modules
+            //    (Orders & Events + Billing & Invoicing) in one round-trip:
+            //      - the freshly inserted payment row
+            //      - the updated invoice (paid_amount / balance / status)
+            //      - the recomputed booking snapshot (paid_amount / balance)
+            $booking->refresh()->load([
+                'serviceEvent.customer.person',
+                'invoice',
+                'payments',
+                'quotation',
+            ]);
+
+            $invoiceTotal = (float) ($booking->invoice?->total_amount ?? 0);
+            $invoicePaid  = (float) ($booking->invoice?->paid_amount ?? 0);
+
+            return $this->ok(
+                [
+                    'payment' => $payment,
+                    'invoice' => $booking->invoice,
+                    'booking' => [
+                        'booking_id'  => $booking->booking_id,
+                        'booking_no'  => $booking->booking_no,
+                        'total_amount' => $invoiceTotal,
+                        'paid_amount'  => $invoicePaid,
+                        'balance'      => max(0, $invoiceTotal - $invoicePaid),
+                        'payments'     => $booking->payments->values(),
+                        'invoice'      => $booking->invoice,
+                    ],
+                ],
+                'Payment recorded.'
+            );
         } catch (\Exception $e) {
             Log::error('Record payment error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
             return $this->fail('Failed to record payment: ' . $e->getMessage(), 500);
@@ -2343,7 +2668,11 @@ class BookingController extends Controller
         try {
             $events = $this->query()
                 ->where('booking_no', 'not like', 'HIST-%')
-                ->whereIn('booking_status', ['confirmed', 'rescheduled', 'completed'])
+                // ⭐ Include every operational status that the Booking module
+                //    promotes a booking to after approval. 'approved' is kept
+                //    for safety (some legacy rows still carry it), and
+                //    'ongoing' lets the coordinator see live events.
+                ->whereIn('booking_status', ['approved', 'confirmed', 'rescheduled', 'ongoing', 'completed'])
                 ->get()
                 ->map(function (Booking $booking): array {
                     $formatted = $this->formatBooking($booking);
@@ -2358,12 +2687,33 @@ class BookingController extends Controller
                         'start' => $formatted['event_date'],
                         'end'   => $endDate,
                         'status' => $booking->booking_status,
+                        // ⭐ Enriched extendedProps — consumed by the calendar cell,
+                        //    the monthly Event List side panel, and the Booking
+                        //    Details modal. Every field is already produced by
+                        //    formatBooking(), so no extra queries are added here.
                         'extendedProps' => [
-                            'event_time'   => $formatted['event_time'],
-                            'venue'        => $formatted['venue'],
-                            'service_type' => $formatted['service_type'],
-                            'days'         => $formatted['days'],
-                            'is_multi_day' => $formatted['days'] > 1,
+                            'booking_id'           => $booking->booking_id,
+                            'booking_no'           => $formatted['booking_no'],
+                            'customer_name'        => $formatted['customer_name'],
+                            'customer_phone'       => $formatted['customer_phone'],
+                            'customer_email'       => $formatted['customer_email'],
+                            'event_type_name'      => $formatted['event_type_name'],
+                            'event_date'           => $formatted['event_date'],
+                            'event_end_date'       => $formatted['event_end_date'],
+                            'event_time'           => $formatted['event_time'],
+                            'venue'                => $formatted['venue'],
+                            'service_type'         => $formatted['service_type'],
+                            'guests_count'         => $formatted['guests_count'],
+                            'days'                 => $formatted['days'],
+                            'is_multi_day'         => $formatted['days'] > 1,
+                            'progress'             => $formatted['progress'] ?? 0,
+                            'booking_status'       => $booking->booking_status,
+                            'total_amount'         => $formatted['total_amount'],
+                            'paid_amount'          => $formatted['paid_amount'],
+                            'balance'              => $formatted['balance'],
+                            'event_completed'      => $formatted['event_completed'] ?? false,
+                            'assigned_staff_count' => $formatted['assigned_staff_count'] ?? 0,
+                            'booking_source'       => $formatted['booking_source'] ?? 'walk_in',
                         ],
                     ];
                 });
@@ -2885,6 +3235,13 @@ class BookingController extends Controller
         try {
             $booking = $service->approve($booking);
 
+            // ⭐ TEMP DIAGNOSTIC — remove after confirming
+            \Log::info('APPROVE RESULT', [
+                'booking_id'     => $booking->booking_id,
+                'booking_no'     => $booking->booking_no,
+                'booking_status' => $booking->booking_status,
+                'event_date'     => optional($booking->serviceEvent)->event_date,
+            ]);
             $this->logCustom(
                 'order_created',
                 'orders',
@@ -2925,6 +3282,7 @@ class BookingController extends Controller
 
             DB::transaction(function () use ($booking) {
                 $booking->update(['booking_status' => 'confirmed']);
+                $booking->serviceEvent?->update(['status' => 'confirmed']);
 
                 if (Schema::hasTable('event_tracking')) {
                     EventTracking::where('booking_id', $booking->booking_id)
@@ -4026,7 +4384,7 @@ class BookingController extends Controller
             foreach ($menuItem->recipeIngredients as $recipe) {
                 $stock           = InventoryStock::where('ingredient_id', $recipe->ingredient_id)->first();
                 $quantityNeeded  = $recipe->quantity_per_pax * $servingQuantity;
-                $availableStock  = ($stock?->current_quantity ?? 0) - ($stock?->reserved_quantity ?? 0);
+                $availableStock  = (float) ($stock?->current_quantity ?? 0);
                 $shortage        = max(0, $quantityNeeded - $availableStock);
 
                 $purchased = PurchaseRequest::where('ingredient_id', $recipe->ingredient_id)
@@ -4075,6 +4433,43 @@ class BookingController extends Controller
                 'success' => false,
                 'message' => 'Failed to load menu item ingredients: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * ⭐ Required vs Available for ONE meal service (Kitchen Prep → Review Ingredients).
+     */
+    public function getMealServiceIngredients(Booking $booking, $mealServiceId, InventoryService $inventoryService): JsonResponse
+    {
+        try {
+            $booking->loadMissing(['serviceEvent', 'mealServices.package', 'mealServices.menuItem']);
+            $meal = $booking->mealServices->firstWhere('meal_service_id', (int) $mealServiceId);
+
+            if (! $meal) {
+                return response()->json(['success' => false, 'message' => 'Meal service not found for this booking.'], 404);
+            }
+
+            $ingredients = $inventoryService->getKitchenTaskRequirements($booking, (int) $mealServiceId);
+            $name = $meal->package?->name ?: $meal->menuItem?->name ?: (string) ($meal->meal_type ?? 'Meal');
+
+            return response()->json([
+                'success' => true,
+                'data'    => [
+                    'meal_service_id' => (int) $meal->meal_service_id,
+                    'menu_item_name'  => $name,
+                    'pax'             => (int) $meal->pax,
+                    'guests_count'    => (int) ($booking->serviceEvent?->guests_count ?? 0),
+                    'ingredients'     => $ingredients,
+                    'summary'         => [
+                        'total_ingredients' => count($ingredients),
+                        'need_to_buy'       => collect($ingredients)->where('need_to_buy', true)->count(),
+                        'total_shortage'    => collect($ingredients)->sum('shortage'),
+                    ],
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Get meal service ingredients error: ' . $e->getMessage(), ['booking_id' => $booking->booking_id]);
+            return response()->json(['success' => false, 'message' => 'Failed to load meal ingredients: ' . $e->getMessage()], 500);
         }
     }
 
@@ -4595,6 +4990,15 @@ class BookingController extends Controller
             'package_id'          => $meal->package_id,
             'menu_name'           => $meal->menu_name,
             'menu_description'    => $meal->menu_description,
+            'package_name'        => $meal->package?->name,
+            'package_items'       => ($meal->relationLoaded('package') && $meal->package)
+                ? $meal->package->menuItems->map(fn($i) => [
+                    'menu_item_id'     => $i->menu_item_id,
+                    'name'             => $i->name,
+                    'quantity_per_pax' => (int) ($i->pivot->quantity_per_pax ?? 1),
+                    'additional_cost'  => (float) ($i->pivot->additional_cost ?? 0),
+                ])->values()
+                : [],
             'price_per_head'      => (float) $meal->price_per_head,
             'total_meal_amount'   => (float) $meal->total_meal_amount,
             'filters'             => ($meal->relationLoaded('filters') ? $meal->filters : collect())->map(fn($filter) => [
@@ -4710,6 +5114,8 @@ class BookingController extends Controller
             'booking_id'     => $booking->booking_id,
             'booking_no'     => $booking->booking_no,
             'booking_status' => $booking->booking_status,
+            // ⭐ Frontend uses this to colour the booking ID and show a badge.
+            'booking_source' => $booking->booking_source ?? 'walk_in',
 
             'customer_name'    => trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? '')),
             'customer_email'   => $person?->email,
@@ -4760,9 +5166,13 @@ class BookingController extends Controller
 
             'event_type_id'       => $event?->event_type_id,
             'event_type_name'     => $event?->eventType?->name,
+            // ⭐ KEY #1 — Every read must carry the multi-day window so
+            //    Orders & Events, Billing, and the Day Schedule pane all
+            //    show the same "(start – end, time • N days)" label.
             'event_date'          => $startDate,
             'event_end_date'      => $endDate,
             'days'                => $days,
+            'total_days'          => $days,
             'is_multi_day'        => $isMultiDay,
             'booking_scope'       => $event?->booking_scope ?? ($isMultiDay ? 'multi_day' : 'regular'),
             'event_time'          => $event?->event_time,
@@ -4770,6 +5180,24 @@ class BookingController extends Controller
             'location'            => $event?->venue,
             'guests_count'        => (int) ($event?->guests_count ?? 0),
             'service_type'        => $event?->service_type,
+            'service_type_label'  => (function () use ($event) {
+                $svc = strtolower(trim((string) ($event?->service_type ?? 'buffet')));
+                return match ($svc) {
+                    'packed' => 'Packed',
+                    'tray'   => 'Tray',
+                    default  => 'Buffet',
+                };
+            })(),
+            'is_packed_or_tray'   => $this->isPackedOrTrayService($booking),
+            // ⭐ The resolved completion mode — always 'deliver' or 'pickup'.
+            // ⭐ `packed_tray_mode` mirrors the normalized completion mode,
+            //    not the raw delivery_method. `delivery_method` below carries
+            //    the original customer choice untouched.
+            'packed_tray_mode'    => $this->resolvePackedTrayMode($booking),
+            'delivery_completed_at' => $event?->delivery_completed_at ?? null,
+            'pickup_completed_at'   => $event?->pickup_completed_at ?? null,
+            // ⭐ The raw customer-facing delivery method. This is what the
+            //    customer chose at booking time and MUST round-trip cleanly.
             'delivery_method'     => $event?->delivery_method,
             'menu_selection_type' => $event?->menu_selection_type,
             'special_requests'    => $event?->special_requests,
@@ -4913,6 +5341,48 @@ class BookingController extends Controller
      *   2. sum of booking_items (unit_price × quantity)
      *   3. sum of meal_services (pax × price_per_head)
      */
+    /**
+     * Generate the next sequential payment number (PAY-0001, PAY-0002, …).
+     *
+     * Delegates to BookingPayment::nextPaymentNumber() when the model
+     * provides it; otherwise falls back to a portable sequential generator
+     * so the format matches everything else in the app.
+     */
+    private function nextPaymentNumber(): string
+    {
+        try {
+            if (method_exists(\App\Models\BookingPayment::class, 'nextPaymentNumber')) {
+                return \App\Models\BookingPayment::nextPaymentNumber();
+            }
+
+            $prefix     = 'PAY-';
+            $modelClass = \App\Models\BookingPayment::class;
+            $column     = 'payment_number';
+            $padding    = 4;
+
+            $instance = new $modelClass();
+            $keyName  = $instance->getKeyName();
+
+            $lastRecord = $modelClass::withTrashed()
+                ->where($column, 'LIKE', $prefix . '%')
+                ->orderBy($keyName, 'desc')
+                ->first();
+
+            $nextNumber = 1;
+            if ($lastRecord && isset($lastRecord->$column)) {
+                $numericPart = preg_replace('/[^0-9]/', '', substr($lastRecord->$column, strlen($prefix)));
+                if ($numericPart !== '') {
+                    $nextNumber = ((int) $numericPart) + 1;
+                }
+            }
+
+            return $prefix . str_pad((string) $nextNumber, $padding, '0', STR_PAD_LEFT);
+        } catch (\Throwable $e) {
+            Log::warning('BookingController::nextPaymentNumber failed: ' . $e->getMessage());
+            return 'PAY-' . str_pad((string) random_int(1, 9999), 4, '0', STR_PAD_LEFT);
+        }
+    }
+
     private function createInvoiceForBooking(Booking $booking): \App\Models\Invoice
     {
         $booking->loadMissing(['quotation', 'items', 'mealServices', 'charges']);
@@ -4959,21 +5429,44 @@ class BookingController extends Controller
         // ── 4. Grand total.
         $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
 
-        $invoiceNumber = \App\Models\Invoice::nextInvoiceNumber();
+        // ⭐ Retry on duplicate-key (MySQL 1062). The cashier may be
+        //    creating the same invoice from Billing at the same instant.
+        $lastError = null;
 
-        return \App\Models\Invoice::create([
-            'invoice_number'     => $invoiceNumber,
-            'booking_id'         => $booking->booking_id,
-            'subtotal'           => round($subtotal, 2),
-            'discount'           => round($discount, 2),
-            'discount_type'      => 'fixed',
-            'additional_charges' => round($additionalCharges, 2),
-            'total_amount'       => round($totalAmount, 2),
-            'paid_amount'        => 0,
-            'status'             => 'unpaid',
-            'due_date'           => now()->addDays(30)->toDateString(),
-            'notes'              => 'Auto-created on first payment.',
-        ]);
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
+            try {
+                return \App\Models\Invoice::create([
+                    'invoice_number'     => \App\Models\Invoice::nextInvoiceNumber(),
+                    'booking_id'         => $booking->booking_id,
+                    'subtotal'           => round($subtotal, 2),
+                    'discount'           => round($discount, 2),
+                    'discount_type'      => 'fixed',
+                    'additional_charges' => round($additionalCharges, 2),
+                    'total_amount'       => round($totalAmount, 2),
+                    'paid_amount'        => 0,
+                    'status'             => 'unpaid',
+                    'due_date'           => now()->addDays(30)->toDateString(),
+                    'notes'              => 'Auto-created on first payment.',
+                ]);
+            } catch (\Illuminate\Database\QueryException $e) {
+                $lastError = $e;
+
+                if (($e->errorInfo[1] ?? 0) !== 1062) {
+                    throw $e;
+                }
+
+                // ⭐ If another path already created the invoice for
+                //    this booking, return it instead of erroring.
+                $existing = \App\Models\Invoice::where('booking_id', $booking->booking_id)->first();
+                if ($existing) {
+                    return $existing;
+                }
+
+                usleep(50_000 * $attempt);
+            }
+        }
+
+        throw $lastError ?? new \RuntimeException('Failed to generate a unique invoice number.');
     }
     private function synchronizeBookingInvoice(Booking $booking): void
     {
@@ -5027,6 +5520,452 @@ class BookingController extends Controller
             }
         } catch (\Exception $e) {
             \Log::error('Auto-confirm booking failed: ' . $e->getMessage());
+        }
+    }
+
+    // ============================================================
+    // ⭐ PACKED / TRAY — DELIVERY & PICKUP COMPLETION
+    // ============================================================
+
+    /**
+     * Verify the kitchen prep + checklist are ready before completing
+     * delivery or pickup. Returns an array of blocking reasons.
+     */
+    private function packedTrayCompletionBlockers(Booking $booking, ?int $mealServiceId = null): array
+    {
+        $booking->loadMissing(['order', 'mealServices', 'serviceEvent']);
+
+        $blockers = [];
+
+        // 1. Kitchen tasks must all be done for the specific meal (or all if no meal specified).
+        try {
+            $order = $booking->order;
+            $tasks = [];
+            if ($order) {
+                $meta = \App\Models\Setting::where('group', 'order_metadata')
+                    ->where('key', 'order_' . $order->order_id)
+                    ->first();
+                $metadata = $meta ? (json_decode($meta->value, true) ?: []) : [];
+                $tasks = $metadata['kitchen_preparation'] ?? [];
+                if (empty($tasks)) {
+                    $legacy = \App\Models\Setting::where('group', 'kitchen_tasks')
+                        ->where('key', 'order_' . $order->order_id)
+                        ->first();
+                    $tasks = $legacy ? (json_decode($legacy->value, true) ?: []) : [];
+                }
+            }
+
+            // Deduction records are the source of truth for "done".
+            $doneIds = \App\Models\Setting::where('group', 'kitchen_task_deductions')
+                ->where('key', 'like', $booking->booking_id . ':%')
+                ->pluck('key')
+                ->map(fn($k) => str_replace($booking->booking_id . ':', '', $k))
+                ->all();
+            $doneSet = array_flip($doneIds);
+
+            $pending = [];
+            foreach ($tasks as $task) {
+                if (! empty($task['is_header'])) continue;
+
+                // ⭐ Filter by specific meal if provided
+                if ($mealServiceId) {
+                    $taskMealId = (int) ($task['meal_service_id'] ?? 0);
+                    if ($taskMealId !== $mealServiceId) continue;
+                }
+
+                $taskId = (string) ($task['id'] ?? '');
+                $isDone = ! empty($task['is_done']) || isset($doneSet[$taskId]);
+                if (! $isDone) {
+                    $pending[] = $task['task'] ?? $task['name'] ?? 'Kitchen task';
+                }
+            }
+            if (! empty($pending)) {
+                $blockers[] = 'Kitchen preparation is not complete. Pending: ' . implode(', ', array_slice($pending, 0, 5)) . (count($pending) > 5 ? '…' : '');
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('packedTrayCompletionBlockers kitchen check failed: ' . $e->getMessage());
+        }
+
+        // 2. Required checklist items must be completed.
+        // (We only block the WHOLE booking on these, not individual meals)
+        if (!$mealServiceId) {
+            try {
+                if (Schema::hasTable('event_checklist_items')) {
+                    $required = \App\Models\EventChecklistItem::where('booking_id', $booking->booking_id)
+                        ->whereIn('task_key', ['all_recipes_purchased', 'food_delivered'])
+                        ->where('status', '!=', 'completed')
+                        ->get();
+                    foreach ($required as $item) {
+                        $blockers[] = 'Checklist not complete: ' . ($item->task ?? $item->task_key);
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('packedTrayCompletionBlockers checklist failed: ' . $e->getMessage());
+            }
+        }
+
+        return $blockers;
+    }
+
+    /**
+     * POST /bookings/{booking}/packed-tray/complete
+     *
+     * Marks a packed/tray booking as DONE DELIVER or DONE PICKUP.
+     * Body: { action: 'deliver' | 'pickup', force?: bool, reason?: string }
+     */
+
+
+
+
+
+    public function completePackedTray(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $booking->loadMissing(['serviceEvent', 'order', 'mealServices']);
+
+            if (! $this->isPackedOrTrayService($booking)) {
+                return $this->fail('This action only applies to Packed or Tray bookings.', 422);
+            }
+
+            $validated = $request->validate([
+                'action' => ['required', 'in:deliver,pickup'],
+                'meal_service_id' => ['nullable', 'integer', 'exists:meal_services,meal_service_id'], // ⭐ NEW
+                'force'  => ['nullable', 'boolean'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $action = $validated['action'];
+            $mealServiceId = $validated['meal_service_id'] ?? null;
+            $expectedMode = $this->resolvePackedTrayMode($booking);
+
+            if ($expectedMode !== $action) {
+                return $this->fail(
+                    "This booking is configured for " . ($expectedMode === 'deliver' ? 'Delivery' : 'Pickup') . ".",
+                    422,
+                    ['code' => 'wrong_completion_mode']
+                );
+            }
+
+            // ⭐ If completing a specific meal, update its status
+            if ($mealServiceId) {
+                $meal = $booking->mealServices->firstWhere('meal_service_id', $mealServiceId);
+                if (!$meal) {
+                    return $this->fail('Meal service not found.', 404);
+                }
+                $newStatus = $action === 'deliver' ? 'delivered' : 'served';
+            } else {
+                // Fallback for whole booking
+                $newStatus = $action === 'deliver' ? 'done_deliver' : 'done_pickup';
+            }
+
+            // Already completed?
+            $current = strtolower((string) $booking->booking_status);
+            if (in_array($current, ['done_deliver', 'done_pickup'], true)) {
+                return $this->fail('This booking is already marked as completed.', 422, ['code' => 'already_completed']);
+            }
+
+            $force = (bool) ($validated['force'] ?? false);
+            if (! $force) {
+                // ⭐ Check blockers ONLY for the specific meal (if provided)
+                $blockers = $this->packedTrayCompletionBlockers($booking, $mealServiceId);
+                if (! empty($blockers)) {
+                    return $this->fail(
+                        'Cannot complete yet. ' . implode(' ', $blockers),
+                        422,
+                        ['code' => 'completion_blocked', 'blockers' => $blockers]
+                    );
+                }
+            } elseif (empty(trim((string) ($validated['reason'] ?? '')))) {
+                return $this->fail('A reason is required when bypassing completion checks.', 422, ['code' => 'reason_required']);
+            }
+
+            $now = now();
+
+            DB::transaction(function () use ($booking, $action, $newStatus, $now, $mealServiceId) {
+                if ($mealServiceId) {
+                    // ⭐ Update only this meal's status
+                    \App\Models\MealService::where('meal_service_id', $mealServiceId)->update([
+                        'delivery_status' => $newStatus,
+                    ]);
+
+                    // Check if ALL meals are now delivered/served to mark the whole booking as done
+                    $allMeals = $booking->mealServices()->get();
+                    $allDone = $allMeals->every(fn($m) => in_array($m->delivery_status, ['delivered', 'served', 'completed']));
+                    if ($allDone) {
+                        $booking->update(['booking_status' => $action === 'deliver' ? 'done_deliver' : 'done_pickup']);
+
+                        // ⭐ IMPORTANT: DO NOT update `service_events.status` here.
+                        //    The `service_events` table's `status` column is an ENUM
+                        //    that only allows ['pending','confirmed','ongoing','completed','cancelled'].
+                        //    Writing 'done_pickup' / 'done_deliver' crashes with
+                        //    "Data truncated for column 'status'".
+                        //
+                        //    The `delivery_completed_at` / `pickup_completed_at` timestamps
+                        //    (handled below) are the source of truth for "done".
+                        //
+                        //    If you ever run a migration to extend the enum, restore
+                        //    the one line above this comment.
+                    }
+                } else {
+                    // Fallback: complete the whole booking
+                    $booking->update(['booking_status' => $newStatus]);
+                    // ⭐ Skip service_events.status update for the same reason as above.
+                    // $booking->serviceEvent?->update(['status' => $newStatus]);
+                }
+
+                $eventUpdate = [];
+                if ($action === 'deliver' && Schema::hasColumn('service_events', 'delivery_completed_at')) {
+                    $eventUpdate['delivery_completed_at'] = $now;
+                }
+                if ($action === 'pickup' && Schema::hasColumn('service_events', 'pickup_completed_at')) {
+                    $eventUpdate['pickup_completed_at'] = $now;
+                }
+                if (!empty($eventUpdate)) {
+                    $booking->serviceEvent?->update($eventUpdate);
+                }
+            });
+            $this->logCustom(
+                $action === 'deliver' ? 'packed_tray_delivered' : 'packed_tray_picked_up',
+                'bookings',
+                $booking->booking_id,
+                "Booking {$booking->booking_no} marked as " . ($action === 'deliver' ? 'DONE DELIVER' : 'DONE PICKUP'),
+                [
+                    'booking_no'  => $booking->booking_no,
+                    'action'      => $action,
+                    'meal_service_id' => $mealServiceId,
+                    'new_status'  => $newStatus,
+                    'force'       => $force,
+                    'reason'      => $validated['reason'] ?? null,
+                    'completed_at' => $now->toDateTimeString(),
+                ]
+            );
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh($this->bookingRelations())),
+                $mealServiceId
+                    ? (($booking->mealServices->firstWhere('meal_service_id', $mealServiceId)?->meal_type ?? 'Meal')
+                        . ($action === 'deliver' ? ' marked as Delivered.' : ' marked as Picked Up.'))
+                    : ($action === 'deliver' ? 'Booking marked as DONE DELIVER.' : 'Booking marked as DONE PICKUP.')
+            );
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('completePackedTray error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            return $this->fail('Failed to complete delivery/pickup: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * POST /bookings/{booking}/packed-tray/undo
+     *
+     * Reverts DONE DELIVER / DONE PICKUP back to confirmed.
+     * Body: { reason?: string }
+     */
+    public function undoPackedTrayCompletion(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $booking->loadMissing('serviceEvent');
+
+            if (! $this->isPackedOrTrayService($booking)) {
+                return $this->fail('This action only applies to Packed or Tray bookings.', 422);
+            }
+
+            $validated = $request->validate([
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $validated = $request->validate([
+                'meal_service_id' => ['nullable', 'integer', 'exists:meal_services,meal_service_id'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+            $mealServiceId = $validated['meal_service_id'] ?? null;
+            $current = strtolower((string) $booking->booking_status);
+
+            if ($mealServiceId) {
+                $meal = $booking->mealServices->firstWhere('meal_service_id', $mealServiceId);
+                if (!$meal || !in_array($meal->delivery_status, ['delivered', 'served', 'completed', 'missed_delivery', 'missed_pickup'], true)) {
+                    return $this->fail('This specific meal is not marked as completed.', 422);
+                }
+            } else {
+                // ⭐ Allow undo if the booking is done OR if at least one meal is completed
+                $hasCompletedMeals = $booking->mealServices->contains(function ($m) {
+                    return in_array(strtolower((string) $m->delivery_status), ['delivered', 'served', 'completed'], true);
+                });
+
+                if (! in_array($current, ['done_deliver', 'done_pickup'], true) && !$hasCompletedMeals) {
+                    return $this->fail('This booking has no completed meals to undo.', 422, ['code' => 'not_completed']);
+                }
+            }
+
+            $previousAction = $current === 'done_deliver' ? 'deliver' : 'pickup';
+
+            DB::transaction(function () use ($booking, $previousAction, $mealServiceId) {
+                if ($mealServiceId) {
+                    \App\Models\MealService::where('meal_service_id', $mealServiceId)->update([
+                        'delivery_status' => 'pending',
+                    ]);
+                    // If the booking was already marked as done, revert it back to confirmed
+                    if (in_array(strtolower($booking->booking_status), ['done_deliver', 'done_pickup'])) {
+                        $booking->update(['booking_status' => 'confirmed']);
+                        $booking->serviceEvent?->update(['status' => 'confirmed']);
+                    }
+                } else {
+                    // Revert whole booking
+                    $booking->update(['booking_status' => 'confirmed']);
+                    // Reset all meals
+                    \App\Models\MealService::where('booking_id', $booking->booking_id)->update(['delivery_status' => 'pending']);
+                }
+
+                $eventUpdate = ['status' => 'confirmed'];
+                if ($previousAction === 'deliver' && Schema::hasColumn('service_events', 'delivery_completed_at')) {
+                    $eventUpdate['delivery_completed_at'] = null;
+                }
+                if ($previousAction === 'pickup' && Schema::hasColumn('service_events', 'pickup_completed_at')) {
+                    $eventUpdate['pickup_completed_at'] = null;
+                }
+                $booking->serviceEvent?->update($eventUpdate);
+            });
+            $this->logCustom(
+                'packed_tray_undo_' . $previousAction,
+                'bookings',
+                $booking->booking_id,
+                "Undo {$previousAction} for booking {$booking->booking_no}",
+                [
+                    'booking_no' => $booking->booking_no,
+                    'undo_from'  => $current,
+                    'new_status' => 'confirmed',
+                    'reason'     => $validated['reason'] ?? null,
+                ]
+            );
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh($this->bookingRelations())),
+                'Completion undone. Booking returned to active management.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('undoPackedTrayCompletion error: ' . $e->getMessage());
+            return $this->fail('Failed to undo completion: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * POST /bookings/{booking}/packed-tray/missed
+     *
+     * Marks a packed/tray booking as MISSED DELIVERY or MISSED PICKUP.
+     * Body: { action: 'deliver' | 'pickup', reason?: string }
+     */
+    public function markPackedTrayMissed(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $booking->loadMissing('serviceEvent');
+
+            if (! $this->isPackedOrTrayService($booking)) {
+                return $this->fail('This action only applies to Packed or Tray bookings.', 422);
+            }
+
+            $validated = $request->validate([
+                'action' => ['required', 'in:deliver,pickup'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+
+            $expectedMode = $this->resolvePackedTrayMode($booking);
+            if ($expectedMode !== $validated['action']) {
+                return $this->fail('This booking is not configured for that completion mode.', 422);
+            }
+
+            // Add meal_service_id to validation
+            $validated = $request->validate([
+                'action' => ['required', 'in:deliver,pickup'],
+                'meal_service_id' => ['nullable', 'integer', 'exists:meal_services,meal_service_id'],
+                'reason' => ['nullable', 'string', 'max:500'],
+            ]);
+            $mealServiceId = $validated['meal_service_id'] ?? null;
+
+            $current = strtolower((string) $booking->booking_status);
+            if (in_array($current, ['done_deliver', 'done_pickup'], true)) {
+                return $this->fail('This booking is already completed and cannot be marked as missed.', 422);
+            }
+
+            $newStatus = $validated['action'] === 'deliver' ? 'missed_delivery' : 'missed_pickup';
+
+            DB::transaction(function () use ($booking, $newStatus, $mealServiceId) {
+                if ($mealServiceId) {
+                    \App\Models\MealService::where('meal_service_id', $mealServiceId)->update([
+                        'delivery_status' => $newStatus,
+                    ]);
+                    // If ALL meals are now terminal (delivered/served/missed), we could optionally update the booking,
+                    // but usually missed means the booking stays active until resolved.
+                } else {
+                    $booking->update(['booking_status' => $newStatus]);
+                    $booking->serviceEvent?->update(['status' => $newStatus]);
+                }
+            });
+
+            $this->logCustom(
+                'packed_tray_missed',
+                'bookings',
+                $booking->booking_id,
+                "Booking {$booking->booking_no} marked as " . strtoupper(str_replace('_', ' ', $newStatus)),
+                [
+                    'booking_no' => $booking->booking_no,
+                    'new_status' => $newStatus,
+                    'reason'     => $validated['reason'] ?? null,
+                ]
+            );
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh($this->bookingRelations())),
+                'Booking marked as ' . strtoupper(str_replace('_', ' ', $newStatus)) . '.'
+            );
+        } catch (ValidationException $e) {
+            return $this->fail($e->validator->errors()->first(), 422, $e->errors());
+        } catch (\Throwable $e) {
+            Log::error('markPackedTrayMissed error: ' . $e->getMessage());
+            return $this->fail('Failed to mark as missed: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * POST /bookings/{booking}/packed-tray/undo-missed
+     *
+     * Reverts MISSED DELIVERY / MISSED PICKUP back to confirmed.
+     */
+    public function undoPackedTrayMissed(Request $request, Booking $booking): JsonResponse
+    {
+        try {
+            $booking->loadMissing('serviceEvent');
+
+            if (! $this->isPackedOrTrayService($booking)) {
+                return $this->fail('This action only applies to Packed or Tray bookings.', 422);
+            }
+
+            $current = strtolower((string) $booking->booking_status);
+            if (! in_array($current, ['missed_delivery', 'missed_pickup'], true)) {
+                return $this->fail('This booking is not in a missed state.', 422);
+            }
+
+            DB::transaction(function () use ($booking) {
+                $booking->update(['booking_status' => 'confirmed']);
+                $booking->serviceEvent?->update(['status' => 'confirmed']);
+            });
+
+            $this->logCustom(
+                'packed_tray_undo_missed',
+                'bookings',
+                $booking->booking_id,
+                "Undo missed status for booking {$booking->booking_no}",
+                ['booking_no' => $booking->booking_no, 'undo_from' => $current]
+            );
+
+            return $this->ok(
+                $this->formatBooking($booking->fresh($this->bookingRelations())),
+                'Missed status undone. Booking returned to active management.'
+            );
+        } catch (\Throwable $e) {
+            Log::error('undoPackedTrayMissed error: ' . $e->getMessage());
+            return $this->fail('Failed to undo missed status: ' . $e->getMessage(), 500);
         }
     }
 }

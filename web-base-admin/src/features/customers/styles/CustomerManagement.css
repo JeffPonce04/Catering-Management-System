@@ -26,15 +26,20 @@
 
 /* ==================== BASE CONTAINER ==================== */
 .cm-customer-container {
-    min-height: 100vh;
+    /* ⭐ Lock the whole page to the viewport so the browser scrollbar
+       never appears. Only inner regions (chat list, messages, tables)
+       may scroll. */
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
     background: var(--cm-page);
     color: var(--cm-text);
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     transition: all 0.3s ease;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
-
 .cm-dark-mode {
     --cm-text: #e2e8f0;
     --cm-muted: #8b93a8;
@@ -274,6 +279,12 @@
     min-height: 0;
 }
 
+/* ⭐ When the Messages tab is active, remove inner radius so the
+   messenger feels flush with the tab bar (like real chat apps) */
+.cm-main-card:has(.cm-messenger-tab) {
+    border-bottom-left-radius: 20px;
+    border-bottom-right-radius: 20px;
+}
 .cm-main-card.cm-main-card-dark {
     background: #0f1424 !important;
     border-color: #1a1f35 !important;
@@ -284,8 +295,8 @@
     height: 100%;
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
-
 /* ==================== TABS ==================== */
 .cm-tabs {
     height: 100%;
@@ -327,14 +338,52 @@
     border-radius: 3px;
 }
 
-.cm-tabs .ant-tabs-content-holder { flex: 1; overflow: hidden; }
-.cm-tabs .ant-tabs-content { height: 100%; }
-.cm-tabs .ant-tabs-tabpane {
+.cm-tabs .ant-tabs-content-holder {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.cm-tabs .ant-tabs-content {
     height: 100%;
     display: flex;
     flex-direction: column;
 }
+.cm-tabs .ant-tabs-tabpane {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
 
+/* ⭐ Ant Design adds an inner wrapper that breaks Flexbox height. 
+   This forces it to stretch to the bottom so the input bar drops to the footer. */
+.cm-tabs .ant-tabs-tabpane > div {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+/* ⭐ Messenger tab — force the tab pane to stretch fully */
+.cm-tabs .ant-tabs-tabpane:has(.cm-messenger-tab),
+.cm-tabs .ant-tabs-tabpane-active:has(.cm-messenger-tab) {
+    padding: 0 !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
+.cm-messenger-tab {
+    padding: 0 !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    overflow: hidden;
+}
 /* ==================== TAB CONTENT ==================== */
 .cm-tab-content {
     padding: 16px 20px;
@@ -342,10 +391,19 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
     overflow: hidden;
 }
 
 .cm-tab-content.cm-tab-content-dark { background: #0a0e1a; }
+
+/* ⭐ Messenger tab needs to stretch flush — no padding, no gaps */
+.cm-tab-content:has(.cm-messenger-container) {
+    padding: 0 !important;
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+}
 
 /* ==================== FILTER BAR ==================== */
 .cm-filters {
@@ -424,15 +482,71 @@
     padding: 0 !important;
     font-size: 14px;
 }
-
 /* ==================== TABLE CONTAINER ==================== */
 .cm-table-container {
     flex: 1;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     padding: 0;
-    min-height: 200px;
+    min-height: 0;
 }
 
+.cm-table-container .ant-table-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.cm-table-container .ant-spin-nested-loading,
+.cm-table-container .ant-spin-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* The table wrapper must be a flex column to stretch the body */
+.cm-table-container .ant-table {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.cm-table-container .ant-table-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.cm-table-container .ant-table-content {
+    flex: 1;
+    overflow: auto !important;
+}
+
+/* Force the table body to fill available height, pushing pagination down */
+.cm-table-container .ant-table-tbody {
+    height: 100%;
+}
+.cm-table-container .ant-table-tbody > tr:last-child > td {
+    border-bottom: none;
+}
+
+/* Pagination styling */
+.cm-table .ant-pagination {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    margin: 0 !important;
+    padding: 14px 20px !important;
+    background: #ffffff;
+    border-top: 1px solid var(--cm-border) !important;
+    border-radius: 0 0 12px 12px !important;
+    flex-shrink: 0;
+    min-height: 60px;
+}
 .cm-table-container::-webkit-scrollbar { width: 6px; height: 6px; }
 .cm-table-container::-webkit-scrollbar-track { background: #f0f4f8; }
 .cm-table-container::-webkit-scrollbar-thumb {
@@ -476,6 +590,13 @@
     vertical-align: middle;
 }
 
+/* Force the table to fill the container height so pagination stays at bottom */
+.cm-table-container .ant-table-tbody {
+    height: 100%;
+}
+.cm-table-container .ant-table-tbody > tr:last-child > td {
+    border-bottom: none;
+}
 .cm-dark-mode .cm-table .ant-table-tbody > tr > td {
     border-bottom-color: #1a1f35 !important;
     color: #e2e8f0 !important;
@@ -635,26 +756,12 @@
 .cm-action-icon.delete:hover { color: #ef4444; background: #fef2f2; }
 .cm-action-icon.approve:hover { color: #10b981; background: #ecfdf5; }
 .cm-action-icon.feature:hover { color: #f59e0b; background: #fffbeb; }
-
 /* ==================== PAGINATION ==================== */
-.cm-table .ant-pagination {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 4px;
-    margin: 16px 0 0 0 !important;
-    padding: 12px 16px;
-    background: #f8fafc;
-    border: 1px solid var(--cm-border);
-    border-radius: 12px;
-    flex-shrink: 0;
-}
-
 .cm-dark-mode .cm-table .ant-pagination {
-    background: #0a0e1a !important;
-    border-color: #1a1f35 !important;
+    background: #0f1424 !important;
+    border-top: 1px solid #1a1f35 !important;
+    border-radius: 0 0 12px 12px !important;
 }
-
 .cm-table .ant-pagination-total-text {
     margin-right: auto;
     color: var(--cm-muted);
@@ -977,20 +1084,23 @@
    ============================================================ */
 .cm-messenger-container {
     display: flex;
-    height: 640px;
-    border-radius: 18px;
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+    height: 100%;
+    /* ⭐ Flexbox handles the height natively, no absolute positioning */
+    border-radius: 0;
     overflow: hidden;
     background: #ffffff;
-    border: 1px solid var(--cm-border);
-    box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+    border: none;
+    box-shadow: none;
+    margin: 0;
 }
-
 .cm-messenger-container.cm-messenger-dark {
     background: #0f1424;
     border-color: #1a1f35;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
 }
-
 /* -------- SIDEBAR -------- */
 .cm-messenger-sidebar {
     width: 340px;
@@ -998,9 +1108,13 @@
     border-right: 1px solid var(--cm-border);
     display: flex;
     flex-direction: column;
-    background: #fafbfc;
+    background: #ffffff;
+    /* ⭐ Lock sidebar to the full height of the container */
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    overflow: hidden;
 }
-
 .cm-messenger-dark .cm-messenger-sidebar {
     background: #0f1424;
     border-right-color: #1a1f35;
@@ -1084,12 +1198,13 @@
 .cm-messenger-contact {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
+    gap: 14px;
+    padding: 14px 20px;
     cursor: pointer;
     transition: background 0.15s ease, border 0.15s ease;
     position: relative;
     border-left: 3px solid transparent;
+    border-bottom: 1px solid #f1f5f9;
 }
 
 .cm-messenger-contact:hover { background: #f1f5f9; }
@@ -1194,17 +1309,24 @@
     flex-direction: column;
     background: #ffffff;
     min-height: 0;
+    /* ⭐ Flush edge — no floating card */
+    border-radius: 0;
+    overflow: hidden;
 }
 
 .cm-messenger-dark .cm-messenger-chat { background: #0a0e1a; }
 
 .cm-messenger-chat-panel {
-    flex: 1;
     display: flex;
     flex-direction: column;
+    /* ⭐ Flex: 1 + min-height: 0 makes it fill the space perfectly */
+    flex: 1 1 auto;
     min-height: 0;
+    height: 100%;
+    border-radius: 0;
+    overflow: hidden;
+    background: #ffffff;
 }
-
 /* -------- CHAT HEADER -------- */
 .cm-messenger-chat-header {
     display: flex;
@@ -1363,17 +1485,21 @@
 /* -------- MESSAGES AREA -------- */
 .cm-messenger-chat-messages {
     flex: 1;
-    padding: 20px 24px;
+    padding: 24px 28px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    background: #fafbfc;
+    gap: 6px;
+    background-color: #f8fafc;
     min-height: 0;
+    /* ⭐ No dotted pattern — flat clean messenger look */
+    background-image: none;
 }
-
-.cm-messenger-dark .cm-messenger-chat-messages { background: #0a0e1a; }
-
+.cm-messenger-dark .cm-messenger-chat-messages { 
+    background-color: #0a0e1a;
+    background-image: radial-gradient(#1a1f35 1px, transparent 1px);
+    background-size: 20px 20px;
+}
 .cm-messenger-chat-messages::-webkit-scrollbar { width: 6px; }
 .cm-messenger-chat-messages::-webkit-scrollbar-track { background: transparent; }
 .cm-messenger-chat-messages::-webkit-scrollbar-thumb {
@@ -1381,6 +1507,20 @@
     border-radius: 10px;
 }
 
+/* ⭐ Keep the chat column from collapsing so the input pins to the bottom */
+.cm-messenger-chat-panel > .cm-messenger-chat-header { 
+    flex-shrink: 0; 
+}
+.cm-messenger-chat-panel > .cm-messenger-chat-messages { 
+    flex: 1 1 auto !important; 
+    min-height: 0; 
+    /* This forces the empty white space to happen INSIDE the messages area, pushing the input down */
+    display: flex;
+    flex-direction: column;
+}
+.cm-messenger-chat-panel > .cm-messenger-chat-input { 
+    flex-shrink: 0; 
+}
 .cm-message-day-group {
     display: flex;
     flex-direction: column;
@@ -1465,12 +1605,18 @@
 }
 
 .cm-message-bubble {
-    padding: 10px 14px;
-    border-radius: 16px;
+    padding: 8px 14px;
+    border-radius: 18px;
     word-wrap: break-word;
     max-width: 100%;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+    line-height: 1.4;
+    display: flex; /* Forces the bubble to hug the text */
+    flex-direction: column;
+    width: fit-content;
+    position: relative;
+    user-select: text;
 }
 
 .cm-message-bubble:hover {
@@ -1496,21 +1642,29 @@
     color: #e2e8f0;
 }
 
+/* ⭐ REQUEST 2.3 — Word-wrap safety: long URLs never overflow. */
 .cm-message-text {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.45;
     font-size: 14px;
-    line-height: 1.55;
-    white-space: pre-wrap;
+    max-width: 100%;
 }
 
+.cm-message-line {
+    display: block;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
 .cm-message-meta {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 6px;
+    white-space: nowrap; /* Prevents 5:36 PM from breaking into two lines */
     margin-top: 4px;
-    font-size: 10.5px;
 }
-
 .cm-message-bubble-admin .cm-message-meta { color: rgba(255, 255, 255, 0.75); }
 .cm-message-bubble-customer .cm-message-meta { color: #94a3b8; }
 
@@ -1567,12 +1721,16 @@
 .cm-messenger-chat-input {
     display: flex;
     align-items: flex-end;
-    padding: 12px 16px 16px;
+    padding: 14px 20px 18px;
     border-top: 1px solid var(--cm-border);
     background: #ffffff;
-    gap: 10px;
+    gap: 12px;
     flex-shrink: 0;
-    min-height: 68px;
+    min-height: 76px;
+    /* ⭐ Pin to bottom, full width */
+    width: 100%;
+    position: relative;
+    bottom: 0;
 }
 
 .cm-messenger-dark .cm-messenger-chat-input {
@@ -1681,15 +1839,32 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #fafbfc;
+    background: #ffffff;
     padding: 40px;
+    /* ⭐ Fill the chat column fully, no floating card */
+    height: 100%;
+    width: 100%;
+    min-height: 0;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
 }
 
-.cm-messenger-dark .cm-messenger-chat-empty { background: #0a0e1a; }
-
-.cm-messenger-chat-empty-content {
+.cm-messenger-dark .cm-messenger-chat-empty {
+    background: #0f1424;
+    /* ⭐ Flush dark background, no floating card */
+    border-radius: 0;
+    border: none;
+}.cm-messenger-chat-empty-content {
     text-align: center;
     max-width: 400px;
+    animation: fadeIn 0.5s ease-out;
+    /* ⭐ Ensure vertical centering inside the full-height empty area */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto;
 }
 
 .cm-messenger-empty-illustration {
@@ -1778,6 +1953,7 @@
     .cm-kpi-grid {
         grid-template-columns: repeat(2, 1fr);
         gap: 12px;
+        
         padding: 12px 20px;
     }
     .cm-main-card { margin: 0 20px 20px; }
@@ -1806,6 +1982,7 @@
     .cm-kpi-grid {
         grid-template-columns: 1fr 1fr;
         gap: 10px;
+        
         padding: 10px 16px;
     }
     .cm-kpi-card { padding: 14px 16px; }
@@ -1977,4 +2154,356 @@
     .cm-table { overflow: visible !important; }
     .cm-kpi-grid { break-inside: avoid; }
     .cm-kpi-card { break-inside: avoid; border: 1px solid #e2e8f0 !important; }
+}
+
+/* ⭐ REQUEST 2.9 — Deletion animations (220ms, matches JS timer). */
+.cm-message-deleting {
+    animation: cmMessageDelete 220ms ease forwards;
+    pointer-events: none;
+}
+
+@keyframes cmMessageDelete {
+    0%   { opacity: 1; transform: scale(1); max-height: 500px; }
+    60%  { opacity: 0.3; transform: scale(0.96); }
+    100% { opacity: 0; transform: scale(0.9); max-height: 0; margin: 0; padding: 0; }
+}
+
+.cm-message-pinned .cm-message-bubble {
+    outline: 2px solid #f59e0b;
+    outline-offset: 2px;
+}
+
+.cm-message-highlight .cm-message-bubble {
+    animation: cmMessageHighlight 1500ms ease;
+}
+
+@keyframes cmMessageHighlight {
+    0%, 30% { background-color: #fef3c7; }
+    100%    { background-color: inherit; }
+}
+
+/* ⭐ REQUEST 2.4 + 2.9 — Conversation removal fade. */
+.cm-conversation-removing {
+    animation: cmConversationRemove 240ms ease forwards;
+}
+
+@keyframes cmConversationRemove {
+    0%   { opacity: 1; transform: translateX(0); }
+    100% { opacity: 0; transform: translateX(24px); }
+}
+
+
+/* ⭐ REQUEST 2.4 — Per-conversation menu button. */
+.cm-messenger-contact {
+    position: relative; /* Required for absolute positioning of the button */
+}
+
+/* ⭐ Real Messenger Style Sidebar Button */
+.cm-messenger-contact-more {
+    position: absolute;
+    top: 50%; /* Center vertically */
+    right: 12px;
+    transform: translateY(-50%); /* Center vertically */
+    border: none;
+    background: #e4e6eb !important; /* Light grey circle */
+    color: #333 !important;
+    cursor: pointer;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 150ms ease, background 150ms ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    z-index: 10;
+}
+
+/* ⭐ Show ONLY when hovering over the contact row */
+.cm-messenger-contact:hover .cm-messenger-contact-more,
+.cm-messenger-contact-active .cm-messenger-contact-more {
+    opacity: 1;
+}
+
+.cm-messenger-contact-more:hover {
+    background: #d8dadf !important;
+}
+
+/* Dark mode override */
+.cm-dark-mode .cm-messenger-contact-more {
+    background: #3a3b3c !important;
+    color: #e4e6eb !important;
+}
+
+.cm-dark-mode .cm-messenger-contact-more:hover {
+    background: #4e4f50 !important;
+}
+.cm-messenger-contact-pinned {
+    background: linear-gradient(90deg, rgba(245, 158, 11, 0.08), transparent 60%);
+}
+
+.cm-messenger-contact-blocked {
+    opacity: 0.6;
+}
+
+/* ⭐ REQUEST 2.4 — Inbox / Archived toggle. */
+.cm-messenger-view-toggle {
+    display: flex;
+    gap: 4px;
+    margin: 8px 0;
+}
+
+.cm-messenger-view-toggle button {
+    flex: 1;
+    border: 1px solid transparent;
+    background: rgba(148, 163, 184, 0.12);
+    color: #475569;
+    padding: 6px 8px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+
+.cm-messenger-view-toggle button.active {
+    background: #1a7ab5;
+    color: #ffffff;
+}
+
+/* ⭐ REQUEST 2.8 — Pinned message banner. */
+.cm-pinned-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #fef3c7;
+    color: #92400e;
+    border-bottom: 1px solid #fde68a;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.cm-pinned-banner-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cm-pinned-banner-close {
+    border: none;
+    background: transparent;
+    color: #92400e;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+
+/* ⭐ REQUEST 2.10 — Attachment preview tray + rendered attachments. */
+.cm-attachment-tray {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px 0;
+}
+
+.cm-attachment-chip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+    max-width: 220px;
+}
+
+.cm-attachment-thumb {
+    width: 28px;
+    height: 28px;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
+.cm-attachment-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: #334155;
+}
+
+.cm-attachment-remove {
+    border: none;
+    background: transparent;
+    color: #ef4444;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.cm-message-attachments {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.cm-message-attachment-image {
+    max-width: 240px;
+    max-height: 240px;
+    border-radius: 8px;
+    display: block;
+}
+
+.cm-message-attachment-video {
+    max-width: 260px;
+    border-radius: 8px;
+    display: block;
+}
+
+.cm-message-attachment-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #1a7ab5;
+    text-decoration: underline;
+    font-size: 13px;
+}
+
+/* ⭐ REQUEST 2.5 — Per-message actions button. */
+/* ⭐ The message actions button must always be a valid click target.
+   Previously it was opacity:0 until hover, and any overlapping element
+   (long text, attachments, badges) could swallow the click. Now it is
+   visible, has a comfortable hit area, and sits above siblings. */
+/* ⭐ Hide buttons by default, show only on hover */
+.cm-message-actions-hover {
+    opacity: 0;
+    pointer-events: none;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin: 0 6px !important;
+    transition: opacity 0.2s ease;
+}
+
+.cm-message-wrapper:hover .cm-message-actions-hover {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* ⭐ Real Messenger Style Circular Buttons (Larger) */
+.cm-action-circle {
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    border-radius: 50% !important;
+    background: rgba(255, 255, 255, 0.2) !important; /* Translucent grey for dark mode */
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    color: #fff !important; 
+    font-size: 18px !important; /* Larger icon */
+    transition: background 0.2s, transform 0.1s;
+    border: none !important;
+    padding: 0 !important;
+}
+
+.cm-action-circle:hover {
+    background: rgba(255, 255, 255, 0.35) !important;
+    transform: scale(1.05); /* Slight pop effect */
+}
+
+/* Light mode override for buttons */
+body:not(.dark-mode) .cm-action-circle {
+    background: rgba(0, 0, 0, 0.08) !important;
+    color: #1a2c3e !important;
+}
+
+body:not(.dark-mode) .cm-action-circle:hover {
+    background: rgba(0, 0, 0, 0.15) !important;
+}
+/* ⭐ Real Messenger Style - Large 36px Circular Button */
+.cm-message-more {
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    border-radius: 50% !important;
+    background: rgba(0, 0, 0, 0.08) !important;
+    color: #333 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border: none !important;
+    cursor: pointer !important;
+    opacity: 0; /* Hidden by default */
+    transition: opacity 0.2s, background 0.2s !important;
+    font-size: 18px !important;
+}
+
+/* ⭐ Show the ... button when hovering the message row */
+.cm-message-wrapper:hover .cm-message-more {
+    opacity: 1 !important;
+}
+/* ⭐ Sidebar Contact Menu (3 dots) - ONLY visible on hover */
+.cm-messenger-contact .cm-message-more {
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.cm-messenger-contact:hover .cm-message-more {
+    opacity: 1 !important;
+}
+
+.cm-message-more:hover {
+    background: rgba(0, 0, 0, 0.15) !important;
+    transform: scale(1.05);
+}
+
+/* Dark mode override for the '...' button */
+.cm-dark-mode .cm-message-more {
+    background: rgba(255, 255, 255, 0.15) !important;
+    color: #fff !important;
+}
+
+.cm-dark-mode .cm-message-more:hover {
+    background: rgba(255, 255, 255, 0.3) !important;
+}
+
+.cm-message-row {
+    display: flex;
+    width: 100%;
+}
+
+.cm-message-row.cm-message-admin {
+    justify-content: flex-end;
+}
+
+.cm-message-row.cm-message-customer {
+    justify-content: flex-start;
+}
+
+/* ⭐ Force the wrapper to shrink to content size and align properly */
+.cm-message-bubble-wrapper {
+    display: flex;
+    flex-direction: column;
+    max-width: 75%;
+    width: fit-content;
+    pointer-events: auto;
+}
+
+.cm-message-avatar {
+    margin-bottom: 2px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* ⭐ Make the whole bubble respond to right-click / context menu */
+.cm-message-bubble {
+    position: relative;
+    user-select: text;
 }

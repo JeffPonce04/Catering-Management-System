@@ -62,25 +62,37 @@ class Invoice extends Model
      * Usage:
      *   $invoiceNumber = Invoice::nextInvoiceNumber();
      */
+    /**
+     * ⭐ Generate the next invoice number.
+     *
+     * Format:  INV-NNNNNNNNN
+     * Example: INV-000000351
+     *
+     * Rules:
+     *   • 9-digit sequential counter, shared across all days.
+     *   • Uses MAX() so deleted rows don't cause collisions.
+     *
+     * ⚠️ This method alone is NOT atomic against concurrent inserts.
+     *    The caller MUST wrap this + the Invoice::create() call inside
+     *    the same DB::transaction() and handle the 1062 duplicate-key
+     *    case by retrying. See InvoiceController::store().
+     */
     public static function nextInvoiceNumber(): string
     {
-        $prefix = 'INV-' . now()->format('Ymd') . '-';
+        $prefix = 'INV-';
 
-        // ⭐ No withTrashed() — this model does not use SoftDeletes.
-        //    Look at the highest sequence already issued today.
-        $lastInvoice = static::query()
+        // ⭐ MAX() is stable even if the latest row was soft-deleted.
+        //    orderByDesc('invoice_number') on a soft-deleted row would
+        //    skip it and produce a duplicate. MAX() reads all rows
+        //    including trashed ones because we use withTrashed().
+        $maxNumber = static::withTrashed()
             ->where('invoice_number', 'like', $prefix . '%')
-            ->orderByDesc('invoice_number')
-            ->first();
+            ->selectRaw("MAX(CAST(SUBSTRING(invoice_number, " . (strlen($prefix) + 1) . ") AS UNSIGNED)) as max_num")
+            ->value('max_num');
 
-        $nextSequence = 1;
+        $nextSequence = ((int) ($maxNumber ?? 0)) + 1;
 
-        if ($lastInvoice && preg_match('/-(\d+)$/', (string) $lastInvoice->invoice_number, $matches)) {
-            $nextSequence = ((int) $matches[1]) + 1;
-        }
-
-        // ⭐ Always 4 digits — INV-YYYYMMDD-0001 … INV-YYYYMMDD-9999
-        //    (numbers above 9999 naturally expand beyond 4 digits).
-        return $prefix . str_pad((string) $nextSequence, 4, '0', STR_PAD_LEFT);
+        // ⭐ Always 9 digits — INV-000000001
+        return $prefix . str_pad((string) $nextSequence, 9, '0', STR_PAD_LEFT);
     }
 }

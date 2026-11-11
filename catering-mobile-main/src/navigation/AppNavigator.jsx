@@ -42,6 +42,7 @@ import ReviewsScreen from '../screens/ReviewsScreen';
 import SplashScreen from '../screens/SplashScreen';
 import WelcomeScreen from '../screens/WelcomeScreen';
 import AttendanceTrackingApp from '../Attendance-tracking/attendance';
+import InventoryManagerScreen from '../screens/InventoryManagerScreen';
 
 // ✅ FIX: Safe Haptic Function
 const safeHaptic = (style = 'light') => {
@@ -904,7 +905,7 @@ Login using an admin account to open the Attendance Tracking module.
 // MAIN APP NAVIGATOR
 // ============================================================
 const AppNavigator = () => {
-  const { isLoading, user, logout, isGuest, isAuthenticated, hasAttendanceAccess } = useAuth();
+  const { isLoading, user, logout, isGuest, isAuthenticated, hasAttendanceAccess, hasInventoryAccess } = useAuth();
   const { 
     cartItems, 
     getCartCount, 
@@ -988,6 +989,10 @@ const AppNavigator = () => {
   };
 
   const handleNavigate = (screenName) => {
+    if (screenName === 'InventoryManager' && !hasInventoryAccess) {
+      Alert.alert('Access Denied', 'Only an assigned Inventory Manager account can open Inventory Management.');
+      return;
+    }
     if (screenName === 'AttendanceTracking' && !hasAttendanceAccess) {
       Alert.alert('Access Denied', 'Only an admin account can open Attendance Tracking.');
       return;
@@ -1132,6 +1137,17 @@ const AppNavigator = () => {
               {...props}
               onAppLogout={handleAppLogout}
               onBackToMainApp={handleBackToMainApp}
+            />
+          ) : (
+            <AccessDeniedScreen navigation={props.navigation} />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="InventoryManager">
+          {(props) => hasInventoryAccess ? (
+            <InventoryManagerScreen
+              {...props}
+              onLogout={handleAppLogout}
             />
           ) : (
             <AccessDeniedScreen navigation={props.navigation} />

@@ -2042,19 +2042,19 @@ body {
 }
 
 /* ==================== MODAL ==================== */
+/* Full-viewport modal overlay — must beat the navigation sidebar (z-index 100) */
 .sdf-modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
   background: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 99999;
 }
 
 .dark-mode .sdf-modal-overlay {
@@ -6117,8 +6117,14 @@ body {
   background: #10b98120;
 }
 
-/* ==================== PRINT STYLES ==================== */
-@media print {
+/* Sidebar dims + disables interaction while a scheduling modal is open */
+body:has(.sdf-modal-overlay) .navigation-container {
+  pointer-events: none;
+  filter: blur(3px);
+  transition: filter 0.25s ease;
+}
+
+/* ==================== PRINT STYLES ==================== */@media print {
   .sdf-modal-overlay {
     background: white;
     position: fixed;

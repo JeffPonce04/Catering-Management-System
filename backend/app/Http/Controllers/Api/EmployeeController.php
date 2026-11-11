@@ -150,9 +150,22 @@ class EmployeeController extends Controller
                 $this->assignEmployeeRole($user);
 
                 $position = Position::with('salaryGrade')->findOrFail($request->input('position_id'));
-                $hourlyRate = $request->filled('hourly_rate_override')
+
+                $salaryBase = $request->input('salary_base', 'hourly');
+                $hourlyRate  = $request->filled('hourly_rate_override')
                     ? (float) $request->input('hourly_rate_override')
                     : (float) ($position->salaryGrade?->default_hourly_rate ?? 0);
+                $dailyRate   = $request->filled('daily_rate')     ? (float) $request->input('daily_rate')     : null;
+                $monthlyRate = $request->filled('monthly_salary') ? (float) $request->input('monthly_salary') : null;
+
+                if ($salaryBase === 'daily' && $dailyRate > 0) {
+                    $hourlyRate = round($dailyRate / 8, 4);
+                } elseif ($salaryBase === 'monthly' && $monthlyRate > 0) {
+                    $hourlyRate = round($monthlyRate / 176, 4);
+                } elseif ($salaryBase === 'hourly' && $hourlyRate > 0) {
+                    $dailyRate   = round($hourlyRate * 8, 2);
+                    $monthlyRate = round($hourlyRate * 176, 2);
+                }
 
                 $employee = Employee::create([
                     'person_id' => $person->person_id,
@@ -163,12 +176,21 @@ class EmployeeController extends Controller
                     'status' => $this->normalizeStatus($request->input('status', 'active')),
                     'hire_date' => $request->input('hire_date'),
                     'hourly_rate' => $hourlyRate,
+                    'salary_base' => $salaryBase,
+                    'daily_rate' => $dailyRate,
+                    'monthly_salary' => $monthlyRate,
+                    'payroll_frequency' => $request->input('payroll_frequency', 'semi_monthly'),
+                    'salary_effective_date' => $request->input('salary_effective_date', now()->toDateString()),
+
                     'sss_number' => $request->input('sss_number', $request->input('sss')),
                     'philhealth_number' => $request->input('philhealth_number', $request->input('philhealth')),
                     'pagibig_number' => $request->input('pagibig_number', $request->input('pagibig')),
                     'tin_number' => $request->input('tin_number', $request->input('tin')),
                     'notes' => $request->input('notes'),
                 ]);
+
+                // ⭐ NEW: snapshot initial salary history
+                $employee->snapshotSalary(auth()->id(), 'Initial salary configuration');
 
                 return $this->ok(
                     $employee->load(['person', 'department', 'position.salaryGrade']),
@@ -259,8 +281,33 @@ class EmployeeController extends Controller
                     }
                 }
 
-                if ($request->filled('hourly_rate_override')) {
-                    $employeeData['hourly_rate'] = (float) $request->input('hourly_rate_override');
+                // ⭐ Salary base + rate updates
+                $salaryFields = ['salary_base', 'daily_rate', 'monthly_salary', 'hourly_rate_override', 'payroll_frequency', 'salary_effective_date'];
+                $salaryChanged = collect($salaryFields)->contains(fn($f) => $request->filled($f));
+
+                if ($salaryChanged) {
+                    $employee->snapshotSalary(auth()->id(), 'Salary update via employee edit');
+
+                    $salaryBase  = $request->input('salary_base', $employee->salary_base ?: 'hourly');
+                    $hourlyRate  = (float) ($request->input('hourly_rate_override') ?? $employee->hourly_rate ?? 0);
+                    $dailyRate   = $request->filled('daily_rate')     ? (float) $request->input('daily_rate')     : $employee->daily_rate;
+                    $monthlyRate = $request->filled('monthly_salary') ? (float) $request->input('monthly_salary') : $employee->monthly_salary;
+
+                    if ($salaryBase === 'daily' && $dailyRate > 0) {
+                        $hourlyRate = round($dailyRate / 8, 4);
+                    } elseif ($salaryBase === 'monthly' && $monthlyRate > 0) {
+                        $hourlyRate = round($monthlyRate / 176, 4);
+                    } elseif ($salaryBase === 'hourly' && $hourlyRate > 0) {
+                        $dailyRate   = round($hourlyRate * 8, 2);
+                        $monthlyRate = round($hourlyRate * 176, 2);
+                    }
+
+                    $employeeData['salary_base']            = $salaryBase;
+                    $employeeData['hourly_rate']            = $hourlyRate;
+                    $employeeData['daily_rate']             = $dailyRate;
+                    $employeeData['monthly_salary']         = $monthlyRate;
+                    $employeeData['payroll_frequency']      = $request->input('payroll_frequency', $employee->payroll_frequency ?? 'semi_monthly');
+                    $employeeData['salary_effective_date']  = $request->input('salary_effective_date', $employee->salary_effective_date?->toDateString() ?? now()->toDateString());
                 }
 
                 if ($request->filled('status')) {
@@ -362,6 +409,29 @@ class EmployeeController extends Controller
         return $this->ok($employee->fresh(['person', 'department', 'position.salaryGrade']), 'Employee restored');
     }
 
+
+    public function salaryHistory(Employee $employee)
+    {
+        $history = DB::table('employee_salary_history')
+            ->where('employee_id', $employee->employee_id)
+            ->orderByDesc('effective_date')
+            ->orderByDesc('id')
+            ->get();
+
+        return $this->ok([
+            'employee' => $employee->load(['person', 'position.salaryGrade']),
+            'current'  => [
+                'salary_base'            => $employee->salary_base,
+                'monthly_salary'         => $employee->monthly_salary,
+                'daily_rate'             => $employee->daily_rate,
+                'hourly_rate'            => $employee->calculated_hourly_rate,
+                'payroll_frequency'      => $employee->payroll_frequency,
+                'salary_effective_date'  => $employee->salary_effective_date?->toDateString(),
+            ],
+            'history' => $history,
+        ]);
+    }
+
     public function forcePasswordReset(Request $request, Employee $employee)
     {
         $employee->loadMissing('user');
@@ -451,12 +521,15 @@ class EmployeeController extends Controller
 
     public function stats()
     {
+        // Use `withoutTrashed` implicitly — default query already excludes soft-deleted.
+        // Count active + on_leave as "not archived" so the badge matches the table.
         return $this->ok([
             'total' => Employee::count(),
             'active' => Employee::where('status', 'active')->count(),
             'onleave' => Employee::where('status', 'on_leave')->count(),
             'inactive' => Employee::where('status', 'inactive')->count(),
             'terminated' => Employee::where('status', 'terminated')->count(),
+            'archived' => Employee::onlyTrashed()->count(),
         ]);
     }
 

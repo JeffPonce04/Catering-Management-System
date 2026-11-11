@@ -186,7 +186,23 @@ exports.verifyOTP = async (req, res) => {
     
     await Otp.markAsUsed(otpRecord.id);
     
-    const verificationToken = crypto.randomBytes(32).toString('hex');
+    if (type !== 'registration') {
+      return res.status(400).json({
+        success: false,
+        message: 'This OTP cannot be used for registration verification.'
+      });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET is not configured');
+    }
+
+    // A signed, short-lived token proves this exact email passed OTP verification.
+    const verificationToken = jwt.sign(
+      { email: trimmedEmail, purpose: 'email_verification' },
+      process.env.JWT_SECRET,
+      { expiresIn: '10m' }
+    );
     
     res.status(200).json({
       success: true,
@@ -322,10 +338,36 @@ exports.register = async (req, res) => {
         message: 'Email verification is required'
       });
     }
+
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET is not configured');
+    }
+
+    let verifiedEmail;
+    try {
+      const verificationPayload = jwt.verify(verification_token, process.env.JWT_SECRET);
+      if (verificationPayload.purpose !== 'email_verification' || !verificationPayload.email) {
+        throw new Error('Invalid verification token purpose');
+      }
+      verifiedEmail = verificationPayload.email.toLowerCase();
+    } catch (verificationError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email verification is invalid or expired. Please verify your email again.'
+      });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    if (verifiedEmail !== normalizedEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'The verified email does not match the registration email.'
+      });
+    }
     
     const userId = await User.create({
       full_name,
-      email: email.toLowerCase(),
+      email: normalizedEmail,
       user_id,
       password,
       email_verified: true

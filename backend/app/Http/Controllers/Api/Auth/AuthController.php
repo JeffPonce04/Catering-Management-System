@@ -522,6 +522,36 @@ class AuthController extends Controller
     // ============================================================
     public function registerCustomer(Request $request)
     {
+        // ⭐ REQUEST #1.3 — Explicit duplicate-email check so the mobile
+        //    app gets the exact message the spec requires, regardless of
+        //    which validation branch fires first.
+        $submittedEmail = strtolower(trim((string) $request->input('email', '')));
+        if ($submittedEmail !== '') {
+            $existingPerson = Person::whereRaw('LOWER(email) = ?', [$submittedEmail])->first();
+            if ($existingPerson) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This Gmail account already exists. Please use another email address.',
+                    'error_code' => 'EMAIL_ALREADY_EXISTS',
+                    'errors' => [
+                        'email' => ['This Gmail account already exists. Please use another email address.'],
+                    ],
+                ], 422);
+            }
+
+            $existingUser = User::where('username', $submittedEmail)->first();
+            if ($existingUser) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This Gmail account already exists. Please use another email address.',
+                    'error_code' => 'EMAIL_ALREADY_EXISTS',
+                    'errors' => [
+                        'email' => ['This Gmail account already exists. Please use another email address.'],
+                    ],
+                ], 422);
+            }
+        }
+
         $validator = validator($request->all(), [
             'first_name' => 'required|string|max:80',
             'last_name' => 'required|string|max:80',
@@ -1142,6 +1172,22 @@ class AuthController extends Controller
 
     public function registerCustomerWithOtp(Request $request)
     {
+        // ⭐ REQUEST #1.3 — Same duplicate-email guard for the OTP path.
+        $submittedEmail = strtolower(trim((string) $request->input('email', '')));
+        if ($submittedEmail !== '') {
+            $existingPerson = Person::whereRaw('LOWER(email) = ?', [$submittedEmail])->first();
+            if ($existingPerson) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This Gmail account already exists. Please use another email address.',
+                    'error_code' => 'EMAIL_ALREADY_EXISTS',
+                    'errors' => [
+                        'email' => ['This Gmail account already exists. Please use another email address.'],
+                    ],
+                ], 422);
+            }
+        }
+
         $validator = validator($request->all(), [
             'first_name' => 'required|string|max:80',
             'last_name' => 'required|string|max:80',

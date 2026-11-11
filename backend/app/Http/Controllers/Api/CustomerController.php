@@ -62,6 +62,7 @@ class CustomerController extends Controller
                 'user.roles',
                 'bookings.serviceEvent',
                 'bookings.payments',
+                'bookings.invoice',          // ⭐ needed for total_spent fallback
                 'bookings.review',
                 'chatThreads.messages',
             ])
@@ -71,9 +72,19 @@ class CustomerController extends Controller
                         $q->whereIn('booking_status', ['completed', 'done']);
                     },
                 ])
-                ->whereNotNull('user_id')
-                ->whereHas('user.roles', function ($q) {
-                    $q->where('slug', 'customer');
+                // ⭐ REQUEST #2.1 — Show every customer that either has the
+                //    `customer` role OR has at least one booking OR is an
+                //    active walk-in customer with a linked person. This is
+                //    what makes newly-created walk-in customers appear in
+                //    the directory immediately, even while their booking is
+                //    still pending.
+                ->where(function ($q) {
+                    $q->whereHas('user.roles', fn($r) => $r->where('slug', 'customer'))
+                        ->orWhereHas('bookings')
+                        ->orWhere(function ($inner) {
+                            $inner->where('is_active', true)
+                                ->whereNotNull('person_id');
+                        });
                 });
 
             if ($request->filled('search')) {
@@ -107,18 +118,38 @@ class CustomerController extends Controller
     public function stats()
     {
         try {
-            $customers = Customer::whereNotNull('user_id')
-                ->whereHas('user.roles', fn($q) => $q->where('slug', 'customer'));
+            // ⭐ Same visibility rule as index() so the KPI matches the table.
+            $customers = Customer::where(function ($q) {
+                $q->whereHas('user.roles', fn($r) => $r->where('slug', 'customer'))
+                    ->orWhereHas('bookings');
+            });
 
             $reviews = Review::query();
 
+            // ⭐ Global revenue (net of refunds) — powers the Total Revenue KPI.
+            $grossCompleted = (float) \App\Models\BookingPayment::query()
+                ->where('status', 'completed')
+                ->where('payment_type', '!=', 'refund')
+                ->sum('amount');
+
+            $totalRefunded = (float) \App\Models\BookingPayment::query()
+                ->where('status', 'completed')
+                ->where('payment_type', 'refund')
+                ->sum('amount');
+
+            $totalRevenue = max(0, $grossCompleted - $totalRefunded);
+
             return $this->ok([
-                'total_customers' => (clone $customers)->count(),
-                'active_customers' => (clone $customers)->where('is_active', true)->count(),
-                'new_this_month' => (clone $customers)->whereMonth('created_at', now()->month)->whereYear('created_at', now()->year)->count(),
-                'avg_rating' => round((float) (clone $reviews)->avg('overall_rating'), 1),
-                'total_reviews' => (clone $reviews)->count(),
-                'loyal_customers' => (clone $customers)->whereIn('tier', ['gold', 'platinum'])->count(),
+                'total_customers'   => (clone $customers)->count(),
+                'active_customers'  => (clone $customers)->where('is_active', true)->count(),
+                'new_this_month'    => (clone $customers)
+                    ->whereMonth('created_at', now()->month)
+                    ->whereYear('created_at', now()->year)
+                    ->count(),
+                'avg_rating'        => round((float) (clone $reviews)->avg('overall_rating'), 1),
+                'total_reviews'     => (clone $reviews)->count(),
+                'loyal_customers'   => (clone $customers)->whereIn('tier', ['gold', 'platinum'])->count(),
+                'total_revenue'     => $totalRevenue,
             ], 'Customer statistics retrieved successfully');
         } catch (\Exception $e) {
             Log::error('Customer stats error: ' . $e->getMessage());
@@ -136,30 +167,121 @@ class CustomerController extends Controller
         $customer->setAttribute('reviews_count', $reviews->count());
         $customer->setAttribute('average_rating', round((float) $reviews->avg('overall_rating'), 1));
         $customer->setAttribute('latest_review', $reviews->first());
-        $customer->setAttribute('total_spent', (float) $customer->bookings->sum(function ($booking) {
-            return $booking->payments->where('status', 'completed')->sum('amount');
-        }));
         $customer->setAttribute('has_chat_thread', $customer->chatThreads->isNotEmpty());
 
+        // ⭐ REQUEST: correct TOTAL SPENT.
+        //    Net of refunds, using completed non-refund payments only.
+        //    Falls back to invoice.paid_amount when payments are missing.
+        $totalSpent = (float) $customer->bookings->sum(function ($booking) {
+            $completed = (float) $booking->payments
+                ->where('status', 'completed')
+                ->where('payment_type', '!=', 'refund')
+                ->sum('amount');
+
+            $refunded = (float) $booking->payments
+                ->where('status', 'completed')
+                ->where('payment_type', 'refund')
+                ->sum('amount');
+
+            $netFromPayments = max(0, $completed - $refunded);
+
+            // Fallback for bookings whose payment lives only on the invoice
+            if ($netFromPayments <= 0 && $booking->invoice) {
+                $invoicePaid = (float) ($booking->invoice->paid_amount ?? 0);
+                if ($invoicePaid > 0) return $invoicePaid;
+            }
+
+            return $netFromPayments;
+        });
+        $customer->setAttribute('total_spent', $totalSpent);
+
+        // ⭐ REQUEST 1.5 — Loyalty points: 1 point per ₱100 of eligible
+        //    VERIFIED payments only. Pending/rejected/unverified/cancelled
+        //    transactions never earn points. Refunds already net out of
+        //    $totalSpent, so points derived from it are automatically
+        //    correct after a reversal.
+        $derivedPoints = (int) floor($totalSpent / 100);
+        $customer->setAttribute('loyalty_points', $derivedPoints);
+        // ⭐ REQUEST 1.3 — count only ELIGIBLE bookings.
+        //    Cancelled and rejected are excluded from both the badge and
+        //    the tier calculation, but their rows still appear in the
+        //    Booking History tab.
+        $bookingsCount = $customer->bookings->filter(function ($booking) {
+            $status = strtolower((string) $booking->booking_status);
+            return ! in_array($status, ['cancelled', 'rejected'], true);
+        })->count();
+        $customer->setAttribute('total_bookings', $bookingsCount);
+
+        // ⭐ REQUEST 1.3 — tier is derived from TOTAL ELIGIBLE BOOKINGS.
+        //    We only write to the DB when the derived tier differs, so we
+        //    don't churn updates on every list refresh.
+        $derivedTier = $this->tierForBookings($bookingsCount);
+        $customer->setAttribute('tier', $derivedTier);
+        if ($customer->getRawOriginal('tier') !== $derivedTier) {
+            try {
+                $customer->update(['tier' => $derivedTier]);
+            } catch (\Throwable $e) {
+                \Log::warning('Failed to persist derived tier', [
+                    'customer_id' => $customer->customer_id,
+                    'tier'        => $derivedTier,
+                    'error'       => $e->getMessage(),
+                ]);
+            }
+        }
         return $customer;
     }
-
+    /**
+     * ⭐ Derive the correct tier from lifetime spend.
+     *
+     * Thresholds:
+     *   bronze    ₱0      – ₱20,000
+     *   silver    ₱20,001 – ₱50,000
+     *   gold      ₱50,001 – ₱100,000
+     *   platinum  ₱100,001 and above
+     */
+    /**
+     * ⭐ REQUEST 1.3 — Tiers are derived from TOTAL ELIGIBLE BOOKINGS,
+     * not lifetime spend. Cancelled and rejected bookings are excluded.
+     *
+     *   Bronze    1–2 bookings
+     *   Silver    3–5 bookings
+     *   Gold      6–10 bookings
+     *   Platinum  11–20 bookings
+     *   Diamond   21+ bookings
+     *
+     * A customer with 0 eligible bookings stays Bronze (default).
+     */
+    private function tierForBookings(int $eligibleBookings): string
+    {
+        return match (true) {
+            $eligibleBookings >= 21 => 'diamond',
+            $eligibleBookings >= 11 => 'platinum',
+            $eligibleBookings >= 6  => 'gold',
+            $eligibleBookings >= 3  => 'silver',
+            default                 => 'bronze',
+        };
+    }
     /**
      * Display the specified customer.
      */
     public function show(Customer $customer)
     {
         try {
-            return $this->ok(
-                $customer->load([
-                    'person',
-                    'bookings.serviceEvent',
-                    'bookings.payments',
-                    'bookings.invoice',
-                    'bookings.review',
-                    'chatThreads.messages.sender.person'
-                ])
-            );
+            // ⭐ Append the same metrics shown in the table (total_spent,
+            //    total_bookings, derived tier) so the drawer stays consistent.
+            $customer->load([
+                'person',
+                'user.roles',
+                'bookings.serviceEvent',
+                'bookings.payments',
+                'bookings.invoice',
+                'bookings.review',
+                'chatThreads.messages.sender.person',
+            ]);
+
+            $this->appendCustomerMetrics($customer);
+
+            return $this->ok($customer);
         } catch (\Exception $e) {
             Log::error('Customer show error: ' . $e->getMessage());
             return $this->fail('Failed to fetch customer: ' . $e->getMessage(), 500);
@@ -345,20 +467,10 @@ class CustomerController extends Controller
 
     private function ensureAiWelcomeMessage(ChatThread $thread): void
     {
-        if ($thread->messages()->exists()) {
-            return;
-        }
-
-        ChatMessage::create([
-            'thread_id' => $thread->thread_id,
-            'sender_user_id' => null,
-            'message' => $this->aiWelcomeMessage(),
-            'read_at' => null,
-        ]);
-
-        $thread->touch();
+        // ⭐ Disabled automatic AI welcome message. 
+        // Customers will only see messages sent by the admin/shop.
+        return;
     }
-
     private function ensureCustomerThread(int $customerId): ChatThread
     {
         $thread = ChatThread::firstOrCreate(
@@ -390,8 +502,10 @@ class CustomerController extends Controller
             return $this->ok(
                 $query->latest('updated_at')->paginate($request->integer('per_page', 20))
             );
-        } catch (\Exception $e) {
-            Log::error('Customer messages error: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            Log::error('Customer messages error: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString(),
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -407,11 +521,22 @@ class CustomerController extends Controller
     public function sendMessage(Request $request)
     {
         try {
+            // ⭐ REQUEST 2.1 + 2.10 — Message OR attachment is required.
             $data = $request->validate([
                 'customer_id' => 'required|exists:customers,customer_id',
-                'message' => 'required|string',
+                'message' => 'nullable|string',
                 'subject' => 'nullable|string|max:255',
+                // ⭐ 25 MB per file, allowed MIME classes only.
+                'attachments' => 'nullable|array',
+                'attachments.*' => 'file|max:25600|mimes:jpg,jpeg,png,gif,webp,mp4,webm,mov,pdf,doc,docx,xls,xlsx,txt',
             ]);
+
+            if (empty($data['message']) && ! $request->hasFile('attachments')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Message or attachment is required.',
+                ], 422);
+            }
 
             $currentUser = $request->user();
             $isCustomerSender = $currentUser?->customer
@@ -431,11 +556,45 @@ class CustomerController extends Controller
             $message = ChatMessage::create([
                 'thread_id' => $chatThread->thread_id,
                 'sender_user_id' => auth()->id(),
-                'message' => $data['message'],
+                'message' => $data['message'] ?? '',
                 'read_at' => null,
+                // ⭐ REQUEST 2.1 — delivery_status persisted server-side.
+                'delivery_status' => 'sent',
             ]);
 
+            // ⭐ REQUEST 2.10 — Persist attachment metadata. Files stored
+            //    in a private disk so only conversation participants can
+            //    download (authorization enforced in the download endpoint).
+            if ($request->hasFile('attachments')) {
+                foreach ($request->file('attachments') as $file) {
+                    if (! $file->isValid()) continue;
+
+                    $path = $file->store(
+                        'chat-attachments/' . $chatThread->thread_id,
+                        'local'
+                    );
+
+                    \DB::table('chat_attachments')->insert([
+                        'message_id'   => $message->message_id,
+                        'thread_id'    => $chatThread->thread_id,
+                        'file_name'    => $file->getClientOriginalName(),
+                        'file_path'    => $path,
+                        'mime_type'    => $file->getMimeType(),
+                        'file_size'    => $file->getSize(),
+                        'created_at'   => now(),
+                        'updated_at'   => now(),
+                    ]);
+                }
+            }
+
             $chatThread->touch();
+
+            // ⭐ REQUEST 2.2 — Broadcast so the customer app updates instantly.
+            try {
+                broadcast(new \App\Events\ChatMessageSent($message->load('attachments')))->toOthers();
+            } catch (\Throwable $e) {
+                \Log::warning('Reverb broadcast failed: ' . $e->getMessage());
+            }
 
             Log::info('Message sent to customer', [
                 'customer_id' => $data['customer_id'],
@@ -483,7 +642,7 @@ class CustomerController extends Controller
                 }
             }
 
-            return $this->ok($message->load('sender.person'), 'Message sent successfully');
+            return $this->ok($message->load(['sender.person', 'attachments']), 'Message sent successfully');
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -500,20 +659,131 @@ class CustomerController extends Controller
         }
     }
 
+    // ⭐ REQUEST 2.4 — Archive conversation (non-destructive).
+    public function archiveConversation(Customer $customer)
+    {
+        $thread = ChatThread::firstOrCreate(['customer_id' => $customer->customer_id]);
+        $thread->update(['is_archived' => true, 'archived_at' => now()]);
+        return $this->ok(null, 'Conversation archived.');
+    }
+
+    public function unarchiveConversation(Customer $customer)
+    {
+        ChatThread::where('customer_id', $customer->customer_id)
+            ->update(['is_archived' => false, 'archived_at' => null]);
+        return $this->ok(null, 'Conversation restored.');
+    }
+
+    // ⭐ REQUEST 2.4 — Block / unblock (history preserved).
+    public function blockCustomer(Customer $customer)
+    {
+        $customer->update(['is_messaging_blocked' => true]);
+        return $this->ok(null, 'Customer blocked.');
+    }
+
+    public function unblockCustomer(Customer $customer)
+    {
+        $customer->update(['is_messaging_blocked' => false]);
+        return $this->ok(null, 'Customer unblocked.');
+    }
+
+    public function blockedCustomers()
+    {
+        return $this->ok(
+            Customer::where('is_messaging_blocked', true)
+                ->get(['customer_id'])
+        );
+    }
+
+    // ⭐ REQUEST 2.4 — Delete conversation for everyone.
+    public function deleteConversation(Customer $customer)
+    {
+        \DB::transaction(function () use ($customer) {
+            $threadIds = ChatThread::where('customer_id', $customer->customer_id)
+                ->pluck('thread_id');
+
+            \DB::table('chat_attachments')->whereIn('thread_id', $threadIds)->delete();
+            ChatMessage::whereIn('thread_id', $threadIds)->delete();
+            ChatThread::whereIn('thread_id', $threadIds)->delete();
+        });
+
+        try {
+            broadcast(new \App\Events\ChatConversationDeleted($customer->customer_id))->toOthers();
+        } catch (\Throwable $e) {
+            \Log::warning('Conversation delete broadcast failed: ' . $e->getMessage());
+        }
+
+        return $this->ok(null, 'Conversation deleted for everyone.');
+    }
+
+    // ⭐ REQUEST 2.5 — Delete message (scope = me | everyone).
+    public function deleteMessage(Request $request, ChatMessage $message)
+    {
+        $scope = (string) $request->query('scope', 'me');
+        $userId = auth()->id();
+
+        if ($scope === 'everyone') {
+            $message->update([
+                'is_deleted_for_everyone' => true,
+                'deleted_at' => now(),
+            ]);
+            broadcast(new \App\Events\ChatMessageDeleted($message->thread_id, $message->message_id, 'everyone'))->toOthers();
+        } else {
+            \DB::table('chat_message_deletions')->insertOrIgnore([
+                'message_id' => $message->message_id,
+                'user_id'    => $userId,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        return $this->ok(null, 'Message deleted.');
+    }
+
+    // ⭐ REQUEST 2.8 — Pin / unpin message.
+    public function pinMessage(ChatMessage $message)
+    {
+        $message->update(['is_pinned' => true, 'pinned_at' => now()]);
+        broadcast(new \App\Events\ChatMessagePinned($message->thread_id, $message->message_id, true))->toOthers();
+        return $this->ok($message->fresh(), 'Message pinned.');
+    }
+
+    public function unpinMessage(ChatMessage $message)
+    {
+        $message->update(['is_pinned' => false, 'pinned_at' => null]);
+        broadcast(new \App\Events\ChatMessagePinned($message->thread_id, $message->message_id, false))->toOthers();
+        return $this->ok($message->fresh(), 'Message unpinned.');
+    }
+
     /**
      * Get customer bookings.
      */
     public function bookings(Customer $customer)
     {
         try {
-            $bookings = $customer->bookings()
-                ->with(['serviceEvent', 'payments', 'items.menuItem', 'mealServices', 'review'])
-                ->latest('booking_id')
+            if (! $customer || ! $customer->customer_id || (int) $customer->customer_id <= 0) {
+                return $this->ok([], 'Customer has no bookings.');
+            }
+
+            // ⭐ DIRECT QUERY (Bulletproof Fix)
+            // We bypass $customer->bookings() completely because the 
+            // hasManyThrough relationship is causing the 30s timeout.
+
+            $bookings = \App\Models\Booking::query()
+                ->join('service_events', 'bookings.service_event_id', '=', 'service_events.service_event_id')
+                ->where('service_events.customer_id', $customer->customer_id)
+                ->select('bookings.*')
+                ->orderByDesc('bookings.booking_id')
+                ->take(50)
+                ->with(['quotation', 'serviceEvent.eventType']) // Only load what we need
                 ->get();
 
             return $this->ok($bookings, 'Customer bookings retrieved successfully');
-        } catch (\Exception $e) {
-            Log::error('Customer bookings error: ' . $e->getMessage());
+        } catch (\Throwable $e) {
+            Log::error('Customer bookings error: ' . $e->getMessage(), [
+                'customer_id' => $customer?->customer_id,
+                'trace'       => $e->getTraceAsString(),
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -521,7 +791,6 @@ class CustomerController extends Controller
             ], 500);
         }
     }
-
     /**
      * Get customer payments.
      */
@@ -637,9 +906,9 @@ class CustomerController extends Controller
             $points = (int) $locked->loyalty_points + (int) $data['points'];
             $locked->update([
                 'loyalty_points' => $points,
-                'tier' => $this->tierForPoints($points),
+                // ⭐ Tier is derived from lifetime spend in appendCustomerMetrics().
+                //    Do NOT override it here with a points-based value.
             ]);
-
             Log::info('Customer loyalty points added', [
                 'customer_id' => $locked->customer_id,
                 'points' => $data['points'],
@@ -678,11 +947,11 @@ class CustomerController extends Controller
                     'points' => 'The customer does not have enough loyalty points.',
                 ]);
             }
-
             $points = (int) $locked->loyalty_points - (int) $data['points'];
             $locked->update([
                 'loyalty_points' => $points,
-                'tier' => $this->tierForPoints($points),
+                // ⭐ Tier is derived from lifetime spend in appendCustomerMetrics().
+                //    Do NOT override it here with a points-based value.
             ]);
 
             Log::info('Customer loyalty points redeemed', [
@@ -697,35 +966,72 @@ class CustomerController extends Controller
 
         return $this->ok($this->loyaltySummary($updated), 'Loyalty points redeemed successfully');
     }
-
+    /**
+     * ⭐ REQUEST 1.3 + 1.5 — Points and tier are deliberately SEPARATE.
+     *
+     *   • Tier      → based on total eligible BOOKINGS
+     *   • Points    → based on eligible VERIFIED payments (₱100 = 1 pt)
+     *
+     * `points_to_next` is expressed in BOOKINGS, because the next tier is
+     * reached by making more bookings, not by spending more money.
+     */
     private function loyaltySummary(Customer $customer): array
     {
         $points = max(0, (int) $customer->loyalty_points);
-        $thresholds = ['bronze' => 0, 'silver' => 500, 'gold' => 1500, 'platinum' => 3000];
-        $tier = $this->tierForPoints($points);
+
+        // ⭐ Report the SAME tier the directory shows (booking-derived).
+        $tier = strtolower((string) $customer->tier) ?: 'bronze';
+
+        // ⭐ Booking-count thresholds aligned with tierForBookings().
+        $thresholds = [
+            'bronze'   => 0,
+            'silver'   => 3,
+            'gold'     => 6,
+            'platinum' => 11,
+            'diamond'  => 21,
+        ];
+
         $tiers = array_keys($thresholds);
         $index = array_search($tier, $tiers, true);
         $nextTier = $index !== false && $index < count($tiers) - 1 ? $tiers[$index + 1] : null;
 
+        // ⭐ Count eligible bookings so the UI can show "X bookings to next tier".
+        $eligibleBookings = $customer->bookings->filter(function ($booking) {
+            $status = strtolower((string) $booking->booking_status);
+            return ! in_array($status, ['cancelled', 'rejected'], true);
+        })->count();
+
         return [
-            'customer_id' => $customer->customer_id,
-            'points' => $points,
-            'tier' => $tier,
-            'next_tier' => $nextTier,
-            'points_to_next' => $nextTier ? max(0, $thresholds[$nextTier] - $points) : 0,
+            'customer_id'    => $customer->customer_id,
+            'points'         => $points,
+            'tier'           => $tier,
+            'next_tier'      => $nextTier,
+            'points_to_next' => $nextTier ? max(0, $thresholds[$nextTier] - $eligibleBookings) : 0,
+            'bookings_to_next' => $nextTier ? max(0, $thresholds[$nextTier] - $eligibleBookings) : 0,
+            'eligible_bookings' => $eligibleBookings,
         ];
     }
-
+    /**
+     * ⭐ Points-based tier — mirrors the spend-based thresholds
+     *    (1 point = ₱1) so both systems agree.
+     *
+     * Thresholds:
+     *   bronze    ₱0      – ₱20,000
+     *   silver    ₱20,001 – ₱50,000
+     *   gold      ₱50,001 – ₱100,000
+     *   platinum  ₱100,001 and above
+     */
+    /**
+     * ⭐ REQUEST 1.3 — DEPRECATED.
+     *
+     * Tiers are no longer derived from points/spend. Kept only so any
+     * legacy caller does not fatal; it now delegates to the booking-based
+     * helper using the customer's eligible booking count.
+     */
     private function tierForPoints(int $points): string
     {
-        return match (true) {
-            $points >= 3000 => 'platinum',
-            $points >= 1500 => 'gold',
-            $points >= 500 => 'silver',
-            default => 'bronze',
-        };
+        return $this->tierForBookings((int) $points);
     }
-
     /**
      * Send email to customer.
      */

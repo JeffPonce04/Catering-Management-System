@@ -19,9 +19,12 @@ export const orderKeys = {
 // ==================== QUERIES ====================
 
 export const useOrders = (filters = {}) => {
+    // ⚡ Default to 200 so the Orders page shows every approved booking
+    //    (previously the backend default of 20 silently truncated the list).
+    const mergedFilters = { per_page: 200, ...filters };
     return useQuery({
-        queryKey: orderKeys.list(filters),
-        queryFn: () => orderAPI.getOrders(filters),
+        queryKey: orderKeys.list(mergedFilters),
+        queryFn: () => orderAPI.getOrders(mergedFilters),
             select: (response) => {
             const responseData = response.data;
             
@@ -34,7 +37,7 @@ export const useOrders = (filters = {}) => {
                 let total = 0;
                 let currentPage = 1;
                 let lastPage = 1;
-                let perPage = 15;
+                            let perPage = 200;   // ⚡ Match the bookings page cap
                 
                 if (Array.isArray(data)) {
                     ordersArray = data;
@@ -44,16 +47,15 @@ export const useOrders = (filters = {}) => {
                     total = data.total || data.data.length;
                     currentPage = data.current_page || 1;
                     lastPage = data.last_page || 1;
-                    perPage = data.per_page || 15;
+                    perPage = data.per_page || 200;
                 } else if (data && typeof data === 'object') {
                     // Try to find array in the object
                     ordersArray = data.data || data.orders || [];
                     total = data.total || ordersArray.length;
                     currentPage = data.current_page || 1;
                     lastPage = data.last_page || 1;
-                    perPage = data.per_page || 15;
+                    perPage = data.per_page || 200;
                 }
-                
                                return {
                     data: ordersArray,
                     total: total,

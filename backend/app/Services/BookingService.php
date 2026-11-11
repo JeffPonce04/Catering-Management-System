@@ -65,7 +65,8 @@ class BookingService
 
     private function generateInvoiceNumber(): string
     {
-        return $this->generateSequentialNumber('INV-', Invoice::class, 'invoice_number');
+        // ⭐ Changed padding to 9 for 9-digit sequential format
+        return $this->generateSequentialNumber('INV-', Invoice::class, 'invoice_number', 9);
     }
 
     private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
@@ -125,31 +126,44 @@ class BookingService
         }
 
         if ($email) {
-            $existingPerson = Person::with('customer')->where('email', $email)->first();
+            // ⭐ REQUEST #1.2 — Match case-insensitively so "Juan@Gmail.com"
+            //    and "juan@gmail.com" resolve to the same Person.
+            $existingPerson = Person::with('customer')
+                ->whereRaw('LOWER(email) = ?', [strtolower($email)])
+                ->first();
+
             if ($existingPerson) {
+                // ⭐ IMPORTANT: never overwrite the email. Only fill in
+                //    missing contact/address fields so a returning customer
+                //    keeps their established identity.
                 $existingPerson->update([
-                    'first_name' => $firstName ?: $existingPerson->first_name,
-                    'last_name' => $lastName ?: $existingPerson->last_name,
-                    'phone' => $phone ?: $existingPerson->phone,
-                    'address_line_1' => $addressLine1 ?: $existingPerson->address_line_1,
-                    'city' => $city ?: $existingPerson->city,
-                    'province' => $province ?: $existingPerson->province,
-                    'postal_code' => $postalCode ?: $existingPerson->postal_code,
-                    'country' => $country ?: $existingPerson->country,
+                    'first_name'     => $existingPerson->first_name     ?: $firstName,
+                    'last_name'      => $existingPerson->last_name      ?: $lastName,
+                    'phone'          => $existingPerson->phone          ?: $phone,
+                    'address_line_1' => $existingPerson->address_line_1 ?: $addressLine1,
+                    'city'           => $existingPerson->city           ?: $city,
+                    'province'       => $existingPerson->province       ?: $province,
+                    'postal_code'    => $existingPerson->postal_code    ?: $postalCode,
+                    'country'        => $existingPerson->country        ?: $country,
                 ]);
 
                 if ($existingPerson->customer) {
+                    // ⭐ REQUEST #1.2 + #2.1 — Reuse the existing customer,
+                    //    make sure their login account exists, and return.
+                    $this->ensureCustomerLoginAccount($existingPerson->customer, $existingPerson);
                     return $existingPerson->customer;
                 }
 
-                return Customer::create([
-                    'person_id' => $existingPerson->person_id,
+                // Person exists but has no Customer row — link one now.
+                $customer = Customer::create([
+                    'person_id'     => $existingPerson->person_id,
                     'customer_code' => 'CUST-' . str_pad((string) ($existingPerson->person_id ?? 0), 4, '0', STR_PAD_LEFT),
-                    'is_active' => true,
+                    'is_active'     => true,
                 ]);
+                $this->ensureCustomerLoginAccount($customer, $existingPerson);
+                return $customer;
             }
         }
-
         if (!$email) {
             $email = 'guest_' . uniqid() . '@example.local';
         }
@@ -166,16 +180,150 @@ class BookingService
             'country' => $country,
         ]);
 
-        return Customer::create([
+        $customer = Customer::create([
             'person_id' => $person->person_id,
             'customer_code' => 'CUST-' . str_pad((string) ($person->person_id ?? 0), 4, '0', STR_PAD_LEFT),
             'is_active' => true,
         ]);
+
+        // ⭐ REQUEST #2 + #7: Walk-in bookings auto-create a customer login
+        //    so the customer can later access the mobile app with the same
+        //    email. Default password = "password123" (they can change it).
+        $this->ensureCustomerLoginAccount($customer, $person);
+
+        return $customer;
+    }
+
+    /**
+     * ⭐ REQUEST #2 + #7: Ensure a User + customer role exists for the
+     *    given Customer/Person, and link it back onto the customer row.
+     *
+     *    - If the Person already has a User → link it, do nothing else.
+     *    - If not → create the User with default password "password123",
+     *      assign the `customer` role, and link it to the Customer.
+     *
+     *    The customer is NOT notified. This is silent — they only learn
+     *    about the account if they try to log in to the mobile app.
+     */
+    /**
+     * ⭐ REQUEST #1.1 + #1.2 + #2.1
+     *
+     * Ensure a User + `customer` role exists for the given Customer/Person
+     * and link it back onto the customer row.
+     *
+     * Behaviour:
+     *   - If the Customer already has a linked user_id → nothing to do.
+     *   - If a User already exists for this Person → reuse it, do NOT
+     *     create another one, do NOT overwrite its password.
+     *   - Otherwise → create a User with default password "password123",
+     *     assign the `customer` role, link it to the Customer, and mark
+     *     `must_change_password = true` if the column exists.
+     *
+     * This method is idempotent and safe to call multiple times.
+     */
+    private function ensureCustomerLoginAccount(Customer $customer, Person $person): void
+    {
+        // ── 1. Already linked on the customer row? Nothing to do.
+        if (!empty($customer->user_id)) {
+            return;
+        }
+
+        // ── 2. A User already exists for this Person?
+        $existingUser = \App\Models\User::where('person_id', $person->person_id)->first();
+        if ($existingUser) {
+            $customer->update(['user_id' => $existingUser->user_id]);
+
+            Log::info('Walk-in booking reused existing customer user account', [
+                'customer_id' => $customer->customer_id,
+                'person_id'   => $person->person_id,
+                'user_id'     => $existingUser->user_id,
+                'email'       => $person->email,
+            ]);
+            return;
+        }
+
+        // ── 3. No user yet — create one with the default password.
+        try {
+            $user = \App\Models\User::create([
+                'person_id' => $person->person_id,
+                // ⭐ Use the Gmail address as the username so mobile login
+                //    works with the same credentials.
+                'username'  => $person->email,
+                'password'  => \Illuminate\Support\Facades\Hash::make('password123'),
+                'is_active' => true,
+            ]);
+
+            // ── 4. Assign the `customer` role.
+            $role = \App\Models\Role::where('slug', 'customer')->first();
+            if ($role) {
+                $user->roles()->sync([$role->role_id]);
+            }
+
+            // ── 5. If the users table supports a "must change password"
+            //       flag, set it so the customer is nudged on first login.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('users', 'must_change_password')) {
+                try {
+                    $user->forceFill(['must_change_password' => true])->save();
+                } catch (\Throwable $e) {
+                    Log::warning('Could not set must_change_password flag: ' . $e->getMessage());
+                }
+            }
+
+            // ── 6. Link the user to the customer row.
+            $customer->update(['user_id' => $user->user_id]);
+
+            Log::info('Auto-created customer login for walk-in booking', [
+                'customer_id' => $customer->customer_id,
+                'person_id'   => $person->person_id,
+                'user_id'     => $user->user_id,
+                'email'       => $person->email,
+            ]);
+        } catch (\Throwable $e) {
+            // Non-fatal: the booking itself must still succeed.
+            Log::warning('ensureCustomerLoginAccount failed: ' . $e->getMessage(), [
+                'customer_id' => $customer->customer_id,
+                'person_id'   => $person->person_id,
+                'email'       => $person->email,
+            ]);
+        }
     }
 
     // ============================================================
     // SERVICE EVENT CREATION
     // ============================================================
+
+    /**
+     * ⭐ Normalize any "delivery" / "deliver" / "pick up" / "pickup" spelling.
+     *    Buffet always delivers; Packed/Tray follow the customer's choice.
+     */
+    private function normalizeDeliveryMethod(string $serviceType, $value): string
+    {
+        // ⭐ Buffet always delivers (setup at the venue).
+        $serviceType = strtolower(trim($serviceType));
+        if ($serviceType === 'buffet') {
+            return 'delivery';
+        }
+
+        // ⭐ Packed/Tray respect the customer's choice.
+        $key = strtolower(preg_replace('/[\s_\-]+/', '', trim((string) $value)));
+
+        if (in_array($key, ['delivery', 'deliver', 'delivered'], true)) {
+            return 'delivery';
+        }
+
+        if (in_array($key, ['pickup', 'pickedup', 'pick', 'pick-up', 'pick_up'], true)) {
+            return 'pickup';
+        }
+
+        // If the value is somehow empty or invalid, check the payload for packed_tray_mode
+        // before defaulting to pickup.
+        $fallbackKey = strtolower(preg_replace('/[\s_\-]+/', '', trim((string) request()->input('packed_tray_mode'))));
+        if (in_array($fallbackKey, ['delivery', 'deliver', 'delivered'], true)) {
+            return 'delivery';
+        }
+
+        return 'pickup';
+    }
 
     private function createOrUpdateServiceEvent(?Customer $customer, array $data): ServiceEvent
     {
@@ -194,6 +342,33 @@ class BookingService
             $eventEndDate = $eventEndDate->format('Y-m-d');
         }
 
+        // ⭐ KEY #1 — Multi-day bookings without an explicit end date must
+        // derive one from `days` / `total_days` / `multiDayDays`. Otherwise
+        // the event collapses back to a single day on the next save.
+        $scope = ($data['booking_scope'] ?? 'regular') === 'multi_day' ? 'multi_day' : 'regular';
+        if ($scope === 'multi_day' && $eventEndDate === $eventDate) {
+            $requestedDays = (int) (
+                $data['days']
+                ?? $data['total_days']
+                ?? $data['multi_day_days']
+                ?? 0
+            );
+            if ($requestedDays > 1) {
+                $eventEndDate = \Carbon\Carbon::parse($eventDate)
+                    ->addDays($requestedDays - 1)
+                    ->format('Y-m-d');
+            }
+        }
+        // ⭐ SERVICE TYPE RESTRICTION: Packed and Tray are ALWAYS regular
+        //    (single-day) events. Multi-day is only allowed for Buffet.
+        $requestedServiceType = strtolower(trim((string) ($data['service_type'] ?? 'buffet')));
+        $isPackedOrTray = in_array($requestedServiceType, ['packed', 'tray'], true);
+
+        if ($isPackedOrTray) {
+            $scope = 'regular';
+            $eventEndDate = $eventDate; // force single day
+        }
+
         $payload = [
             'customer_id' => $customer->customer_id,
             'event_type_id' => $data['event_type_id'] ?? null,
@@ -203,12 +378,16 @@ class BookingService
             'event_time' => $data['event_time'],
             'venue' => $data['venue'],
             'guests_count' => $data['guests_count'],
-            'service_type' => $data['service_type'] ?? 'buffet',
+            'service_type' => $requestedServiceType,
             'menu_selection_type' => $data['menu_selection_type'] ?? 'custom',
             'has_waiters' => $data['has_waiters'] ?? false,
-            'delivery_method' => ($data['service_type'] ?? 'buffet') === 'buffet'
-                ? 'delivery'
-                : ($data['delivery_method'] ?? 'pickup'),
+            // ⭐ Buffet always delivers (setup at venue). Packed/Tray respect
+            //    the customer's actual delivery arrangement.
+            //    The normalized value is what `packed_tray_mode` will mirror.
+            'delivery_method' => $this->normalizeDeliveryMethod(
+                $requestedServiceType,
+                $data['delivery_method'] ?? $data['packed_tray_mode'] ?? null
+            ),
             'special_requests' => $data['special_requests'] ?? null,
             'delivery_address' => $data['delivery_address'] ?? null,
             'delivery_contact_person' => $data['delivery_contact_person'] ?? null,
@@ -218,7 +397,15 @@ class BookingService
         ];
 
         if (Schema::hasColumn('service_events', 'booking_scope')) {
-            $payload['booking_scope'] = ($data['booking_scope'] ?? 'regular') === 'multi_day' ? 'multi_day' : 'regular';
+            $payload['booking_scope'] = $scope;
+        }
+
+        // ⭐ Packed/Tray completion markers (safe to add if columns exist)
+        if (Schema::hasColumn('service_events', 'delivery_completed_at')) {
+            $payload['delivery_completed_at'] = null;
+        }
+        if (Schema::hasColumn('service_events', 'pickup_completed_at')) {
+            $payload['pickup_completed_at'] = null;
         }
 
         return ServiceEvent::create($payload);
@@ -446,10 +633,13 @@ class BookingService
             if (isset($seenMealSlots[$slotKey])) {
                 throw new \InvalidArgumentException("{$mealSequence[$normalizedType]['label']} may only be added once for Day {$dayNumber}.");
             }
+            // ⭐ KEY #1 — Auto-grow the event window rather than throwing,
+            //    because the operator may add a day-4 meal after the
+            //    create form has already committed the booking.
             if ($dayNumber > $maximumDay) {
-                throw new \InvalidArgumentException("Day {$dayNumber} is outside the configured {$maximumDay}-day event duration.");
+                $maximumDay = $dayNumber;
+                $eventEnd = $eventStart->copy()->addDays($maximumDay - 1);
             }
-
             $seenMealSlots[$slotKey] = true;
             $meal['day_number'] = $dayNumber;
             $meal['meal_type'] = $mealSequence[$normalizedType]['label'];
@@ -517,6 +707,9 @@ class BookingService
                 ? 'package'
                 : 'custom';
 
+            // ⭐ BUG FIX: meal_services has NO menu_name/menu_description columns.
+            //    Package name and description are derived at read time from the
+            //    package relation (packages.name / packages.description).
             $created = MealService::create([
                 'booking_id' => $booking->booking_id,
                 'event_day_id' => $createdEventDays[$dayNumber]->event_day_id ?? null,
@@ -543,6 +736,16 @@ class BookingService
             $createdMealServices[] = $created;
         }
 
+        // ⭐ KEY #1 — Keep service_events.event_end_date in sync with the
+        // largest day_number actually persisted.
+        if (! empty($eventDaysData)) {
+            $maxDayNumber = collect($eventDaysData)->max('day_number') ?: 1;
+            $derivedEndDate = $eventStart->copy()->addDays($maxDayNumber - 1)->format('Y-m-d');
+            $booking->serviceEvent?->update([
+                'event_end_date' => $derivedEndDate,
+                'booking_scope' => $maxDayNumber > 1 ? 'multi_day' : 'regular',
+            ]);
+        }
         // ⭐ Now build filters / custom items / booking items with real IDs
         $finalFiltersData = [];
         $finalCustomItemsData = [];
@@ -762,7 +965,9 @@ class BookingService
                 }
                 foreach (
                     [
-                        'customer_email' => 'email',
+                        // ⭐ REQUEST #3: `customer_email` is intentionally
+                        //    OMITTED here — it is the identity key and
+                        //    cannot be edited via the admin update path.
                         'customer_phone' => 'phone',
                         'customer_address' => 'address_line_1',
                         'address_line_1' => 'address_line_1',
@@ -779,12 +984,35 @@ class BookingService
 
             if ($booking->serviceEvent) {
                 $eventDate = $data['event_date'] ?? $booking->serviceEvent->event_date;
-                $eventEndDate = $data['event_end_date'] ?? $eventDate;
-                $updatedServiceType = $data['service_type'] ?? $booking->serviceEvent->service_type;
-                $updatedDeliveryMethod = $updatedServiceType === 'buffet'
-                    ? 'delivery'
-                    : ($data['delivery_method'] ?? $booking->serviceEvent->delivery_method);
 
+                // ⭐ SERVICE TYPE RESTRICTION (admin update path): switching
+                //    to Packed/Tray forces a regular single-day event.
+                $updatedServiceType = strtolower(trim((string) (
+                    $data['service_type'] ?? $booking->serviceEvent->service_type
+                )));
+                $isPackedOrTray = in_array($updatedServiceType, ['packed', 'tray'], true);
+
+                $requestedScope = ($data['booking_scope'] ?? $booking->serviceEvent->booking_scope ?? 'regular') === 'multi_day'
+                    ? 'multi_day'
+                    : 'regular';
+                if ($isPackedOrTray) {
+                    $requestedScope = 'regular';
+                }
+
+                $eventEndDate = $data['event_end_date'] ?? $eventDate;
+                if ($isPackedOrTray || $requestedScope === 'regular') {
+                    $eventEndDate = $eventDate;
+                }
+                // ⭐ FIX: If the payload explicitly contains 'delivery_method', use it. 
+                // Only fallback to the old value if the payload didn't include it at all.
+                $submittedDeliveryMethod = $data['delivery_method'] ?? null;
+
+                $updatedDeliveryMethod = $this->normalizeDeliveryMethod(
+                    $updatedServiceType,
+                    $submittedDeliveryMethod !== null
+                        ? $submittedDeliveryMethod
+                        : ($data['packed_tray_mode'] ?? $booking->serviceEvent->delivery_method)
+                );
                 $booking->serviceEvent->update([
                     'event_type_id' => $data['event_type_id'] ?? $booking->serviceEvent->event_type_id,
                     'event_date' => $eventDate,
@@ -798,9 +1026,7 @@ class BookingService
                     'special_requests' => $data['special_requests'] ?? $booking->serviceEvent->special_requests,
                     'delivery_address' => $data['delivery_address'] ?? $booking->serviceEvent->delivery_address,
                     'delivery_fee' => (float) ($data['delivery_fee'] ?? $booking->serviceEvent->delivery_fee ?? 0),
-                    'booking_scope' => ($data['booking_scope'] ?? $booking->serviceEvent->booking_scope ?? 'regular') === 'multi_day'
-                        ? 'multi_day'
-                        : 'regular',
+                    'booking_scope' => $requestedScope,
                 ]);
             }
 
@@ -1130,6 +1356,9 @@ class BookingService
                 'quotation_id' => $quotation->quotation_id,
                 'required_deposit' => $requiredDeposit,
                 'booking_status' => 'pending_approval',
+                // ⭐ Persist where the booking came from. Admin-created
+                //    bookings are walk-in by default.
+                'booking_source' => $this->resolveBookingSource($data),
                 'requested_date' => $data['event_date'] ?? null,
                 'requested_time' => $data['event_time'] ?? null,
             ]);
@@ -1171,6 +1400,29 @@ class BookingService
         });
     }
 
+
+    /**
+     * ⭐ Resolve the booking source from the request, defaulting to walk_in.
+     *    Valid values: walk_in, mobile, web, phone.
+     */
+    private function resolveBookingSource(array $data): string
+    {
+        $raw = strtolower(trim((string) ($data['booking_source'] ?? '')));
+
+        // Normalize common spellings
+        $raw = str_replace([' ', '-'], '_', $raw);
+
+        if ($raw === 'walkin' || $raw === 'walk') {
+            $raw = 'walk_in';
+        }
+        if ($raw === 'app') {
+            $raw = 'mobile';
+        }
+
+        return in_array($raw, ['walk_in', 'mobile', 'web', 'phone'], true)
+            ? $raw
+            : 'walk_in';
+    }
     // ============================================================
     // APPROVE — with idempotency guard
     // ============================================================
@@ -1190,8 +1442,19 @@ class BookingService
                     'order',
                 ]);
 
+                // ⭐ An Ongoing / Completed booking must never be re-approved (would reset its status).
+                $currentStatus = strtolower((string) $booking->booking_status);
+                if (in_array($currentStatus, ['ongoing', 'completed'], true)) {
+                    return $booking->fresh([
+                        'serviceEvent.customer.person',
+                        'order',
+                        'quotation',
+                        'invoice',
+                    ]);
+                }
+
                 // ⭐ FIX #11: Idempotency guard
-                $alreadyApproved = strtolower((string) $booking->booking_status) === 'confirmed'
+                $alreadyApproved = $currentStatus === 'confirmed'
                     && $booking->order;
 
                 if ($alreadyApproved) {
@@ -1392,7 +1655,11 @@ class BookingService
 
     public function createKitchenPreparation(Booking $booking, Order $order): void
     {
-        $kitchenTasks = $this->generateKitchenTasks($booking);
+        $kitchenTasks = $this->preserveKitchenTaskState(
+            $booking,
+            $order,
+            $this->generateKitchenTasks($booking)
+        );
 
         Setting::updateOrCreate(
             ['group' => 'kitchen_tasks', 'key' => 'order_' . $order->order_id],
@@ -1405,10 +1672,93 @@ class BookingService
         ]);
     }
 
+    /**
+     * ⭐ Carry DONE state (and staff edits) over when tasks are regenerated.
+     *    A deduction record in settings is the permanent source of truth.
+     */
+    private function preserveKitchenTaskState(Booking $booking, Order $order, array $tasks): array
+    {
+        $existing = [];
+        $setting  = Setting::where('group', 'kitchen_tasks')->where('key', 'order_' . $order->order_id)->first();
+        if ($setting) {
+            foreach ($this->decodeSettingValue($setting->value) as $old) {
+                if (is_array($old) && ! empty($old['id'])) {
+                    $existing[(string) $old['id']] = $old;
+                }
+            }
+        }
+
+        $prefixLen = strlen((string) $booking->booking_id) + 1;
+        $deducted  = array_flip(
+            Setting::where('group', 'kitchen_task_deductions')
+                ->where('key', 'like', $booking->booking_id . ':%')
+                ->pluck('key')
+                ->map(fn($key) => substr((string) $key, $prefixLen))
+                ->all()
+        );
+
+        foreach ($tasks as &$task) {
+            if (! empty($task['is_header'])) {
+                continue;
+            }
+            $id = (string) ($task['id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+
+            if (isset($deducted[$id])) {
+                $task['is_done'] = true;
+                $task['status']  = 'completed';
+            }
+
+            if (isset($existing[$id])) {
+                $old = $existing[$id];
+                foreach (['completed_at', 'completed_by', 'deduction_id'] as $key) {
+                    if (isset($old[$key])) {
+                        $task[$key] = $old[$key];
+                    }
+                }
+                if (! empty($old['is_done'])) {
+                    $task['is_done'] = true;
+                    $task['status']  = 'completed';
+                }
+                if (! empty($old['assigned_to'])) {
+                    $task['assigned_to'] = $old['assigned_to'];
+                }
+            }
+        }
+        unset($task);
+
+        return $tasks;
+    }
+
+    /**
+     * ⭐ Delivery leaves 30 min before serving; cooking starts 60 min before that.
+     */
+    private function suggestKitchenTimes(?string $servingTime, int $prepMinutes = 60, int $leadMinutes = 30): array
+    {
+        if (! $servingTime) {
+            return ['start' => null, 'out' => null];
+        }
+
+        try {
+            $serve = Carbon::parse($servingTime);
+            $out   = $serve->copy()->subMinutes($leadMinutes);
+            $start = $out->copy()->subMinutes($prepMinutes);
+
+            return ['start' => $start->format('g:i A'), 'out' => $out->format('g:i A')];
+        } catch (\Throwable $e) {
+            return ['start' => null, 'out' => null];
+        }
+    }
     private function generateKitchenTasks(Booking $booking): array
     {
         $tasks = [];
-        $booking->loadMissing(['mealServices.menuItem', 'mealServices.package', 'items.menuItem']);
+        $booking->loadMissing([
+            'mealServices.menuItem',
+            'mealServices.package.menuItems',
+            'items.menuItem',
+        ]);
 
         if ($booking->mealServices && $booking->mealServices->count() > 0) {
             $tasks[] = [
@@ -1423,26 +1773,62 @@ class BookingService
             ];
 
             foreach ($booking->mealServices as $meal) {
-                $menuName = $meal->menu_name ?: $meal->menuItem?->name ?: 'Menu';
-                $tasks[] = [
-                    'id' => 'meal-' . $meal->meal_service_id,
+                $meta = [
                     'meal_service_id' => $meal->meal_service_id,
+                    'meal_type'        => $meal->meal_type,
+                    'quantity'         => $meal->pax,
+                    'servings'         => $meal->pax,
+                    'day_number'       => (int) $meal->day_number,
+                    'service_date'     => $meal->service_date?->toDateString(),
+                    'serving_time'     => $meal->serving_time,
+                    'start_time'       => $meal->preparation_time ?: ($this->suggestKitchenTimes($meal->serving_time)['start'] ?? null),
+                    'end_time'         => $meal->serving_time,
+                    'assigned_to'      => $meal->assigned_staff ?: 'Kitchen Team',
+                    'status'           => $meal->preparation_status === 'completed' ? 'completed' : 'pending',
+                    'is_done'          => $meal->preparation_status === 'completed',
+                    'out_for_delivery' => $meal->dispatch_time ?: ($this->suggestKitchenTimes($meal->serving_time)['out'] ?? null),
+                    'notes'            => $meal->notes ?? '',
+                ];
+
+                // ⭐ FIX #6 — PACKAGE MEALS: emit ONE task per package
+                //    menu item. Each item is independently checkable,
+                //    reviewable, and reversible.
+                if (! empty($meal->package_id)) {
+                    // Eager load the package if it wasn't loaded
+                    $package = $meal->package ?? \App\Models\Package::with('menuItems')->find($meal->package_id);
+                    $packageItems = $package ? $package->menuItems : collect();
+
+                    if ($packageItems->isNotEmpty()) {
+                        foreach ($packageItems as $menuItem) {
+                            $tasks[] = array_merge($meta, [
+                                'id'              => 'meal-' . $meal->meal_service_id . '-item-' . $menuItem->menu_item_id,
+                                'is_header'       => false,
+                                'task'            => $menuItem->name ?: 'Menu item',
+                                'menu_item_id'    => $menuItem->menu_item_id,
+                                'package_id'      => $meal->package_id,
+                                'package_name'    => $package->name ?? 'Package',
+                                'quantity'        => (int) ($menuItem->pivot->quantity_per_pax ?? 1) * (int) $meal->pax,
+                                'servings'        => $meal->pax,
+                            ]);
+                        }
+                        continue;
+                    }
+                }
+
+                // ⭐ FIX #6 — SINGLE MENU ITEM meal. Never use "Meal"
+                //    as a fallback label — use the actual menu item name,
+                //    then the meal type label, then a stable placeholder.
+                $menuName = $meal->menuItem?->name
+                    ?: ($meal->package?->name)
+                    ?: (string) ($meal->meal_type ?: 'Menu item');
+
+                $tasks[] = array_merge($meta, [
+                    'id' => 'meal-' . $meal->meal_service_id,
                     'is_header' => false,
                     'task' => $menuName,
-                    'quantity' => $meal->pax,
-                    'servings' => $meal->pax,
-                    'day_number' => (int) $meal->day_number,
-                    'service_date' => $meal->service_date?->toDateString(),
-                    'meal_type' => $meal->meal_type,
-                    'serving_time' => $meal->serving_time,
-                    'start_time' => $meal->preparation_time,
-                    'end_time' => $meal->serving_time,
-                    'assigned_to' => $meal->assigned_staff ?: 'Kitchen Team',
-                    'status' => $meal->preparation_status ?: 'pending',
-                    'is_done' => $meal->preparation_status === 'completed',
-                    'out_for_delivery' => $meal->dispatch_time,
-                    'notes' => $meal->notes ?? '',
-                ];
+                    'menu_item_id' => $meal->menu_item_id,
+                    'package_id' => $meal->package_id,
+                ]);
             }
             return $tasks;
         }
@@ -1482,6 +1868,7 @@ class BookingService
                 'id' => 'task-' . uniqid(),
                 'is_header' => false,
                 'task' => $item->custom_item_name ?? $item->menuItem?->name ?? 'Menu Item',
+                'menu_item_id' => $item->menu_item_id,   // ⭐ NEW
                 'quantity' => $item->quantity,
                 'servings' => $item->quantity * ($booking->serviceEvent?->guests_count ?? 1),
                 'start_time' => $currentTime->format('h:i A'),
@@ -1717,7 +2104,6 @@ class BookingService
         $cutoffDays = $this->policyService->cancellationCutoffDays();
 
         if (!$eventDate && $cutoffDays > 0) {
-            // ⭐ FIX #8: Log warning when booking has no event date
             Log::warning('Cancelling booking with no event date — cutoff check skipped', [
                 'booking_id' => $booking->booking_id,
                 'booking_no' => $booking->booking_no,
@@ -1734,11 +2120,26 @@ class BookingService
                 false
             );
 
-            if ($daysUntilEvent < $cutoffDays) {
+            // ⭐ REQUEST #4 — Once the event date has arrived (daysUntilEvent <= 0),
+            //    the cutoff rule no longer applies. This is the "auto-remove"
+            //    path: the booking was never approved and the event is today
+            //    or past — auto-cancellation MUST be allowed so the operator
+            //    can clean up stale pending rows.
+            $eventHasArrived = $daysUntilEvent <= 0;
+
+            if ($daysUntilEvent < $cutoffDays && !$eventHasArrived) {
                 throw ValidationException::withMessages([
                     'cancellation' => [
                         "Cancellation is no longer available because the booking has reached the cancellation cutoff period."
                     ],
+                ]);
+            }
+
+            if ($eventHasArrived) {
+                Log::info('Cancellation allowed past cutoff — event date has arrived', [
+                    'booking_id'       => $booking->booking_id,
+                    'booking_no'       => $booking->booking_no,
+                    'days_until_event' => $daysUntilEvent,
                 ]);
             }
         }

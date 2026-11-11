@@ -31,13 +31,14 @@
     },
     "extra": {
       "eas": {
-        "projectId": "your-project-id"
+        "projectId": "01845cae-0a5f-4865-bce6-961f3e928b27"
       }
     },
     "plugins": [
       "@react-native-community/datetimepicker",
       "expo-status-bar",
       "expo-web-browser"
-    ]
+    ],
+    "owner": "jefferson_ponce04"
   }
 }

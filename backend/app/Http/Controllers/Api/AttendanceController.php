@@ -106,6 +106,17 @@ class AttendanceController extends Controller
         return $this->index($request);
     }
 
+    /**
+     * ⭐ Operational listing — always includes history records so the
+     *    web attendance page never hides freshly-created mobile records.
+     */
+    public function operationalIndex(Request $request)
+    {
+        $request->merge(['include_history' => true]);
+
+        return $this->index($request);
+    }
+
     public function needsApproval(Request $request)
     {
         $request->merge(['approval_status' => 'pending']);
@@ -180,14 +191,135 @@ class AttendanceController extends Controller
         ]);
     }
 
-    public function timeIn(AttendanceRequest $request, AttendanceService $service)
+    public function timeIn(AttendanceRequest $request, AttendanceService $service, \App\Services\FaceRecognitionService $faceRecognition)
     {
-        return $this->ok($service->timeIn($this->resolveAttendanceEmployee($request), $request->validated()), 'Timed in');
+        $employee = $this->resolveAttendanceEmployee($request);
+        $data = $request->validated();
+        $verification = $this->verifyAttendanceFace($employee, $data, $faceRecognition);
+        if ($verification instanceof JsonResponse) {
+            return $verification;
+        }
+        $data = array_merge($data, $verification);
+
+        return $this->ok($service->timeIn($employee, $data), 'Timed in');
     }
 
-    public function timeOut(AttendanceRequest $request, AttendanceService $service)
+    public function timeOut(AttendanceRequest $request, AttendanceService $service, \App\Services\FaceRecognitionService $faceRecognition)
     {
-        return $this->ok($service->timeOut($this->resolveAttendanceEmployee($request), $request->validated()), 'Timed out');
+        $employee = $this->resolveAttendanceEmployee($request);
+        $data = $request->validated();
+        $verification = $this->verifyAttendanceFace($employee, $data, $faceRecognition);
+        if ($verification instanceof JsonResponse) {
+            return $verification;
+        }
+        $data = array_merge($data, $verification);
+
+        return $this->ok($service->timeOut($employee, $data), 'Timed out');
+    }
+
+    /**
+     * Admin/HR biometric enrollment. Images are kept on Laravel's private local
+     * disk; explicit consent is required and a generic profile image is not used.
+     */
+    public function registerFaceProfile(Request $request, Employee $employee): JsonResponse
+    {
+        $validated = $request->validate([
+            'image' => ['required', 'string', 'max:12000000'],
+            'consent' => ['required', 'accepted'],
+        ]);
+
+        $encoded = preg_replace('/^data:image\\/(?:jpeg|jpg|png|webp);base64,/i', '', $validated['image']);
+        $binary = base64_decode($encoded, true);
+        if ($binary === false || strlen($binary) < 1000 || strlen($binary) > 8 * 1024 * 1024) {
+            return response()->json(['success' => false, 'message' => 'Invalid face image. Please capture a clear JPEG, PNG, or WebP image.'], 422);
+        }
+
+        $fileInfo = new \finfo(FILEINFO_MIME_TYPE);
+        $mime = $fileInfo->buffer($binary) ?: '';
+        $extensions = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
+        if (! isset($extensions[$mime])) {
+            return response()->json(['success' => false, 'message' => 'Only JPEG, PNG, and WebP face images are accepted.'], 422);
+        }
+
+        $relativePath = 'employee-faces/' . $employee->employee_id . '/face-' . now()->format('YmdHis') . '.' . $extensions[$mime];
+        \Illuminate\Support\Facades\Storage::disk('local')->put($relativePath, $binary);
+
+        if ($employee->face_photo && ! str_starts_with($employee->face_photo, 'http')) {
+            \Illuminate\Support\Facades\Storage::disk('local')->delete($employee->face_photo);
+        }
+
+        $employee->forceFill([
+            'face_photo' => $relativePath,
+            'face_consent_at' => now(),
+        ])->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Employee face profile enrolled and stored privately.',
+            'data' => [
+                'employee_id' => $employee->employee_id,
+                'face_enrolled' => true,
+                'enrolled_at' => $employee->face_consent_at,
+            ],
+        ]);
+    }
+
+    private function verifyAttendanceFace(Employee $employee, array $data, \App\Services\FaceRecognitionService $faceRecognition): array|JsonResponse
+    {
+        $enforced = (bool) config('services.face_recognition.enforced', false);
+
+        // Preserve the existing HR/admin manual-entry workflow. Only a signed-in
+        // privileged actor may use this server-labelled exception; ordinary
+        // employee/mobile punches still require a camera capture when enforced.
+        $actor = request()->user();
+        $isPrivilegedManualEntry = ($data['device_info'] ?? null) === 'Admin manual entry'
+            && $actor
+            && $actor->hasAnyRole(['admin', 'administrator', 'owner', 'super-admin', 'super_admin', 'superadmin', 'staff-manager', 'staff_manager']);
+
+        if ($isPrivilegedManualEntry) {
+            return [
+                'face_verification_status' => 'manual_admin_entry',
+                'face_confidence' => null,
+            ];
+        }
+
+        if (! $enforced) {
+            return [
+                'face_verification_status' => 'not_enforced',
+                'face_confidence' => null,
+            ];
+        }
+
+        if (empty($data['selfie'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A live camera capture is required for face verification.',
+                'error_code' => 'FACE_CAPTURE_REQUIRED',
+            ], 422);
+        }
+
+        if (! $faceRecognition->hasRegisteredFace($employee)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This employee has no enrolled face profile. Please contact HR.',
+                'error_code' => 'FACE_PROFILE_MISSING',
+            ], 422);
+        }
+
+        $result = $faceRecognition->verify($employee, $data['selfie']);
+        if (! ($result['verified'] ?? false)) {
+            $unavailable = str_contains(strtolower((string) ($result['message'] ?? '')), 'unavailable');
+            return response()->json([
+                'success' => false,
+                'message' => $result['message'] ?? 'Face verification failed. Please try again.',
+                'error_code' => $unavailable ? 'FACE_SERVICE_UNAVAILABLE' : 'FACE_NOT_MATCHED',
+            ], $unavailable ? 503 : 422);
+        }
+
+        return [
+            'face_verification_status' => 'verified',
+            'face_confidence' => (float) ($result['confidence'] ?? 0),
+        ];
     }
 
     /**
@@ -229,7 +361,9 @@ class AttendanceController extends Controller
 
         return $this->ok(
             $this->attendanceRecordPayload($attendance->fresh([
-                'employee.person', 'employee.department', 'schedule',
+                'employee.person',
+                'employee.department',
+                'schedule',
             ])),
             $flag ? "Attendance flagged as {$flag}" : 'Attendance flag cleared'
         );
@@ -265,9 +399,28 @@ class AttendanceController extends Controller
             ? Carbon::parse($effectiveTimeIn)->toDateString()
             : $attendance->attendance_date?->toDateString();
 
+        // ⭐ FIX: An attendance row belongs to ONE cutoff. Refuse any edit that
+        //    would move it into a different cutoff. This is what keeps a
+        //    September 1-15 row from silently drifting into August 16-31 or
+        //    September 16-30.
+        if ($newDate && $attendance->attendance_date) {
+            [$currentStart, $currentEnd] = $this->cutoffForDate(
+                $attendance->attendance_date->toDateString()
+            );
+            $inCurrentCutoff = $newDate >= $currentStart && $newDate <= $currentEnd;
+
+            if (! $inCurrentCutoff) {
+                throw ValidationException::withMessages([
+                    'time_in' => "Cannot move this record out of its cutoff ({$currentStart} to {$currentEnd}). "
+                        . "To change the cutoff, archive this row and create a new one.",
+                ]);
+            }
+        }
+
         if ($newDate) {
             $updates['attendance_date'] = $newDate;
         }
+
 
         if (array_key_exists('approval_status', $data)) {
             $status = $this->normalizeApprovalStatus($data['approval_status']);
@@ -307,7 +460,7 @@ class AttendanceController extends Controller
                     $updates['approval_notes'] ?? null,
                     $attendance->approval_notes,
                     $collision->approval_notes,
-                ], fn ($v) => is_string($v) && trim($v) !== ''));
+                ], fn($v) => is_string($v) && trim($v) !== ''));
                 $mergedNotes = $notesCandidates ? end($notesCandidates) : null;
 
                 $statusRank = ['approved' => 3, 'pending' => 2, 'rejected' => 1];
@@ -318,7 +471,7 @@ class AttendanceController extends Controller
                 ];
                 $bestStatus = collect($statuses)
                     ->filter()
-                    ->sortByDesc(fn ($s) => $statusRank[$s] ?? 0)
+                    ->sortByDesc(fn($s) => $statusRank[$s] ?? 0)
                     ->first() ?: 'pending';
 
                 $overtimeRequest = $attendance->overtimeRequest ?? $collision->overtimeRequest;
@@ -406,20 +559,20 @@ class AttendanceController extends Controller
 
     private function earliestTime(array $times)
     {
-        $valid = array_values(array_filter($times, fn ($t) => $t !== null));
+        $valid = array_values(array_filter($times, fn($t) => $t !== null));
         if (empty($valid)) {
             return null;
         }
-        return collect($valid)->map(fn ($t) => Carbon::parse($t))->sort()->first();
+        return collect($valid)->map(fn($t) => Carbon::parse($t))->sort()->first();
     }
 
     private function latestTime(array $times)
     {
-        $valid = array_values(array_filter($times, fn ($t) => $t !== null));
+        $valid = array_values(array_filter($times, fn($t) => $t !== null));
         if (empty($valid)) {
             return null;
         }
-        return collect($valid)->map(fn ($t) => Carbon::parse($t))->sortDesc()->first();
+        return collect($valid)->map(fn($t) => Carbon::parse($t))->sortDesc()->first();
     }
 
     public function updateStatus(Request $request, AttendanceLog $attendance)
@@ -813,7 +966,13 @@ class AttendanceController extends Controller
             ->orderBy('employee_id')
             ->get()
             ->map(function (Employee $employee) use ($start, $end, $attendanceService) {
-                $attendanceService->materializeScheduledAbsences($employee->employee_id, $start, $end);
+                // ⭐ FIX: Do NOT materialize AWOL rows here. This endpoint is a
+                //    read-only overview for the Process Payroll modal. Creating
+                //    rows during a GET mutates payroll_ready_at state and makes
+                //    the modal claim nothing was saved. Materialization already
+                //    happens in employeeRecords() and generateSummary() where
+                //    the user explicitly asked for it.
+                // $attendanceService->materializeScheduledAbsences($employee->employee_id, $start, $end);
 
                 $records = $this->attendanceHistoryRowsForEmployee($employee->employee_id, $start, $end)
                     ->map(function (AttendanceLog $attendance) use ($attendanceService) {
@@ -849,11 +1008,14 @@ class AttendanceController extends Controller
                         && ($row['overtime_status'] ?? null) !== 'pending'
                 );
 
-                $allSaved = $records->isNotEmpty() && $records->every(
-                    fn(array $row) => (bool) ($row['payroll_ready'] ?? false)
-                );
-
-                $unsavedCount = $records->filter(fn(array $row) => ! ($row['payroll_ready'] ?? false))->count();
+                // ⭐ FIX: "Saved to payroll" must be driven ONLY by payroll_ready_at,
+                //    because that is what finalizeAttendanceForPayroll() sets.
+                //    all_approved / attendance_state / overtime_status are display
+                //    concerns and MUST NOT gate whether the employee appears in the
+                //    Process Payroll modal.
+                $savedCount = $records->filter(fn(array $row) => (bool) ($row['payroll_ready'] ?? false))->count();
+                $unsavedCount = $records->count() - $savedCount;
+                $allSaved = $records->isNotEmpty() && $unsavedCount === 0;
 
                 return array_merge($summary, [
                     'employee_id' => $employee->employee_id,
@@ -861,11 +1023,15 @@ class AttendanceController extends Controller
                     'employee_name' => $employee->full_name ?: 'N/A',
                     'position' => $employee->position?->title ?? $employee->position?->name ?? 'N/A',
                     'department' => $employee->department?->name ?? 'N/A',
-                    'department_id' => $employee->department_id,
                     'generated' => false,
                     'all_approved' => $allApproved,
                     'saved_to_payroll' => $allSaved,
                     'unsaved_count' => $unsavedCount,
+                    'saved_count' => $savedCount,
+                    // ⭐ Explicit period echo so the frontend can verify the cutoff
+                    //   it requested is the cutoff it received.
+                    'period_start' => $start,
+                    'period_end' => $end,
                     'payroll_status' => $payroll?->status,
                     'payroll_archived' => (bool) $payroll?->trashed(),
                     'payroll_id' => $payroll?->payroll_id,
@@ -888,6 +1054,8 @@ class AttendanceController extends Controller
         return $this->ok([
             'period_start' => $start,
             'period_end' => $end,
+            'cutoff_start' => $start,
+            'cutoff_end' => $end,
             'can_generate' => $this->canGenerateForPeriod($start, $end),
             'employees' => $employees,
         ]);
@@ -1022,8 +1190,12 @@ class AttendanceController extends Controller
         [$start, $end] = $this->attendancePeriod($request);
         $request->validate(['notes' => 'nullable|string']);
 
+        // ⭐ FIX: Do NOT restrict to rows where payroll_ready_at IS NULL.
+        //    If an employee already has some (or all) rows saved for this
+        //    cutoff, they must still appear here so a partial save can be
+        //    completed and so the response reflects the full cutoff.
         $employees = Employee::with(['person', 'department', 'position.salaryGrade'])
-            ->whereHas('attendanceLogs', fn($query) => $query->whereBetween('attendance_date', [$start, $end])->whereNull('payroll_ready_at'))
+            ->whereHas('attendanceLogs', fn($query) => $query->whereBetween('attendance_date', [$start, $end]))
             ->orderBy('employee_id')
             ->get();
 
@@ -1122,17 +1294,30 @@ class AttendanceController extends Controller
         ]);
 
         $employee = $this->findAttendanceEmployee((string) $request->input('employee_id'));
+        // ⭐ FIX: If the caller sends explicit start_date/end_date, trust those
+        //    over month/year/cutoff. That way the Saved Records modal reads
+        //    from exactly the same cutoff the Process Payroll modal displayed.
+        $explicitStart = $request->input('start_date');
+        $explicitEnd   = $request->input('end_date');
 
-        $month = (int) ($request->input('month') ?? now()->month);
-        $year = (int) ($request->input('year') ?? now()->year);
-        $cutoff = $request->input('cutoff', 'first');
-
-        if ($cutoff === 'second') {
-            $start = Carbon::create($year, $month, 16)->toDateString();
-            $end = Carbon::create($year, $month, 1)->endOfMonth()->toDateString();
+        if ($explicitStart && $explicitEnd) {
+            $start = Carbon::parse($explicitStart)->startOfDay()->toDateString();
+            $end   = Carbon::parse($explicitEnd)->endOfDay()->toDateString();
+            $cutoff = $request->input('cutoff', 'first');
+            $month = (int) Carbon::parse($start)->month;
+            $year  = (int) Carbon::parse($start)->year;
         } else {
-            $start = Carbon::create($year, $month, 1)->toDateString();
-            $end = Carbon::create($year, $month, 15)->toDateString();
+            $month = (int) ($request->input('month') ?? now()->month);
+            $year = (int) ($request->input('year') ?? now()->year);
+            $cutoff = $request->input('cutoff', 'first');
+
+            if ($cutoff === 'second') {
+                $start = Carbon::create($year, $month, 16)->startOfDay()->toDateString();
+                $end = Carbon::create($year, $month, 1)->endOfMonth()->endOfDay()->toDateString();
+            } else {
+                $start = Carbon::create($year, $month, 1)->startOfDay()->toDateString();
+                $end = Carbon::create($year, $month, 15)->endOfDay()->toDateString();
+            }
         }
 
         $rows = AttendanceLog::with(['employee.person', 'schedule'])
@@ -1396,12 +1581,44 @@ class AttendanceController extends Controller
             'end_date' => 'required|date|after_or_equal:start_date',
         ]);
 
+        $start = Carbon::parse($data['start_date'])->startOfDay();
+        $end = Carbon::parse($data['end_date'])->endOfDay();
+
+        // ⭐ FIX: Normalize the cutoff so a timezone-shifted start_date
+        //    (e.g. '2025-09-15' coming from a UTC-converted Sept 16)
+        //    cannot create a Payroll row in the wrong cutoff.
+        //
+        //    Rule: the cutoff ALWAYS starts on the 1st or the 16th.
+        //    If the caller's start day is 15 but the end day is 30/31,
+        //    they clearly meant the 16th-end cutoff — snap forward.
+        //    If the caller's start day is 1 but the end day is 15,
+        //    that's already correct.
+        $startDay = (int) $start->day;
+        $endDay = (int) $end->day;
+        $endIsMonthEnd = $end->isSameDay($end->copy()->endOfMonth());
+
+        if ($startDay === 15 && $endIsMonthEnd) {
+            // Meant 16th → end of month
+            $start = $start->copy()->addDay()->startOfDay();
+        } elseif ($startDay === 16 && $endDay === 15) {
+            // Meant 16th → end of month but end got shifted back a day
+            $end = $end->copy()->endOfMonth()->endOfDay();
+        } elseif ($startDay === 1 && $endDay === 14) {
+            // Meant 1st → 15th but end got shifted back a day
+            $end = $end->copy()->day(15)->endOfDay();
+        }
+
         return [
-            Carbon::parse($data['start_date'])->toDateString(),
-            Carbon::parse($data['end_date'])->toDateString(),
+            $start->toDateString(),
+            $end->toDateString(),
         ];
     }
-
+    /**
+     * ⭐ FIX: This helper used to silently exclude rows whose payroll_ready_at
+     *    was already set. That made the second save of a cutoff a no-op and
+     *    caused the "saved then disappeared" symptom. Callers now receive
+     *    every row in the period and decide what to do with it.
+     */
     private function attendanceRowsForEmployee(int $employeeId, string $start, string $end)
     {
         return AttendanceLog::with([
@@ -1413,12 +1630,10 @@ class AttendanceController extends Controller
         ])
             ->where('employee_id', $employeeId)
             ->whereBetween('attendance_date', [$start, $end])
-            ->whereNull('payroll_ready_at')
             ->orderBy('attendance_date')
             ->orderBy('time_in')
             ->get();
     }
-
     private function attendanceHistoryRowsForEmployee(int $employeeId, string $start, string $end)
     {
         return AttendanceLog::with([
@@ -1443,9 +1658,14 @@ class AttendanceController extends Controller
             'employee_name' => $employee->full_name ?: 'N/A',
             'position' => $employee->position?->title ?? $employee->position?->name ?? 'N/A',
             'department' => $employee->department?->name ?? 'N/A',
+            'salary_base' => $employee->salary_base ?: 'hourly',
+            'monthly_salary' => (float) ($employee->monthly_salary ?? 0),
+            'daily_rate' => (float) ($employee->daily_rate ?? 0),
             'hourly_rate' => (float) ($employee->hourly_rate
                 ?: $employee->position?->salaryGrade?->default_hourly_rate
                 ?: 0),
+            'payroll_frequency' => $employee->payroll_frequency ?? 'semi_monthly',
+            'salary_effective_date' => $employee->salary_effective_date?->toDateString(),
             'bank_account_number' => $employee->bank_account_number
                 ?? $employee->bank_account
                 ?? $employee->account_number
@@ -1546,14 +1766,37 @@ class AttendanceController extends Controller
         ?string $notes,
         AttendanceService $attendanceService
     ): array {
-        $attendance = $this->attendanceRowsForEmployee($employee->employee_id, $start, $end);
+        // ⭐ FIX: Load ALL rows in the cutoff, saved or not. The caller may be
+        //    re-finalizing after an edit, or completing a partial save. The
+        //    only hard requirement is that the cutoff has at least one row.
+        $attendance = AttendanceLog::with([
+            'employee.person',
+            'employee.department',
+            'employee.position.salaryGrade',
+            'schedule',
+            'overtimeRequest',
+        ])
+            ->where('employee_id', $employee->employee_id)
+            ->whereBetween('attendance_date', [$start, $end])
+            ->orderBy('attendance_date')
+            ->orderBy('time_in')
+            ->get();
 
         if ($attendance->isEmpty()) {
             throw ValidationException::withMessages([
-                'employee_id' => "{$employee->full_name} has no unsaved attendance records for this payroll period.",
+                'employee_id' => "{$employee->full_name} has no attendance records for {$start} to {$end}.",
             ]);
         }
 
+        // ⭐ NEW: If every row is already finalized for this cutoff, surface a
+        //    clear, non-silent message so the frontend can stop showing the
+        //    employee as "ready to process".
+        $alreadyFinalized = $attendance->every(fn(AttendanceLog $row) => ! is_null($row->payroll_ready_at));
+        if ($alreadyFinalized) {
+            throw ValidationException::withMessages([
+                'employee_id' => "{$employee->full_name}'s attendance is already saved as payroll ready for {$start} to {$end}.",
+            ]);
+        }
         $missing = $attendance->first(fn(AttendanceLog $row) => $row->status !== 'absent' && (! $row->time_in || ! $row->time_out));
         if ($missing) {
             $state = ! $missing->time_in ? 'No Time In' : 'No Time Out';

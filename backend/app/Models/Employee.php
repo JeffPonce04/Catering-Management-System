@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class Employee extends Model
@@ -15,10 +16,15 @@ class Employee extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'hire_date' => 'date',
-        'regularization_date' => 'date',
-        'termination_date' => 'date',
-        'hourly_rate' => 'float',
+        'hire_date'              => 'date',
+        'regularization_date'    => 'date',
+        'termination_date'       => 'date',
+        'salary_base'            => 'string',
+        'monthly_salary'         => 'decimal:2',
+        'daily_rate'             => 'decimal:2',
+        'hourly_rate'            => 'decimal:2',
+        'payroll_frequency'      => 'string',
+        'salary_effective_date'  => 'date',
     ];
 
     protected $appends = [
@@ -130,11 +136,6 @@ class Employee extends Model
         return $this->position?->employment_type ?? 'full_time';
     }
 
-    public function getCalculatedHourlyRateAttribute(): float
-    {
-        return (float) ($this->hourly_rate ?: ($this->position?->salaryGrade?->default_hourly_rate ?? 0));
-    }
-
     public function getProfilePhotoAttribute(): ?string
     {
         return $this->person?->profile_photo;
@@ -216,7 +217,7 @@ class Employee extends Model
             return false;
         }
 
-        if ($this->user && ! $this->user->is_active) {
+        if ($this->user && ! (bool) $this->user->is_active) {
             return false;
         }
 
@@ -232,5 +233,65 @@ class Employee extends Model
     public function isInactive(): bool
     {
         return ! $this->getCanLoginAttribute();
+    }
+
+    public function getCalculatedHourlyRateAttribute(): float
+    {
+        $base = $this->salary_base ?: 'hourly';
+
+        if ($base === 'monthly') {
+            $monthly = (float) ($this->monthly_salary ?? 0);
+            // 22 working days × 8 hours = 176 standard hours per month
+            return $monthly > 0 ? round($monthly / 176, 4) : 0.0;
+        }
+
+        if ($base === 'daily') {
+            $daily = (float) ($this->daily_rate ?? 0);
+            return $daily > 0 ? round($daily / 8, 4) : 0.0;
+        }
+
+        // hourly (or legacy)
+        $hourly = (float) ($this->hourly_rate ?? 0);
+        if ($hourly > 0) {
+            return $hourly;
+        }
+
+        return (float) ($this->position?->salaryGrade?->default_hourly_rate ?? 0);
+    }
+
+    /** Effective daily rate from whatever base is configured. */
+    public function getCalculatedDailyRateAttribute(): float
+    {
+        if ($this->salary_base === 'daily') {
+            return (float) ($this->daily_rate ?? 0);
+        }
+        return round($this->getCalculatedHourlyRateAttribute() * 8, 2);
+    }
+
+    /** Effective monthly rate from whatever base is configured. */
+    public function getCalculatedMonthlyRateAttribute(): float
+    {
+        if ($this->salary_base === 'monthly') {
+            return (float) ($this->monthly_salary ?? 0);
+        }
+        return round($this->getCalculatedHourlyRateAttribute() * 176, 2);
+    }
+
+    /** Snapshot the current salary to history before overwriting. */
+    public function snapshotSalary(?int $changedBy = null, ?string $reason = null): void
+    {
+        DB::table('employee_salary_history')->insert([
+            'employee_id'        => $this->employee_id,
+            'salary_base'        => $this->salary_base ?: 'hourly',
+            'monthly_salary'     => $this->monthly_salary,
+            'daily_rate'         => $this->daily_rate,
+            'hourly_rate'        => $this->getCalculatedHourlyRateAttribute(),
+            'payroll_frequency'  => $this->payroll_frequency ?: 'semi_monthly',
+            'effective_date'     => $this->salary_effective_date ?: now()->toDateString(),
+            'changed_by'         => $changedBy ?? auth()->id(),
+            'reason'             => $reason,
+            'created_at'         => now(),
+            'updated_at'         => now(),
+        ]);
     }
 }

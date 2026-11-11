@@ -30,7 +30,7 @@ const api = axios.create({
     Accept: 'application/json',
     'X-Requested-With': 'XMLHttpRequest',
   },
-  timeout: 15000,
+  timeout: 30000, // ⭐ Increased from 15s to 30s to handle large data payloads
   withCredentials: true,
 });
 
@@ -167,26 +167,93 @@ api.interceptors.request.use(
 );
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // ⭐ GLOBAL WRITE BROADCAST — any successful POST / PUT / PATCH / DELETE
+    //    against billing / booking / payment / event / order endpoints fires
+    //    a browser event that the Billing & Orders pages listen to. This
+    //    guarantees cross-module sync even if the calling component forgot
+    //    to invalidate React Query caches.
+    const method = (response?.config?.method || 'get').toUpperCase();
+    const url = response?.config?.url || '';
+
+    const isWrite = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+    const isBillingWrite =
+      isWrite && (
+        /\/invoices(\/|$)/.test(url) ||
+        /\/payments(\/|$)/.test(url) ||
+        /\/refunds(\/|$)/.test(url) ||
+        /\/bookings\/[^/]+\/record-payment/.test(url) ||
+        /\/events\/[^/]+\/(start|complete|live-status|equipment|deliveries|staff|checklist)/.test(url) ||
+        /\/orders\/[^/]+\/(add-to-kitchen|add-to-delivery|delivery-item|kitchen-task|status)/.test(url)
+      );
+
+    if (isBillingWrite && typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('billing:refresh'));
+        if (typeof BroadcastChannel !== 'undefined') {
+          const ch = new BroadcastChannel('billing_sync');
+          ch.postMessage({ type: 'refresh', url, method });
+          ch.close();
+        }
+      } catch { /* ignore */ }
+    }
+
+    return response;
+  },
   (error) => {
-    console.error('❌ API Error Details:', {
-      url: error.config?.url,
-      method: error.config?.method,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      data: error.response?.data,
-      message: error.message,
-    });
+    // ⭐ Silence expected "cancelled" / aborted requests — React Query,
+    //    the loading-line Cancel button, and navigation-driven unmounts
+    //    all produce these. They are NOT real API failures.
+    const isCancelled =
+      error?.name === 'CanceledError' ||
+      error?.name === 'AbortError' ||
+      error?.code === 'ERR_CANCELED' ||
+      error?.message === 'canceled' ||
+      error?.message === 'Network Error';
+
+    // ⭐ The visibility endpoints are polled every 10 s by Billing /
+    //    Orders & Events. A transient failure (dev server restart,
+    //    navigation race) must not spam the console.
+    const url = error.config?.url || '';
+    const isSoftVisibilityEndpoint =
+      url.includes('/settings/financial-visibility') ||
+      url.includes('/settings/billing-visibility') ||
+      url.includes('/settings/insight-visibility');
+
+    if (!isCancelled && !isSoftVisibilityEndpoint) {
+      // ⭐ Log a FLAT string first so Chrome never collapses it to "Object".
+      const status = error.response?.status ?? 'NO_RESPONSE';
+      const method = (error.config?.method || 'get').toUpperCase();
+      const serverMessage =
+        error.response?.data?.message ||
+        error.response?.data?.error ||
+        error.message ||
+        'Unknown error';
+
+      console.error(
+        `❌ API ${status} ${method} ${url || '(unknown)'} → ${serverMessage}`
+      );
+
+      // Full detail (object) only when there IS a response body worth
+      // inspecting. Network failures skip this to keep the console clean.
+      if (error.response?.data) {
+        console.error('   ↳ details:', {
+          status,
+          method,
+          url,
+          body: error.response.data,
+          validationErrors: error.response.data.errors,
+        });
+      }
+    }
 
     const currentPath = window.location.pathname;
     const isLoginPage = currentPath.includes('/login');
-    const isAuthRoute = error.config?.url?.includes('/auth/');
+    const isAuthRoute = url.includes('/auth/');
     const isLoginEndpoint =
-      error.config?.url === '/auth/login' ||
-      error.config?.url === '/auth/employee-login';
+      url === '/auth/login' || url === '/auth/employee-login';
     const isUserEndpoint =
-      error.config?.url === '/auth/user' ||
-      error.config?.url === '/auth/profile';
+      url === '/auth/user' || url === '/auth/profile';
 
     if (error.response?.status === 401) {
       if (isLoginEndpoint) {
@@ -927,8 +994,9 @@ export const bookingAPI = {
   deleteBooking: (id) => api.delete(`/bookings/${id}`),
   confirmBooking: (id) => api.post(`/bookings/${id}/confirm`),
   rejectBooking: (id) => api.post(`/bookings/${id}/reject`),
-  unrejectBooking: (id) => api.post(`/bookings/${id}/unreject`),  cancelBooking: (id, data) => api.post(`/bookings/${id}/cancel`, data),
-  rescheduleBooking: (id, data) => api.post(`/bookings/${id}/reschedule`, data),
+  unrejectBooking: (id) => api.post(`/bookings/${id}/unreject`),
+  rebookBooking: (id, data) => api.post(`/bookings/${id}/rebook`, data),
+  cancelBooking: (id, data) => api.post(`/bookings/${id}/cancel`, data),  rescheduleBooking: (id, data) => api.post(`/bookings/${id}/reschedule`, data),
   requestReschedule: (id, data) => api.post(`/bookings/${id}/request-reschedule`, data),
   approveReschedule: (id) => api.post(`/bookings/${id}/approve-reschedule`),
   rejectReschedule: (id) => api.post(`/bookings/${id}/reject-reschedule`),

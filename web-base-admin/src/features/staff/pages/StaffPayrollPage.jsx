@@ -169,6 +169,24 @@ const printPayslipInNewWindow = (htmlContent) => {
   }, 400);
 };
 
+// ============================================================
+// ⭐ PDF helper — landscape A4 download for the Master List
+// ============================================================
+const downloadHtmlAsPdf = async (html, filename, options = {}) => {
+  const html2pdfModule = await import('html2pdf.js');
+  const html2pdf = html2pdfModule.default || html2pdfModule;
+  const orientation = options.orientation === 'landscape' ? 'landscape' : 'portrait';
+  return html2pdf()
+    .set({
+      margin: 8,
+      filename,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation },
+    })
+    .from(html, 'string')
+    .save();
+};
 /* ============================================================
    SKELETON COMPONENTS
    ============================================================ */
@@ -599,13 +617,27 @@ const useSavedAttendanceEmployees = (params) => useQuery({
         emp.calculated_hourly_rate ||
         rateMap.get(Number(emp.employee_id))
       );
-      const regularPay = regularHours * hourlyRate;
+        // ⭐ FIX: Mirror the backend's monthly / daily / hourly branching so
+      //    the modal's Est. Gross matches what PayrollService will produce.
+      const base = emp.salary_base || 'hourly';
+      let regularPay;
+      if (base === 'monthly') {
+        // Prorate monthly salary across the cutoff's payable days.
+        const payableDays = safeNumber(emp.payable_days);
+        const monthly = safeNumber(emp.monthly_salary || emp.monthly_salary_snapshot);
+        regularPay = monthly > 0 ? (monthly / 22) * payableDays : 0;
+      } else if (base === 'daily') {
+        const payableDays = safeNumber(emp.payable_days);
+        const dailyRate = safeNumber(emp.daily_rate || emp.daily_rate_snapshot);
+        regularPay = dailyRate * payableDays;
+      } else {
+        regularPay = regularHours * hourlyRate;
+      }
       const overtimePay = overtimeHours * hourlyRate * 1.25;
       const estimatedGross = safeNumber(
         emp.estimated_gross_pay ||
         (regularPay + overtimePay)
       );
-
            const payrollStatus = String(emp.payroll_status || '').toLowerCase();
       // ⭐ FIX: "calculated" / "draft" means the row EXISTS but is not yet
       //    approved. It must still be selectable for re-processing and must
@@ -1018,6 +1050,26 @@ const PayslipDocument = ({ payslip }) => {
           <span className="payslip-info-label-landscape">Department</span>
           <span className="payslip-info-value-landscape">{s.department_name || '—'}</span>
         </div>
+           <div className="payslip-info-block-landscape">
+          <span className="payslip-info-label-landscape">Salary Base</span>
+          <span className="payslip-info-value-landscape">
+            {({ monthly: 'Monthly-Paid', daily: 'Daily-Paid', hourly: 'Hourly-Paid' }[s.salary_base || 'hourly'])}
+          </span>
+        </div>
+        <div className="payslip-info-block-landscape">
+          <span className="payslip-info-label-landscape">
+            {s.salary_base === 'monthly' ? 'Monthly Salary'
+              : s.salary_base === 'daily' ? 'Daily Rate'
+              : 'Hourly Rate'}
+          </span>
+          <span className="payslip-info-value-landscape">
+            {s.salary_base === 'monthly'
+              ? formatCurrency(s.monthly_salary_snapshot || 0)
+              : s.salary_base === 'daily'
+                ? formatCurrency(s.daily_rate_snapshot || 0)
+                : formatCurrency(s.hourly_rate || 0)}
+          </span>
+        </div>
         <div className="payslip-info-block-landscape">
           <span className="payslip-info-label-landscape">Bank account</span>
           <span className="payslip-info-value-landscape">{s.bank_account_number || '—'}</span>
@@ -1313,6 +1365,12 @@ const Staff_Payroll_Formal = () => {
   const [otherDeduction, setOtherDeduction] = useState(0);
   const [processingAction, setProcessingAction] = useState(false);
 
+  // ⭐ Master List state — consolidated landscape report
+  const [masterListModalVisible, setMasterListModalVisible] = useState(false);
+  const [masterListHtml, setMasterListHtml] = useState('');
+  const [masterListType, setMasterListType] = useState('active');
+  const [masterListDateRange, setMasterListDateRange] = useState([]);
+  const [masterListZoom, setMasterListZoom] = useState(100);
   const processPayrollMutation = useProcessPayroll();
   const previewPayrollMutation = usePreviewPayroll();
   const updatePayrollMutation = useUpdatePayroll();
@@ -2225,6 +2283,314 @@ const Staff_Payroll_Formal = () => {
     }
   }, [currentCutoff]);
 
+  // ============================================================
+  // ⭐ MASTER LIST — consolidated landscape report
+  // ============================================================
+  const generateMasterListHTML = (type = 'active', dateRange = []) => {
+    const now = new Date();
+    const currentDate = dayjs().format('MMMM DD, YYYY h:mm A');
+    const logoUrl = companyLogo;
+
+    const inRange = (dateValue) => {
+      if (!dateRange || dateRange.length !== 2) return true;
+      const d = dayjs(dateValue);
+      if (!d.isValid()) return true;
+      return !d.isBefore(dateRange[0], 'day') && !d.isAfter(dateRange[1], 'day');
+    };
+
+    let title = '';
+    let subtitle = '';
+    let tableHead = '';
+    let tableBody = '';
+    let totalsRow = '';
+
+    const val = (v) => {
+      const s = safeString(v, '');
+      return s ? s : '—';
+    };
+
+    if (type === 'active') {
+      const rows = payrollData.filter((r) => inRange(r.period_start));
+      title = 'MASTER LIST — ACTIVE PAYROLL';
+      subtitle = `${periodLabel} · ${rows.length} record(s)`;
+
+      const totalGross = rows.reduce((s, r) => s + safeNumber(r.gross_pay || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay))), 0);
+      const totalDed = rows.reduce((s, r) => s + safeNumber(r.total_deductions), 0);
+      const totalNet = rows.reduce((s, r) => s + safeNumber(r.net_pay), 0);
+
+      tableHead = `
+        <tr>
+          <th style="width:5%;">#</th>
+          <th style="width:9%;">Payroll #</th>
+          <th style="width:17%;">Employee</th>
+          <th style="width:12%;">Position</th>
+          <th style="width:9%;">Department</th>
+          <th style="width:7%; text-align:right;">Reg Hrs</th>
+          <th style="width:6%; text-align:right;">OT Hrs</th>
+          <th style="width:9%; text-align:right;">Gross</th>
+          <th style="width:9%; text-align:right;">Deductions</th>
+          <th style="width:9%; text-align:right;">Net Pay</th>
+          <th style="width:8%;">Status</th>
+        </tr>
+      `;
+      tableBody = rows.map((r, i) => {
+        const gross = safeNumber(r.gross_pay) || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay));
+        return `
+          <tr>
+            <td style="text-align:center;">${i + 1}</td>
+            <td>#${formatPayrollNumber(r.payroll_number)}</td>
+            <td>${val(r.employee?.full_name || r.employee_name)}</td>
+            <td>${val(r.position_name || r.employee?.position)}</td>
+            <td>${val(r.department_name || r.employee?.department)}</td>
+            <td style="text-align:right;">${safeNumber(r.regular_hours).toFixed(2)}</td>
+            <td style="text-align:right;">${safeNumber(r.overtime_hours).toFixed(2)}</td>
+            <td style="text-align:right; font-weight:600;">${formatCurrency(gross)}</td>
+            <td style="text-align:right; color:#dc2626;">${formatCurrency(r.total_deductions)}</td>
+            <td style="text-align:right; color:#059669; font-weight:700;">${formatCurrency(r.net_pay)}</td>
+            <td style="text-align:center;">${val(getStatusConfig(mapStatusToLabel(r.status)).text)}</td>
+          </tr>
+        `;
+      }).join('');
+      totalsRow = `
+        <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+          <td colspan="7" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+          <td style="text-align:right;">${formatCurrency(totalGross)}</td>
+          <td style="text-align:right; color:#dc2626;">${formatCurrency(totalDed)}</td>
+          <td style="text-align:right; color:#059669;">${formatCurrency(totalNet)}</td>
+          <td></td>
+        </tr>
+      `;
+    }
+
+    if (type === 'history') {
+      const rows = payrollHistory.filter((r) => inRange(r.period_start));
+      title = 'MASTER LIST — PAYROLL HISTORY';
+      subtitle = `${periodLabel} · ${rows.length} record(s)`;
+
+      const totalGross = rows.reduce((s, r) => s + safeNumber(r.gross_pay || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay))), 0);
+      const totalNet = rows.reduce((s, r) => s + safeNumber(r.net_pay), 0);
+
+      tableHead = `
+        <tr>
+          <th style="width:5%;">#</th>
+          <th style="width:10%;">Payroll #</th>
+          <th style="width:18%;">Employee</th>
+          <th style="width:12%;">Period</th>
+          <th style="width:10%;">Cutoff</th>
+          <th style="width:10%; text-align:right;">Gross</th>
+          <th style="width:10%; text-align:right;">Deductions</th>
+          <th style="width:10%; text-align:right;">Net Pay</th>
+          <th style="width:8%;">Status</th>
+          <th style="width:9%;">Paid At</th>
+        </tr>
+      `;
+      tableBody = rows.map((r, i) => `
+        <tr>
+          <td style="text-align:center;">${i + 1}</td>
+          <td>#${formatPayrollNumber(r.payroll_number)}</td>
+          <td>${val(r.employee?.full_name || r.employee_name)}</td>
+          <td>${formatDateSafe(r.period_start)} – ${formatDateSafe(r.period_end)}</td>
+          <td style="text-align:center;">${val(r.cutoff_type || (r.period_start && dayjs(r.period_start).date() <= 15 ? '1st' : '2nd'))}</td>
+          <td style="text-align:right;">${formatCurrency(r.gross_pay || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay)))}</td>
+          <td style="text-align:right; color:#dc2626;">${formatCurrency(r.total_deductions)}</td>
+          <td style="text-align:right; color:#059669; font-weight:700;">${formatCurrency(r.net_pay)}</td>
+          <td style="text-align:center;">${val(getStatusConfig(mapStatusToLabel(r.status)).text)}</td>
+          <td>${formatDateSafe(r.paid_at || r.deleted_at)}</td>
+        </tr>
+      `).join('');
+      totalsRow = `
+        <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+          <td colspan="5" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+          <td style="text-align:right;">${formatCurrency(totalGross)}</td>
+          <td></td>
+          <td style="text-align:right; color:#059669;">${formatCurrency(totalNet)}</td>
+          <td colspan="2"></td>
+        </tr>
+      `;
+    }
+
+    if (type === 'all') {
+      // Combine active + history
+      const combined = [...payrollData, ...payrollHistory];
+      const seen = new Set();
+      const deduped = combined.filter((r) => {
+        if (!r?.id || seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      });
+      const rows = deduped.filter((r) => inRange(r.period_start));
+      title = 'MASTER LIST — ALL PAYROLL RECORDS';
+      subtitle = `${rows.length} record(s) — active + history`;
+
+      const totalGross = rows.reduce((s, r) => s + safeNumber(r.gross_pay || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay))), 0);
+      const totalDed = rows.reduce((s, r) => s + safeNumber(r.total_deductions), 0);
+      const totalNet = rows.reduce((s, r) => s + safeNumber(r.net_pay), 0);
+
+      tableHead = `
+        <tr>
+          <th style="width:5%;">#</th>
+          <th style="width:9%;">Payroll #</th>
+          <th style="width:16%;">Employee</th>
+          <th style="width:11%;">Period</th>
+          <th style="width:11%;">Position</th>
+          <th style="width:9%; text-align:right;">Gross</th>
+          <th style="width:9%; text-align:right;">Deductions</th>
+          <th style="width:9%; text-align:right;">Net Pay</th>
+          <th style="width:8%;">Status</th>
+          <th style="width:13%;">Paid/Archived</th>
+        </tr>
+      `;
+      tableBody = rows.map((r, i) => `
+        <tr>
+          <td style="text-align:center;">${i + 1}</td>
+          <td>#${formatPayrollNumber(r.payroll_number)}</td>
+          <td>${val(r.employee?.full_name || r.employee_name)}</td>
+          <td>${formatDateSafe(r.period_start)} – ${formatDateSafe(r.period_end)}</td>
+          <td>${val(r.position_name || r.employee?.position)}</td>
+          <td style="text-align:right;">${formatCurrency(r.gross_pay || (safeNumber(r.regular_pay) + safeNumber(r.overtime_pay)))}</td>
+          <td style="text-align:right; color:#dc2626;">${formatCurrency(r.total_deductions)}</td>
+          <td style="text-align:right; color:#059669; font-weight:700;">${formatCurrency(r.net_pay)}</td>
+          <td style="text-align:center;">${val(getStatusConfig(mapStatusToLabel(r.status)).text)}</td>
+          <td>${formatDateSafe(r.paid_at || r.deleted_at)}</td>
+        </tr>
+      `).join('');
+      totalsRow = `
+        <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+          <td colspan="5" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+          <td style="text-align:right;">${formatCurrency(totalGross)}</td>
+          <td style="text-align:right; color:#dc2626;">${formatCurrency(totalDed)}</td>
+          <td style="text-align:right; color:#059669;">${formatCurrency(totalNet)}</td>
+          <td colspan="2"></td>
+        </tr>
+      `;
+    }
+
+    const dateLabel = (dateRange && dateRange.length === 2)
+      ? `${dateRange[0].format('MMM DD, YYYY')} – ${dateRange[1].format('MMM DD, YYYY')}`
+      : periodLabel;
+
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>${title}</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          @page { size: A4 landscape; margin: 12mm 10mm; }
+          body {
+            font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: #f8fafc; color: #1e293b;
+            font-size: 10px; line-height: 1.4; padding: 16px;
+          }
+          .container {
+            max-width: 297mm; margin: 0 auto; background: #fff;
+            padding: 10mm 8mm; border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+          }
+          .header {
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 2px solid #1a7ab5; padding-bottom: 12px; margin-bottom: 12px;
+          }
+          .header .logo-block { display: flex; align-items: center; gap: 10px; }
+          .header .logo-block img { height: 48px; width: 48px; border-radius: 6px; object-fit: cover; }
+          .header h1 { font-size: 16px; font-weight: 700; color: #1a7ab5; letter-spacing: 0.5px; }
+          .header .sub { font-size: 9px; color: #64748b; letter-spacing: 1px; text-transform: uppercase; }
+          .header .meta { text-align: right; font-size: 9px; color: #64748b; }
+          .header .meta strong { color: #1e293b; font-size: 11px; display: block; }
+          .title { text-align: center; font-size: 15px; font-weight: 700; color: #1a7ab5; letter-spacing: 1.5px; text-transform: uppercase; margin: 6px 0; }
+          .subtitle { text-align: center; font-size: 9px; color: #64748b; margin-bottom: 12px; }
+          table { width: 100%; border-collapse: collapse; font-size: 9.5px; }
+          thead th {
+            background: #1a7ab5; color: #fff; font-weight: 600;
+            padding: 6px 8px; text-align: left; font-size: 9px;
+            letter-spacing: 0.3px; text-transform: uppercase;
+          }
+          tbody td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+          tbody tr:nth-child(even) { background: #f8fafc; }
+          .footer {
+            text-align: center; border-top: 1px solid #e2e8f0;
+            padding-top: 10px; margin-top: 12px;
+            font-size: 8.5px; color: #94a3b8;
+          }
+          @media print {
+            body { background: white; padding: 0; margin: 0; }
+            .container { box-shadow: none; border-radius: 0; padding: 8mm 6mm; max-width: 100%; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <div class="logo-block">
+              ${logoUrl ? `<img src="${logoUrl}" alt="Logo" />` : ''}
+              <div>
+                <h1>Dear Bab's</h1>
+                <div class="sub">Fastfood and Catering Services</div>
+              </div>
+            </div>
+            <div class="meta">
+              <strong>${currentDate}</strong>
+              Period: ${dateLabel}
+            </div>
+          </div>
+          <div class="title">${title}</div>
+          <div class="subtitle">${subtitle}</div>
+          <table>
+            <thead>${tableHead}</thead>
+            <tbody>
+              ${tableBody || `<tr><td colspan="11" style="text-align:center; padding:20px; color:#94a3b8;">No records found for this period.</td></tr>`}
+              ${totalsRow}
+            </tbody>
+          </table>
+          <div class="footer">
+            <div>This is a system-generated document.</div>
+            <div>Generated on: ${currentDate}</div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  };
+
+  const openMasterList = (type = 'active') => {
+    setMasterListType(type);
+    const html = generateMasterListHTML(type, masterListDateRange);
+    setMasterListHtml(html);
+    setMasterListZoom(100);
+    setMasterListModalVisible(true);
+  };
+
+  const handlePrintMasterList = () => {
+    if (!masterListHtml) return;
+    const w = window.open('', '_blank', 'width=1000,height=900');
+    if (!w) { message.error('Please allow popups to print'); return; }
+    w.document.open(); w.document.write(masterListHtml); w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 500);
+  };
+
+  const handleDownloadMasterList = async () => {
+    if (!masterListHtml) return;
+    try {
+      await downloadHtmlAsPdf(
+        masterListHtml,
+        `payroll-master-list-${masterListType}-${dayjs().format('YYYY-MM-DD')}.pdf`,
+        { orientation: 'landscape' }
+      );
+      message.success('Master List downloaded successfully.');
+    } catch (e) {
+      message.error('Failed to download Master List');
+    }
+  };
+
+  const handleRegenerateMasterList = (rangeOverride) => {
+    const range = rangeOverride !== undefined ? rangeOverride : masterListDateRange;
+    const html = generateMasterListHTML(masterListType, range);
+    setMasterListHtml(html);
+    message.success('Master List regenerated.');
+  };
+
   const handleRefresh = useCallback(async () => {
     await Promise.all([
       refetchPayroll(),
@@ -2387,11 +2753,19 @@ const Staff_Payroll_Formal = () => {
                 position: emp.position,
                 department: emp.department,
                 department_id: emp.department_id,
-                regular_hours: regularHours,
+                             regular_hours: regularHours,
                 overtime_hours: overtimeHours,
-                total_hours:
+                               total_hours:
                   safeNumber(emp.total_hours) || regularHours + overtimeHours,
                 hourly_rate: hourlyRate,
+                salary_base: emp.salary_base || 'hourly',
+                daily_rate: safeNumber(emp.daily_rate),
+                monthly_salary: safeNumber(emp.monthly_salary),
+                payable_days: safeNumber(emp.payable_days),
+                salary_base: emp.salary_base || 'hourly',
+                daily_rate: safeNumber(emp.daily_rate),
+                monthly_salary: safeNumber(emp.monthly_salary),
+                payable_days: safeNumber(emp.payable_days),
                 regular_pay: regularPay,
                 overtime_pay: overtimePay,
                 estimated_gross_pay: estimatedGross,
@@ -2629,6 +3003,44 @@ const Staff_Payroll_Formal = () => {
           </div>
         </div>
       ),
+    },
+    {
+      title: 'SALARY BASE',
+      key: 'salary_base',
+      width: 110,
+      render: (_, record) => {
+        const base = record.salary_base || 'hourly';
+        const meta = {
+          monthly: { label: 'Monthly', color: '#7c3aed', bg: '#ede9fe' },
+          daily:   { label: 'Daily',   color: '#0891b2', bg: '#cffafe' },
+          hourly:  { label: 'Hourly',  color: '#2563eb', bg: '#dbeafe' },
+        }[base];
+        return (
+          <span style={{
+            padding: '2px 8px', borderRadius: 12,
+            background: meta.bg, color: meta.color,
+            fontSize: 11, fontWeight: 600,
+          }}>
+            {meta.label}
+          </span>
+        );
+      },
+    },
+    {
+      title: 'RATE',
+      key: 'rate',
+      width: 110,
+      align: 'right',
+      render: (_, record) => {
+        const base = record.salary_base || 'hourly';
+        if (base === 'monthly') {
+          return <span className="prf-amount">₱{Number(record.monthly_salary_snapshot || 0).toLocaleString()}/mo</span>;
+        }
+        if (base === 'daily') {
+          return <span className="prf-amount">₱{Number(record.daily_rate_snapshot || 0).toLocaleString()}/day</span>;
+        }
+        return <span className="prf-amount">₱{Number(record.hourly_rate || 0).toLocaleString()}/hr</span>;
+      },
     },
     {
       title: 'REG HOURS',
@@ -2954,7 +3366,37 @@ const Staff_Payroll_Formal = () => {
               </div>
               <Divider type="vertical" style={{ height: 28 }} />
               <Button icon={<ReloadOutlined />} onClick={handleRefresh}>Refresh</Button>
-              <Button icon={<DownloadOutlined />} onClick={handleExport}>Export</Button>
+                         <Button icon={<DownloadOutlined />} onClick={handleExport}>Export</Button>
+              {/* ⭐ MASTER LIST — consolidated landscape report */}
+              <Dropdown
+                trigger={['click']}
+                menu={{
+                  items: [
+                    {
+                      key: 'active',
+                      label: 'Active Payroll Master List',
+                      icon: <DollarOutlined />,
+                      onClick: () => openMasterList('active'),
+                    },
+                    {
+                      key: 'history',
+                      label: 'History Master List',
+                      icon: <HistoryOutlined />,
+                      onClick: () => openMasterList('history'),
+                    },
+                    {
+                      key: 'all',
+                      label: 'All Payroll Master List',
+                      icon: <FileTextOutlined />,
+                      onClick: () => openMasterList('all'),
+                    },
+                  ],
+                }}
+              >
+                <Button icon={<FileTextOutlined />} type="primary" ghost>
+                  Master List
+                </Button>
+              </Dropdown>
               <Button type="primary" icon={<PlusOutlined />} onClick={openEmployeeSelectionModal} disabled={isFutureCutoff}>
                 Process Payroll
               </Button>
@@ -3647,8 +4089,26 @@ const Staff_Payroll_Formal = () => {
                                 )}
                               </td>
                               <td className="pp-col-num"><strong>{formatDecimalHours(emp.total_hours)}</strong></td>
-                              <td className="pp-col-num">{formatCurrency(emp.hourly_rate)}</td>
                               <td className="pp-col-num">
+                                {(() => {
+                                  const base = emp.salary_base || 'hourly';
+                                  if (base === 'monthly') {
+                                    return (
+                                      <span title={`₱${Number(emp.hourly_rate || 0).toFixed(2)}/hr equivalent`}>
+                                        ₱{Number(emp.monthly_salary || 0).toLocaleString()}/mo
+                                      </span>
+                                    );
+                                  }
+                                  if (base === 'daily') {
+                                    return (
+                                      <span title={`₱${Number(emp.hourly_rate || 0).toFixed(2)}/hr equivalent`}>
+                                        ₱{Number(emp.daily_rate || 0).toLocaleString()}/day
+                                      </span>
+                                    );
+                                  }
+                                  return <>₱{Number(emp.hourly_rate || 0).toLocaleString()}/hr</>;
+                                })()}
+                              </td>                              <td className="pp-col-num">
                                 <strong className="pp-amount">{formatCurrency(emp.estimated_gross_pay)}</strong>
                               </td>
                               <td className="pp-col-status">
@@ -4727,8 +5187,28 @@ const Staff_Payroll_Formal = () => {
                       <div className="prf-summary-item"><label>Period</label><span>{periodLabel}</span></div>
                       <div className="prf-summary-item"><label>Regular Hours</label><span><strong>{safeNumber(selectedEmployee.regular_hours).toFixed(2)}</strong> hours</span></div>
                       <div className="prf-summary-item"><label>Overtime Hours</label><span><strong>{safeNumber(selectedEmployee.overtime_hours).toFixed(2)}</strong> hours</span></div>
-                      <div className="prf-summary-item"><label>Hourly Rate</label><span>{formatCurrency(selectedEmployee.hourly_rate)}</span></div>
-                    </Col>
+                      <div className="prf-summary-item">
+                        <label>Salary Base</label>
+                        <span>
+                          {({ monthly: 'Monthly-Paid', daily: 'Daily-Paid', hourly: 'Hourly-Paid' }[selectedEmployee.salary_base || 'hourly'])}
+                        </span>
+                      </div>
+                      <div className="prf-summary-item">
+                        <label>
+                          {selectedEmployee.salary_base === 'monthly'
+                            ? 'Monthly Salary'
+                            : selectedEmployee.salary_base === 'daily'
+                              ? 'Daily Rate'
+                              : 'Hourly Rate'}
+                        </label>
+                        <span>
+                          {selectedEmployee.salary_base === 'monthly'
+                            ? formatCurrency(selectedEmployee.monthly_salary_snapshot || selectedEmployee.monthly_salary)
+                            : selectedEmployee.salary_base === 'daily'
+                              ? formatCurrency(selectedEmployee.daily_rate_snapshot || selectedEmployee.daily_rate)
+                              : formatCurrency(selectedEmployee.hourly_rate)}
+                        </span>
+                      </div>                    </Col>
                     <Col span={12}>
                       <div className="prf-summary-item"><label>Gross Pay</label><span><strong>{formatCurrency(selectedEmployee.gross_pay || (safeNumber(selectedEmployee.regular_pay) + safeNumber(selectedEmployee.overtime_pay)))}</strong></span></div>
                       <div className="prf-summary-item"><label>Total Deductions</label><span><strong style={{ color: '#ef4444' }}>{formatCurrency(selectedEmployee.total_deductions)}</strong></span></div>
@@ -5120,6 +5600,152 @@ const Staff_Payroll_Formal = () => {
                 >
                   Close
                 </button>
+              </div>
+            </div>
+               </Modal>
+
+          {/* ================== ⭐ MASTER LIST MODAL ================== */}
+          <Modal
+            open={masterListModalVisible}
+            onCancel={() => setMasterListModalVisible(false)}
+            width="95%"
+            style={{ top: 20, maxWidth: 1400 }}
+            className="prf-modal-clean pp-modal-host"
+            destroyOnHidden={true}
+            closable={false}
+            maskClosable={true}
+            footer={null}
+            styles={{ body: { padding: 0 } }}
+          >
+            <div className="pp-modal-shell">
+              <div className="pp-modal-header">
+                <div className="pp-header-left">
+                  <div className="pp-header-icon"><FileTextOutlined /></div>
+                  <div className="pp-header-text">
+                    <h2 style={{ textTransform: 'capitalize' }}>
+                      Master List — {masterListType.replace('-', ' ')}
+                    </h2>
+                    <span className="pp-header-sub">
+                      {periodLabel} · landscape report
+                    </span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginRight: 40 }}>
+                  <button
+                    type="button"
+                    className="pp-btn secondary"
+                    onClick={() => setMasterListZoom(Math.max(50, masterListZoom - 10))}
+                  >
+                    −
+                  </button>
+                  <span style={{ fontSize: 12, minWidth: 50, textAlign: 'center' }}>
+                    {masterListZoom}%
+                  </span>
+                  <button
+                    type="button"
+                    className="pp-btn secondary"
+                    onClick={() => setMasterListZoom(Math.min(200, masterListZoom + 10))}
+                  >
+                    +
+                  </button>
+                  <button
+                    type="button"
+                    className="pp-btn secondary"
+                    onClick={() => setMasterListZoom(100)}
+                  >
+                    Fit
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  className="pp-close-btn"
+                  onClick={() => setMasterListModalVisible(false)}
+                  aria-label="Close"
+                >
+                  <CloseOutlined />
+                </button>
+              </div>
+
+              <div
+                className="pp-modal-body"
+                style={{
+                  padding: '20px',
+                  background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
+                  maxHeight: 'calc(100vh - 220px)',
+                  overflow: 'auto',
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'flex-start',
+                }}
+              >
+                <div
+                  style={{
+                    transform: `scale(${masterListZoom / 100})`,
+                    transformOrigin: 'top center',
+                    transition: 'transform 0.2s ease',
+                    background: '#ffffff',
+                    borderRadius: '4px',
+                    boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+                    padding: 0,
+                    margin: '0 auto',
+                    maxWidth: '297mm',
+                    width: '100%',
+                  }}
+                >
+                  <div dangerouslySetInnerHTML={{ __html: masterListHtml }} />
+                </div>
+              </div>
+
+              <div
+                className="pp-modal-footer"
+                style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>Filter by date:</span>
+                  <DatePicker.RangePicker
+                    value={masterListDateRange}
+                    onChange={(v) => {
+                      const next = v || [];
+                      setMasterListDateRange(next);
+                      handleRegenerateMasterList(next);
+                    }}
+                    size="small"
+                    format="YYYY-MM-DD"
+                  />
+                  <button
+                    type="button"
+                    className="pp-btn secondary"
+                    onClick={() => {
+                      setMasterListDateRange([]);
+                      handleRegenerateMasterList([]);
+                    }}
+                  >
+                    Clear Filter
+                  </button>
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="pp-btn primary"
+                    onClick={handlePrintMasterList}
+                  >
+                    <PrinterOutlined /> Print
+                  </button>
+                  <button
+                    type="button"
+                    className="pp-btn primary"
+                    onClick={handleDownloadMasterList}
+                  >
+                    <DownloadOutlined /> Download PDF
+                  </button>
+                  <button
+                    type="button"
+                    className="pp-btn secondary"
+                    onClick={() => setMasterListModalVisible(false)}
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
             </div>
           </Modal>

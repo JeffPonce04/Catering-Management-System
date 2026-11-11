@@ -1453,3 +1453,58 @@
         max-height: none !important;
     }
 }
+
+/* ⭐ FIX: Force the table container to stretch and fill the remaining screen space */
+.reservation-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+}
+
+.reservation-main-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* Crucial for flexbox scrolling */
+    margin-bottom: 24px; /* Keep a nice padding at the bottom of the screen */
+}
+
+.reservation-main-card .ant-card-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 0;
+}
+
+.reservation-table-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.reservation-table-wrapper {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Make sure the AntD spin wrapper stretches too */
+.reservation-table-wrapper .ant-spin-nested-loading,
+.reservation-table-wrapper .ant-spin-container {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.reservation-table-wrapper .ant-table {
+    flex: 1;
+}
+
+/* Ensure the scrollable body fills the wrapper */
+.reservation-table-wrapper .ant-table-body {
+    height: 100% !important;
+    overflow-y: auto !important;
+}

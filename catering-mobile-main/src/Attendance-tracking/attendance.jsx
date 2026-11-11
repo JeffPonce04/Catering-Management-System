@@ -1284,9 +1284,18 @@ const AttendanceScreen = ({ employee, navigation }) => {
             {history.length > 0 ? history.map((record, index) => {
               const flagBadge = getFlagBadge(record.attendance_flag);
               return (
-                <View key={record.id || index} style={[styles.recordCard, { backgroundColor: theme.card }]}>
-                  {record.selfie_url ? (
-                    <Image source={{ uri: record.selfie_url }} style={styles.recordSelfie} />
+                              <View key={record.id || index} style={[styles.recordCard, { backgroundColor: theme.card }]}>
+                  {(record.selfie_url || record.time_in_selfie_url || record.time_out_selfie_url) ? (
+                    <Image
+                      source={{
+                        uri:
+                          record.selfie_url ||
+                          (record.type === 'IN' ? record.time_in_selfie_url : record.time_out_selfie_url) ||
+                          record.time_in_selfie_url ||
+                          record.time_out_selfie_url,
+                      }}
+                      style={styles.recordSelfie}
+                    />
                   ) : (
                     <View style={[styles.recordSelfie, styles.recordSelfiePlaceholder, { backgroundColor: theme.chipBg }]}>
                       <Ionicons name="camera" size={30} color={theme.textMuted} />
@@ -2444,13 +2453,16 @@ const CameraCaptureScreen = ({ employee, attendanceType, onClose, onSuccess }) =
         base64Image = `data:image/jpeg;base64,${base64Image}`;
       }
 
-      const attendanceData = {
+         const attendanceData = {
         employee_id: String(employee.employee_id),
         selfie: base64Image,
         face_verified: true,
         liveness_checked: true,
         device_info: `${Platform.OS} ${Platform.Version}`,
-        captured_at: new Date().toISOString(),
+        // ⭐ FIX E: Send local time (no Z) + timezone so the server stores
+        //    the correct attendance_date instead of shifting across midnight.
+        captured_at: moment().format('YYYY-MM-DD HH:mm:ss'),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Manila',
       };
 
       if (location) {

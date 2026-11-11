@@ -500,7 +500,11 @@ const LoginScreen = ({ navigation }) => {
         const greeting = `Hello, ${result.user?.full_name || email}!`;
         setAdminGreeting(greeting);
 
-        if (canOpenAttendance(result)) {
+        const signedInRole = String(result.role || result.user?.role || '').toLowerCase().replace(/_/g, '-');
+        if (signedInRole === 'inventory-manager') {
+          setLoginBanner({ message: `Welcome to Inventory Management! ${greeting}`, type: 'success' });
+          setTimeout(() => navigation.reset({ index: 0, routes: [{ name: 'InventoryManager' }] }), 500);
+        } else if (canOpenAttendance(result)) {
           setAdminModalVisible(true);
           safeHaptic('medium');
         } else {

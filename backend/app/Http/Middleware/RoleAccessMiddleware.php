@@ -442,6 +442,23 @@ class RoleAccessMiddleware
             return true;
         }
 
+        // Inventory managers may complete/reverse kitchen tasks through the
+        // same server-side, idempotent deduction workflow used by the web app.
+        if ($method === 'POST' && $this->matches(
+            $path,
+            '#^events/[^/]+/kitchen-task/(?:complete|uncomplete)$#'
+        )) {
+            return true;
+        }
+
+        if ($method === 'POST' && $this->matches(
+            $path,
+            '#^events/[^/]+/meals/[^/]+/start$#'
+        )) {
+            return true;
+        }
+
+
         if (
             $this->matches($path, '#^events/[^/]+/equipment(?:/.*)?$#')
             && in_array($method, ['POST', 'PUT', 'PATCH'], true)

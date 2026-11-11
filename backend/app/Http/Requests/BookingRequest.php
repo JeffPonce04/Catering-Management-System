@@ -125,6 +125,10 @@ class BookingRequest extends FormRequest
             // Customer information - ADD THESE FIELDS
             'customer_id' => ['nullable', 'exists:customers,customer_id'],
             'customer_name' => ['nullable', 'string', 'max:200'],
+            // ⭐ REQUEST #3 + #4: Email is the identity key. It cannot be
+            //    edited after creation (see `update()`), and when creating
+            //    a new booking the frontend confirms reuse with the customer
+            //    before submitting. The rule below only validates format.
             'customer_email' => ['nullable', 'email', 'max:150'],
             'customer_phone' => ['nullable', 'string', 'max:30'],
             'customer_address' => ['nullable', 'string', 'max:1000'],
@@ -169,6 +173,9 @@ class BookingRequest extends FormRequest
 
             // Booking scope
             'booking_scope' => ['required', Rule::in(['regular', 'multi_day'])],
+
+            // ⭐ Where the booking came from.
+            'booking_source' => ['nullable', Rule::in(['walk_in', 'mobile', 'web', 'phone'])],
 
             // Fees and charges
             'transportation_fee' => ['nullable', 'numeric', 'min:0'],
@@ -294,5 +301,4 @@ class BookingRequest extends FormRequest
             },
         ];
     }
-
 }

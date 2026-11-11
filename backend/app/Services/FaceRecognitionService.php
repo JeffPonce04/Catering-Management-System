@@ -88,24 +88,25 @@ class FaceRecognitionService
     {
         $employee->loadMissing('person');
 
-        $photoPath = $employee->face_photo
-            ?? $employee->person?->profile_photo
-            ?? null;
+        // Biometric enrollment must be explicit; do not silently reuse a
+        // generic profile photo as a face template.
+        $photoPath = $employee->face_photo ?? null;
 
         if (! $photoPath) {
             return null;
         }
 
-        if (str_starts_with($photoPath, 'http://') || str_starts_with($photoPath, 'https://')) {
-            $temp = tempnam(sys_get_temp_dir(), 'face_ref_');
-            file_put_contents($temp, file_get_contents($photoPath));
-            return $temp;
+        // Never fetch a biometric reference from an arbitrary URL stored in the
+        // database; this avoids SSRF and keeps enrolled face data private.
+        $relative = ltrim(str_replace('/storage/', '', $photoPath), '/');
+        $privatePath = Storage::disk('local')->path($relative);
+        if (file_exists($privatePath)) {
+            return $privatePath;
         }
 
-        $relative = ltrim(str_replace('/storage/', '', $photoPath), '/');
-        $absolute = Storage::disk('public')->path($relative);
-
-        return file_exists($absolute) ? $absolute : null;
+        // Backward-compatible support for explicitly enrolled legacy files.
+        $publicPath = Storage::disk('public')->path($relative);
+        return file_exists($publicPath) ? $publicPath : null;
     }
 
     protected function stripDataUri(string $base64): string

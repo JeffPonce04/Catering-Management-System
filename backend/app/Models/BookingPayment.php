@@ -14,10 +14,37 @@ class BookingPayment extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'amount' => 'float',    
+        'amount' => 'float',
         'payment_date' => 'datetime',
         'verified_at' => 'datetime',
     ];
+
+    /**
+     * ⭐ Display name for the payer — falls back to the booked
+     *    customer's name when no third-party payer was recorded.
+     */
+    public function getDisplayPayerAttribute(): string
+    {
+        $payer = trim((string) ($this->payer_name ?? ''));
+        if ($payer !== '') {
+            return $payer;
+        }
+        return $this->booking?->serviceEvent?->customer?->person?->full_name
+            ?? 'Unknown Customer';
+    }
+
+    /**
+     * ⭐ True when someone other than the booked customer paid.
+     */
+    public function getIsThirdPartyPayerAttribute(): bool
+    {
+        $payer = trim((string) ($this->payer_name ?? ''));
+        if ($payer === '') {
+            return false;
+        }
+        $customer = $this->booking?->serviceEvent?->customer?->person?->full_name ?? '';
+        return strcasecmp($payer, $customer) !== 0;
+    }
 
     // Relationships
     public function booking()

@@ -11,6 +11,7 @@ import {
     ConfigProvider,
     DatePicker,
     Divider,
+    Dropdown,
     Form,
     Input,
     InputNumber,
@@ -36,10 +37,11 @@ import {
     Switch,
     Checkbox,
 } from 'antd';
-
 import {
     AppstoreOutlined,
     CalendarOutlined,
+    SafetyCertificateOutlined,
+    ThunderboltOutlined,
     CheckCircleOutlined,
     ClockCircleOutlined,
     CloseCircleOutlined,
@@ -66,6 +68,7 @@ import {
     SearchOutlined,
     SendOutlined,
     StopOutlined,
+    
     TeamOutlined,
     TrophyOutlined,
     UnlockOutlined,
@@ -78,14 +81,23 @@ import {
     InfoCircleOutlined,
     FireOutlined,
         ShoppingOutlined,
-    SwapOutlined,
+      SwapOutlined,
     MoonOutlined,
     SunOutlined,
+        ZoomInOutlined,
+    ZoomOutOutlined,
+    FullscreenOutlined,
+
+    DownloadOutlined,
+   
+    UnorderedListOutlined,
 } from '@ant-design/icons';
 import { FaRegCalendarAlt } from "react-icons/fa";
-
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
+
+// ⭐ FIX: Import React Query's useQueryClient
+import { useQueryClient } from '@tanstack/react-query'; 
 
 import api from '../../../services/api';
 import { useAuth } from '../../../contexts/AuthContext';
@@ -94,11 +106,8 @@ import { ADMIN_ROLES, CASHIER_ROLES, hasAllowedRole } from '../../../utils/roleR
 import {
     useBookings,
     useBookingStatistics,
-    useCalendarAvailability,
-    useCalendarEvents,
-      useConfirmBooking,
+    useConfirmBooking,
     useCreateQuotation,
-    useDeleteCalendarAvailability,
     useDeleteQuotation,
     useEventTypes,
     useQuotations,
@@ -106,15 +115,18 @@ import {
     useRejectBooking,
     useUnrejectBooking,
     useRejectQuotation,
-    useSaveCalendarAvailability,
     useSendQuotation,
     useInsightVisibility,
     useInsightVisibilitySync,
     useUpdateInsightVisibility,
     useBookingChangeSync,
     broadcastBookingChanged,
-    normalizeListResponse
+    normalizeListResponse,
+    bookingKeys // ⭐ FIX: Import bookingKeys for the cache invalidation
 } from '../../../hooks/useBookingQuotation';
+    // ⭐ useCalendarAvailability, useCalendarEvents,
+    //    useSaveCalendarAvailability, useDeleteCalendarAvailability
+    //    moved to BookingCalendarPage.
 
 import '../../../features/bookings/styles/Sales.css';
 
@@ -159,6 +171,25 @@ const safeObject = (value, defaultValue = {}) => {
 const formatCurrency = (value) => {
     const amount = safeNumber(value);
     return `₱${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+// ============================================================
+// ⭐ PDF helper — landscape A4 download for Master List reports
+// ============================================================
+const downloadHtmlAsPdf = async (html, filename, options = {}) => {
+    const html2pdfModule = await import('html2pdf.js');
+    const html2pdf = html2pdfModule.default || html2pdfModule;
+    const orientation = options.orientation === 'landscape' ? 'landscape' : 'portrait';
+    return html2pdf()
+        .set({
+            margin: 8,
+            filename,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true },
+            jsPDF: { unit: 'mm', format: 'a4', orientation },
+        })
+        .from(html, 'string')
+        .save();
 };
 
 /**
@@ -383,10 +414,23 @@ const menuItemMatchesMealType = (item, mealType) => {
 
 const serviceTypeOptions = [
     { value: 'buffet', label: 'Buffet Service', description: 'Buffet setup with serving stations' },
-    { value: 'packed', label: 'Packed Meals', description: 'Individually packed meals' },
-    { value: 'tray', label: 'Tray Service', description: 'Tray service with plated meals' }
+    { value: 'packed', label: 'Packed Meals', description: 'Individually packed meals · Delivery or pickup' },
+    { value: 'tray', label: 'Tray Service', description: 'Tray service with plated meals · Delivery or pickup' }
 ];
 
+// ⭐ Human-readable labels for the service type tag in tables and modals.
+const serviceTypeLabel = (value) => {
+    const svc = String(value || 'buffet').toLowerCase();
+    if (svc === 'packed') return 'Packed';
+    if (svc === 'tray') return 'Tray';
+    return 'Buffet';
+};
+const serviceTypeColor = (value) => {
+    const svc = String(value || 'buffet').toLowerCase();
+    if (svc === 'packed') return 'purple';
+    if (svc === 'tray') return 'gold';
+    return 'blue';
+};
 const eventScopeOptions = [
     { value: 'regular', label: 'Regular (1 Day)', description: 'Single day event' },
     { value: 'multi_day', label: 'Multi-Day Event', description: 'Multiple days' }
@@ -434,7 +478,10 @@ const getBookingId = (booking) => {
  * Falls back to 'web' (blue) when nothing is set.
  */
 const getBookingSource = (booking) => {
-    if (!booking) return 'web';
+    if (!booking) return 'walk_in';
+
+    // ⭐ Prefer the persisted field. Fallback to legacy inference only if
+    //    the row predates the migration.
     const raw = (
         booking.booking_source ||
         booking.source ||
@@ -442,13 +489,89 @@ const getBookingSource = (booking) => {
         booking.channel ||
         booking.origin ||
         ''
-    ).toString().toLowerCase();
+    ).toString().toLowerCase().replace(/[^a-z_]/g, '');
 
     if (raw.includes('mobile') || raw.includes('app')) return 'mobile';
     if (raw.includes('walk')) return 'walk_in';
-    return 'web';
+    if (raw.includes('phone')) return 'phone';
+    if (raw === 'web') return 'web';
+
+    // ⭐ Default = walk_in, because the admin panel is the only creator
+    //    of bookings that reach this UI.
+    return 'walk_in';
+};
+// ⭐ Source metadata — used by the ID pill and the source badge.
+const getBookingSourceMeta = (source) => {
+    switch (source) {
+        case 'mobile':
+            return {
+                label: 'Mobile App',
+                short: 'APP',
+                icon: <PhoneOutlined />,
+                color: '#DB2777',
+                background: '#FCE7F3',
+                borderColor: '#F9A8D4',
+            };
+        case 'web':
+            return {
+                label: 'Website',
+                short: 'WEB',
+                icon: <EnvironmentOutlined />,
+                color: '#0891B2',
+                background: '#CFFAFE',
+                borderColor: '#67E8F9',
+            };
+        case 'phone':
+            return {
+                label: 'Phone Order',
+                short: 'PHONE',
+                icon: <PhoneOutlined />,
+                color: '#7C3AED',
+                background: '#EDE9FE',
+                borderColor: '#C4B5FD',
+            };
+        case 'walk_in':
+        default:
+            return {
+                label: 'Walk-In',
+                short: 'WALK-IN',
+                icon: <EnvironmentOutlined />,
+                color: '#1D4ED8',
+                background: '#DBEAFE',
+                borderColor: '#93C5FD',
+            };
+    }
 };
 
+// ⭐ Small, unambiguous pill. Rendered next to the booking ID.
+const BookingSourceBadge = ({ booking, compact = false }) => {
+    const source = getBookingSource(booking);
+    const meta = getBookingSourceMeta(source);
+
+    return (
+        <span
+            title={`Booking source: ${meta.label}`}
+            style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: compact ? '1px 6px' : '2px 8px',
+                borderRadius: 6,
+                fontSize: compact ? 9 : 10,
+                fontWeight: 700,
+                letterSpacing: 0.3,
+                color: meta.color,
+                background: meta.background,
+                border: `1px solid ${meta.borderColor}`,
+                textTransform: 'uppercase',
+                whiteSpace: 'nowrap',
+            }}
+        >
+            {meta.icon}
+            {meta.short}
+        </span>
+    );
+};
 const getBookingIdColor = (booking) => {
     const source = getBookingSource(booking);
     if (source === 'mobile') {
@@ -708,6 +831,52 @@ const getServiceType = (booking) => {
     return booking.service_type || booking.fulfillment_type || booking.delivery_type || 'Catering Service';
 };
 
+// ⭐ Centralized Delivery Method resolver — matches the logic used in
+//    UnifiedOrderEventsManagement.jsx so both pages agree on the label.
+//    Returns `true` when the booking should show "Delivery", `false`
+//    for "Pick up". Buffet always delivers; Packed/Tray respect the
+//    customer's choice stored on `service_events.delivery_method`.
+const normalizeDeliveryMethodValue = (value) => {
+    const key = String(value || '').toLowerCase().replace(/[\s_-]+/g, '');
+    if (['delivery', 'deliver', 'delivered'].includes(key)) return 'deliver';
+    if (['pickup', 'pickedup'].includes(key)) return 'pickup';
+    return '';
+};
+
+const isDeliveryMethod = (booking) => {
+    if (!booking) return false;
+
+    const svc = String(booking?.service_type || '').toLowerCase();
+
+    // ⭐ Buffet is ALWAYS delivery — the customer has no pickup option.
+    //    We do NOT look at delivery_method here because legacy rows may
+    //    have been saved with 'pickup' before the backend forced it to
+    //    'delivery'. Trusting the service_type is the only safe rule.
+    if (svc === 'buffet') {
+        return true;
+    }
+
+    // ⭐ Unknown / empty service_type → default to Buffet behaviour (delivery).
+    if (svc === '') {
+        return true;
+    }
+
+    // Packed / Tray respect the customer's choice.
+    const fromMode   = normalizeDeliveryMethodValue(booking?.packed_tray_mode);
+    if (fromMode) return fromMode === 'deliver';
+
+    const fromMethod = normalizeDeliveryMethodValue(booking?.delivery_method);
+    if (fromMethod) return fromMethod === 'deliver';
+
+    // Last-resort fallback: use the raw service_event payload.
+    const rawMethod = normalizeDeliveryMethodValue(
+        booking?._raw?.service_event?.delivery_method ||
+        booking?.service_event?.delivery_method
+    );
+    if (rawMethod) return rawMethod === 'deliver';
+
+    return false;
+};
 const getMenuType = (booking) => {
     if (!booking) return 'Customize';
     return booking.menu_selection_type === 'package' ? 'Package' : 'Customize';
@@ -1144,14 +1313,133 @@ const BookingQuotationManagement = () => {
     const canApproveOperations = hasAllowedRole(user, ADMIN_ROLES);
     const isCashierOnly = hasAllowedRole(user, CASHIER_ROLES) && !canApproveOperations;
     const { message, modal } = App.useApp();
-
+    
+    // ⭐ FIX: Initialize queryClient for Optimistic UI updates
+    const queryClient = useQueryClient();
         const [activeMainTab, setActiveMainTab] = useState('bookings');
     const [activeBookingTab, setActiveBookingTab] = useState('regular');
 
     useEffect(() => {
-        const requestedView = new URLSearchParams(location.search).get('view');
+        const params = new URLSearchParams(location.search);
+        const requestedView = params.get('view');
         if (['bookings', 'quotations', 'history', 'calendar', 'refund-requests'].includes(requestedView)) {
             setActiveMainTab(requestedView);
+        }
+
+        // ⭐ REQUEST #2.3 — Support `?rebook=<bookingId>` so the Customer
+        //    Directory's Rebook button can hand off to this page.
+        const rebookId = params.get('rebook');
+        if (rebookId && !rebookHandledRef.current) {
+            rebookHandledRef.current = true;
+            (async () => {
+                try {
+                    const res = await api.get(`/bookings/${rebookId}`);
+                    const source = res?.data?.data || res?.data;
+                    if (source) {
+                        await handleRebook(source);
+                        // Clear the query param so a refresh doesn't re-open it.
+                        const next = new URLSearchParams(window.location.search);
+                        next.delete('rebook');
+                        const newUrl =
+                            window.location.pathname +
+                            (next.toString() ? `?${next.toString()}` : '');
+                        window.history.replaceState({}, '', newUrl);
+                    }
+                               } catch (err) {
+                    message.error(
+                        err?.response?.data?.message ||
+                        'Failed to load booking for rebooking.'
+                    );
+                }
+            })();
+        }
+
+        // ⭐ NEW: `?rebook_customer=<id>` from the Customer Directory.
+        //    Fetches the customer, prefills name + address + phone, and
+        //    opens the Create Booking modal on Step 1.
+        const rebookCustomerId = params.get('rebook_customer');
+        if (rebookCustomerId && !rebookCustomerHandledRef.current) {
+            rebookCustomerHandledRef.current = true;
+            (async () => {
+                try {
+                    const res = await api.get(`/customers/${rebookCustomerId}`);
+                    const customer = res?.data?.data || res?.data;
+                    if (!customer) {
+                        message.error('Could not load customer for rebooking.');
+                        return;
+                    }
+
+                    const person = customer.person || {};
+                    const addressParts = splitAddressParts({
+                        customer_address: person.address_line_1,
+                        address_line_1:   person.address_line_1,
+                        city:             person.city,
+                        province:         person.province,
+                        postal_code:      person.postal_code,
+                    });
+
+                    quotationForm.resetFields();
+                    setEditingBooking(null);
+                    setSelectedBooking(null);
+                    setCreateBookingStep(0);
+                    setServiceType('buffet');
+                    setEventScope('regular');
+                    setMultiDayDays(2);
+                    setMealServices([]);
+                    setSelectedMenuItems([]);
+                    setSelectedPackage(null);
+                    setSelectedPromo(null);
+                    setModalPricingType('per_pax');
+                    setModalSelectedIds([]);
+                    guestCountRef.current = 10;
+                    setBillingAdjustments({
+                        transportation_fee: 0,
+                        setup_fee: 0,
+                        service_crew_fee: 0,
+                        equipment_rental: 0,
+                        extra_food_fee: 0,
+                        discount: 0,
+                        down_payment: 0,
+                    });
+
+                    const sourceEmail = safeString(person.email, '');
+                    setRebookSourceEmail(sourceEmail);
+                    setLiveCustomerEmail(sourceEmail);
+                    emailChangeConfirmedRef.current = false;
+
+                    quotationForm.setFieldsValue({
+                        customer_name:    `${person.first_name || ''} ${person.last_name || ''}`.trim(),
+                        customer_email:   sourceEmail,
+                        customer_phone:   person.phone || '',
+                        address_line_1:   addressParts.address_line_1,
+                        city:             addressParts.city,
+                        province:         addressParts.province,
+                        postal_code:      addressParts.postal_code,
+                        venue:            undefined,
+                        event_type_id:    undefined,
+                        guests_count:     10,
+                        event_date:       null,
+                        event_time:       '12:00 PM',
+                        delivery_method:  'delivery',
+                        special_requests: undefined,
+                    });
+
+                    setQuotationModalVisible(true);
+                    message.info('Rebooking — set a new event date and review before saving.');
+
+                    const next = new URLSearchParams(window.location.search);
+                    next.delete('rebook_customer');
+                    const newUrl =
+                        window.location.pathname +
+                        (next.toString() ? `?${next.toString()}` : '');
+                    window.history.replaceState({}, '', newUrl);
+                } catch (err) {
+                    message.error(
+                        err?.response?.data?.message ||
+                        'Failed to load customer for rebooking.'
+                    );
+                }
+            })();
         }
     }, [location.search]);
 
@@ -1159,6 +1447,7 @@ const BookingQuotationManagement = () => {
     const [debouncedSearchText, setDebouncedSearchText] = useState('');
     const [filterStatus, setFilterStatus] = useState('all');
     const [filterEventType, setFilterEventType] = useState('all');
+        const [filterBookingSource, setFilterBookingSource] = useState('all');
     const [filterDateRange, setFilterDateRange] = useState([]);
 
     const [historySearchText, setHistorySearchText] = useState('');
@@ -1168,10 +1457,7 @@ const BookingQuotationManagement = () => {
     const [historyEventType, setHistoryEventType] = useState('all');
     const [historyDateRange, setHistoryDateRange] = useState([]);
 
-    const [calendarMode, setCalendarMode] = useState('month');
-    const [calendarCursor, setCalendarCursor] = useState(dayjs());
-    const [selectedCalendarDate, setSelectedCalendarDate] = useState(dayjs());
-
+      // ⭐ Calendar state has moved to BookingCalendarPage (/booking/calendar).
       const [isDarkMode, setIsDarkMode] = useState(() => {
         const saved = (localStorage.getItem('theme') || '').toLowerCase();
         if (saved === 'dark') return true;
@@ -1183,12 +1469,39 @@ const BookingQuotationManagement = () => {
     const [editingBooking, setEditingBooking] = useState(null);
     const [bookingStep, setBookingStep] = useState(0);
 
-    const [bookingDetailsModalVisible, setBookingDetailsModalVisible] = useState(false);
-    const [quotationModalVisible, setQuotationModalVisible] = useState(false);
+    // ⭐ REQUEST #1.6 — Rebooking keeps the previous email here so the
+    //    form can WARN the operator when they change it.
+    const [rebookSourceEmail, setRebookSourceEmail] = useState('');
+    const emailChangeConfirmedRef = useRef(false);
+    const rebookHandledRef = useRef(false);
+    const rebookCustomerHandledRef = useRef(false);
+    // ⭐ Live mirror of whatever email is currently in the form.
+    //    Used only to render the "you changed the email" warning.
+    const [liveCustomerEmail, setLiveCustomerEmail] = useState('');
+    // ⭐ AUTOMATIC EMAIL VALIDATION
+    //    `emailLookup` describes the debounced result of
+    //    GET /bookings/customer-by-email for whatever email is currently
+    //    in the form. Used to warn "this email already exists → reused"
+    //    or "this is a new email → new account will be created".
+    //    `null` = idle, `{ found: false }` = new email,
+    //    `{ found: true, customer }` = existing email.
+    const [emailLookup, setEmailLookup] = useState(null);
+    const [emailLookupLoading, setEmailLookupLoading] = useState(false);
+    const emailLookupSeqRef = useRef(0);
+    const [bookingDetailsModalVisible, setBookingDetailsModalVisible] = useState(false);    const [bookingDetailsEditMode, setBookingDetailsEditMode] = useState(false);
+    const [bookingDetailsDraft, setBookingDetailsDraft] = useState(null);
+    const [bookingDetailsSaving, setBookingDetailsSaving] = useState(false);    const [quotationModalVisible, setQuotationModalVisible] = useState(false);
     const [availabilityModalVisible, setAvailabilityModalVisible] = useState(false);
     const [rejectReasonModalVisible, setRejectReasonModalVisible] = useState(false);
     const [cancelReasonModalVisible, setCancelReasonModalVisible] = useState(false);
-    const [rescheduleModalVisible, setRescheduleModalVisible] = useState(false);
+     const [rescheduleModalVisible, setRescheduleModalVisible] = useState(false);
+
+    // ⭐ Master List state — consolidated landscape report
+    const [masterListModalVisible, setMasterListModalVisible] = useState(false);
+    const [masterListHtml, setMasterListHtml] = useState('');
+    const [masterListType, setMasterListType] = useState('bookings');
+    const [masterListDateRange, setMasterListDateRange] = useState([]);
+    const [masterListZoom, setMasterListZoom] = useState(100);
 
     // ⭐ Cancel reschedule proposal modal
     const [cancelRescheduleModalVisible, setCancelRescheduleModalVisible] = useState(false);
@@ -1203,10 +1516,15 @@ const BookingQuotationManagement = () => {
     // ⭐ REQUEST #2 — Rejected bookings modal (click the "Rejected" KPI card).
     const [rejectedModalVisible, setRejectedModalVisible] = useState(false);
     const [rejectedModalSearch, setRejectedModalSearch] = useState('');
-
     const [startEventModalVisible, setStartEventModalVisible] = useState(false);
     const [startEventBookingData, setStartEventBookingData] = useState(null);
 
+    // ⭐ REQUEST #3 — Pending booking whose event is TODAY. Offers
+    //    "Approve" or "Remove" so the operator can triage it before it
+    //    silently reaches the cutoff.
+    const [todayPendingModalVisible, setTodayPendingModalVisible] = useState(false);
+    const [todayPendingBooking, setTodayPendingBooking] = useState(null);
+    const [todayPendingSubmitting, setTodayPendingSubmitting] = useState(false);
     const [threeDayWarningModalVisible, setThreeDayWarningModalVisible] = useState(false);
     const [threeDayWarningBooking, setThreeDayWarningBooking] = useState(null);
 
@@ -1317,18 +1635,68 @@ const BookingQuotationManagement = () => {
     const [loadingLine, setLoadingLine] = useState(null);
     const loadingLineRef = useRef(null);
     const loadingLineTimerRef = useRef(null);
-    const [quotationForm] = Form.useForm();
+      const [quotationForm] = Form.useForm();
     const [availabilityForm] = Form.useForm();
+
+    // ⭐ AUTOMATIC EMAIL VALIDATION
+    //    Watches `customer_email` while the create/rebook modal is open.
+    //    Debounced 500 ms so typing doesn't spam the API.
+    //    Result is stored in `emailLookup` and rendered under the field.
+    useEffect(() => {
+        if (!quotationModalVisible) {
+            setEmailLookup(null);
+            return undefined;
+        }
+
+        let cancelled = false;
+        const timer = setTimeout(async () => {
+            const raw = quotationForm.getFieldValue('customer_email');
+            const email = safeString(raw).trim().toLowerCase();
+
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                if (!cancelled) {
+                    setEmailLookup(null);
+                    setEmailLookupLoading(false);
+                }
+                return;
+            }
+
+            const seq = ++emailLookupSeqRef.current;
+            setEmailLookupLoading(true);
+
+            try {
+                const res = await api.get('/bookings/customer-by-email', {
+                    params: { email },
+                });
+                if (cancelled || seq !== emailLookupSeqRef.current) return;
+
+                const payload = res?.data?.data || res?.data || {};
+                if (payload?.found && payload?.customer) {
+                    setEmailLookup({ found: true, customer: payload.customer, email });
+                } else {
+                    setEmailLookup({ found: false, email });
+                }
+            } catch (err) {
+                if (cancelled) return;
+                // Non-fatal — treat as "unknown" rather than blocking.
+                setEmailLookup(null);
+            } finally {
+                if (!cancelled && seq === emailLookupSeqRef.current) {
+                    setEmailLookupLoading(false);
+                }
+            }
+        }, 500);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(timer);
+        };
+    }, [quotationModalVisible, quotationForm, rebookSourceEmail]);
     const [rejectForm] = Form.useForm();
     const [cancelForm] = Form.useForm();
     const [rescheduleForm] = Form.useForm();
 
-    const calendarRange = useMemo(() => {
-        return {
-            start: calendarCursor.startOf('month').subtract(7, 'day').format('YYYY-MM-DD'),
-            end: calendarCursor.endOf('month').add(7, 'day').format('YYYY-MM-DD')
-        };
-    }, [calendarCursor]);
+    // ⭐ calendarRange moved to BookingCalendarPage.
 
     const ACTIVE_BOOKING_STATUS_EXCLUSIONS = 'completed,cancelled,rejected';
     const HISTORY_BOOKING_STATUSES = 'completed,cancelled,rejected';
@@ -1346,9 +1714,15 @@ const BookingQuotationManagement = () => {
             params.status_not_in = ACTIVE_BOOKING_STATUS_EXCLUSIONS;
         }
 
-        if (filterEventType !== 'all') {
+              if (filterEventType !== 'all') {
             params.event_type_id = filterEventType;
         }
+
+        // ⭐ REQUEST: filter by booking source
+        if (filterBookingSource !== 'all') {
+            params.booking_source = filterBookingSource;
+        }
+        
 
         if (search && search.trim()) {
             params.search = search.trim();
@@ -1360,8 +1734,7 @@ const BookingQuotationManagement = () => {
         }
 
         return params;
-    }, [filterStatus, debouncedSearchText, filterEventType, filterDateRange]);
-
+    }, [filterStatus, debouncedSearchText, filterEventType, filterDateRange, filterBookingSource]);
       const buildHistoryParams = useCallback(() => {
         const combinedSearch = [historySearchText, historyBookingId, historyCustomerName]
             .map((value) => safeString(value).trim())
@@ -1444,15 +1817,7 @@ const BookingQuotationManagement = () => {
         refetch: refetchQuotations
        } = useQuotations(quotationParams);
     const { data: eventTypesData } = useEventTypes();
-    const calendarEnabled = activeMainTab === 'calendar';
-    const { data: calendarEvents, refetch: refetchCalendarEvents } = useCalendarEvents(
-        calendarEnabled ? calendarRange : { ...calendarRange, __skip: true },
-        { enabled: calendarEnabled }
-    );
-    const { data: calendarAvailabilityData, refetch: refetchCalendarAvailability } = useCalendarAvailability(
-        calendarEnabled ? calendarRange : { ...calendarRange, __skip: true },
-        { enabled: calendarEnabled }
-    );
+    // ⭐ Calendar data fetching moved to BookingCalendarPage.
     // ⭐ Hide/Unhide: read + write the persisted visibility map.
     const { data: insightVisibility } = useInsightVisibility();
     const updateInsightVisibilityMutation = useUpdateInsightVisibility();
@@ -1517,8 +1882,8 @@ const BookingQuotationManagement = () => {
     const rejectQuotationMutation = useRejectQuotation();
     const sendQuotationMutation = useSendQuotation();
     const deleteQuotationMutation = useDeleteQuotation();
-    const saveCalendarAvailabilityMutation = useSaveCalendarAvailability();
-    const deleteCalendarAvailabilityMutation = useDeleteCalendarAvailability();
+      // ⭐ saveCalendarAvailabilityMutation + deleteCalendarAvailabilityMutation
+    //    moved to BookingCalendarPage (/booking/calendar).
 
     const isActiveBookingStatus = (status) => !['completed', 'cancelled', 'rejected'].includes(safeString(status));
 
@@ -1539,14 +1904,13 @@ const BookingQuotationManagement = () => {
     const completedBookingsTotal = safeNumber(completedBookingsDataNormalized?.total, completedBookings.length);
 
     const quotations = safeArray(quotationsData?.data).filter((quotation) => {
-        const bookingStatus = safeString(quotation.booking_status).toLowerCase();
+        const bookingStatus = safeString(quotation.booking_statfus).toLowerCase();
         return ['approved', 'confirmed'].includes(bookingStatus) && bookingStatus !== 'cancelled';
     });
     const quotationsTotal = safeNumber(quotationsData?.total, quotations.length);
 
     const eventTypes = safeArray(eventTypesData?.data);
-    const events = safeArray(calendarEvents);
-    const calendarAvailability = safeArray(calendarAvailabilityData?.data);
+     // ⭐ events + calendarAvailability moved to BookingCalendarPage.
 
       const stats = safeObject(statistics?.data || statistics, {
         total_bookings: 0, pending_approvals: 0, total_revenue: 0,
@@ -1753,31 +2117,48 @@ const BookingQuotationManagement = () => {
             return scheduled.isBefore(now);
         });
 
-        if (dueNow && !startEventModalVisible) {
+             if (dueNow && !startEventModalVisible) {
             setStartEventBookingData(dueNow);
             setStartEventModalVisible(true);
         }
     }, [regularBookings, multiDayBookings, startEventModalVisible]);
 
-    // NOTE: Removed the blanket refreshAllData() listener. useConfirmBooking
-    // already syncs cache via syncBookingInCache, so refetching all 7 queries
-    // here was double network traffic per approval. Only refetch calendar /
-    // availability, which the confirm mutation does NOT touch.
+    // ⭐ REQUEST #3 — Auto-detect a PENDING booking whose event date is
+    // TODAY. Offers "Approve" or "Remove". Dismissed per-booking so it
+    // never nags more than once per browser session.
     useEffect(() => {
-        const handleBookingEvent = (event) => {
-            console.log('📢 Booking event received:', event.detail);
-            refetchCalendarEvents();
-            refetchCalendarAvailability();
-        };
+        const TODAY_PENDING_KEY = 'today_pending_dismissed';
+        const dismissedToday = (() => {
+            try {
+                return JSON.parse(localStorage.getItem(TODAY_PENDING_KEY) || '[]');
+            } catch {
+                return [];
+            }
+        })();
 
-        window.addEventListener('booking-cancelled', handleBookingEvent);
-        window.addEventListener('booking-reschedule-requested', handleBookingEvent);
+        const candidates = [...safeArray(regularBookings), ...safeArray(multiDayBookings)];
+        const today = dayjs().format('YYYY-MM-DD');
 
-        return () => {
-            window.removeEventListener('booking-cancelled', handleBookingEvent);
-            window.removeEventListener('booking-reschedule-requested', handleBookingEvent);
-        };
-    }, [refetchCalendarEvents, refetchCalendarAvailability]);
+        const dueNow = candidates.find((booking) => {
+            const status = safeString(booking?.booking_status).toLowerCase();
+            if (!['pending', 'pending_approval', 'draft'].includes(status)) return false;
+
+            const id = getBookingId(booking);
+            if (!id || dismissedToday.includes(id)) return false;
+
+            const dateStr = safeString(booking?.event_date);
+            if (!dateStr) return false;
+
+            return dateStr === today;
+        });
+
+        if (dueNow && !todayPendingModalVisible) {
+            setTodayPendingBooking(dueNow);
+            setTodayPendingModalVisible(true);
+        }
+    }, [regularBookings, multiDayBookings, todayPendingModalVisible]);
+       // ⭐ Calendar refetch listeners moved to BookingCalendarPage (/booking/calendar).
+    // The calendar page owns its own event listeners and refetch logic.
 
     useEffect(() => {
         if (quotationModalVisible) {
@@ -1829,10 +2210,7 @@ const BookingQuotationManagement = () => {
         return found?.name || 'Unknown';
     };
 
-    const getCalendarAvailability = (dateValue) => {
-        const date = dayjs(dateValue).format('YYYY-MM-DD');
-        return calendarAvailability.find((item) => safeString(item.availability_date || item.date) === date);
-    };
+    // ⭐ getCalendarAvailability moved to BookingCalendarPage.
 
     const getMenuItems = (booking) => {
         if (!booking) return [];
@@ -2002,6 +2380,375 @@ const BookingQuotationManagement = () => {
         );
     };
 
+    // ========================================================
+    // ⭐ MASTER LIST — consolidated landscape report generator
+    // ========================================================
+    const generateMasterListHTML = (type = 'bookings', dateRange = []) => {
+        const now = dayjs();
+        const currentDate = now.format('MMMM DD, YYYY h:mm A');
+
+        const inRange = (dateStr) => {
+            if (!dateRange || dateRange.length !== 2) return true;
+            const d = dayjs(dateStr);
+            if (!d.isValid()) return true;
+            return !d.isBefore(dateRange[0], 'day') && !d.isAfter(dateRange[1], 'day');
+        };
+
+        let title = '';
+        let subtitle = '';
+        let tableHead = '';
+        let tableBody = '';
+        let totalsRow = '';
+
+        const val = (v) => {
+            const s = safeString(v, '');
+            return s ? s : '—';
+        };
+        const fmtDate = (d) => {
+            const p = dayjs(d);
+            return p.isValid() ? p.format('YYYY-MM-DD') : '—';
+        };
+
+        if (type === 'bookings') {
+            // Merge regular + multi-day active bookings
+            const combined = [...safeArray(regularBookings), ...safeArray(multiDayBookings)];
+            const seen = new Set();
+            const deduped = combined.filter((b) => {
+                const id = getBookingId(b);
+                if (!id || seen.has(id)) return false;
+                seen.add(id);
+                return true;
+            });
+            const rows = deduped.filter((b) => inRange(b.event_date));
+
+            title = 'MASTER LIST — ACTIVE BOOKINGS';
+            subtitle = `Total active bookings: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + safeNumber(r.total_amount), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:5%;">#</th>
+                    <th style="width:12%;">Booking #</th>
+                    <th style="width:18%;">Customer</th>
+                    <th style="width:10%;">Event Date</th>
+                    <th style="width:8%;">Time</th>
+                    <th style="width:15%;">Venue</th>
+                                      <th style="width:7%;">PAX</th>
+                    <th style="width:9%;">Delivery</th>
+                    <th style="width:9%;">Status</th>
+                    <th style="width:9%; text-align:right;">Amount</th>
+                    <th style="width:7%;">Source</th>
+                </tr>
+            `;
+            tableBody = rows.map((r, i) => `
+                <tr>
+                    <td style="text-align:center;">${i + 1}</td>
+                    <td>${val(r.booking_no)}</td>
+                    <td>${val(r.customer_name)}</td>
+                    <td>${fmtDate(r.event_date)}</td>
+                    <td>${val(r.event_time)}</td>
+                    <td>${val(getBookingLocation(r))}</td>
+                                      <td style="text-align:center;">${safeNumber(r.guests_count)}</td>
+                    <td style="text-align:center;">${isDeliveryMethod(r) ? 'Delivery' : 'Pick up'}</td>
+                    <td style="text-align:center;">${val(r.booking_status).toUpperCase()}</td>
+                    <td style="text-align:right; font-weight:600;">${formatCurrency(r.total_amount)}</td>
+                    <td style="text-align:center;">${getBookingSourceMeta(getBookingSource(r)).short}</td>
+                </tr>
+            `).join('');
+                     totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="9" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right;">${formatCurrency(totalAmount)}</td>
+                    <td></td>
+                </tr>
+            `;
+        }
+
+        if (type === 'quotations') {
+            const rows = safeArray(quotations).filter((q) => inRange(q.event_date));
+            title = 'MASTER LIST — QUOTATIONS';
+            subtitle = `Total quotations: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + safeNumber(r.total_amount), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:5%;">#</th>
+                    <th style="width:14%;">Quote #</th>
+                    <th style="width:22%;">Customer</th>
+                    <th style="width:11%;">Event Date</th>
+                    <th style="width:7%;">PAX</th>
+                    <th style="width:11%; text-align:right;">Amount</th>
+                    <th style="width:10%;">Status</th>
+                    <th style="width:10%;">Date Sent</th>
+                    <th style="width:10%;">Delivery</th>
+                </tr>
+            `;
+            tableBody = rows.map((r, i) => {
+                const send = getQuotationLatestSend(r);
+                return `
+                    <tr>
+                        <td style="text-align:center;">${i + 1}</td>
+                        <td>${val(r.quote_no)}</td>
+                        <td>${val(r.customer_name)}</td>
+                        <td>${fmtDate(r.event_date)}</td>
+                        <td style="text-align:center;">${safeNumber(r.guests_count)}</td>
+                        <td style="text-align:right; font-weight:600;">${formatCurrency(r.total_amount)}</td>
+                        <td style="text-align:center;">${val(r.status).toUpperCase()}</td>
+                        <td>${val(send.date_sent)}</td>
+                        <td style="text-align:center;">${val(send.delivery_status)}</td>
+                    </tr>
+                `;
+            }).join('');
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="5" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right;">${formatCurrency(totalAmount)}</td>
+                    <td colspan="3"></td>
+                </tr>
+            `;
+        }
+
+        if (type === 'history') {
+            const rows = safeArray(completedBookings).filter((b) => inRange(b.event_date));
+            title = 'MASTER LIST — BOOKING HISTORY';
+            subtitle = `Total history records: ${rows.length}`;
+
+            const totalAmount = rows.reduce((s, r) => s + safeNumber(r.total_amount), 0);
+            const totalPaid = rows.reduce((s, r) => s + safeNumber(r.paid_amount), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:5%;">#</th>
+                    <th style="width:14%;">Booking #</th>
+                    <th style="width:22%;">Customer</th>
+                    <th style="width:11%;">Event Date</th>
+                    <th style="width:7%;">PAX</th>
+                    <th style="width:9%;">Status</th>
+                    <th style="width:11%; text-align:right;">Amount</th>
+                    <th style="width:11%; text-align:right;">Paid</th>
+                    <th style="width:10%; text-align:right;">Balance</th>
+                </tr>
+            `;
+            tableBody = rows.map((r, i) => {
+                const bal = safeNumber(r.balance ?? Math.max(0, safeNumber(r.total_amount) - safeNumber(r.paid_amount)));
+                return `
+                    <tr>
+                        <td style="text-align:center;">${i + 1}</td>
+                        <td>${val(r.booking_no)}</td>
+                        <td>${val(r.customer_name)}</td>
+                        <td>${fmtDate(r.event_date)}</td>
+                        <td style="text-align:center;">${safeNumber(r.guests_count)}</td>
+                        <td style="text-align:center;">${val(r.booking_status).toUpperCase()}</td>
+                        <td style="text-align:right;">${formatCurrency(r.total_amount)}</td>
+                        <td style="text-align:right; color:#059669;">${formatCurrency(r.paid_amount)}</td>
+                        <td style="text-align:right; color:${bal > 0.01 ? '#dc2626' : '#059669'}; font-weight:600;">${formatCurrency(bal)}</td>
+                    </tr>
+                `;
+            }).join('');
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="6" style="text-align:right; padding-right:12px;">GRAND TOTAL</td>
+                    <td style="text-align:right;">${formatCurrency(totalAmount)}</td>
+                    <td style="text-align:right; color:#059669;">${formatCurrency(totalPaid)}</td>
+                    <td></td>
+                </tr>
+            `;
+        }
+
+        if (type === 'refund-requests') {
+            const rows = safeArray(refundRequests).filter((b) => inRange(b.event_date));
+            title = 'MASTER LIST — REFUND REQUESTS';
+            subtitle = `Total refund requests: ${rows.length}`;
+
+            const totalDeposit = rows.reduce((s, r) => s + getDepositAmount(r), 0);
+
+            tableHead = `
+                <tr>
+                    <th style="width:5%;">#</th>
+                    <th style="width:13%;">Booking #</th>
+                    <th style="width:18%;">Customer</th>
+                    <th style="width:10%;">Event Date</th>
+                    <th style="width:11%; text-align:right;">Deposit</th>
+                    <th style="width:11%;">Refund Status</th>
+                    <th style="width:12%;">Requested</th>
+                    <th style="width:20%;">Reason</th>
+                </tr>
+            `;
+            tableBody = rows.map((r, i) => {
+                const cfg = getRefundStatusConfig(r.refund_status);
+                return `
+                    <tr>
+                        <td style="text-align:center;">${i + 1}</td>
+                        <td>${val(r.booking_no)}</td>
+                        <td>${val(r.customer_name)}</td>
+                        <td>${fmtDate(r.event_date)}</td>
+                        <td style="text-align:right;">${formatCurrency(getDepositAmount(r))}</td>
+                        <td style="text-align:center;">${cfg?.text || '—'}</td>
+                        <td>${val(r.refund_requested_at)}</td>
+                        <td style="font-size:8.5px;">${val(r.refund_reason)}</td>
+                    </tr>
+                `;
+            }).join('');
+            totalsRow = `
+                <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #1a7ab5;">
+                    <td colspan="4" style="text-align:right; padding-right:12px;">GRAND TOTAL DEPOSIT</td>
+                    <td style="text-align:right;">${formatCurrency(totalDeposit)}</td>
+                    <td colspan="3"></td>
+                </tr>
+            `;
+        }
+
+        const dateLabel = (dateRange && dateRange.length === 2)
+            ? `${dateRange[0].format('MMM DD, YYYY')} – ${dateRange[1].format('MMM DD, YYYY')}`
+            : 'All dates';
+
+        return `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <title>${title}</title>
+                <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    @page { size: A4 landscape; margin: 12mm 10mm; }
+                    body {
+                        font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+                        background: #f8fafc;
+                        color: #1e293b;
+                        font-size: 10px;
+                        line-height: 1.4;
+                        padding: 16px;
+                    }
+                    .container {
+                        max-width: 297mm;
+                        margin: 0 auto;
+                        background: #ffffff;
+                        padding: 10mm 8mm;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+                    }
+                    .header {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        border-bottom: 2px solid #8b5cf6;
+                        padding-bottom: 12px;
+                        margin-bottom: 12px;
+                    }
+                    .header h1 { font-size: 16px; font-weight: 700; color: #8b5cf6; letter-spacing: 0.5px; }
+                    .header .sub { font-size: 9px; color: #64748b; letter-spacing: 1px; text-transform: uppercase; }
+                    .header .meta { text-align: right; font-size: 9px; color: #64748b; }
+                    .header .meta strong { color: #1e293b; font-size: 11px; display: block; }
+                    .title {
+                        text-align: center;
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: #8b5cf6;
+                        letter-spacing: 1.5px;
+                        text-transform: uppercase;
+                        margin: 6px 0;
+                    }
+                    .subtitle { text-align: center; font-size: 9px; color: #64748b; margin-bottom: 12px; }
+                    table { width: 100%; border-collapse: collapse; font-size: 9.5px; }
+                    thead th {
+                        background: #8b5cf6;
+                        color: #fff;
+                        font-weight: 600;
+                        padding: 6px 8px;
+                        text-align: left;
+                        font-size: 9px;
+                        letter-spacing: 0.3px;
+                        text-transform: uppercase;
+                    }
+                    tbody td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: middle; }
+                    tbody tr:nth-child(even) { background: #f8fafc; }
+                    .footer {
+                        text-align: center;
+                        border-top: 1px solid #e2e8f0;
+                        padding-top: 10px;
+                        margin-top: 12px;
+                        font-size: 8.5px;
+                        color: #94a3b8;
+                    }
+                    @media print {
+                        body { background: white; padding: 0; margin: 0; }
+                        .container { box-shadow: none; border-radius: 0; padding: 8mm 6mm; max-width: 100%; }
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <div>
+                            <h1>Dear Bab's</h1>
+                            <div class="sub">Fastfood and Catering Services</div>
+                        </div>
+                        <div class="meta">
+                            <strong>${currentDate}</strong>
+                            Period: ${dateLabel}
+                        </div>
+                    </div>
+                    <div class="title">${title}</div>
+                    <div class="subtitle">${subtitle}</div>
+                    <table>
+                        <thead>${tableHead}</thead>
+                        <tbody>
+                            ${tableBody || `<tr><td colspan="10" style="text-align:center; padding:20px; color:#94a3b8;">No records found for this period.</td></tr>`}
+                            ${totalsRow}
+                        </tbody>
+                    </table>
+                    <div class="footer">
+                        <div>This is a system-generated document.</div>
+                        <div>Generated on: ${currentDate}</div>
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+    };
+
+    const openMasterList = (type = 'bookings') => {
+        setMasterListType(type);
+        const html = generateMasterListHTML(type, masterListDateRange);
+        setMasterListHtml(html);
+        setMasterListZoom(100);
+        setMasterListModalVisible(true);
+    };
+
+    const handlePrintMasterList = () => {
+        if (!masterListHtml) return;
+        const w = window.open('', '_blank', 'width=1000,height=900');
+        if (!w) { message.error('Please allow popups to print'); return; }
+        w.document.open();
+        w.document.write(masterListHtml);
+        w.document.close();
+        w.focus();
+        setTimeout(() => w.print(), 500);
+    };
+
+    const handleDownloadMasterList = async () => {
+        if (!masterListHtml) return;
+        try {
+            await downloadHtmlAsPdf(
+                masterListHtml,
+                `master-list-${masterListType}-${dayjs().format('YYYY-MM-DD')}.pdf`,
+                { orientation: 'landscape' }
+            );
+            message.success('Master List downloaded successfully.');
+        } catch (e) {
+            console.error(e);
+            message.error('Failed to download Master List');
+        }
+    };
+
+    const handleRegenerateMasterList = (rangeOverride) => {
+        const range = rangeOverride !== undefined ? rangeOverride : masterListDateRange;
+        const html = generateMasterListHTML(masterListType, range);
+        setMasterListHtml(html);
+        message.success('Master List regenerated.');
+    };
     const refreshAllData = async (showNotification = true) => {
         try {
             await Promise.all([
@@ -2010,8 +2757,8 @@ const BookingQuotationManagement = () => {
                 refetchCompletedBookings(),
                 refetchStatistics(),
                 refetchQuotations(),
-                refetchCalendarEvents(),
-                refetchCalendarAvailability()
+                // ⭐ Calendar / availability refetch removed — the calendar
+                //    lives on its own page now and refreshes itself.
             ]);
 
             if (showNotification) {
@@ -2058,8 +2805,9 @@ const BookingQuotationManagement = () => {
             { title: 'CUSTOMER', dataIndex: 'customer_name' },
             { title: 'EVENT DATE', dataIndex: 'event_date' },
             { title: 'LOCATION', dataIndex: 'venue' },
-            { title: 'SERVICE', key: 'service_type' },
-            { title: 'EVENT TYPE', key: 'event_type' },
+                 { title: 'SERVICE', key: 'service_type' },
+        { title: 'DELIVERY METHOD', key: 'delivery_method_label' },
+        { title: 'EVENT TYPE', key: 'event_type' },
             { title: 'PAX', dataIndex: 'guests_count' },
             { title: 'AMOUNT', dataIndex: 'total_amount' },
             { title: 'STATUS', dataIndex: 'booking_status' }
@@ -2079,7 +2827,8 @@ const BookingQuotationManagement = () => {
             { title: 'START DATE', dataIndex: 'event_date' },
             { title: 'END DATE', dataIndex: 'event_end_date' },
             { title: 'DAYS', key: 'days' },
-            { title: 'LOCATION', dataIndex: 'venue' },
+                   { title: 'LOCATION', dataIndex: 'venue' },
+            { title: 'DELIVERY METHOD', key: 'delivery_method_label' },
             { title: 'PAX', dataIndex: 'guests_count' },
             { title: 'AMOUNT', dataIndex: 'total_amount' },
             { title: 'STATUS', dataIndex: 'booking_status' }
@@ -2163,16 +2912,17 @@ const BookingQuotationManagement = () => {
         printWindow.print();
     };
 
-    const bookingPrintColumns = [
-        { title: 'Booking #', get: (row) => row.booking_no },
-        { title: 'Customer', get: (row) => row.customer_name },
-        { title: 'Event Date', get: (row) => formatDateSafe(row.event_date) },
-        { title: 'Event Time', get: (row) => row.event_time },
-        { title: 'Venue', get: (row) => row.venue || row.location },
-        { title: 'PAX', get: (row) => row.guests_count },
-        { title: 'Amount', get: (row) => formatCurrency(row.total_amount) },
-        { title: 'Status', get: (row) => row.booking_status }
-    ];
+const bookingPrintColumns = [
+    { title: 'Booking #', get: (row) => row.booking_no },
+    { title: 'Customer', get: (row) => row.customer_name },
+    { title: 'Event Date', get: (row) => formatDateSafe(row.event_date) },
+    { title: 'Event Time', get: (row) => row.event_time },
+    { title: 'Venue', get: (row) => row.venue || row.location },
+    { title: 'Delivery', get: (row) => (isDeliveryMethod(row) ? 'Delivery' : 'Pick up') },
+    { title: 'PAX', get: (row) => row.guests_count },
+    { title: 'Amount', get: (row) => formatCurrency(row.total_amount) },
+    { title: 'Status', get: (row) => row.booking_status }
+];
 
     const printRegularBookings = async () => {
         const rows = await fetchBookingsForPrint(buildBookingParams('regular'));
@@ -2237,14 +2987,11 @@ const BookingQuotationManagement = () => {
         try {
             const signal = showLoadingLine('cancel', bookingNo);
 
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(resolve, 5000);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    reject(new DOMException('Aborted', 'AbortError'));
-                });
-            });
-
+                 // ⚡ No artificial hold — the signal still lets the user
+            //    abort the in-flight request via the Cancel button.
+            if (signal?.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
             await api.post(
                 `/bookings/${bookingId}/cancel-with-reason`,
                 { reason: values.reason },
@@ -2634,17 +3381,13 @@ const BookingQuotationManagement = () => {
         }            if (values.action === 'reject') {
             const wasCancelled = { value: false };
 
-            try {
+                   try {
                 const signal = showLoadingLine('reject', safeString(selectedBooking?.booking_no));
 
-                await new Promise((resolve, reject) => {
-                    const timer = setTimeout(resolve, 5000);
-                    signal.addEventListener('abort', () => {
-                        clearTimeout(timer);
-                        wasCancelled.value = true;
-                        reject(new DOMException('Aborted', 'AbortError'));
-                    });
-                });
+                // ⚡ No artificial hold — fire the request immediately.
+                if (signal?.aborted) {
+                    throw new DOMException('Aborted', 'AbortError');
+                }
 
                 await api.post(
                     `/bookings/${bookingId}/reject`,
@@ -2756,16 +3499,13 @@ const BookingQuotationManagement = () => {
         const isSameDateTime = currentDate === newDate && currentTime === newTime;
         const bookingNo = safeString(selectedBooking?.booking_no);
 
-        try {
+         try {
             const signal = showLoadingLine('reschedule', bookingNo);
 
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(resolve, 5000);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    reject(new DOMException('Aborted', 'AbortError'));
-                });
-            });
+            // ⚡ No artificial hold — fire the request immediately.
+            if (signal?.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
 
             const validation = await api.post(
                 '/bookings/validate-slot',
@@ -3099,16 +3839,67 @@ const BookingQuotationManagement = () => {
         }
         setSelectedBooking(booking);
         setBookingStep(0);
+        setBookingDetailsEditMode(false);
+        setBookingDetailsDraft(null);
         setBookingDetailsModalVisible(true);
     };
 
-    const nextBookingStep = () => {
-        if (bookingStep < 4) setBookingStep(bookingStep + 1);
+    // ⭐ REQUEST #2 — Save edits made directly in the View Details modal.
+    const handleBookingDetailsSave = async () => {
+        if (!selectedBooking || !bookingDetailsDraft) return;
+        const bookingId = getBookingId(selectedBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        setBookingDetailsSaving(true);
+        try {
+                     const payload = {
+                customer_name:    bookingDetailsDraft.customer_name,
+                // ⭐ REQUEST #3: email intentionally omitted — it cannot change.
+                customer_phone:   bookingDetailsDraft.customer_phone,
+                customer_address: bookingDetailsDraft.customer_address,
+                event_type_id:    bookingDetailsDraft.event_type_id,
+                event_date:       bookingDetailsDraft.event_date
+                    ? dayjs(bookingDetailsDraft.event_date).format('YYYY-MM-DD')
+                    : null,
+                event_time:       bookingDetailsDraft.event_time,
+                venue:            bookingDetailsDraft.venue,
+                guests_count:     safeNumber(bookingDetailsDraft.guests_count),
+                service_type:     bookingDetailsDraft.service_type,
+                delivery_method:  bookingDetailsDraft.delivery_method,
+                special_requests: bookingDetailsDraft.special_requests,
+                meal_services:    safeArray(bookingDetailsDraft.meal_services),
+                total_amount:     safeNumber(bookingDetailsDraft.total_amount),
+            };
+
+            const response = await api.put(`/bookings/${bookingId}`, payload);
+            const updated = response?.data?.data || response?.data || payload;
+
+            setSelectedBooking((cur) => ({ ...(cur || {}), ...updated }));
+            setBookingDetailsDraft(null);
+            setBookingDetailsEditMode(false);
+
+            broadcastBookingChanged(bookingId, 'booking_updated');
+            await refreshAllData(false);
+            message.success('Booking updated successfully.');
+        } catch (error) {
+            message.error(
+                error?.response?.data?.message ||
+                'Failed to update booking. Please review the form and try again.'
+            );
+        } finally {
+            setBookingDetailsSaving(false);
+        }
     };
 
-    const prevBookingStep = () => {
-        if (bookingStep > 0) setBookingStep(bookingStep - 1);
+    const handleBookingDetailsCancel = () => {
+        setBookingDetailsDraft(null);
+        setBookingDetailsEditMode(false);
     };
+
+     // (step navigation removed — booking details now show everything at once)
 
     const autoCancelExpiredBooking = async (booking) => {
         const bookingId = getBookingId(booking);
@@ -3219,23 +4010,13 @@ const BookingQuotationManagement = () => {
             cancelText: 'Cancel',
             maskClosable: false,
             keyboard: false,
-                              onOk: async () => {
+                                           onOk: async () => {
                 const bookingNoLocal = bookingNo;
-                let cancelled = false;
 
                 try {
-                    const signal = showLoadingLine('approve', bookingNoLocal);
-
-                    await new Promise((resolve) => {
-                        const timer = setTimeout(resolve, 5000);
-                        signal.addEventListener('abort', () => {
-                            clearTimeout(timer);
-                            cancelled = true;
-                            resolve();
-                        });
-                    });
-
-                    if (cancelled) return;
+                    // ⚡ Fire approval immediately — the loading line is
+                    //    cosmetic only and does not gate the request.
+                    showLoadingLine('approve', bookingNoLocal);
 
                     await confirmBookingMutation.mutateAsync(bookingId);
 
@@ -3296,17 +4077,8 @@ const BookingQuotationManagement = () => {
         try {
             const signal = showLoadingLine('approve', bookingNo);
 
-            await new Promise((resolve) => {
-                const timer = setTimeout(resolve, 5000);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    cancelled = true;
-                    resolve();
-                });
-            });
-
-            if (cancelled) return;
-
+                     // ⚡ No artificial hold — fire the request immediately.
+            if (signal?.aborted) return;
             await confirmBookingMutation.mutateAsync(bookingId);
 
             message.success({
@@ -3343,24 +4115,14 @@ const BookingQuotationManagement = () => {
                 return;
             }
         }
-        setLateApprovalSubmitting(true);
+          setLateApprovalSubmitting(true);
         const bookingNo = safeString(lateApprovalBooking.booking_no);
-
-        let cancelled = false;
 
         try {
             const signal = showLoadingLine('approve', bookingNo);
 
-            await new Promise((resolve) => {
-                const timer = setTimeout(resolve, 5000);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    cancelled = true;
-                    resolve();
-                });
-            });
-
-            if (cancelled) return;
+            // ⚡ No artificial hold — fire the request immediately.
+            if (signal?.aborted) return;
 
             await confirmBookingMutation.mutateAsync(bookingId);
 
@@ -3473,9 +4235,16 @@ const BookingQuotationManagement = () => {
             discount: 0,
             down_payment: 0
         });
-        setFormValues({});
+         setFormValues({});
         setFieldErrors({});
         setIsSaving(false);
+
+        // ⭐ REQUEST #1.6 — Clear rebook tracking when starting a fresh
+        //    (non-rebook) booking so a stale "previous email" from a prior
+        //    rebook does not trigger the "you changed the email" warning.
+        setRebookSourceEmail('');
+        setLiveCustomerEmail('');
+        emailChangeConfirmedRef.current = false;
 
         quotationForm.setFieldsValue({
             delivery_method: 'delivery',
@@ -3485,7 +4254,6 @@ const BookingQuotationManagement = () => {
 
         setQuotationModalVisible(true);
     };
-
     const validateStep = async (step) => {
         const form = quotationForm;
 
@@ -3739,47 +4507,46 @@ const BookingQuotationManagement = () => {
             return sum + (price * qty);
         }, 0);
 
-    const setMealCustomItems = (mealId, selectedIds = []) => {
+        const setMealCustomItems = (mealId, selectedIds = []) => {
         setMealServices(prev => prev.map(meal => {
             if (meal.id !== mealId) return meal;
-            const existingItems = safeArray(meal.custom_items);
-            const nextItems = selectedIds.map(id => {
-                const existing = existingItems.find(i => String(i.menu_item_id) === String(id));
-                if (existing) return existing;
-                const source = menuItemsList.find(item => String(item.menu_item_id || item.id) === String(id));
-                if (!source) return null;
-                return normalizeCustomMealItem(source);
-            }).filter(Boolean);
-            const pkgItems = meal.package_id ? packagesList
-                .find(p => String(p.package_id || p.id) === String(meal.package_id))
-                ?.menu_items?.map(item => normalizeCustomMealItem(item)) || [] : [];
-            const allItems = [...pkgItems, ...nextItems];
-            const uniqueItems = [];
-            const seenIds = new Set();
-            for (const item of allItems) {
-                const id = String(item.menu_item_id || item.id);
-                if (!seenIds.has(id)) {
-                    seenIds.add(id);
-                    uniqueItems.push(item);
-                }
-            }
-            const hasTrayItems = uniqueItems.some(item => item.is_tray || item.pricing_type === 'tray');
-            const totalPrice = calculateCustomItemsPrice(uniqueItems);
+
+            // ⭐ REQUEST #3 — Build the item list ONLY from selectedIds.
+            //    Package items are already part of menuItemsList, so a
+            //    second pass over packagesList created duplicates.
+            const nextItems = selectedIds
+                .map(id => {
+                    const existing = safeArray(meal.custom_items)
+                        .find(i => String(i.menu_item_id) === String(id));
+                    if (existing) return existing;
+                    const source = menuItemsList.find(
+                        item => String(item.menu_item_id || item.id) === String(id)
+                    );
+                    if (!source) return null;
+                    return normalizeCustomMealItem(source);
+                })
+                .filter(Boolean);
+
+            const hasTrayItems = nextItems.some(item => item.is_tray || item.pricing_type === 'tray');
+            const totalPrice = calculateCustomItemsPrice(nextItems);
+
             return {
                 ...meal,
-                menu_source: 'custom',
-                custom_items: uniqueItems,
-                menu_item_id: uniqueItems.length === 1 ? uniqueItems[0].menu_item_id : null,
-                menu_name: uniqueItems.map(i => i.item_name).join(', '),
+                custom_items: nextItems,
+                menu_item_id: nextItems.length === 1 ? nextItems[0].menu_item_id : null,
+                menu_name: nextItems.map(i => i.item_name).join(', '),
                 pricing_type: hasTrayItems ? 'tray' : 'per_pax',
                 price_per_head: totalPrice,
                 total_meal_amount: hasTrayItems
-                    ? uniqueItems.reduce((sum, item) => sum + (safeNumber(item.unit_price) * safeNumber(item.tray_quantity || 1)), 0)
-                    : safeNumber(meal.pax) * totalPrice
+                    ? nextItems.reduce(
+                        (sum, item) =>
+                            sum + safeNumber(item.unit_price) * safeNumber(item.tray_quantity || 1),
+                        0
+                    )
+                    : safeNumber(meal.pax) * totalPrice,
             };
         }));
     };
-
     const updateMealCustomItem = (mealId, menuItemId, field, value) => {
         setMealServices(prev => prev.map(meal => {
             if (meal.id !== mealId) return meal;
@@ -3982,15 +4749,24 @@ const BookingQuotationManagement = () => {
         setMenuSelectionMode('menu_items');
     };
 
-    const handleSelectPackage = (packageId) => {
+     const handleSelectPackage = (packageId) => {
         const pkg = packagesList.find(p => String(p.package_id || p.id) === String(packageId));
         if (pkg && selectedMealId) {
             const pkgItems = pkg.menu_items || pkg.items || [];
             const itemIds = pkgItems.map(item => String(item.menu_item_id || item.id));
-            setMealCustomItems(selectedMealId, itemIds);
-            updateMealService(selectedMealId, 'package_id', packageId);
+
+            // ⭐ ORDER MATTERS:
+            // 1. menu_source clears custom_items — so set it FIRST.
+            // 2. package_id repopulates custom_items from the package.
+            // 3. setMealCustomItems then enforces the exact set (no duplicates).
             updateMealService(selectedMealId, 'menu_source', 'package');
-            const totalPrice = pkgItems.reduce((sum, item) => sum + safeNumber(item.price || 0), 0);
+            updateMealService(selectedMealId, 'package_id', packageId);
+            setMealCustomItems(selectedMealId, itemIds);
+
+            const totalPrice = pkgItems.reduce(
+                (sum, item) => sum + safeNumber(item.price || item.additional_cost || 0),
+                0
+            );
             updateMealService(selectedMealId, 'price_per_head', totalPrice);
         }
         setMenuSelectionModalVisible(false);
@@ -4124,8 +4900,11 @@ const BookingQuotationManagement = () => {
                 discount: safeNumber(billingAdjustments.discount),
                 down_payment: safeNumber(billingAdjustments.down_payment),
                 special_requests: allValues.special_requests || '',
-                service_type: serviceType,
-                delivery_method: serviceType === 'buffet' ? 'delivery' : (allValues.delivery_method || 'pickup'),
+                                               service_type: serviceType,
+                // ⭐ FIX: Read the EXACT live value from the form dropdown, not the stale allValues state.
+                delivery_method: serviceType === 'buffet' 
+                    ? 'delivery' 
+                    : (quotationForm.getFieldValue('delivery_method') === 'delivery' ? 'delivery' : 'pickup'),
                 menu_selection_type: 'custom',
                 meal_services: formattedMealServices,
                 promo_id: selectedPromo ? Number(selectedPromo.promotion_id || selectedPromo.id) : null,
@@ -4134,16 +4913,73 @@ const BookingQuotationManagement = () => {
                 promo_discount_type: selectedPromo?.discount_type || null,
                 promo_discount_value: selectedPromo ? safeNumber(selectedPromo.discount_value) : null,
                 promo_discount_amount: selectedPromo ? Number(promoDiscountAmount.toFixed(2)) : null,
-                booking_status: 'pending_approval',
+                               booking_status: 'pending_approval',
                 booking_scope: eventScope === 'multi_day' ? 'multi_day' : 'regular',
+                // ⭐ Created from the admin panel → always a walk-in booking.
+                //    The mobile app sends 'mobile' and the website sends 'web'.
+                booking_source: editingBooking?.booking_source || 'walk_in',
             };
 
-            Object.keys(bookingData).forEach(key => {
+                   Object.keys(bookingData).forEach(key => {
                 if (bookingData[key] === undefined || bookingData[key] === null) {
                     delete bookingData[key];
                 }
             });
 
+            // ⭐ REQUEST #8 — prevent accidental duplicate bookings.
+            if (!editingBooking) {
+                const duplicate = allLoadedBookings.find((b) => {
+                    const status = safeString(b.booking_status).toLowerCase();
+                    if (['cancelled', 'rejected'].includes(status)) return false;
+                    return (
+                        safeString(b.customer_email).toLowerCase() ===
+                            safeString(bookingData.customer_email).toLowerCase() &&
+                        safeString(b.event_date) === safeString(bookingData.event_date) &&
+                        safeString(b.event_time) === safeString(bookingData.event_time)
+                    );
+                });
+
+                if (duplicate) {
+                    const proceed = await new Promise((resolve) => {
+                        modal.confirm({
+                            title: 'Possible Duplicate Booking',
+                            content: `A booking already exists for this customer on ${bookingData.event_date} at ${bookingData.event_time} (${duplicate.booking_no}). Create anyway?`,
+                            okText: 'Create Anyway',
+                            cancelText: 'Cancel',
+                            maskClosable: false,
+                            keyboard: false,
+                            onOk: () => resolve(true),
+                            onCancel: () => resolve(false),
+                        });
+                    });
+                                      if (!proceed) {
+                        saveLockRef.current = false;
+                        setIsSaving(false);
+                        return;
+                    }
+                }
+
+                               // ⭐ AUTOMATIC EMAIL VALIDATION
+                //    The email field already shows a live banner
+                //    ("account exists → reused" / "new email → new account").
+                //    We only need one final safety net here:
+                //    if the operator typed a NEW email that already exists
+                //    (e.g. the debounce hasn't caught up yet), sync the
+                //    state so the backend will reuse the account.
+                //
+                //    No blocking modal. No way to accidentally create a
+                //    duplicate account from the UI.
+                const candidateEmail = safeString(bookingData.customer_email).trim().toLowerCase();
+                if (candidateEmail && emailLookup?.found && emailLookup.email === candidateEmail) {
+                    // Confirmed reuse — nothing to do.
+                    console.debug(
+                        '[booking] Reusing existing customer',
+                        emailLookup.customer?.customer_id,
+                        'for email',
+                        candidateEmail
+                    );
+                }
+            }
             console.log('📝 Sending booking data:', JSON.stringify(bookingData, null, 2));
 
             const isUpdate = !!editingBooking?.booking_id;
@@ -4154,8 +4990,23 @@ const BookingQuotationManagement = () => {
                 timeout: 12000
             });
 
-            const responsePayload = response?.data?.data || response?.data || {};
+                      const responsePayload = response?.data?.data || response?.data || {};
             const bookingNo = responsePayload?.booking_no || 'N/A';
+
+            // ⭐ OPTIMISTIC UI UPDATE — Update the table INSTANTLY before refetching
+            if (isUpdate && responsePayload?.booking_id) {
+                // Patch the cache with the new values immediately
+                queryClient.setQueryData(bookingKeys.detail(responsePayload.booking_id), (old) => ({
+                    ...old,
+                    ...responsePayload,
+                    delivery_method: bookingData.delivery_method,
+                    service_type: bookingData.service_type,
+                }));
+
+                // Tell every active list to refresh in the background without blocking the UI
+                queryClient.invalidateQueries({ queryKey: bookingKeys.lists(), refetchType: 'none' });
+            }
+
             message.success({
                 content: isUpdate ? ` Booking ${bookingNo} updated successfully!` : ` Booking ${bookingNo} created successfully!`,
                 duration: 3,
@@ -4178,10 +5029,14 @@ const BookingQuotationManagement = () => {
                 discount: 0,
                 down_payment: 0
             });
-                     setFormValues({});
+                                        setFormValues({});
+            // ⭐ REQUEST #1.6 — Clear rebook tracking after a successful save
+            //    so the next walk-in does not inherit a stale "previous email".
+            setRebookSourceEmail('');
+            setLiveCustomerEmail('');
+            emailChangeConfirmedRef.current = false;
             setQuotationModalVisible(false);
             setCreateBookingStep(0);
-
             void refreshAllData(false);
 
             // ⭐⭐⭐ BUG FIX #3:
@@ -4283,7 +5138,7 @@ const BookingQuotationManagement = () => {
                                     />
                                 </Form.Item>
                             </Col>
-                            <Col span={12}>
+                                                                                <Col span={12}>
                                 <Form.Item
                                     name="customer_email"
                                     label="Email Address"
@@ -4291,17 +5146,137 @@ const BookingQuotationManagement = () => {
                                         { required: true, message: 'Email is required' },
                                         { type: 'email', message: 'Invalid email format' }
                                     ]}
-                                    validateStatus={fieldErrors.customer_email ? 'error' : ''}
-                                    help={fieldErrors.customer_email}
+                                    validateStatus={
+                                        fieldErrors.customer_email
+                                            ? 'error'
+                                            : emailLookup?.found
+                                                ? 'success'
+                                                : ''
+                                    }
+                                    help={
+                                        editingBooking
+                                            ? 'Email is locked — it is the customer identity key.'
+                                            : fieldErrors.customer_email
+                                                ? fieldErrors.customer_email
+                                                : null
+                                    }
                                 >
                                     <Input
                                         placeholder="Enter email address"
                                         prefix={<MailOutlined className="bqm-input-icon" />}
                                         size="large"
                                         className="bqm-input-professional"
+                                        // ⭐ Editing an existing booking still
+                                        //    locks the email (identity key).
+                                        disabled={Boolean(editingBooking)}
+                                        // ⭐ Live mirror so the "you changed
+                                        //    the email" warning below can fire
+                                        //    on every keystroke.
+                                        onChange={(e) => setLiveCustomerEmail(e.target.value)}
+                                        suffix={
+                                            emailLookupLoading ? (
+                                                <LoadingOutlined style={{ color: '#9ca3af' }} />
+                                            ) : null
+                                        }
                                     />
+                                                                       {/*
+                                      ⭐ The "account already exists" banner is
+                                      shown ONLY while editing an existing
+                                      booking — it is hidden during a fresh
+                                      create and during a rebook so the
+                                      operator isn't nagged about a customer
+                                      identity that is already settled.
+                                    */}
+                                    {editingBooking && !fieldErrors.customer_email && emailLookup && emailLookup.found && (
+                                        <Alert
+                                            type="success"
+                                            showIcon
+                                            icon={<CheckCircleOutlined />}
+                                            style={{ marginTop: 6, borderRadius: 8 }}
+                                            message={
+                                                <span>
+                                                    This Gmail account already exists
+                                                    {emailLookup.customer?.full_name
+                                                        ? ` — ${safeString(emailLookup.customer.full_name)}`
+                                                        : ''}.
+                                                    The booking is linked to{' '}
+                                                    <strong>the existing account</strong>{' '}
+                                                    — no new customer is created.
+                                                </span>
+                                            }
+                                        />
+                                    )}
+
+                                    {/*
+                                      ⭐ THE WARNING YOU ASKED FOR.
+
+                                      Fires ONLY when:
+                                        • this is a REBOOK (rebookSourceEmail is set), AND
+                                        • the operator has typed a DIFFERENT email
+                                          than the one on the original booking.
+
+                                      Same email → no banner.
+                                      Different email → yellow warning, not blocking.
+                                    */}
+                                    {(() => {
+                                        if (editingBooking || !rebookSourceEmail) return null;
+
+                                        const typed = safeString(liveCustomerEmail).trim().toLowerCase();
+                                        const original = rebookSourceEmail.trim().toLowerCase();
+
+                                        if (!typed || typed === original) return null;
+
+                                        return (
+                                            <Alert
+                                                type="warning"
+                                                showIcon
+                                                icon={<WarningOutlined />}
+                                                style={{
+                                                    marginTop: 6,
+                                                    borderRadius: 8,
+                                                    background: '#fffbeb',
+                                                    border: '1px solid #fcd34d',
+                                                }}
+                                                message={
+                                                    <div style={{ lineHeight: 1.5 }}>
+                                                        <div style={{ fontWeight: 600, color: '#92400e' }}>
+                                                            You are booking under a DIFFERENT email
+                                                        </div>
+                                                        <div style={{ fontSize: 12, color: '#78350f', marginTop: 4 }}>
+                                                            The original booking was made with{' '}
+                                                            <strong>{rebookSourceEmail}</strong>, but you are now
+                                                            entering <strong>{liveCustomerEmail}</strong>.
+                                                            This booking will <strong>NOT</strong> be linked to the
+                                                            original customer — it will belong to a{' '}
+                                                            <strong>different email account</strong>.
+                                                        </div>
+                                                        <div style={{ fontSize: 12, color: '#78350f', marginTop: 6 }}>
+                                                            To keep the same customer, restore{' '}
+                                                            <Button
+                                                                type="link"
+                                                                size="small"
+                                                                style={{ padding: 0, height: 'auto', fontSize: 12, fontWeight: 600 }}
+                                                                onClick={() => {
+                                                                    quotationForm.setFieldValue(
+                                                                        'customer_email',
+                                                                        rebookSourceEmail
+                                                                    );
+                                                                    setLiveCustomerEmail(rebookSourceEmail);
+                                                                }}
+                                                            >
+                                                                {rebookSourceEmail}
+                                                            </Button>
+                                                            .
+                                                        </div>
+                                                    </div>
+                                                }
+                                            />
+                                        );
+                                    })()}
                                 </Form.Item>
                             </Col>
+
+
                         </Row>
                         <Row gutter={16}>
                             <Col span={12}>
@@ -4522,10 +5497,22 @@ const BookingQuotationManagement = () => {
                         </div>
                         <Radio.Group
                             value={serviceType}
-                            onChange={(e) => {
+                                                        onChange={(e) => {
                                 const nextServiceType = e.target.value;
                                 setServiceType(nextServiceType);
-                                if (nextServiceType === 'buffet') {
+
+                                // ⭐ SERVICE TYPE ↔ EVENT SCOPE RESTRICTION
+                                //    Packed/Tray → force single-day (regular).
+                                //    Buffet → allow multi-day.
+                                if (nextServiceType === 'packed' || nextServiceType === 'tray') {
+                                    setEventScope('regular');
+                                    setMultiDayDays(2); // reset multi-day counter
+                                    // Delivery method defaults to pickup for
+                                    // packed/tray; the operator can switch.
+                                    if (!quotationForm.getFieldValue('delivery_method')) {
+                                        quotationForm.setFieldValue('delivery_method', 'pickup');
+                                    }
+                                } else if (nextServiceType === 'buffet') {
                                     quotationForm.setFieldValue('delivery_method', 'delivery');
                                 }
                             }}
@@ -4549,11 +5536,13 @@ const BookingQuotationManagement = () => {
                         <div className="bqm-section-label-professional">
                             Event Scope
                         </div>
-                        <Radio.Group
+                                               <Radio.Group
                             value={eventScope}
                             onChange={(e) => setEventScope(e.target.value)}
                             className="bqm-scope-radio-professional"
                             size="large"
+                            // ⭐ Packed/Tray → Event Scope locked to Regular.
+                            disabled={serviceType === 'packed' || serviceType === 'tray'}
                         >
                             {eventScopeOptions.map(option => (
                                 <Radio.Button key={option.value} value={option.value} className="bqm-scope-option-professional">
@@ -4567,7 +5556,17 @@ const BookingQuotationManagement = () => {
                             ))}
                         </Radio.Group>
 
-                        {eventScope === 'multi_day' && (
+                                                {(serviceType === 'packed' || serviceType === 'tray') && (
+                            <Alert
+                                type="info"
+                                showIcon
+                                style={{ marginTop: 12, borderRadius: 8 }}
+                                message="Packed and Tray bookings are always single-day (Regular) events."
+                                description="Multi-day scheduling is only available for Buffet service."
+                            />
+                        )}
+
+                        {eventScope === 'multi_day' && serviceType !== 'packed' && serviceType !== 'tray' && (
                             <div className="bqm-multi-day-config-professional">
                                 <div className="bqm-multi-day-label">Number of Days</div>
                                 <Space size="middle" align="center">
@@ -4736,15 +5735,25 @@ const BookingQuotationManagement = () => {
                                             </div>
                                         </Col>
                                     </Row>
-                                    {meal.custom_items?.length > 0 && (
+                                                                       {meal.custom_items?.length > 0 && (
                                         <div className="bqm-meal-selected-items">
+                                            {meal.package_id && (
+                                                <div className="bqm-meal-selected-package">
+                                                    <AppstoreOutlined /> {meal.menu_name || 'Package'}
+                                                </div>
+                                            )}
                                             <div className="bqm-selected-items-label">Selected Items:</div>
                                             <div className="bqm-selected-items-list">
                                                 {meal.custom_items.map((item, idx) => {
                                                     const isTray = item.is_tray || item.pricing_type === 'tray';
                                                     return (
-                                                        <Tag key={idx} closable onClose={() => removeMealCustomItem(meal.id, item.menu_item_id)}>
-                                                            {item.item_name}
+                                                        <Tag
+                                                            key={idx}
+                                                            className={meal.package_id ? 'bqm-package-item-tag' : ''}
+                                                            closable
+                                                            onClose={() => removeMealCustomItem(meal.id, item.menu_item_id)}
+                                                        >
+                                                            <span className="bqm-package-item-name">{item.item_name}</span>
                                                             {isTray
                                                                 ? ` (Tray: ${formatCurrency(item.unit_price)} × ${safeNumber(item.tray_quantity || 1)})`
                                                                 : ` (${formatCurrency(item.unit_price)})`}
@@ -4778,13 +5787,12 @@ const BookingQuotationManagement = () => {
                         </div>
                     </div>
 
-                    <div className="bqm-form-section-professional">
+                                      <div className="bqm-form-section-professional">
                         <div className="bqm-section-label-professional">
                             Delivery Method
                         </div>
                         <Form.Item
                             name="delivery_method"
-                            initialValue="delivery"
                             style={{ maxWidth: 300 }}
                         >
                             <Select
@@ -5059,7 +6067,7 @@ const BookingQuotationManagement = () => {
                             </div>
                         </div>
 
-                        <div className="bqm-review-card-professional">
+                                            <div className="bqm-review-card-professional">
                             <div className="bqm-review-card-header">
                                 <ScheduleOutlined /> Service
                             </div>
@@ -5068,9 +6076,12 @@ const BookingQuotationManagement = () => {
                                     <span>Type</span>
                                     <span className="bqm-review-value"><Tag color="cyan">{serviceTypeOptions.find(s => s.value === serviceType)?.label || serviceType}</Tag></span>
                                 </div>
-                                <div className="bqm-review-item">
+                                                              <div className="bqm-review-item">
                                     <span>Delivery</span>
-                                    <span className="bqm-review-value"><Tag color="geekblue">{allValues.delivery_method === 'delivery' ? 'Delivery' : 'Pickup'}</Tag></span>
+                                    <span className="bqm-review-value">
+                                        {/* ⭐ FIX: Read directly from the live form field, not the stale allValues object */}
+                                        <Tag color="geekblue">{quotationForm.getFieldValue('delivery_method') === 'delivery' ? 'Delivery' : 'Pickup'}</Tag>
+                                    </span>
                                 </div>
                                 <div className="bqm-review-item">
                                     <span>Menu Type</span>
@@ -5648,203 +6659,110 @@ const BookingQuotationManagement = () => {
         );
     };
 
-    const handleCalendarDayClick = (dateValue) => {
-        const date = dayjs(dateValue);
-        if (date.isBefore(dayjs().startOf('day'))) {
-            message.warning('Cannot edit availability for past dates');
+
+
+
+
+    // ⭐ All calendar handlers (handleCalendarDayClick, saveCalendarAvailability,
+    //    resetCalendarAvailability, dateCellRender, openCalendarBookingDetails,
+    //    approvedCalendarEvents) moved to BookingCalendarPage.
+
+
+
+
+
+    // ⭐ REQUEST #6 — Rebook a customer from a previous booking.
+    const handleRebook = async (booking) => {
+        if (!booking) {
+            message.error('No booking selected');
             return;
         }
-        const existing = getCalendarAvailability(date);
-        setSelectedCalendarDate(date);
-        let status = 'available';
-        let operationMode = 'normal';
-        let maxBookings = null;
-        let notes = '';
-        if (existing) {
-            status = existing.status || 'available';
-            maxBookings = existing.max_bookings || null;
-            operationMode = existing.operation_mode || (maxBookings ? 'limited_slot' : 'normal');
-            notes = existing.notes || '';
-        }
-        availabilityForm.setFieldsValue({
-            operation_mode: operationMode,
-            status: status,
-            max_bookings: maxBookings,
-            notes: notes
-        });
-        setAvailabilityModalVisible(true);
-    };
-
-    const saveCalendarAvailability = (values) => {
-        const date = selectedCalendarDate.format('YYYY-MM-DD');
-        const status = safeString(values.status, 'available');
-        const operationMode = safeString(values.operation_mode, 'normal');
-        const maxBookings = operationMode === 'limited_slot' && values.max_bookings ? safeNumber(values.max_bookings) : null;
-        const payload = {
-            status: status,
-            operation_mode: operationMode,
-            max_bookings: maxBookings,
-            notes: safeString(values.notes)
-        };
-        saveCalendarAvailabilityMutation.mutate({
-            date: date,
-            data: payload
-        }, {
-            onSuccess: () => {
-                message.success(`Availability for ${date} updated to ${status}`);
-                setAvailabilityModalVisible(false);
-                availabilityForm.resetFields();
-                refetchCalendarAvailability();
-                refetchCalendarEvents();
-            },
-            onError: (error) => {
-                console.error('Save availability error:', error);
-                message.error(error?.response?.data?.message || 'Failed to update availability');
-            }
-        });
-    };
-
-    const resetCalendarAvailability = () => {
-        const date = selectedCalendarDate.format('YYYY-MM-DD');
-        modal.confirm({
-            title: 'Reset Date Availability',
-            content: `Reset ${date} to the default available state? This will remove any custom settings.`,
-            okText: 'Reset',
-            maskClosable: false,
-            keyboard: false,
-            onOk: () => {
-                deleteCalendarAvailabilityMutation.mutate(date, {
-                    onSuccess: () => {
-                        message.success(`${date} reset to available`);
-                        setAvailabilityModalVisible(false);
-                        refetchCalendarAvailability();
-                    },
-                    onError: (error) => {
-                        message.error(error?.response?.data?.message || 'Failed to reset availability');
-                    }
-                });
-            }
-        });
-    };
-
-    const approvedCalendarEvents = useMemo(() => {
-        return events.filter((event) => {
-            return ['confirmed', 'rescheduled'].includes(safeString(event.status));
-        });
-    }, [events]);
-
-    const dateCellRender = (dateValue) => {
-        const date = dateValue.format('YYYY-MM-DD');
-        const dayEvents = approvedCalendarEvents.filter((event) => {
-            return safeString(event.start).split('T')[0] === date;
-        });
-        const availability = getCalendarAvailability(dateValue);
-        const isPast = dayjs(date).isBefore(dayjs().startOf('day'));
-
-        const hasCustomSetting = availability !== undefined && availability !== null;
-        const shouldShowBadge = hasCustomSetting && availability.status !== 'available';
-        const hasLimitedSlots = hasCustomSetting &&
-                               availability.status === 'available' &&
-                               (availability.operation_mode === 'limited_slot' || availability.max_bookings !== null) &&
-                               availability.max_bookings !== null &&
-                               availability.max_bookings !== undefined;
-
-        return (
-            <div
-                className="bqm-calendar-date-cell"
-                onClick={(e) => {
-                    e.stopPropagation();
-                    if (isPast) {
-                        message.warning('Cannot edit availability for past dates');
-                        return;
-                    }
-                    handleCalendarDayClick(dateValue);
-                }}
-                style={{
-                    cursor: isPast ? 'not-allowed' : 'pointer',
-                    opacity: isPast ? 0.7 : 1
-                }}
-            >
-                {(shouldShowBadge || hasLimitedSlots) && (
-                    <div
-                        className="bqm-calendar-availability-badge"
-                        style={{
-                            backgroundColor: shouldShowBadge
-                                ? getAvailabilityConfig(availability.status).background
-                                : '#f0fdf4',
-                            color: shouldShowBadge
-                                ? getAvailabilityConfig(availability.status).color
-                                : '#10b981',
-                            borderLeft: `3px solid ${shouldShowBadge
-                                ? getAvailabilityConfig(availability.status).color
-                                : '#10b981'}`
-                        }}
-                    >
-                        {shouldShowBadge ? getAvailabilityConfig(availability.status).icon : <UnlockOutlined />}
-                        <span>
-                            {shouldShowBadge
-                                ? getAvailabilityConfig(availability.status).text
-                                : `Limited: ${availability.max_bookings} slots`}
-                        </span>
-                    </div>
-                )}
-
-                <div className="bqm-calendar-events-wrapper">
-                    {dayEvents.slice(0, 2).map((event) => (
-                        <Tooltip key={event.id} title="Click to view booking details">
-                            <button
-                                type="button"
-                                className="bqm-calendar-event-item"
-                                onClick={(clickEvent) => {
-                                    clickEvent.stopPropagation();
-                                    openCalendarBookingDetails(event);
-                                }}
-                            >
-                                <span className="bqm-calendar-event-time">
-                                    {safeString(event.extendedProps?.event_time, 'Time TBD')}
-                                </span>
-                                <span className="bqm-calendar-event-name">
-                                    {safeString(event.title).split(' - ')[0]}
-                                </span>
-                            </button>
-                        </Tooltip>
-                    ))}
-                    {dayEvents.length > 2 && (
-                        <div className="bqm-calendar-event-more">
-                            +{dayEvents.length - 2} more
-                        </div>
-                    )}
-                </div>
-
-                {!isPast && (
-                    <div className="bqm-calendar-date-hint">
-                        <EditOutlined style={{ fontSize: 8, opacity: 0.5 }} />
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    const openCalendarBookingDetails = async (event) => {
-        if (!event || !event.id) {
-            message.warning('Invalid event data');
+        const bookingId = getBookingId(booking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
             return;
         }
+
         try {
-            const response = await api.get(`/bookings/${event.id}`);
-            const booking = response?.data?.data || response?.data || null;
-            if (!booking) {
-                message.warning('Booking details could not be loaded');
+            const response = await api.get(`/bookings/${bookingId}`);
+            const source = response?.data?.data || response?.data || booking;
+            if (!source) {
+                message.error('Failed to load booking details');
                 return;
             }
-            openBookingDetails(booking);
+
+            quotationForm.resetFields();
+            setEditingBooking(null);           // ⭐ ensure a NEW record on save
+            setSelectedBooking(source);
+            setCreateBookingStep(0);
+
+            const loadedServiceType = source.service_type || 'buffet';
+            setServiceType(loadedServiceType);
+            setEventScope(
+                source.is_multi_day || source.booking_scope === 'multi_day'
+                    ? 'multi_day'
+                    : 'regular'
+            );
+            guestCountRef.current = safeNumber(source.guests_count, 10);
+            setMultiDayDays(safeNumber(source.days, 1) > 1 ? safeNumber(source.days, 1) : 2);
+
+                      const addressParts = splitAddressParts(source);
+
+            // ⭐ REQUEST #1.5 — Rebooking prefills ONLY customer + address.
+            //    All event-specific fields are reset to their defaults so
+            //    the operator must re-enter them.
+            quotationForm.setFieldsValue({
+                customer_name:    source.customer_name,
+                customer_email:   source.customer_email,
+                customer_phone:   source.customer_phone,
+                address_line_1:   addressParts.address_line_1,
+                city:             addressParts.city,
+                province:         addressParts.province,
+                postal_code:      addressParts.postal_code,
+                // Event-specific fields — intentionally cleared.
+                venue:            undefined,
+                event_type_id:    undefined,
+                guests_count:     10,
+                event_date:       null,
+                event_time:       '12:00 PM',
+                delivery_method:  'delivery',
+                special_requests: undefined,
+            });
+
+                        // ⭐ REQUEST #1.5 — Reset ALL pricing fields. Only customer
+            //    identity and address carry over from the previous booking.
+            setBillingAdjustments({
+                transportation_fee: 0,
+                setup_fee: 0,
+                service_crew_fee: 0,
+                equipment_rental: 0,
+                extra_food_fee: 0,
+                discount: 0,
+                down_payment: 0,
+            });
+
+                       // ⭐ REQUEST #1.5 — Do NOT carry over meal services, packages,
+            //    or menu selections. The customer must re-choose them.
+            setMealServices([]);
+
+            // ⭐ REQUEST #1.6 — Remember the email the source booking used
+            //    so the "you changed the email" warning can compare against
+            //    it, and seed the live mirror with the same value so the
+            //    warning does not fire on first open.
+            const sourceEmail = safeString(source.customer_email, '');
+            setRebookSourceEmail(sourceEmail);
+            setLiveCustomerEmail(sourceEmail);
+
+            setQuotationModalVisible(true);
+            message.info('Rebooking — set a new event date and review before saving.');
         } catch (error) {
-            message.error(error?.response?.data?.message || 'Failed to load booking details');
+            message.error(
+                error?.response?.data?.message || 'Failed to start rebooking'
+            );
         }
     };
 
-     const openEditBooking = async (booking) => {
-        if (!booking) {
+     const openEditBooking = async (booking) => {        if (!booking) {
             message.error('No booking selected for editing');
             return;
         }
@@ -5868,8 +6786,22 @@ const BookingQuotationManagement = () => {
             setEventScope(details.is_multi_day || details.booking_scope === 'multi_day' ? 'multi_day' : 'regular');
             guestCountRef.current = safeNumber(details.guests_count, 10);
             setMultiDayDays(safeNumber(details.days, 1) > 1 ? safeNumber(details.days, 1) : 2);
-
             const addressParts = splitAddressParts(details);
+            
+                      // ⭐ FIX: Normalize the DB value so it matches the dropdown options exactly ('delivery' or 'pickup')
+            const normalizeDeliveryMethodValue = (val) => {
+                const str = String(val || '').toLowerCase();
+                if (str.includes('deliver')) return 'delivery';
+                if (str.includes('pick')) return 'pickup';
+                return 'pickup'; // fallback
+            };
+
+            const rawDeliveryMethod = details.delivery_method || details.packed_tray_mode || details._raw?.service_event?.delivery_method;
+            
+            const loadedDeliveryMethod = loadedServiceType === 'buffet' 
+                ? 'delivery' 
+                : normalizeDeliveryMethodValue(rawDeliveryMethod);
+
             quotationForm.setFieldsValue({
                 customer_name: details.customer_name,
                 customer_email: details.customer_email,
@@ -5879,7 +6811,7 @@ const BookingQuotationManagement = () => {
                 guests_count: details.guests_count,
                 event_date: details.event_date ? dayjs(details.event_date) : null,
                 event_time: details.event_time,
-                delivery_method: loadedServiceType === 'buffet' ? 'delivery' : (details.delivery_method || 'pickup'),
+                delivery_method: loadedDeliveryMethod,
                 special_requests: details.special_requests,
                 address_line_1: addressParts.address_line_1,
                 city: addressParts.city,
@@ -5936,8 +6868,116 @@ const BookingQuotationManagement = () => {
         }
     };
 
-      const handleTodayBookingApprove = async () => {
-        if (!todayBookingData) return;
+    // ⭐ REQUEST #3 — Handlers for the "Pending Booking Today" modal.
+    const handleTodayPendingApprove = async () => {
+        if (!todayPendingBooking) return;
+        const bookingId = getBookingId(todayPendingBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        setTodayPendingSubmitting(true);
+        const hideLoading = message.loading('Approving booking...', 0);
+        try {
+            await confirmBookingMutation.mutateAsync(bookingId);
+            hideLoading();
+            message.success(
+                `Booking ${safeString(todayPendingBooking.booking_no)} approved.`
+            );
+
+            try {
+                const key = 'today_pending_dismissed';
+                const prev = JSON.parse(localStorage.getItem(key) || '[]');
+                if (!prev.includes(bookingId)) {
+                    localStorage.setItem(key, JSON.stringify([...prev, bookingId]));
+                }
+            } catch (e) { /* ignore quota */ }
+
+            setTodayPendingModalVisible(false);
+            setTodayPendingBooking(null);
+            await refreshAllData(false);
+        } catch (error) {
+            hideLoading();
+            message.error(
+                error?.response?.data?.message ||
+                'Failed to approve booking.'
+            );
+        } finally {
+            setTodayPendingSubmitting(false);
+        }
+    };
+
+    const handleTodayPendingRemove = async () => {
+        if (!todayPendingBooking) return;
+        const bookingId = getBookingId(todayPendingBooking);
+        if (!bookingId) {
+            message.error('Invalid booking ID');
+            return;
+        }
+
+        const confirmed = await new Promise((resolve) => {
+            modal.confirm({
+                title: 'Remove this booking?',
+                content: (
+                    <div>
+                        <p>
+                            Booking <strong>{safeString(todayPendingBooking.booking_no)}</strong>{' '}
+                            will be <strong>cancelled</strong> and moved to history.
+                        </p>
+                        <p style={{ marginTop: 8, color: '#ef4444' }}>
+                            <WarningOutlined /> This action cannot be undone.
+                        </p>
+                    </div>
+                ),
+                okText: 'Remove Booking',
+                okButtonProps: { danger: true },
+                cancelText: 'Keep',
+                maskClosable: false,
+                keyboard: false,
+                onOk: () => resolve(true),
+                onCancel: () => resolve(false),
+            });
+        });
+
+        if (!confirmed) return;
+
+        setTodayPendingSubmitting(true);
+        const hideLoading = message.loading('Removing booking...', 0);
+        try {
+            await api.post(`/bookings/${bookingId}/cancel-with-reason`, {
+                reason: 'Auto-removed: booking was never approved and the event date has arrived.',
+            });
+
+            hideLoading();
+            message.success(
+                `Booking ${safeString(todayPendingBooking.booking_no)} removed.`
+            );
+
+            try {
+                const key = 'today_pending_dismissed';
+                const prev = JSON.parse(localStorage.getItem(key) || '[]');
+                if (!prev.includes(bookingId)) {
+                    localStorage.setItem(key, JSON.stringify([...prev, bookingId]));
+                }
+            } catch (e) { /* ignore quota */ }
+
+            setTodayPendingModalVisible(false);
+            setTodayPendingBooking(null);
+            broadcastBookingChanged(bookingId, 'cancelled');
+            await refreshAllData(false);
+        } catch (error) {
+            hideLoading();
+            message.error(
+                error?.response?.data?.message ||
+                'Failed to remove booking.'
+            );
+        } finally {
+            setTodayPendingSubmitting(false);
+        }
+    };
+
+      const handleTodayBookingApprove = async () => {        if (!todayBookingData) return;
         const bookingId = getBookingId(todayBookingData);
         if (!bookingId) {
             message.error('Invalid booking ID');
@@ -5945,21 +6985,11 @@ const BookingQuotationManagement = () => {
         }
         const bookingNo = safeString(todayBookingData.booking_no);
 
-              let cancelled = false;
-
         try {
             const signal = showLoadingLine('approve', bookingNo);
 
-            await new Promise((resolve) => {
-                const timer = setTimeout(resolve, 5000);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    cancelled = true;
-                    resolve();
-                });
-            });
-
-            if (cancelled) return;
+            // ⚡ No artificial hold — fire the request immediately.
+            if (signal?.aborted) return;
 
             await confirmBookingMutation.mutateAsync(bookingId);
 
@@ -6071,23 +7101,20 @@ const BookingQuotationManagement = () => {
 
     /**
      * ⭐ Wraps any async action with the loading line + abort handling.
-     * The loading line shows FIRST, waits 5 seconds (giving the user
-     * time to Cancel), and ONLY THEN fires the backend request.
+     *
+     * ⚡ FAST PATH: the backend request fires IMMEDIATELY. The loading
+     * line is purely cosmetic — it appears while the request runs and
+     * disappears when it settles. The Cancel button aborts the axios
+     * request via the AbortSignal (the request itself carries the signal),
+     * so the user still has full control without the 5-second wait that
+     * previously blocked every approval / cancel / reschedule.
      */
     const runWithLoadingLine = useCallback(async (type, record, fn) => {
         const bookingNo = safeString(record?.booking_no || record?.order_number || record?.id || '');
         const signal = showLoadingLine(type, bookingNo);
-        const HOLD_MS = 5000;
 
         try {
-            await new Promise((resolve, reject) => {
-                const timer = setTimeout(resolve, HOLD_MS);
-                signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    reject(new DOMException('Aborted', 'AbortError'));
-                });
-            });
-
+            // Fire the real request right away — no artificial hold.
             const result = await fn(signal);
             return result;
         } catch (error) {
@@ -6307,15 +7334,12 @@ const BookingQuotationManagement = () => {
     };
 
     const regularBookingColumns = [
-         {
+             {
             title: 'BOOKING #',
             dataIndex: 'booking_no',
             key: 'booking_no',
             width: 140,
             fixed: 'left',
-                    // ⭐ REQUEST #1: colour the booking ID by source.
-            //   mobile  → pink
-            //   walk_in / web → blue
             render: (value, record) => {
                 const idColor = getBookingIdColor(record);
                 return (
@@ -6361,9 +7385,18 @@ const BookingQuotationManagement = () => {
                 );
             }
         },
-        { title: 'SERVICE', key: 'service_type', width: 130, render: (_, record) => <span className="bqm-service-text">{getServiceType(record)}</span> },
-        { title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record?.event_type_id)}</span> },
-        { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
+            { title: 'SERVICE', key: 'service_type', width: 130, render: (_, record) => <span className="bqm-service-text">{getServiceType(record)}</span> },
+{
+    title: 'DELIVERY',
+    key: 'delivery_method',
+    width: 110,
+    render: (_, record) => (
+        <span className="bqm-service-text" style={{ fontWeight: 500 }}>
+            {isDeliveryMethod(record) ? 'Delivery' : 'Pick up'}
+        </span>
+    ),
+},
+{ title: 'EVENT TYPE', key: 'event_type', width: 130, render: (_, record) => <span className="bqm-event-type-text">{getEventTypeName(record?.event_type_id)}</span> },
                {
             title: 'AMOUNT',
             dataIndex: 'total_amount',
@@ -6539,7 +7572,17 @@ const BookingQuotationManagement = () => {
                 );
             }
         },
-        { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
+               { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number"><TeamOutlined /> {safeNumber(value)}</span> },
+               {
+            title: 'DELIVERY',
+            key: 'delivery_method',
+            width: 110,
+            render: (_, record) => (
+                <span className="bqm-service-text" style={{ fontWeight: 500 }}>
+                    {isDeliveryMethod(record) ? 'Delivery' : 'Pick up'}
+                </span>
+            ),
+        },
         { title: 'AMOUNT', dataIndex: 'total_amount', key: 'total_amount', width: 140, align: 'right', render: (value) => <span className="bqm-amount">{formatCurrency(value)}</span> },
                       { title: 'STATUS', dataIndex: 'booking_status', key: 'booking_status', width: 260, render: (value, record) => {
             const config = getStatusConfig(value);
@@ -6628,8 +7671,13 @@ const BookingQuotationManagement = () => {
             }
         },
         { title: 'CUSTOMER', dataIndex: 'customer_name', key: 'customer_name', width: 200 },
-        { title: 'EVENT DATE', dataIndex: 'event_date', key: 'event_date', width: 120, render: (value) => formatDateSafe(value) },
-        { title: 'LOCATION', dataIndex: 'venue', key: 'venue', width: 180, ellipsis: true },
+          { title: 'EVENT DATE', dataIndex: 'event_date', key: 'event_date', width: 120, render: (value) => formatDateSafe(value) },
+{ title: 'DELIVERY', key: 'delivery_method', width: 110, render: (_, record) => (
+    <span className="bqm-service-text" style={{ fontWeight: 500 }}>
+        {isDeliveryMethod(record) ? 'Delivery' : 'Pick up'}
+    </span>
+) },
+{ title: 'LOCATION', dataIndex: 'venue', key: 'venue', width: 180, ellipsis: true },
         { title: 'PAX', dataIndex: 'guests_count', key: 'guests_count', width: 80, align: 'center', render: (value) => <span className="bqm-pax-number">{safeNumber(value)}</span> },
                     {
             title: 'AMOUNT',
@@ -6675,7 +7723,7 @@ const BookingQuotationManagement = () => {
              {
             title: 'ACTION',
             key: 'action',
-            width: 150,
+            width: 190,
             fixed: 'right',
             render: (_, record) => {
                 const status = safeString(record?.booking_status).toLowerCase();
@@ -6688,6 +7736,17 @@ const BookingQuotationManagement = () => {
                                 onClick={() => openBookingDetails(record)}
                             >
                                 <EyeOutlined />
+                            </button>
+                        </Tooltip>
+
+                        {/* ⭐ REQUEST #6 — Rebook creates a NEW booking. */}
+                        <Tooltip title="Rebook this customer">
+                            <button
+                                className="bqm-action-icon edit"
+                                style={{ borderColor: '#8b5cf6', backgroundColor: '#f5f3ff' }}
+                                onClick={() => handleRebook(record)}
+                            >
+                                <SyncOutlined style={{ color: '#8b5cf6' }} />
                             </button>
                         </Tooltip>
 
@@ -6780,10 +7839,10 @@ const BookingQuotationManagement = () => {
             ellipsis: true,
             render: (value) => safeString(value, '—'),
         },
-        {
+              {
             title: 'ACTION',
             key: 'action',
-            width: 200,
+            width: 260,
             fixed: 'right',
             render: (_, record) => {
                 const pending = isRefundPending(record);
@@ -6798,27 +7857,25 @@ const BookingQuotationManagement = () => {
                                 <EyeOutlined />
                             </button>
                         </Tooltip>
+                        
                         {pending && (
-                            <Tooltip title="Review refund request">
-                                <button
-                                    className="bqm-action-icon refund-approval"
-                                    onClick={() => openRefundApprovalModal(record)}
-                                    style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
-                                >
-                                    <DollarOutlined style={{ color: '#f59e0b' }} />
-                                </button>
-                            </Tooltip>
+                            <Button
+                                type="primary"
+                                size="small"
+                                icon={<ThunderboltOutlined />}
+                                onClick={() => openRefundApprovalModal(record)}
+                                style={{ background: '#f59e0b', borderColor: '#f59e0b', borderRadius: 6, fontWeight: 500 }}
+                            >
+                                Review
+                            </Button>
                         )}
-                        {approved && (
-                            <Tooltip title="Awaiting cashier to release refund">
-                                <button
-                                    className="bqm-action-icon"
-                                    style={{ borderColor: '#3b82f6', backgroundColor: '#eff6ff', cursor: 'default' }}
-                                >
-                                    <ClockCircleOutlined style={{ color: '#3b82f6' }} />
-                                </button>
-                            </Tooltip>
+                        
+                                                                      {approved && (
+                            <Tag color="blue" style={{ padding: '4px 12px', borderRadius: 6, fontWeight: 500, margin: 0 }}>
+                                Awaiting Cashier
+                            </Tag>
                         )}
+                        
                         <Tooltip title="Open cancellation sheet">
                             <button
                                 className="bqm-action-icon delete"
@@ -6924,86 +7981,337 @@ const BookingQuotationManagement = () => {
         { title: 'Requests', icon: <MessageOutlined /> },
         { title: 'Summary', icon: <DollarOutlined /> }
     ];
-
-    const renderBookingStepContent = () => {
+                 // ============================================================
+    // ⭐ REDESIGNED BOOKING DETAILS — Perfect Bottom Alignment
+    // ============================================================
+    const renderBookingDetailsAll = () => {
         if (!selectedBooking) {
             return (
-                <div className="bqm-step-content">
-                    <Text type="secondary">No booking selected.</Text>
+                <div className="bqm-details-empty">
+                    <Empty description="No booking selected" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 </div>
             );
         }
 
-        switch (bookingStep) {
-            case 0:
-                return (
-                    <div className="bqm-step-content">
-                        <div className="bqm-info-card">
-                            <div className="bqm-info-row"><span className="bqm-info-label"><UserOutlined /> Customer Name</span><span className="bqm-info-value">{safeString(selectedBooking.customer_name)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><MailOutlined /> Email Address</span><span className="bqm-info-value">{safeString(selectedBooking.customer_email)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><PhoneOutlined /> Phone Number</span><span className="bqm-info-value">{safeString(selectedBooking.customer_phone, 'N/A')}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><EnvironmentOutlined /> Address</span><span className="bqm-info-value">{safeString(selectedBooking.customer_address, 'N/A')}</span></div>
+        const b = selectedBooking;
+        const isEditing = bookingDetailsEditMode;
+        const draft = bookingDetailsDraft || {};
+        const setDraft = (patch) =>
+            setBookingDetailsDraft((cur) => ({ ...(cur || {}), ...patch }));
+        const statusCfg = getStatusConfig(b.booking_status);
+        const refundCfg = getRefundStatusConfig(b.refund_status);
+        const depositCfg = getDepositStateLabel(b.deposit_decision_status);
+        const paid = getPaidAmount(b);
+        const balance = safeNumber(b.balance ?? Math.max(0, safeNumber(b.total_amount) - paid));
+        const isApproved = ['confirmed', 'approved'].includes(safeString(b.booking_status).toLowerCase());
+
+          // ⭐ REQUEST #4 — Flatten package items into the meal list and
+        // keep the package label visible above them.
+        const extractItems = (meal) => {
+            const pkgItems = safeArray(meal.package_items);
+            const custom   = safeArray(meal.custom_items);
+
+            if (meal.menu_source === 'package' || meal.package_id) {
+                if (pkgItems.length > 0) {
+                    return pkgItems.map((i) => ({
+                        item_name: i.name || i.item_name || 'Package Item',
+                        quantity:  safeNumber(i.quantity_per_pax ?? i.quantity ?? 1),
+                        unit_price: safeNumber(i.additional_cost ?? i.unit_price ?? i.price ?? 0),
+                        is_package_item: true,
+                    }));
+                }
+                if (custom.length > 0) {
+                    return custom.map((i) => ({ ...i, is_package_item: true }));
+                }
+                return [{
+                    item_name: meal.menu_name || meal.package_name || 'Package Menu',
+                    quantity: 1,
+                    unit_price: safeNumber(meal.price_per_head),
+                    is_package_item: true,
+                }];
+            }
+
+            if (custom.length > 0) return custom;
+            if (meal.menu_name) {
+                return [{
+                    item_name: meal.menu_name,
+                    quantity: 1,
+                    unit_price: safeNumber(meal.price_per_head),
+                }];
+            }
+            return [];
+        };
+
+        return (
+            <div className="bqm-details-layout">
+                           {/* ===== LEFT SIDE: Customer & Event ===== */}
+                <div className="bqm-details-left">
+                    
+                    {/* HERO */}
+                                      <div className="bqm-details-hero">
+                        <div className="bqm-details-hero-main">
+                            <div className="bqm-details-hero-avatar">
+                                {safeString(b.customer_name, '?').charAt(0).toUpperCase()}
+                            </div>
+                            <div className="bqm-details-hero-text">
+                                                                <div className="bqm-details-hero-name">
+                                    {safeString(b.customer_name, 'Unnamed Customer')}
+                                </div>
+                                <div className="bqm-details-hero-meta">
+                                    <span><MailOutlined /> {safeString(b.customer_email, 'No email')}</span>
+                                    <span><PhoneOutlined /> {safeString(b.customer_phone, 'No phone')}</span>
+                                </div>
+                            </div>
+                        </div>
+                                                                          <div className="bqm-details-hero-status" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <span className="bqm-status" style={{ color: statusCfg.color, background: statusCfg.background }}>
+                                {statusCfg.icon}{statusCfg.text}
+                            </span>
+                            {isBookingToday(b) && <Tag color="orange"><FireOutlined /> Today</Tag>}
+                            {refundCfg && <span className="bqm-status" style={{ color: refundCfg.color, background: refundCfg.background }}>{refundCfg.icon}{refundCfg.text}</span>}
+                            {depositCfg && <span className="bqm-status" style={{ color: depositCfg.color, background: depositCfg.background }}>{depositCfg.icon}{depositCfg.text}</span>}
                         </div>
                     </div>
-                );
-            case 1:
-                return (
-                    <div className="bqm-step-content">
-                        <div className="bqm-info-card">
-                            <div className="bqm-info-row"><span className="bqm-info-label"><TagOutlined /> Event Type</span><span className="bqm-info-value">{getEventTypeName(selectedBooking.event_type_id)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><CalendarOutlined /> Event Date</span><span className="bqm-info-value">{formatDateTime(selectedBooking.event_date, selectedBooking.event_time)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><EnvironmentOutlined /> Venue/Location</span><span className="bqm-info-value">{getBookingLocation(selectedBooking)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><ForkOutlined /> Service Type</span><span className="bqm-info-value">{getServiceType(selectedBooking)}</span></div>
-                            <div className="bqm-info-row"><span className="bqm-info-label"><TeamOutlined /> Number of Guests</span><span className="bqm-info-value">{safeNumber(selectedBooking.guests_count)} PAX</span></div>
-                            {isBookingToday(selectedBooking) && (
-                                <div className="bqm-info-row"><span className="bqm-info-label"><FireOutlined /> Status</span><span className="bqm-info-value"><Tag color="orange">Event is TODAY</Tag></span></div>
+
+                               <div className="bqm-details-card">
+                        <div className="bqm-details-card-head">
+                            <UserOutlined /> Customer Information
+                        </div>
+                        <div className="bqm-details-grid-rows">
+                            {isEditing ? (
+                                <>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Full Name</span>
+                                        <Input
+                                            value={draft.customer_name || ''}
+                                            onChange={(e) => setDraft({ customer_name: e.target.value })}
+                                        />
+                                    </div>
+                                                                      <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Email</span>
+                                        <Input
+                                            value={draft.customer_email || ''}
+                                            disabled
+                                            title="Email is the customer identity and cannot be edited."
+                                        />
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Phone</span>
+                                        <Input
+                                            value={draft.customer_phone || ''}
+                                            onChange={(e) => setDraft({ customer_phone: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Address</span>
+                                        <Input
+                                            value={draft.customer_address || ''}
+                                            onChange={(e) => setDraft({ customer_address: e.target.value })}
+                                        />
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="bqm-detail-row"><span className="bqm-detail-label">Full Name</span><span className="bqm-detail-val">{safeString(b.customer_name, 'N/A')}</span></div>
+                                    <div className="bqm-detail-row"><span className="bqm-detail-label">Email</span><span className="bqm-detail-val">{safeString(b.customer_email, 'N/A')}</span></div>
+                                    <div className="bqm-detail-row"><span className="bqm-detail-label">Phone</span><span className="bqm-detail-val">{safeString(b.customer_phone, 'N/A')}</span></div>
+                                    <div className="bqm-detail-row"><span className="bqm-detail-label">Address</span><span className="bqm-detail-val">{safeString(b.customer_address, 'N/A')}</span></div>
+                                </>
                             )}
                         </div>
                     </div>
-                );
-            case 2:
-                return (
-                    <div className="bqm-step-content">
-                        <div className="bqm-info-card">
-                            <div className="bqm-info-row" style={{ borderBottom: 'none', marginBottom: 12 }}>
-                                <span className="bqm-info-label"><MenuOutlined /> Menu Type</span>
-                                <span className="bqm-info-value"><Tag color={getMenuType(selectedBooking) === 'Package' ? '#8b5cf6' : '#f59e0b'}>{getMenuType(selectedBooking)} Menu</Tag></span>
-                            </div>
-                            {renderMealServicesInModal(selectedBooking)}
+                              <div className="bqm-details-card">
+                        <div className="bqm-details-card-head">
+                            <CalendarOutlined /> Event Details
+                        </div>
+                        <div className="bqm-details-grid-rows">
+                            {isEditing ? (
+                                <>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Event Type</span>
+                                        <Select
+                                            value={draft.event_type_id}
+                                            onChange={(value) => setDraft({ event_type_id: value })}
+                                            style={{ width: '100%' }}
+                                            showSearch
+                                            optionFilterProp="children"
+                                        >
+                                            {safeArray(eventTypes).map((type) => {
+                                                const id = type.event_type_id || type.id;
+                                                return <Option key={id} value={id}>{type.name}</Option>;
+                                            })}
+                                        </Select>
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Date</span>
+                                        <DatePicker
+                                            value={draft.event_date ? dayjs(draft.event_date) : null}
+                                            onChange={(v) =>
+                                                setDraft({ event_date: v ? v.format('YYYY-MM-DD') : null })
+                                            }
+                                            format="YYYY-MM-DD"
+                                            style={{ width: '100%' }}
+                                        />
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Time</span>
+                                        <Select
+                                            value={draft.event_time}
+                                            onChange={(value) => setDraft({ event_time: value })}
+                                            style={{ width: '100%' }}
+                                        >
+                                            {timeOptions.map((t) => (
+                                                <Option key={t} value={t}>{t}</Option>
+                                            ))}
+                                        </Select>
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Guests</span>
+                                        <InputNumber
+                                            min={1}
+                                            value={draft.guests_count}
+                                            onChange={(v) => setDraft({ guests_count: v || 1 })}
+                                            style={{ width: '100%' }}
+                                        />
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Venue</span>
+                                        <Input
+                                            value={draft.venue || ''}
+                                            onChange={(e) => setDraft({ venue: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Special Request</span>
+                                        <Input.TextArea
+                                            rows={2}
+                                            value={draft.special_requests || ''}
+                                            onChange={(e) => setDraft({ special_requests: e.target.value })}
+                                        />
+                                    </div>
+                                </>
+                            ) : (
+                                                               <>
+                                   <div className="bqm-detail-row"><span className="bqm-detail-label">Event Type</span><span className="bqm-detail-val"><Tag color="blue">{getEventTypeName(b.event_type_id)}</Tag></span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Service Type</span><span className="bqm-detail-val"><Tag color="cyan">{getServiceType(b)}</Tag></span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Delivery Method</span><span className="bqm-detail-val"><Tag color={isDeliveryMethod(b) ? 'geekblue' : 'green'}>{isDeliveryMethod(b) ? 'Delivery' : 'Pick up'}</Tag></span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Date & Time</span><span className="bqm-detail-val">{formatDateSafe(b.event_date, 'MMM DD, YYYY')} at {safeString(b.event_time, 'N/A')}</span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Guests</span><span className="bqm-detail-val"><TeamOutlined /> {safeNumber(b.guests_count)} PAX</span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Venue</span><span className="bqm-detail-val">{getBookingLocation(b)}</span></div>
+<div className="bqm-detail-row"><span className="bqm-detail-label">Special Request</span><span className="bqm-detail-val" style={{ fontStyle: getSpecialRequests(b) === 'No special requests' ? 'italic' : 'normal' }}>{getSpecialRequests(b)}</span></div>
+                                </>
+                            )}
                         </div>
                     </div>
-                );
-            case 3:
-                return (
-                    <div className="bqm-step-content">
-                        <div className="bqm-info-card">
-                            <div className="bqm-special-request-box">
-                                <MessageOutlined style={{ fontSize: 32, color: '#3b82f6' }} />
-                                <p>{getSpecialRequests(selectedBooking)}</p>
+                    {/* Financial Summary — sits right after Event Details */}
+                    <div className="bqm-details-card">
+                        <div className="bqm-details-card-head">
+                            <DollarOutlined /> Financial Summary
+                        </div>
+                                               <div className="bqm-details-grid-rows">
+                            <div className="bqm-detail-row">
+                                <span className="bqm-detail-label">Total Amount</span>
+                                {isEditing ? (
+                                    <InputNumber
+                                        min={0}
+                                        value={draft.total_amount}
+                                        onChange={(v) => setDraft({ total_amount: v || 0 })}
+                                        formatter={(v) => `₱ ${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                                        parser={(v) => v?.replace(/₱\s?|(,*)/g, '')}
+                                        style={{ width: '100%' }}
+                                    />
+                                ) : (
+                                    <span className="bqm-detail-val bqm-amount-text">{formatCurrency(b.total_amount)}</span>
+                                )}
+                            </div>
+                            {isApproved && (
+                                <>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Amount Paid</span>
+                                        <span className="bqm-detail-val" style={{ color: '#10b981' }}>{formatCurrency(paid)}</span>
+                                    </div>
+                                    <div className="bqm-detail-row">
+                                        <span className="bqm-detail-label">Remaining Balance</span>
+                                        <span className="bqm-detail-val" style={{ color: balance > 0 ? '#ef4444' : '#10b981' }}>
+                                            {formatCurrency(balance)}
+                                        </span>
+                                    </div>
+                                </>
+                            )}
+                            <div className="bqm-detail-row" style={{ borderBottom: 'none' }}>
+                                <span className="bqm-detail-label">Status</span>
+                                <span className="bqm-detail-val">
+                                    {balance > 0 && isApproved ? <Tag color="red">Unpaid Balance</Tag> : isApproved ? <Tag color="green">Fully Paid</Tag> : <Tag>Pending Approval</Tag>}
+                                </span>
                             </div>
                         </div>
                     </div>
-                );
-            case 4:
-                return (
-                    <div className="bqm-step-content">
-                        <div className="bqm-info-card">
-                            <div className="bqm-price-summary">
-                                <div className="bqm-price-summary-header">
-                                    <DollarOutlined style={{ fontSize: 28, color: '#3b82f6' }} />
-                                    <span>Financial Summary</span>
-                                </div>
-                                <div className="bqm-price-row"><span>Total Amount</span><strong>{formatCurrency(selectedBooking.total_amount)}</strong></div>
-                                <div className="bqm-price-row"><span>Status</span><Tag color={getStatusConfig(selectedBooking.booking_status).color}>{getStatusConfig(selectedBooking.booking_status).text}</Tag></div>
-                            </div>
-                        </div>
-                    </div>
-                );
-            default:
-                return null;
-        }
-    };
+                </div>
+                {/* ===== RIGHT SIDE: Meal Services Only ===== */}
+                <div className="bqm-details-right">
 
+                    {/* Meal Services - fills the right column, scrolls inside */}
+                    <div className="bqm-details-card bqm-details-card--meals" style={{ flex: 1, minHeight: 0 }}>
+                        <div className="bqm-details-card-head">
+                            <ForkOutlined /> Meal Services <Tag color="default" style={{ marginLeft: 8, margin: 0 }}>{getMenuType(b)}</Tag>
+                        </div>
+                        <div className="bqm-details-meals-list" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+                            {safeArray(b.meal_services).length === 0 ? (
+                                <div className="bqm-details-empty-text">No meal services configured.</div>
+                            ) : (
+                                sortMealServicesChronologically(b.meal_services)
+                                    .map((meal, idx) => {
+                                        const items = extractItems(meal);
+                                        return (
+                                            <div key={idx} className="bqm-meal-item-block">
+                                                <div className="bqm-meal-item-header">
+                                                    <div className="bqm-meal-item-title">
+                                                        <Tag color="blue" style={{ marginRight: 0 }}>Day {meal.day_number || 1}</Tag>
+                                                        <span className="bqm-meal-type">{meal.meal_type || 'Meal'}</span>
+                                                    </div>
+                                                    <div className="bqm-meal-item-meta">
+                                                        <span><ClockCircleOutlined /> {meal.serving_time || 'TBD'}</span>
+                                                        <span><TeamOutlined /> {safeNumber(meal.pax)} pax</span>
+                                                    </div>
+                                                </div>
+                                                
+                                                                                              {meal.package_id && (
+                                                    <Tag
+                                                        color="purple"
+                                                        style={{ marginBottom: 6, fontWeight: 600 }}
+                                                    >
+                                                        Package: {meal.package_name || meal.menu_name || 'Package'}
+                                                    </Tag>
+                                                )}
+                                                <div className="bqm-meal-items-table">
+                                                    <div className="bqm-meal-items-head">
+                                                        <span>Item Name</span>
+                                                        <span style={{ textAlign: 'center' }}>Qty</span>
+                                                        <span style={{ textAlign: 'right' }}>Price</span>
+                                                    </div>
+                                                    {items.length > 0 ? items.map((item, i) => (
+                                                        <div key={i} className="bqm-meal-items-row">
+                                                            <span className="bqm-item-name">{item.item_name || item.name || 'Menu Item'}</span>
+                                                            <span style={{ textAlign: 'center' }}>{safeNumber(item.quantity, 1)}</span>
+                                                            <span style={{ textAlign: 'right' }}>{formatCurrency(item.unit_price || item.price || 0)}</span>
+                                                        </div>
+                                                    )) : (
+                                                        <div className="bqm-meal-items-row" style={{ fontStyle: 'italic', color: '#9ca3af' }}>
+                                                            <span>No specific items listed</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        );
+                                    })
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    };
+    
     const renderLateCancellationStrip = (booking) => {
         const withinCutoff = isBookingWithinCancellationCutoff(booking);
         const cutoffDays = getCancellationCutoffDays(booking);
@@ -7408,11 +8716,47 @@ const BookingQuotationManagement = () => {
                                 else if (activeBookingTab === 'multi_day') exportMultiDayBookings();
                                 else if (activeMainTab === 'history') exportHistory();
                             }}>Export</Button>
-                            <Button icon={<PrinterOutlined />} onClick={() => {
+                                                      <Button icon={<PrinterOutlined />} onClick={() => {
                                 if (activeMainTab === 'history') printHistory();
                                 else if (activeMainTab === 'bookings' && activeBookingTab === 'regular') printRegularBookings();
                                 else if (activeMainTab === 'bookings' && activeBookingTab === 'multi_day') printMultiDayBookings();
                             }}>Print</Button>
+                            {/* ⭐ MASTER LIST — consolidated landscape report */}
+                            <Dropdown
+                                trigger={['click']}
+                                menu={{
+                                    items: [
+                                        {
+                                            key: 'bookings',
+                                            label: 'Bookings Master List',
+                                            icon: <CalendarOutlined />,
+                                            onClick: () => openMasterList('bookings'),
+                                        },
+                                        {
+                                            key: 'quotations',
+                                            label: 'Quotations Master List',
+                                            icon: <FileTextOutlined />,
+                                            onClick: () => openMasterList('quotations'),
+                                        },
+                                        {
+                                            key: 'history',
+                                            label: 'History Master List',
+                                            icon: <CheckCircleOutlined />,
+                                            onClick: () => openMasterList('history'),
+                                        },
+                                        ...(canApproveOperations ? [{
+                                            key: 'refund-requests',
+                                            label: 'Refund Requests Master List',
+                                            icon: <DollarOutlined />,
+                                            onClick: () => openMasterList('refund-requests'),
+                                        }] : []),
+                                    ],
+                                }}
+                            >
+                                <Button icon={<FileTextOutlined />} type="primary" ghost>
+                                    Master List
+                                </Button>
+                            </Dropdown>
                         </div>
                     </div>
                                      {/*
@@ -7575,7 +8919,23 @@ const BookingQuotationManagement = () => {
                                                 </div>
 
                                                 <div className={filterGroupClass}><AppstoreOutlined /><Select value={filterEventType} onChange={(value) => { setFilterEventType(value); }} className="bqm-filter-select" placeholder="Event Type"><Option value="all">All Event Types</Option>{eventTypes.map((eventType) => (<Option key={eventType.event_type_id || eventType.id} value={eventType.event_type_id || eventType.id}>{eventType.name}</Option>))}</Select></div>
-                                                <div className={`${filterGroupClass} bqm-search`}><SearchOutlined /><Input value={searchText} onChange={(event) => { setSearchText(event.target.value); }} placeholder="Search booking or customer..." allowClear className="bqm-search-input" /></div>
+
+                                                {/* ⭐ REQUEST: filter by booking source */}
+                                                <div className={filterGroupClass}>
+                                                    <EnvironmentOutlined />
+                                                    <Select
+                                                        value={filterBookingSource}
+                                                        onChange={setFilterBookingSource}
+                                                        className="bqm-filter-select"
+                                                        placeholder="Source"
+                                                    >
+                                                        <Option value="all">All Sources</Option>
+                                                        <Option value="walk_in">Walk-In</Option>
+                                                        <Option value="mobile">Mobile App</Option>
+                                                        <Option value="web">Website</Option>
+                                                        <Option value="phone">Phone Order</Option>
+                                                    </Select>
+                                                </div>                                                <div className={`${filterGroupClass} bqm-search`}><SearchOutlined /><Input value={searchText} onChange={(event) => { setSearchText(event.target.value); }} placeholder="Search booking or customer..." allowClear className="bqm-search-input" /></div>
                                                 <Button type="primary" icon={<PlusOutlined />} onClick={openCreateBookingModal}>Create Booking</Button>
                                             </div>
                                             <Tabs
@@ -7681,7 +9041,7 @@ const BookingQuotationManagement = () => {
                                                     bordered={false}
                                                     size="middle"
                                                     footer={() => (
-                                                        <div className="bqm-table-footer-info">
+                                                                                                              <div className="bqm-table-footer-info">
                                                             <span>Showing {quotations.length} quotations</span>
                                                             <span className="bqm-footer-divider">|</span>
                                                             <span>Total Amount: {formatCurrency(quotations.reduce((sum, q) => sum + safeNumber(q.total_amount), 0))}</span>
@@ -7692,6 +9052,8 @@ const BookingQuotationManagement = () => {
                                         </div>
                                     )
                                 },
+
+                                // ⭐ Refund Requests tab (admin only) — properly placed
                                 ...(canApproveOperations ? [{
                                     key: 'refund-requests',
                                     label: (
@@ -7708,33 +9070,55 @@ const BookingQuotationManagement = () => {
                                     ),
                                     children: (
                                         <div className="bqm-tab-content">
-                                            <Alert
-                                                message="Cashier Cancellation & Refund Requests"
-                                                description={
-                                                    <span>
-                                                        All cancellation/refund requests submitted by cashiers appear here.
-                                                        Approve or reject pending requests, and monitor approved refunds
-                                                        awaiting cashier release.
-                                                    </span>
-                                                }
-                                                type="warning"
-                                                showIcon
-                                                className="bqm-info-alert"
-                                                style={{ marginBottom: 16 }}
-                                            />
+                                            
+                                            {/* ⭐ ENHANCED STATS CARDS */}
+                                            <div className={filtersClass} style={{ padding: '20px 24px', gap: 16, background: 'var(--bqm-surface)', borderBottom: '1px solid var(--bqm-border)' }}>
+                                                
+                                                <div style={{ display: 'flex', gap: 16, width: '100%', marginBottom: 8 }}>
+                                                    <Card className="bqm-summary-card-professional" style={{ flex: 1, borderTop: '3px solid #f59e0b', padding: '12px 16px' }}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <div>
+                                                                <div style={{ color: 'var(--bqm-muted)', fontSize: 14, fontWeight: 500 }}>Pending Approval</div>
+                                                                <div style={{ color: '#f59e0b', fontSize: 28, fontWeight: 700 }}>{refundRequestsPendingCount}</div>
+                                                            </div>
+                                                            <div style={{ background: '#fef3c7', padding: 12, borderRadius: 12 }}>
+                                                                <ClockCircleOutlined style={{ fontSize: 24, color: '#f59e0b' }} />
+                                                            </div>
+                                                        </div>
+                                                    </Card>
 
-                                            <div className={filtersClass} style={{ marginBottom: 12 }}>
-                                                <Space size="middle" wrap>
-                                                    <Tag color="orange">
-                                                        Pending: {refundRequestsPendingCount}
-                                                    </Tag>
-                                                    <Tag color="blue">
-                                                        Approved (awaiting cashier): {refundRequestsApprovedCount}
-                                                    </Tag>
-                                                    <Tag color="default">
-                                                        Total: {refundRequests.length}
-                                                    </Tag>
-                                                </Space>
+                                                    <Card className="bqm-summary-card-professional" style={{ flex: 1, borderTop: '3px solid #3b82f6', padding: '12px 16px' }}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <div>
+                                                                <div style={{ color: 'var(--bqm-muted)', fontSize: 14, fontWeight: 500 }}>Awaiting Release</div>
+                                                                <div style={{ color: '#3b82f6', fontSize: 28, fontWeight: 700 }}>{refundRequestsApprovedCount}</div>
+                                                            </div>
+                                                            <div style={{ background: '#eff6ff', padding: 12, borderRadius: 12 }}>
+                                                                <SafetyCertificateOutlined style={{ fontSize: 24, color: '#3b82f6' }} />
+                                                            </div>
+                                                        </div>
+                                                    </Card>
+
+                                                    <Card className="bqm-summary-card-professional" style={{ flex: 1, borderTop: '3px solid #64748b', padding: '12px 16px' }}>
+                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                            <div>
+                                                                <div style={{ color: 'var(--bqm-muted)', fontSize: 14, fontWeight: 500 }}>Total Requests</div>
+                                                                <div style={{ color: 'var(--bqm-text)', fontSize: 28, fontWeight: 700 }}>{refundRequests.length}</div>
+                                                            </div>
+                                                            <div style={{ background: '#f1f5f9', padding: 12, borderRadius: 12 }}>
+                                                                <DollarOutlined style={{ fontSize: 24, color: '#64748b' }} />
+                                                            </div>
+                                                        </div>
+                                                    </Card>
+                                                </div>
+
+                                                <Alert
+                                                    message="Cashier Cancellation & Refund Workflow"
+                                                    description="Review cancellation requests submitted by cashiers. You can approve them with a refund, approve them without a refund (forfeit), or reject the request."
+                                                    type="info"
+                                                    showIcon
+                                                    style={{ width: '100%', borderRadius: 12, border: '1px solid #bfdbfe', background: '#eff6ff' }}
+                                                />
                                             </div>
 
                                             <div className="bqm-scrollable-table-wrapper">
@@ -7761,10 +9145,11 @@ const BookingQuotationManagement = () => {
                                                         </div>
                                                     )}
                                                 />
-                                            </div>
+                                                                                       </div>
                                         </div>
                                     ),
                                 }] : []),
+
                                 {
                                     key: 'history',
                                     label: <span><CheckCircleOutlined /> Booking History</span>,
@@ -7807,69 +9192,13 @@ const BookingQuotationManagement = () => {
                                         </div>
                                     )
                                 },
-                                {
-                                    key: 'calendar',
-                                    label: <span><ScheduleOutlined /> Calendar</span>,
-                                    children: (
-                                        <div className="bqm-tab-content bqm-calendar-tab-content">
-                                            <div className="bqm-calendar-toolbar bqm-calendar-toolbar-compact">
-                                                <div>
-                                                    <Text strong>Event Calendar & Date Availability</Text>
-                                                    <div>
-                                                        <Text type="secondary">
-                                                            <EditOutlined /> Click any date to edit availability (Available, Limited Slots, Fully Booked, or Unavailable)
-                                                        </Text>
-                                                    </div>
-                                                </div>
-                                                <Text type="secondary" className="bqm-calendar-header-note">
-                                                    Use the calendar header to change month or year.
-                                                </Text>
-                                            </div>
-
-                                            <div className="bqm-calendar-legend">
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color available"></span>
-                                                    <span>Available</span>
-                                                </div>
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color limited"></span>
-                                                    <span>Limited Slots</span>
-                                                </div>
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color fully-booked"></span>
-                                                    <span>Fully Booked</span>
-                                                </div>
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color unavailable"></span>
-                                                    <span>Unavailable</span>
-                                                </div>
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color event"></span>
-                                                    <span>Has Events</span>
-                                                </div>
-                                                <div className="bqm-legend-item">
-                                                    <span className="bqm-legend-color clickable"></span>
-                                                    <span>Click to Edit</span>
-                                                </div>
-                                            </div>
-
-                                            <div className="bqm-calendar-wrapper bqm-calendar-wrapper-compact" style={{ overflow: 'auto' }}>
-                                                <Calendar
-                                                    value={calendarCursor}
-                                                    mode={calendarMode}
-                                                    cellRender={dateCellRender}
-                                                    onPanelChange={(dateValue, mode) => {
-                                                        setCalendarCursor(dateValue);
-                                                        setCalendarMode(mode);
-                                                    }}
-                                                />
-                                            </div>
-                                        </div>
-                                    )
-                                }
+                                                                // ⭐ Calendar tab has been extracted to its own page at /booking/calendar.
+                                // The sidebar now links to it under SALES MANAGEMENT.
                             ]}
                         />
                     </Card>
+
+                                       {/* ⭐ Fullscreen Calendar Modal moved to BookingCalendarPage (/booking/calendar). */}
 
                     {/* THREE-DAY WARNING MODAL */}
                     <Modal
@@ -9117,15 +10446,9 @@ const BookingQuotationManagement = () => {
                             </div>
                         </div>
                     </Modal>
-
                     {/* START EVENT MODAL */}
                     <Modal
-                        title={
-                            <div className="bqm-modal-header-clean">
-                                <div className="bqm-modal-title-icon"><FireOutlined style={{ color: '#10b981' }} /></div>
-                                <div className="bqm-modal-title-text">Event Starts Today</div>
-                            </div>
-                        }
+                        title={null}
                         open={startEventModalVisible}
                         onCancel={() => {
                             setStartEventModalVisible(false);
@@ -9134,46 +10457,197 @@ const BookingQuotationManagement = () => {
                         maskClosable={false}
                         keyboard={false}
                         footer={null}
-                        width={550}
-                                             className="bqm-modal-clean"
+                        width={620}
+                        className="bqm-modal-clean bqm-pro-modal bqm-start-event-modal"
+                        rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
+                        destroyOnHidden={true}
+                        closable={true}
+                        centered
+                    >
+                        <div className="bqm-pro-modal-shell">
+                            <div className="bqm-pro-modal-header bqm-pro-header-success">
+                                <div className="bqm-pro-modal-icon">
+                                    <FireOutlined />
+                                </div>
+                                <div className="bqm-pro-modal-header-text">
+                                    <div className="bqm-pro-modal-eyebrow">Action Required</div>
+                                    <div className="bqm-pro-modal-title">Event Starts Today</div>
+                                    <div className="bqm-pro-modal-subtitle">
+                                        This confirmed booking is scheduled for today. Would you like to start the event now?
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bqm-pro-modal-body">
+                                <div className="bqm-pro-highlight-card bqm-pro-highlight-success">
+                                    <div className="bqm-pro-highlight-message">
+                                        <CheckCircleOutlined />
+                                        <span>
+                                            Starting the event will move it to <strong>Ongoing</strong> status and update the operational dashboard.
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="bqm-pro-info-grid">
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Booking No.</span>
+                                        <span className="bqm-pro-info-value bqm-mono">{safeString(startEventBookingData?.booking_no)}</span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Customer</span>
+                                        <span className="bqm-pro-info-value">{safeString(startEventBookingData?.customer_name)}</span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Event Date</span>
+                                        <span className="bqm-pro-info-value bqm-highlight">
+                                            {safeString(startEventBookingData?.event_date)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-pro-info-row">
+                                        <span className="bqm-pro-info-label">Event Time</span>
+                                        <span className="bqm-pro-info-value">
+                                            {safeString(startEventBookingData?.event_time)}
+                                        </span>
+                                    </div>
+                                    <div className="bqm-pro-info-row bqm-pro-info-full">
+                                        <span className="bqm-pro-info-label">Venue</span>
+                                        <span className="bqm-pro-info-value">{getBookingLocation(startEventBookingData)}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bqm-pro-modal-footer">
+                                <Button
+                                    onClick={() => {
+                                        // ⭐ REQUEST #2: Remember "Later" so this
+                                        // booking never re-triggers the auto-modal.
+                                        try {
+                                            const key = 'auto_start_later_bookings';
+                                            const prev = JSON.parse(localStorage.getItem(key) || '[]');
+                                            const id = getBookingId(startEventBookingData);
+                                            if (id && !prev.includes(id)) {
+                                                localStorage.setItem(key, JSON.stringify([...prev, id]));
+                                            }
+                                        } catch (e) {
+                                            console.warn('Failed to persist Later dismissal:', e);
+                                        }
+                                        setStartEventModalVisible(false);
+                                        setStartEventBookingData(null);
+                                    }}
+                                    size="large"
+                                    className="bqm-pro-btn-secondary"
+                                >
+                                    Later
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    onClick={() => handleStartEvent(startEventBookingData)}
+                                    icon={<FireOutlined />}
+                                    size="large"
+                                    className="bqm-pro-btn-success"
+                                >
+                                    Start Event Now
+                                </Button>
+                            </div>
+                        </div>
+                    </Modal>
+
+                                      {/* ⭐ REQUEST #3 — PENDING BOOKING TODAY MODAL */}
+                    <Modal
+                        title={
+                            <div className="bqm-modal-header-clean">
+                                <div
+                                    className="bqm-modal-title-icon"
+                                    style={{ background: '#fef3c7', color: '#d97706' }}
+                                >
+                                    <WarningOutlined />
+                                </div>
+                                <div className="bqm-modal-title-text">
+                                    Pending Booking — Event Is Today
+                                </div>
+                                <div className="bqm-modal-badge">
+                                    {safeString(todayPendingBooking?.booking_no)}
+                                </div>
+                            </div>
+                        }
+                        open={todayPendingModalVisible}
+                        onCancel={() => {
+                            try {
+                                const key = 'today_pending_dismissed';
+                                const id = getBookingId(todayPendingBooking);
+                                const prev = JSON.parse(localStorage.getItem(key) || '[]');
+                                if (id && !prev.includes(id)) {
+                                    localStorage.setItem(key, JSON.stringify([...prev, id]));
+                                }
+                            } catch (e) { /* ignore */ }
+
+                            setTodayPendingModalVisible(false);
+                            setTodayPendingBooking(null);
+                        }}
+                        maskClosable={false}
+                        keyboard={false}
+                        footer={null}
+                        width={600}
+                        className="bqm-modal-clean"
                         rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
                     >
                         <div className="bqm-modal-clean-content">
                             <Alert
-                                type="success"
+                                type="warning"
                                 showIcon
-                                message="This confirmed booking starts today"
+                                icon={<WarningOutlined />}
+                                message="This booking is scheduled for TODAY but has not been approved."
                                 description={
                                     <div>
-                                        <p><strong>Booking:</strong> {safeString(startEventBookingData?.booking_no)}</p>
-                                        <p><strong>Customer:</strong> {safeString(startEventBookingData?.customer_name)}</p>
-                                        <p><strong>Event Date:</strong> {safeString(startEventBookingData?.event_date)} at {safeString(startEventBookingData?.event_time)}</p>
-                                        <p><strong>Venue:</strong> {getBookingLocation(startEventBookingData)}</p>
-                                        <p style={{ marginTop: 8 }}>Do you want to start the event now?</p>
+                                        <p>
+                                            <strong>Booking:</strong>{' '}
+                                            {safeString(todayPendingBooking?.booking_no)}
+                                        </p>
+                                        <p>
+                                            <strong>Customer:</strong>{' '}
+                                            {safeString(todayPendingBooking?.customer_name)}
+                                        </p>
+                                        <p>
+                                            <strong>Event Date:</strong>{' '}
+                                            {safeString(todayPendingBooking?.event_date)} at{' '}
+                                            {safeString(todayPendingBooking?.event_time)}
+                                        </p>
+                                        <p>
+                                            <strong>Venue:</strong>{' '}
+                                            {getBookingLocation(todayPendingBooking)}
+                                        </p>
+                                        <p style={{ marginTop: 12 }}>
+                                            Choose <strong>Approve</strong> to confirm the
+                                            booking and push it into Orders & Events, or
+                                            <strong> Remove</strong> to cancel it.
+                                        </p>
                                     </div>
                                 }
-                                className="bqm-success-alert"
+                                className="bqm-warning-alert"
                             />
-                            <div className="bqm-modal-buttons-clean" style={{ marginTop: 20 }}>
-                                                             <Button onClick={() => {
-                                    // ⭐ REQUEST #2: Remember "Later" so this
-                                    // booking never re-triggers the auto-modal.
-                                    try {
-                                        const key = 'auto_start_later_bookings';
-                                        const prev = JSON.parse(localStorage.getItem(key) || '[]');
-                                        const id = getBookingId(startEventBookingData);
-                                        if (id && !prev.includes(id)) {
-                                            localStorage.setItem(key, JSON.stringify([...prev, id]));
-                                        }
-                                    } catch (e) {
-                                        console.warn('Failed to persist Later dismissal:', e);
-                                    }
-                                    setStartEventModalVisible(false);
-                                    setStartEventBookingData(null);
-                                }}>Later</Button>
-                                <Button type="primary" onClick={() => handleStartEvent(startEventBookingData)} icon={<FireOutlined />}>
-                                    Start Event Now
+
+                            <div
+                                className="bqm-modal-buttons-clean"
+                                style={{ marginTop: 20 }}
+                            >
+                                <Button
+                                    danger
+                                    icon={<DeleteOutlined />}
+                                    onClick={handleTodayPendingRemove}
+                                    loading={todayPendingSubmitting}
+                                    disabled={todayPendingSubmitting}
+                                >
+                                    Remove Booking
+                                </Button>
+                                <Button
+                                    type="primary"
+                                    icon={<CheckCircleOutlined />}
+                                    onClick={handleTodayPendingApprove}
+                                    loading={todayPendingSubmitting}
+                                    disabled={todayPendingSubmitting}
+                                >
+                                    Approve Booking
                                 </Button>
                             </div>
                         </div>
@@ -9181,62 +10655,124 @@ const BookingQuotationManagement = () => {
 
                     {/* BOOKING DETAILS MODAL */}
                     <Modal
-                        title={
-                            <div className="bqm-modal-header-clean">
+                                              title={
+                            <div className="bqm-modal-header-clean" style={{ display: 'flex', alignItems: 'center' }}>
                                 <div className="bqm-modal-title-icon"><EyeOutlined /></div>
                                 <div className="bqm-modal-title-text">Booking Details</div>
-                                <div className="bqm-modal-badge">{safeString(selectedBooking?.booking_no)}</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <div className="bqm-modal-badge">{safeString(selectedBooking?.booking_no)}</div>
+                                    {selectedBooking && <BookingSourceBadge booking={selectedBooking} />}
+                                </div>
                                 {selectedBooking && isBookingToday(selectedBooking) && (
                                     <Tag color="orange" className="bqm-today-tag"><FireOutlined /> Today</Tag>
                                 )}
                             </div>
-                        }
-                        open={bookingDetailsModalVisible}
-                        onCancel={() => setBookingDetailsModalVisible(false)}
-                        maskClosable={false}
+                        }                    open={bookingDetailsModalVisible}
+                        onCancel={() => {
+                            setBookingDetailsModalVisible(false);
+                            setBookingDetailsEditMode(false);
+                            setBookingDetailsDraft(null);
+                        }}                        maskClosable={false}
                         keyboard={false}
                         closable={true}
-                        width={850}
+                        width={1150}
+                        centered={true}
+                        style={{ top: 0, paddingBottom: 0 }}
+                        styles={{
+                            body: {
+                                padding: 0,
+                                height: 'auto',
+                                maxHeight: 'calc(100vh - 160px)',
+                                overflow: 'hidden',
+                                position: 'relative',
+                                display: 'flex',
+                                flexDirection: 'column'
+                            }
+                        }}
                                            className="bqm-modal-clean bqm-modal-no-scroll"
                         rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
-                        footer={
-                            <div className="bqm-modal-footer-simple">
-                                <div className="bqm-simple-buttons">
-                                    {bookingStep > 0 && (
-                                        <Button onClick={prevBookingStep} icon={<LeftOutlined />}>
-                                            Previous
+                                                                                        footer={
+                            <div
+                                className="bqm-modal-footer-simple"
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'flex-end',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    width: '100%',
+                                }}
+                            >
+                                {bookingDetailsEditMode ? (
+                                    <>
+                                        <Button
+                                            onClick={handleBookingDetailsCancel}
+                                            disabled={bookingDetailsSaving}
+                                        >
+                                            Cancel
                                         </Button>
-                                    )}
-                                    {bookingStep < 4 ? (
-                                        <Button type="primary" onClick={nextBookingStep} icon={<RightOutlined />} iconPosition="end">
-                                            Next
+                                        <Button
+                                            type="primary"
+                                            icon={<CheckCircleOutlined />}
+                                            loading={bookingDetailsSaving}
+                                            onClick={handleBookingDetailsSave}
+                                        >
+                                            Save Changes
                                         </Button>
-                                    ) : (
-                                        <Button type="primary" onClick={() => setBookingDetailsModalVisible(false)}>
-                                            Close
-                                        </Button>
-                                    )}
-                                </div>
+                                    </>
+                                                              ) : (() => {
+                                    // ⭐ REQUEST #8: History is immutable.
+                                    //    Completed, cancelled, and rejected
+                                    //    bookings can be viewed but not edited.
+                                    const status = safeString(selectedBooking?.booking_status).toLowerCase();
+                                    const isLocked = ['completed', 'cancelled', 'rejected'].includes(status);
+
+                                    return (
+                                        <Tooltip
+                                            title={
+                                                isLocked
+                                                    ? 'This booking is in history and cannot be edited.'
+                                                    : ''
+                                            }
+                                        >
+                                            <Button
+                                                icon={isLocked ? <LockOutlined /> : <EditOutlined />}
+                                                disabled={isLocked}
+                                                onClick={() => {
+                                                    if (isLocked || !selectedBooking) return;
+                                                    setBookingDetailsDraft({
+                                                        ...selectedBooking,
+                                                        meal_services: safeArray(selectedBooking.meal_services).map((m) => ({
+                                                            ...m,
+                                                            custom_items: safeArray(m.custom_items).map((i) => ({ ...i })),
+                                                        })),
+                                                    });
+                                                    setBookingDetailsEditMode(true);
+                                                }}
+                                            >
+                                                {isLocked ? 'Locked' : 'Edit'}
+                                            </Button>
+                                        </Tooltip>
+                                    );
+                                })()}
+
+                                <Button
+                                    type="primary"
+                                    onClick={() => {
+                                        // ⭐ Close — discards any unsaved edits
+                                        setBookingDetailsModalVisible(false);
+                                        setBookingDetailsEditMode(false);
+                                        setBookingDetailsDraft(null);
+                                    }}
+                                >
+                                    Close
+                                </Button>
                             </div>
                         }
                     >
-                        <div className="bqm-modal-step-container">
-                            <div className="bqm-modal-step-header">
-                                <div className="bqm-step-icon">{bookingSteps[bookingStep].icon}</div>
-                                <div>
-                                    <div className="bqm-step-title">{bookingSteps[bookingStep].title}</div>
-                                    <div className="bqm-step-desc">
-                                        {bookingStep === 0 && 'Personal and contact information'}
-                                        {bookingStep === 1 && 'Date, time, venue and guest count'}
-                                        {bookingStep === 2 && 'Complete meal services by day and schedule'}
-                                        {bookingStep === 3 && 'Additional notes and requirements'}
-                                        {bookingStep === 4 && 'Payment overview and status'}
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="bqm-modal-step-body">
-                                {renderBookingStepContent()}
+                                               <div className="bqm-modal-step-container">
+                            <div className="bqm-details-noscroll">
+                                {renderBookingDetailsAll()}
                             </div>
                         </div>
                     </Modal>
@@ -9285,11 +10821,11 @@ const BookingQuotationManagement = () => {
                                       className="bqm-modal-clean bqm-modal-fixed-center"
                         rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
                         destroyOnHidden={true}
-                        styles={{
+                                               styles={{
                             body: {
                                 padding: 0,
-                                maxHeight: 'calc(100vh - 180px)',
-                                overflowY: 'auto',
+                                height: 'calc(100vh - 140px)', // Locks the modal body height
+                                overflow: 'hidden',            // Kills the outer scrollbar completely
                                 position: 'relative'
                             }
                         }}
@@ -9756,106 +11292,94 @@ const BookingQuotationManagement = () => {
                         </div>
                     </Modal>
 
-                    {/* CALENDAR AVAILABILITY MODAL */}
-                                     <Modal
+                                   {/* ⭐ Calendar Availability Modal moved to BookingCalendarPage (/booking/calendar). */}
+
+                    {/* ==================== ⭐ MASTER LIST MODAL ==================== */}
+                    <Modal
                         title={
-                            <div className="bqm-modal-header-clean">
-                                <div className="bqm-modal-title-icon"><EditOutlined /></div>
-                                <div className="bqm-modal-title-text">Edit Date Availability</div>
-                                <div className="bqm-modal-badge">{selectedCalendarDate.format('MMM DD, YYYY')}</div>
+                            <div className="bqm-modal-header-clean" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <div className="bqm-modal-title-icon" style={{ background: '#8b5cf6', color: '#fff' }}>
+                                    <UnorderedListOutlined />
+                                </div>
+                                <div className="bqm-modal-title-text" style={{ textTransform: 'capitalize' }}>
+                                    Master List — {masterListType.replace('-', ' ')}
+                                </div>
+                                <div className="bqm-pdf-controls" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <Button size="small" icon={<ZoomOutOutlined />} onClick={() => setMasterListZoom(Math.max(50, masterListZoom - 10))} />
+                                    <span style={{ fontSize: 12, minWidth: 50, textAlign: 'center' }}>{masterListZoom}%</span>
+                                    <Button size="small" icon={<ZoomInOutlined />} onClick={() => setMasterListZoom(Math.min(200, masterListZoom + 10))} />
+                                    <Button size="small" icon={<FullscreenOutlined />} onClick={() => setMasterListZoom(100)}>Fit</Button>
+                                </div>
                             </div>
                         }
-                        open={availabilityModalVisible}
-                        onCancel={() => setAvailabilityModalVisible(false)}
-                        maskClosable={false}
-                        keyboard={false}
-                        footer={null}
-                        width={560}
-                                              className="bqm-modal-clean"
+                        open={masterListModalVisible}
+                        onCancel={() => setMasterListModalVisible(false)}
+                        width="95%"
+                        style={{ maxWidth: 1400, top: 20 }}
+                        className="bqm-modal-clean"
                         rootClassName={isDarkMode ? 'bqm-modal-dark-root' : ''}
+                        centered={false}
+                        maskClosable={true}
                         destroyOnHidden={true}
-                        // ⭐ Keep the form instance attached to the DOM so
-                        // Ant Design does not log
-                        // "Instance created by useForm is not connected
-                        //  to any Form element."
-                        forceRender
-                    >
-                        <div className="bqm-modal-clean-content">
-                            <Alert
-                                message="Date Availability Control"
-                                description="Set this date's booking availability. This will control how many bookings can be accepted for this date."
-                                type="info"
-                                showIcon
-                                style={{ marginBottom: 20 }}
-                            />
-                            <Form form={availabilityForm} layout="vertical" onFinish={saveCalendarAvailability} initialValues={{ operation_mode: 'normal', status: 'available' }}>
-                                <Form.Item
-                                    name="operation_mode"
-                                    label="Operation Mode"
-                                    rules={[{ required: true }]}
-                                    extra="Normal Operation accepts unlimited bookings. Limited Slot enforces a maximum booking limit."
-                                >
-                                    <Radio.Group buttonStyle="solid">
-                                        {availabilityOperationOptions.map((option) => (
-                                            <Radio.Button key={option.value} value={option.value}>{option.label}</Radio.Button>
-                                        ))}
-                                    </Radio.Group>
-                                </Form.Item>
-
-                                <Form.Item
-                                    name="status"
-                                    label="Availability Status"
-                                    rules={[{ required: true }]}
-                                    extra="Choose how this date should be treated for new bookings"
-                                >
-                                    <Select>
-                                        {availabilityStatusOptions.map((option) => (
-                                            <Option key={option.value} value={option.value}>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                    {getAvailabilityConfig(option.value).icon}
-                                                    <span>{option.label}</span>
-                                                </div>
-                                            </Option>
-                                        ))}
-                                    </Select>
-                                </Form.Item>
-
-                                <Form.Item shouldUpdate={(prev, current) => prev.operation_mode !== current.operation_mode || prev.status !== current.status} noStyle>
-                                    {({ getFieldValue }) => (
-                                        getFieldValue('operation_mode') === 'limited_slot' && getFieldValue('status') === 'available' ? (
-                                            <Form.Item
-                                                name="max_bookings"
-                                                label="Maximum Bookings Limit"
-                                                rules={[{ required: true, message: 'Please enter the maximum bookings limit for Limited Slot mode.' }]}
-                                                extra="This limit is applied only while Limited Slot mode is selected."
-                                            >
-                                                <InputNumber
-                                                    min={1}
-                                                    style={{ width: '100%' }}
-                                                    placeholder="Enter maximum number of bookings"
-                                                />
-                                            </Form.Item>
-                                        ) : null
-                                    )}
-                                </Form.Item>
-
-                                <Form.Item
-                                    name="notes"
-                                    label="Admin Notes"
-                                    extra="Internal notes about why this date has restrictions"
-                                >
-                                    <TextArea
-                                        rows={3}
-                                        placeholder="E.g., Holiday surcharge applies, Limited staff available, etc."
+                        footer={
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                                <Space>
+                                    <span style={{ fontSize: 12, color: '#64748b' }}>Filter by date:</span>
+                                    <RangePicker
+                                        value={masterListDateRange}
+                                        onChange={(v) => {
+                                            const next = v || [];
+                                            setMasterListDateRange(next);
+                                            handleRegenerateMasterList(next);
+                                        }}
+                                        size="small"
+                                        format="YYYY-MM-DD"
                                     />
-                                </Form.Item>
-
-                                <div className="bqm-modal-buttons-clean">
-                                    <Button danger onClick={resetCalendarAvailability}>Reset to Available</Button>
-                                    <Button onClick={() => setAvailabilityModalVisible(false)}>Cancel</Button>
-                                    <Button type="primary" htmlType="submit">Save Settings</Button>
-                                </div>
-                            </Form>
+                                    <Button size="small" onClick={() => {
+                                        setMasterListDateRange([]);
+                                        handleRegenerateMasterList([]);
+                                    }}>
+                                        Clear Filter
+                                    </Button>
+                                </Space>
+                                <Space>
+                                    <Button icon={<PrinterOutlined />} onClick={handlePrintMasterList} type="primary">
+                                        Print
+                                    </Button>
+                                    <Button icon={<DownloadOutlined />} onClick={handleDownloadMasterList}>
+                                        Download PDF
+                                    </Button>
+                                    <Button onClick={() => setMasterListModalVisible(false)}>Close</Button>
+                                </Space>
+                            </div>
+                        }
+                        styles={{
+                            body: {
+                                padding: '20px',
+                                background: isDarkMode ? '#0a0e1a' : '#f0f2f5',
+                                maxHeight: 'calc(100vh - 200px)',
+                                overflow: 'auto',
+                                display: 'flex',
+                                justifyContent: 'center',
+                                alignItems: 'flex-start',
+                            },
+                        }}
+                    >
+                        <div
+                            style={{
+                                transform: `scale(${masterListZoom / 100})`,
+                                transformOrigin: 'top center',
+                                transition: 'transform 0.2s ease',
+                                background: '#ffffff',
+                                borderRadius: '4px',
+                                boxShadow: '0 4px 20px rgba(0,0,0,0.08)',
+                                padding: 0,
+                                margin: '0 auto',
+                                maxWidth: '297mm',
+                                width: '100%',
+                            }}
+                        >
+                            <div dangerouslySetInnerHTML={{ __html: masterListHtml }} />
                         </div>
                     </Modal>
                 </div>

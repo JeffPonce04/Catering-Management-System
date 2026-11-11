@@ -277,11 +277,16 @@ class PaymentController extends Controller
                 'account_number' => ['nullable', 'string', 'max:50'],
                 'transaction_id' => ['nullable', 'string', 'max:100'],
                 'notes' => ['nullable', 'string'],
-                'receipt_file' => ['nullable', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:2048'],
+                'receipt_file' => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp,pdf', 'max:2048'],
                 'verify_immediately' => ['nullable', 'boolean'],
                 'force_duplicate' => ['nullable', 'boolean'],
+                // ⭐ Overpayment / change fields
+                'tendered_amount' => ['nullable', 'numeric', 'min:0'],
+                'change_amount' => ['nullable', 'numeric', 'min:0'],
+                // ⭐ Payer fields — who physically paid
+                'payer_name' => ['nullable', 'string', 'max:150'],
+                'payer_relation' => ['nullable', 'string', 'max:100'],
             ]);
-
             $booking = Booking::with(['invoice', 'quotation', 'items', 'mealServices'])->findOrFail($data['booking_id']);
 
             // ⭐ Auto-create the invoice the first time a payment is attempted.
@@ -302,39 +307,19 @@ class PaymentController extends Controller
                 //    format lives in exactly one place and does not depend
                 //    on the SoftDeletes trait being present.
                 $invoiceNumber = Invoice::nextInvoiceNumber();
-                // ⭐ Pull additional charges + discount from the booking
+                // ⭐ Pull additional charges + discount from booking_charges
                 //    so the invoice total matches what the operator entered
                 //    in the Create Booking → Additional Charges step.
+                //    (Executed exactly once — the old duplicate block caused
+                //     wasted queries and drift.)
                 $additionalCharges = 0.0;
+                $discount = 0.0;
                 if (Schema::hasTable('booking_charges')) {
                     $additionalCharges = (float) DB::table('booking_charges')
                         ->where('booking_id', $booking->booking_id)
                         ->where('charge_kind', 'charge')
                         ->sum('amount');
-                }
 
-                $discount = 0.0;
-                if (Schema::hasTable('booking_charges')) {
-                    $discount = (float) DB::table('booking_charges')
-                        ->where('booking_id', $booking->booking_id)
-                        ->where('charge_kind', 'discount')
-                        ->sum('amount');
-                }
-
-                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
-
-                // ⭐ Pull charges + discount from booking_charges so the
-                //    invoice total matches the booking form.
-                $additionalCharges = 0.0;
-                if (Schema::hasTable('booking_charges')) {
-                    $additionalCharges = (float) DB::table('booking_charges')
-                        ->where('booking_id', $booking->booking_id)
-                        ->where('charge_kind', 'charge')
-                        ->sum('amount');
-                }
-
-                $discount = 0.0;
-                if (Schema::hasTable('booking_charges')) {
                     $discount = (float) DB::table('booking_charges')
                         ->where('booking_id', $booking->booking_id)
                         ->where('charge_kind', 'discount')
@@ -373,19 +358,34 @@ class PaymentController extends Controller
                     ['code' => 'fully_paid']
                 );
             }
+            // ⭐ Overpayment handling — accept any amount, but only record the
+            //    amount needed to settle the invoice. The excess is change.
+            //
+            //    IMPORTANT: `$tenderedAmount` is what the customer handed over.
+            //    `$recordedAmount` is what we store on the payment row and is
+            //    clamped to the outstanding balance. `$changeAmount` is the
+            //    difference — it must be computed ONCE from the tendered amount
+            //    and never overwritten from the already-clamped `$recordedAmount`
+            //    (doing so always yields 0 and breaks the receipt).
+            $tenderedAmount = (float) ($data['tendered_amount'] ?? $data['amount']);
+            $recordedAmount = (float) $data['amount'];
 
-            // ⭐ Reject any payment above the remaining balance.
-            if ((float) $data['amount'] > $balance + 0.01) {
-                return $this->fail(
-                    'Payment amount cannot exceed the remaining balance.',
-                    422,
-                    [
-                        'code' => 'overpayment',
-                        'remaining_balance' => $balance,
-                        'submitted_amount'  => (float) $data['amount'],
-                    ]
-                );
+            // Clamp the recorded amount so it can never exceed the balance.
+            if ($recordedAmount > $balance + 0.01) {
+                $recordedAmount = $balance;
             }
+
+            // Compute the change from the ORIGINAL tendered amount.
+            $changeAmount = max(0, $tenderedAmount - $recordedAmount);
+
+            // If the frontend explicitly sent a change_amount, trust it when
+            // it is larger (matches what the cashier handed back to the customer).
+            if (isset($data['change_amount']) && (float) $data['change_amount'] > $changeAmount) {
+                $changeAmount = (float) $data['change_amount'];
+            }
+
+            // Overwrite $data['amount'] so downstream code uses the corrected value.
+            $data['amount'] = $recordedAmount;
 
             // ⭐ Deposit detection — more lenient so a 30% payment is
             //    always classified as a deposit, even if the amount is
@@ -425,7 +425,10 @@ class PaymentController extends Controller
                 );
             }
 
-            $changeAmount = max(0, (float) $data['amount'] - max(0, $balance));
+            // ⚠️ DO NOT recompute $changeAmount here. It has already been
+            //    calculated from the tendered amount above; recomputing it
+            //    from the clamped $data['amount'] always yields 0 and wipes
+            //    the real change value out of the notes / receipt.
             if ($changeAmount > 0) {
                 $data['notes'] = trim(($data['notes'] ?? '') . "\nChange due: ₱" . number_format($changeAmount, 2));
             }
@@ -436,27 +439,53 @@ class PaymentController extends Controller
 
             $verifyImmediately = $request->boolean('verify_immediately');
 
-            $payment = DB::transaction(function () use ($booking, $data, $receiptPath, $verifyImmediately) {
+            $payment = DB::transaction(function () use ($booking, $data, $receiptPath, $verifyImmediately, $tenderedAmount, $changeAmount) {
+                // ⭐ Record the tendered/change amounts inside the notes so the
+                //    receipt and audit trail show the full picture without
+                //    needing a schema change.
+                $baseNotes = $data['notes'] ?? '';
+                if ($changeAmount > 0) {
+                    $changeLine = 'Change given: ₱' . number_format($changeAmount, 2)
+                        . ' (tendered ₱' . number_format($tenderedAmount, 2) . ')';
+                    $baseNotes = $baseNotes
+                        ? $baseNotes . "\n" . $changeLine
+                        : $changeLine;
+                }
+
                 $paymentData = [
                     'payment_number' => $this->generatePaymentNumber(),
                     'booking_id' => $booking->booking_id,
-                    'amount' => (float) $data['amount'],
+                    'amount' => (float) $data['amount'],   // ← already clamped to balance
                     'payment_method' => $data['payment_method'],
                     'payment_type' => $data['payment_type'] ?? 'partial',
                     'reference_number' => $data['reference_number'] ?? $this->generateReferenceNumber(),
                     'transaction_id' => $data['transaction_id'] ?? null,
                     'receipt_file' => $receiptPath,
-                    'notes' => $data['notes'] ?? null,
+                    'notes' => $baseNotes ?: null,
                     'status' => $verifyImmediately ? 'completed' : 'pending',
                     'payment_date' => now(),
                     'verified_by' => $verifyImmediately ? auth()->id() : null,
                     'verified_at' => $verifyImmediately ? now() : null,
                 ];
 
-                if (isset($data['account_name'])) {
+                // ⭐ PAYER — who physically handed over the money. Only
+                //    stored when different from the customer so legacy
+                //    display logic continues to work unchanged.
+                if (! empty($data['payer_name'])) {
+                    $paymentData['payer_name'] = trim((string) $data['payer_name']);
+                }
+                if (! empty($data['payer_relation'])) {
+                    $paymentData['payer_relation'] = trim((string) $data['payer_relation']);
+                }
+                // ⭐ Use array_key_exists() instead of isset() — this makes
+                //    it possible to CLEAR account_name / account_number by
+                //    sending an empty string (isset() returns false for null,
+                //    which silently skipped the write and made updates
+                //    impossible to observe).
+                if (array_key_exists('account_name', $data)) {
                     $paymentData['account_name'] = $data['account_name'];
                 }
-                if (isset($data['account_number'])) {
+                if (array_key_exists('account_number', $data)) {
                     $paymentData['account_number'] = $data['account_number'];
                 }
 
@@ -491,15 +520,34 @@ class PaymentController extends Controller
                     ]);
                 }
             }
-
             // ⭐ Reload the invoice + booking so the response reflects the new balance.
             $booking->unsetRelation('invoice');
-            $booking->load('invoice');
+            $booking->load(['invoice', 'payments']);
             $payment->refresh();
             $payment->load(['booking.invoice', 'booking.serviceEvent.customer.person', 'verifier.person']);
 
+            $formattedPayment = $this->formatPaymentWithFullDetails($payment);
+
+            // ⭐ Enriched payload — mirrors the BookingController::recordPayment
+            //    shape so the frontend can patch BOTH modules' caches
+            //    (Orders & Events + Billing & Invoicing) with one response.
+            $invoiceTotal = (float) ($booking->invoice?->total_amount ?? 0);
+            $invoicePaid  = (float) ($booking->invoice?->paid_amount ?? 0);
+
             return $this->ok(
-                $this->formatPaymentWithFullDetails($payment),
+                [
+                    'payment' => $formattedPayment,
+                    'invoice' => $booking->invoice,
+                    'booking' => [
+                        'booking_id'   => $booking->booking_id,
+                        'booking_no'   => $booking->booking_no,
+                        'total_amount' => $invoiceTotal,
+                        'paid_amount'  => $invoicePaid,
+                        'balance'      => max(0, $invoiceTotal - $invoicePaid),
+                        'payments'     => $booking->payments->values(),
+                        'invoice'      => $booking->invoice,
+                    ],
+                ],
                 $verifyImmediately ? 'Payment recorded and verified successfully.' : 'Payment recorded successfully.'
             );
         } catch (\Illuminate\Validation\ValidationException $e) {
@@ -803,6 +851,9 @@ class PaymentController extends Controller
                 'account_number' => ['nullable', 'string', 'max:50'],
                 'notes' => ['nullable', 'string'],
                 'proof_of_payment' => ['nullable', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:2048'],
+                // ⭐ Payer fields
+                'payer_name' => ['nullable', 'string', 'max:150'],
+                'payer_relation' => ['nullable', 'string', 'max:100'],
             ]);
 
             $booking = Booking::with(['invoice', 'quotation', 'items', 'mealServices'])->findOrFail($data['booking_id']);
@@ -822,24 +873,6 @@ class PaymentController extends Controller
                 }
 
                 // ⭐ Pull additional charges + discount from the booking.
-                $additionalCharges = 0.0;
-                if (Schema::hasTable('booking_charges')) {
-                    $additionalCharges = (float) DB::table('booking_charges')
-                        ->where('booking_id', $booking->booking_id)
-                        ->where('charge_kind', 'charge')
-                        ->sum('amount');
-                }
-
-                $discount = 0.0;
-                if (Schema::hasTable('booking_charges')) {
-                    $discount = (float) DB::table('booking_charges')
-                        ->where('booking_id', $booking->booking_id)
-                        ->where('charge_kind', 'discount')
-                        ->sum('amount');
-                }
-
-                $totalAmount = max(0, $subtotal + $additionalCharges - $discount);
-
                 $additionalCharges = 0.0;
                 if (Schema::hasTable('booking_charges')) {
                     $additionalCharges = (float) DB::table('booking_charges')
@@ -907,7 +940,13 @@ class PaymentController extends Controller
                 $data['payment_type'] = 'partial';
             }
 
-            $changeAmount = max(0, (float) $data['amount'] - max(0, $balance));
+            // ⚠️ For mobile payments the customer transfers exactly the
+            //    amount they entered — no overpayment / change is possible.
+            //    The previous `max(0, $amount - $balance)` always yielded 0
+            //    once the amount was clamped, so this whole branch was dead
+            //    code. Keep it but guard against the amount actually being
+            //    higher than balance (should be rejected above, but be safe).
+            $changeAmount = max(0, (float) $data['amount'] - $balance);
             if ($changeAmount > 0) {
                 $data['notes'] = trim(($data['notes'] ?? '') . "\nChange due: ₱" . number_format($changeAmount, 2));
             }
@@ -929,10 +968,17 @@ class PaymentController extends Controller
                     'payment_date' => now(),
                 ];
 
-                if (isset($data['account_name'])) {
+                // ⭐ Payer fields
+                if (! empty($data['payer_name'])) {
+                    $paymentData['payer_name'] = trim((string) $data['payer_name']);
+                }
+                if (! empty($data['payer_relation'])) {
+                    $paymentData['payer_relation'] = trim((string) $data['payer_relation']);
+                }
+                if (array_key_exists('account_name', $data)) {
                     $paymentData['account_name'] = $data['account_name'];
                 }
-                if (isset($data['account_number'])) {
+                if (array_key_exists('account_number', $data)) {
                     $paymentData['account_number'] = $data['account_number'];
                 }
 
@@ -1088,20 +1134,144 @@ class PaymentController extends Controller
         $invoice = $booking?->invoice;
         $person = $booking?->serviceEvent?->customer?->person;
 
+        // ⭐ Derive the tendered + change amounts from the notes so the
+        //    receipt and Billing UI can display them without a schema change.
+        $changeAmount = 0.0;
+        $tenderedAmount = (float) ($payment->amount ?? 0);
+
+        if (!empty($payment->notes)) {
+            if (preg_match('/Change given:\s*₱([\d,]+(?:\.\d+)?)/i', $payment->notes, $m)) {
+                $changeAmount = (float) str_replace(',', '', $m[1]);
+            }
+            if (preg_match('/tendered\s*₱([\d,]+(?:\.\d+)?)/i', $payment->notes, $m)) {
+                $tenderedAmount = (float) str_replace(',', '', $m[1]);
+            }
+        }
+        // ⭐ CASHIER NAME — who physically recorded / verified this payment.
+        //    Priority: verified_by person → created_by user → "System".
+        $cashierName = $payment->verifier?->person?->full_name;
+        if (! $cashierName && $payment->verified_by) {
+            $verifierUser = \App\Models\User::with('person')->find($payment->verified_by);
+            $cashierName = $verifierUser?->person?->full_name
+                ?: ($verifierUser?->username ?? null);
+        }
+        $cashierName = $cashierName ?: 'System';
+
+        // ⭐ PAYER — person who physically paid. Falls back to the booked
+        //    customer's name when no third-party payer was recorded.
+        $bookedCustomerName = $person?->full_name
+            ?? trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? ''))
+            ?: 'Unknown Customer';
+        $payerNameRaw   = trim((string) ($payment->payer_name ?? ''));
+        $payerName      = $payerNameRaw !== '' ? $payerNameRaw : $bookedCustomerName;
+        $payerRelation  = trim((string) ($payment->payer_relation ?? ''));
+        $isThirdPartyPayer = $payerNameRaw !== ''
+            && strcasecmp($payerNameRaw, $bookedCustomerName) !== 0;
+
+        // ⭐ BALANCE AFTER THIS PAYMENT — computed from the invoice.        //
+        //    Priority:
+        //      1. Invoice.balance snapshot at read time (best).
+        //      2. invoice.total_amount - invoice.paid_amount.
+        //      3. This payment's booking.total_amount - booking.paid_amount.
+        $invoiceTotal    = (float) ($invoice?->total_amount ?? 0);
+        $invoicePaid     = (float) ($invoice?->paid_amount   ?? 0);
+        $bookingTotal    = (float) ($booking?->total_amount  ?? 0);
+        $bookingPaid     = (float) ($booking?->paid_amount   ?? 0);
+
+        $totalAmountForEvent = $invoiceTotal > 0 ? $invoiceTotal : $bookingTotal;
+        $paidAfterPayment    = $invoiceTotal > 0 ? $invoicePaid  : $bookingPaid;
+        $balanceAfterPayment = max(0, $totalAmountForEvent - $paidAfterPayment);
+
+        // ⭐ PAYMENT CATEGORY — distinguishes a normal booking payment from
+        //    an "additional" payment caused by:
+        //      • damage charge (equipment damaged / missing)
+        //      • extra order (client added menu items after the initial invoice)
+        //      • service fee adjustment (transportation / setup)
+        //
+        //    The label surfaces directly in the receipt and payment tracking
+        //    table so the cashier can see WHY this payment exists.
+        $paymentCategory = 'standard';
+        $paymentCategoryLabel = 'Standard Payment';
+
+        $notesLower = strtolower((string) $payment->notes);
+        $typeLower  = strtolower((string) $payment->payment_type);
+
+        if ($typeLower === 'refund') {
+            $paymentCategory = 'refund';
+            $paymentCategoryLabel = 'Refund';
+        } elseif (str_contains($notesLower, 'damage') || str_contains($notesLower, 'missing equipment')) {
+            $paymentCategory = 'damage';
+            $paymentCategoryLabel = 'Damage / Missing Equipment';
+        } elseif (
+            str_contains($notesLower, 'additional') ||
+            str_contains($notesLower, 'extra order') ||
+            str_contains($notesLower, 'extra food') ||
+            str_contains($notesLower, 'additional charge')
+        ) {
+            $paymentCategory = 'additional';
+            $paymentCategoryLabel = 'Additional Charge';
+        } elseif ($typeLower === 'deposit') {
+            $paymentCategory = 'deposit';
+            $paymentCategoryLabel = 'Deposit';
+        } elseif ($typeLower === 'full') {
+            $paymentCategory = 'full';
+            $paymentCategoryLabel = 'Full Payment';
+        } elseif ($typeLower === 'partial') {
+            $paymentCategory = 'partial';
+            $paymentCategoryLabel = 'Partial Payment';
+        }
+        // ⭐ Load booking charges to inject into the payment payload
+        $booking->loadMissing('charges');
+        $chargesList = collect();
+        if ($booking && $booking->charges) {
+            $chargesList = $booking->charges->map(function ($charge) {
+                return [
+                    'id'          => $charge->booking_charge_id,
+                    'kind'        => $charge->charge_kind,
+                    'type'        => $charge->charge_type,
+                    'description' => $charge->description,
+                    'amount'      => (float) $charge->amount,
+                ];
+            })->values();
+        }
+
         return [
             'id' => $payment->payment_id,
             'payment_id' => $payment->payment_id,
             'payment_number' => $payment->payment_number ?? 'N/A',
             'booking_id' => $payment->booking_id,
+            // ⭐ Add charges to the payment object
+            'charges' => $chargesList,
             'booking_no' => $booking?->booking_no ?? 'N/A',
             'customer_id' => $booking?->serviceEvent?->customer_id,
             'customer_name' => $person?->full_name ?? 'Unknown',
             'customer_email' => $person?->email ?? 'N/A',
             'customer_phone' => $person?->phone ?? 'N/A',
             'customer_avatar' => $person?->profile_photo_url,
+
+            // ⭐ PAYER — who physically paid. Third-party payers are
+            //    common (family member, driver, company rep, sponsor).
+            'payer_name'           => $payerName,
+            'payer_relation'       => $payerRelation ?: null,
+            'is_third_party_payer' => $isThirdPartyPayer,
             'invoice_id' => $invoice?->invoice_id,
             'invoice_number' => $invoice?->invoice_number ?? 'N/A',
             'amount' => (float) ($payment->amount ?? 0),
+
+            // ⭐ ADDED — full payment context for the receipt and the
+            //    Payment Tracking table.
+            'total_amount'         => round($totalAmountForEvent, 2),
+            'paid_amount'          => round($paidAfterPayment, 2),
+            'balance_after_payment' => round($balanceAfterPayment, 2),
+            'is_fully_paid'        => $balanceAfterPayment <= 0.01,
+            'payment_category'      => $paymentCategory,
+            'payment_category_label' => $paymentCategoryLabel,
+            'cashier_name'          => $cashierName,
+
+            // ⭐ Overpayment / change fields — surfaced to the receipt and UI.
+            'tendered_amount' => $tenderedAmount,
+            'change_amount'   => $changeAmount,
+            'is_exact_cash'   => $changeAmount > 0.01,
             'payment_method' => $payment->payment_method ?? 'N/A',
             'payment_type' => $payment->payment_type ?? 'partial',
             'reference_number' => $payment->reference_number ?? 'N/A',
@@ -1113,12 +1283,7 @@ class PaymentController extends Controller
             'date_time' => $payment->payment_date?->toDateTimeString(),
             'notes' => $payment->notes,
             'receipt_file' => $payment->receipt_file,
-            // ⭐ Storage::disk('public')->url() returns a full URL when
-            //    APP_URL is set; otherwise it returns `/storage/<path>`.
-            //    The frontend's resolveBackendUrl() handles both shapes.
-            'receipt_url' => $payment->receipt_file
-                ? Storage::disk('public')->url($payment->receipt_file)
-                : null,
+            'receipt_url' => $payment->receipt_file ? Storage::disk('public')->url($payment->receipt_file) : null,
             'verified_by_id' => $payment->verified_by,
             'verified_by' => $payment->verifier?->person?->full_name,
             'verified_at' => $payment->verified_at?->toDateTimeString(),
@@ -1292,120 +1457,133 @@ class PaymentController extends Controller
             'booking.serviceEvent.eventType',
             'booking.invoice',
             'booking.quotation',
-            'booking.items.menuItem',
-            'booking.items.mealService',
-            'booking.mealServices.menuItem',
-            'booking.mealServices.eventDay',
-            'booking.mealServices.customItems.menuItem',
             'booking.payments',
         ]);
 
-        $booking = $payment->booking;
-        $event = $booking?->serviceEvent;
-        $person = $event?->customer?->person;
-        $invoice = $booking?->invoice;
+        $booking  = $payment->booking;
+        $event    = $booking?->serviceEvent;
+        $person   = $event?->customer?->person;
+        $invoice  = $booking?->invoice;
         $quotation = $booking?->quotation;
 
         $money = fn($value) => '₱' . number_format((float) ($value ?? 0), 2);
-        $safe = fn($value) => e((string) ($value ?? 'N/A'));
+        $safe  = fn($value) => e((string) ($value ?? 'N/A'));
 
-        $customerName = $person?->full_name ?? trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? '')) ?: 'Unknown';
+        $customerName = $person?->full_name
+            ?? trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? ''))
+            ?: 'Unknown Customer';
         $eventName = $event?->eventType?->name ?? 'Event';
         $bookingNo = $booking?->booking_no ?? 'N/A';
-        $paymentDate = $payment->payment_date?->format('F d, Y h:i A') ?? optional($payment->created_at)->format('F d, Y h:i A') ?? 'N/A';
+
+        // ⭐ PAYMENT DATE & TIME — always shown on the trimmed receipt.
+        $paymentDate = $payment->payment_date?->format('F d, Y') ?? optional($payment->created_at)->format('F d, Y') ?? 'N/A';
+        $paymentTime = $payment->payment_date?->format('h:i A') ?? optional($payment->created_at)->format('h:i A') ?? 'N/A';
+        $paymentDateTime = $payment->payment_date?->format('F d, Y · h:i A')
+            ?? optional($payment->created_at)->format('F d, Y · h:i A')
+            ?? 'N/A';
         $generatedDate = now()->format('F d, Y h:i A');
 
-        $mealRows = collect();
-        if ($booking && $booking->relationLoaded('mealServices') && $booking->mealServices->isNotEmpty()) {
-            foreach ($booking->mealServices as $meal) {
-                $customItems = ($meal->relationLoaded('customItems') ? $meal->customItems : collect());
-                if ($customItems->isNotEmpty()) {
-                    foreach ($customItems as $item) {
-                        $mealRows->push([
-                            'day' => (int) ($meal->day_number ?? 1),
-                            'date' => $meal->service_date?->toDateString(),
-                            'meal_type' => $meal->meal_type ?? 'Meal',
-                            'item' => $item->item_name ?? $item->menuItem?->name ?? 'Menu Item',
-                            'quantity' => (int) ($item->quantity ?? 1),
-                            'unit_price' => (float) ($item->unit_price ?? 0),
-                            'subtotal' => (float) (($item->quantity ?? 1) * ($item->unit_price ?? 0)),
-                        ]);
-                    }
-                } else {
-                    $mealRows->push([
-                        'day' => (int) ($meal->day_number ?? 1),
-                        'date' => $meal->service_date?->toDateString(),
-                        'meal_type' => $meal->meal_type ?? 'Meal',
-                        'item' => $meal->menu_name ?? $meal->menuItem?->name ?? 'Meal Service',
-                        'quantity' => (int) ($meal->pax ?? 1),
-                        'unit_price' => (float) ($meal->price_per_head ?? 0),
-                        'subtotal' => (float) ($meal->total_meal_amount ?? (($meal->pax ?? 1) * ($meal->price_per_head ?? 0))),
-                    ]);
+        // ⭐ CASHIER NAME — who physically recorded / verified this payment.
+        $cashierName = $payment->verifier?->person?->full_name;
+        if (! $cashierName && $payment->verified_by) {
+            $verifierUser = \App\Models\User::with('person')->find($payment->verified_by);
+            $cashierName = $verifierUser?->person?->full_name
+                ?: ($verifierUser?->username ?? null);
+        }
+        $cashierName = $cashierName ?: 'System';
+
+        // ⭐ TOTALS — the three numbers the cashier ALWAYS needs:
+        //    • Grand Total of the event
+        //    • Amount Paid (this payment)
+        //    • Balance After This Payment
+        $grandTotal = (float) ($invoice?->total_amount ?? $quotation?->total_amount ?? 0);
+
+        // Paid BEFORE this payment = invoice.paid_amount minus this payment
+        // (only when this payment is already reflected in invoice.paid_amount).
+        $invoicePaid = (float) ($invoice?->paid_amount ?? 0);
+        $thisPayment = (float) ($payment->amount ?? 0);
+
+        $completedSum = (float) ($booking?->payments ?? collect())
+            ->where('status', 'completed')
+            ->where('payment_type', '!=', 'refund')
+            ->sum('amount');
+        $refundSum = (float) ($booking?->payments ?? collect())
+            ->where('status', 'completed')
+            ->where('payment_type', 'refund')
+            ->sum('amount');
+        $netPaid = max(0, $completedSum - $refundSum);
+
+        // After this payment = the net paid across the booking.
+        // If the backend already rolled this payment into invoice.paid_amount,
+        // use that. Otherwise add this payment on top of the current paid.
+        $paidAfterPayment = $invoicePaid > 0 ? $invoicePaid : $netPaid;
+        $balanceAfterPayment = max(0, $grandTotal - $paidAfterPayment);
+
+        // ⭐ PAYMENT CATEGORY — labels the reason for this payment so the
+        //    receipt makes it clear when the client is paying for an extra
+        //    order, damage, or a normal partial payment.
+        $notesLower = strtolower((string) $payment->notes);
+        $typeLower  = strtolower((string) $payment->payment_type);
+
+        $categoryLabel = 'Standard Payment';
+        $categoryTone  = '#1a7ab5'; // default blue
+        if ($typeLower === 'refund') {
+            $categoryLabel = 'Refund';
+            $categoryTone  = '#d97706';
+        } elseif (str_contains($notesLower, 'damage') || str_contains($notesLower, 'missing equipment')) {
+            $categoryLabel = 'Damage / Missing Equipment';
+            $categoryTone  = '#dc2626';
+        } elseif (
+            str_contains($notesLower, 'additional') ||
+            str_contains($notesLower, 'extra order') ||
+            str_contains($notesLower, 'extra food') ||
+            str_contains($notesLower, 'additional charge')
+        ) {
+            $categoryLabel = 'Additional Charge';
+            $categoryTone  = '#7c3aed';
+        } elseif ($typeLower === 'deposit') {
+            $categoryLabel = 'Deposit';
+            $categoryTone  = '#2563eb';
+        } elseif ($typeLower === 'full') {
+            $categoryLabel = 'Full Payment';
+            $categoryTone  = '#059669';
+        } elseif ($typeLower === 'partial') {
+            $categoryLabel = 'Partial Payment';
+            $categoryTone  = '#d97706';
+        }
+
+        // ⭐ Extract tendered / change for the cash summary.
+        $tenderedAmount = (float) ($payment->amount ?? 0);
+        $changeAmount   = 0.0;
+        if (!empty($payment->notes)) {
+            if (preg_match('/Change given:\s*₱([\d,]+(?:\.\d+)?)/i', $payment->notes, $m)) {
+                $changeAmount = (float) str_replace(',', '', $m[1]);
+            }
+            if (preg_match('/tendered\s*₱([\d,]+(?:\.\d+)?)/i', $payment->notes, $m)) {
+                $tenderedAmount = (float) str_replace(',', '', $m[1]);
+            }
+        }
+
+        // ⭐ GENERATE ADDITIONAL CHARGES ROWS
+        $booking->loadMissing('charges');
+        $chargesRowsHtml = '';
+
+        if ($booking && $booking->charges && $booking->charges->count() > 0) {
+            foreach ($booking->charges as $charge) {
+                if ($charge->amount > 0) {
+                    $label = $charge->description ?: ucwords(str_replace('_', ' ', $charge->charge_type));
+                    $prefix = $charge->charge_kind === 'discount' ? '-' : '';
+                    $color = $charge->charge_kind === 'discount' ? '#059669' : '#1e293b';
+
+                    $chargesRowsHtml .= '
+                        <div class="summary-row" style="border-bottom: 1px dashed #e2e8f0; padding: 4px 0; font-size: 12px;">
+                            <span style="color: #64748b;">' . $safe($label) . '</span>
+                            <strong style="color: ' . $color . ';">' . $prefix . $money($charge->amount) . '</strong>
+                        </div>
+                    ';
                 }
             }
-        } elseif ($booking && $booking->relationLoaded('items')) {
-            foreach ($booking->items as $item) {
-                $mealRows->push([
-                    'day' => (int) ($item->mealService?->day_number ?? 1),
-                    'date' => $item->mealService?->service_date?->toDateString(),
-                    'meal_type' => $item->mealService?->meal_type ?? 'Selected Menu',
-                    'item' => $item->menuItem?->name ?? 'Menu Item',
-                    'quantity' => (int) ($item->quantity ?? 1),
-                    'unit_price' => (float) ($item->price ?? $item->unit_price ?? 0),
-                    'subtotal' => (float) ($item->total_price ?? (($item->quantity ?? 1) * ($item->price ?? $item->unit_price ?? 0))),
-                ]);
-            }
         }
-
-        $mealOrder = ['Breakfast', 'Morning Snacks', 'Lunch', 'Afternoon Snacks', 'Dinner', 'Snacks', 'Selected Menu', 'Meal'];
-        $mealsHtml = '';
-        if ($mealRows->isEmpty()) {
-            $mealsHtml = '<p class="muted">No menu item records were attached to this payment.</p>';
-        } else {
-            foreach ($mealRows->groupBy('day')->sortKeys() as $day => $dayRows) {
-                $dayTotal = $dayRows->sum('subtotal');
-                $dayDate = $dayRows->first()['date'] ?? null;
-                $mealsHtml .= '<div class="day-block"><h3>Day ' . e($day) . ($dayDate ? ' - ' . e($dayDate) : '') . '</h3>';
-                foreach ($dayRows->groupBy('meal_type')->sortBy(fn($rows, $mealType) => array_search($mealType, $mealOrder, true) === false ? 99 : array_search($mealType, $mealOrder, true)) as $mealType => $rows) {
-                    $subtotal = $rows->sum('subtotal');
-                    $mealsHtml .= '<h4>' . e($mealType) . ' <span>' . $money($subtotal) . '</span></h4><table><thead><tr><th>Menu Item</th><th>Qty/PAX</th><th>Unit Price</th><th>Subtotal</th></tr></thead><tbody>';
-                    foreach ($rows as $row) {
-                        $mealsHtml .= '<tr><td>' . e($row['item']) . '</td><td>' . e($row['quantity']) . '</td><td>' . $money($row['unit_price']) . '</td><td>' . $money($row['subtotal']) . '</td></tr>';
-                    }
-                    $mealsHtml .= '</tbody></table>';
-                }
-                $mealsHtml .= '<div class="day-total">Day Total: <strong>' . $money($dayTotal) . '</strong></div></div>';
-            }
-        }
-
-        $additionalRows = [
-            'Transportation Fee' => $invoice?->transportation_fee ?? $booking?->transportation_fee ?? 0,
-            'Setup Fee' => $booking?->setup_fee ?? 0,
-            'Service Crew Fee' => $booking?->service_crew_fee ?? 0,
-            'Equipment Rental' => $booking?->equipment_rental ?? 0,
-            'Extra Food Fee' => $booking?->extra_food_fee ?? 0,
-            'Discount' => -abs((float) ($invoice?->discount_amount ?? $booking?->discount ?? 0)),
-        ];
-        $chargesHtml = '';
-        foreach ($additionalRows as $label => $value) {
-            if ((float) $value != 0.0) {
-                $chargesHtml .= '<tr><td>' . e($label) . '</td><td>' . $money($value) . '</td></tr>';
-            }
-        }
-        if ($chargesHtml === '') {
-            $chargesHtml = '<tr><td colspan="2" class="muted">No additional charges or adjustments recorded.</td></tr>';
-        }
-
-        $paymentsHtml = '';
-        $allPayments = $booking?->payments ?? collect([$payment]);
-        foreach ($allPayments as $row) {
-            $paymentsHtml .= '<tr><td>' . e($row->payment_number ?? '-') . '</td><td>' . e($row->payment_method ?? '-') . '</td><td>' . e($row->payment_type ?? '-') . '</td><td>' . $money($row->amount ?? 0) . '</td><td>' . e($row->status ?? '-') . '</td></tr>';
-        }
-
-        $subtotal = (float) ($mealRows->sum('subtotal') ?: ($invoice?->subtotal ?? $quotation?->total_amount ?? 0));
-        $grandTotal = (float) ($invoice?->total_amount ?? $quotation?->total_amount ?? $subtotal);
-        $paidAmount = (float) ($invoice?->paid_amount ?? $allPayments->where('status', 'completed')->sum('amount'));
-        $balance = max(0, $grandTotal - $paidAmount);
 
         $accountRows = '';
         if ($payment->account_name) {
@@ -1414,7 +1592,59 @@ class PaymentController extends Controller
         if ($payment->account_number) {
             $accountRows .= '<tr><td>Account Number</td><td>' . $safe($payment->account_number) . '</td></tr>';
         }
-        $notes = $payment->notes ? '<div class="notes"><strong>Notes:</strong><br>' . nl2br(e($payment->notes)) . '</div>' : '';
+
+        $notes = $payment->notes
+            ? '<div class="notes"><strong>Notes:</strong><br>' . nl2br(e($payment->notes)) . '</div>'
+            : '';
+
+        // ⭐ OPTIONAL CHANGE ROWS — cash payments show the tendered and
+        //    change returned so the customer can verify their money.
+        $changeRowsHtml = '';
+        if ($changeAmount > 0.01) {
+            $changeRowsHtml .= '<tr><td><strong>Cash Tendered</strong></td><td style="text-align:right;font-weight:600;">' . $money($tenderedAmount) . '</td></tr>';
+            $changeRowsHtml .= '<tr style="background:#ecfdf5;"><td><strong style="color:#059669;">Change</strong></td><td style="text-align:right;font-weight:700;color:#059669;">' . $money($changeAmount) . '</td></tr>';
+        }
+
+        // ⭐ COLOR for the balance chip: green when settled, red when owing.
+        $balanceColor = $balanceAfterPayment <= 0.01 ? '#059669' : '#dc2626';
+        $balanceLabel = $balanceAfterPayment <= 0.01 ? 'FULLY PAID' : 'BALANCE';
+
+        // ⭐ PAYER — only rendered when a third party paid.
+        $payerNameRaw  = trim((string) ($payment->payer_name ?? ''));
+        $payerRelation = trim((string) ($payment->payer_relation ?? ''));
+        $bookedName    = $person?->full_name
+            ?? trim(($person?->first_name ?? '') . ' ' . ($person?->last_name ?? ''))
+            ?: 'Unknown Customer';
+        $isThirdParty  = $payerNameRaw !== ''
+            && strcasecmp($payerNameRaw, $bookedName) !== 0;
+
+        $payerSectionHtml = '';
+        if ($isThirdParty) {
+            $safePayer    = $safe($payerNameRaw);
+            $safeRelation = $safe($payerRelation);
+            $safeBooked   = $safe($bookedName);
+
+            $payerSectionHtml = '
+                <div class="section-title">Paid By</div>
+                <div style="padding: 12px 16px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px;">
+                        <div>
+                            <div style="font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b;">Received From</div>
+                            <div style="font-size: 15px; font-weight: 700; color: #1e293b; margin-top: 2px;">' . $safePayer . '</div>
+                        </div>'
+                . ($safeRelation !== ''
+                    ? '<div style="text-align: right;">
+                            <div style="font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #64748b;">Relationship</div>
+                            <div style="font-size: 13px; font-weight: 600; color: #7c3aed; margin-top: 2px;">' . $safeRelation . '</div>
+                       </div>'
+                    : '')
+                . '</div>
+                    <div style="font-size: 11px; color: #94a3b8; margin-top: 8px; padding-top: 8px; border-top: 1px dashed #fde68a;">
+                        Booking on file under <strong style="color: #64748b;">' . $safeBooked . '</strong>
+                    </div>
+                </div>
+            ';
+        }
 
         return <<<HTML
 <!DOCTYPE html>
@@ -1423,81 +1653,134 @@ class PaymentController extends Controller
     <meta charset="UTF-8">
     <title>Payment Receipt - {$safe($payment->payment_number)}</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
-        .receipt-container { max-width: 980px; margin: 0 auto; background: #fff; }
-        .receipt-header { text-align: center; border-bottom: 3px solid #1a7ab5; padding-bottom: 16px; margin-bottom: 18px; }
-        h1 { color: #1a7ab5; margin: 0 0 6px; }
-        h2 { margin-top: 22px; color: #1f2937; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
-        h3 { background: #f3f4f6; padding: 8px; margin: 16px 0 8px; }
-        h4 { display: flex; justify-content: space-between; margin: 12px 0 6px; color: #374151; }
-        table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 12px; }
-        th, td { border: 1px solid #d1d5db; padding: 7px 8px; text-align: left; }
-        th { background: #f9fafb; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-        .summary { background: #eff6ff; padding: 12px; border-radius: 6px; margin-top: 12px; }
-        .summary-row, .day-total { display: flex; justify-content: space-between; padding: 4px 0; }
-        .grand { font-size: 18px; font-weight: bold; color: #1a7ab5; border-top: 1px solid #bfdbfe; margin-top: 6px; padding-top: 8px; }
-        .muted { color: #6b7280; }
-        .notes { margin-top: 14px; padding: 10px; background: #f9fafb; border-left: 4px solid #1a7ab5; }
-        .footer { text-align: center; color: #6b7280; font-size: 12px; margin-top: 24px; border-top: 1px solid #e5e7eb; padding-top: 12px; }
-        @media print { body { margin: 10px; } .receipt-container { max-width: none; } }
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; margin: 0; padding: 24px; color: #111827; background: #f8fafc; }
+        .receipt-container { max-width: 720px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 28px 32px; border: 1px solid #e2e8f0; }
+
+        .receipt-header { text-align: center; border-bottom: 2px solid #1a7ab5; padding-bottom: 16px; margin-bottom: 20px; }
+        .receipt-header h1 { color: #1a7ab5; margin: 0 0 4px; font-size: 22px; letter-spacing: 1px; }
+        .receipt-header .subtitle { color: #64748b; font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase; }
+        .receipt-header .receipt-id { font-family: 'Courier New', monospace; font-weight: 700; color: #1e293b; font-size: 14px; margin-top: 6px; }
+
+        .category-banner { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; margin-bottom: 18px; background: #eff6ff; border: 1px solid #bfdbfe; }
+        .category-banner .cat-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #64748b; }
+        .category-banner .cat-value { font-size: 13px; font-weight: 700; color: {$categoryTone}; }
+
+        .section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #64748b; margin: 18px 0 8px; padding-bottom: 6px; border-bottom: 1px solid #e2e8f0; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        table td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+        table tr:last-child td { border-bottom: none; }
+        table td:first-child { color: #64748b; font-weight: 500; width: 42%; }
+        table td:last-child  { color: #1e293b; font-weight: 600; text-align: right; }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+        .summary-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 10px; padding: 16px 20px; margin-top: 8px; }
+        .summary-box .summary-row { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px dashed #bfdbfe; font-size: 13px; }
+        .summary-box .summary-row:last-child { border-bottom: none; }
+        .summary-box .summary-row span { color: #475569; font-weight: 500; }
+        .summary-box .summary-row strong { color: #1e293b; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .summary-box .summary-row.grand { padding: 12px 0 8px; border-top: 2px solid #1a7ab5; margin-top: 6px; }
+        .summary-box .summary-row.grand strong { font-size: 20px; color: #1a7ab5; }
+        .summary-box .summary-row.balance-row { padding: 14px 12px; margin-top: 8px; border-radius: 8px; background: #fff; border: 1px solid {$balanceColor}33; }
+        .summary-box .summary-row.balance-row strong { font-size: 18px; color: {$balanceColor}; }
+        .summary-box .summary-row.balance-row .bal-label { color: {$balanceColor}; font-weight: 700; }
+
+        .cashier-box { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; margin-top: 18px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .cashier-box .cashier-label { font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: #64748b; }
+        .cashier-box .cashier-name { font-size: 14px; font-weight: 700; color: #1e293b; }
+        .cashier-box .cashier-time { font-size: 11.5px; color: #64748b; margin-top: 2px; }
+
+        .notes { margin-top: 16px; padding: 12px 14px; background: #fffbeb; border-left: 3px solid #f59e0b; border-radius: 4px; font-size: 12.5px; }
+
+        .footer { text-align: center; color: #94a3b8; font-size: 11px; margin-top: 24px; padding-top: 14px; border-top: 1px solid #e2e8f0; }
+        .footer p { margin: 3px 0; }
+
+        @media print {
+            body { background: #fff; padding: 0; }
+            .receipt-container { border: none; box-shadow: none; padding: 12mm 10mm; max-width: 100%; }
+        }
     </style>
 </head>
 <body>
 <div class="receipt-container">
     <div class="receipt-header">
         <h1>PAYMENT RECEIPT</h1>
-        <div>Receipt #: <strong>{$safe($payment->payment_number)}</strong></div>
-        <div>Date: <strong>{$safe($paymentDate)}</strong></div>
+        <div class="subtitle">Dear Bab's Catering Services</div>
+        <div class="receipt-id">{$safe($payment->payment_number)}</div>
     </div>
 
+    <div class="category-banner">
+        <span class="cat-label">Payment Category</span>
+        <span class="cat-value">{$safe($categoryLabel)}</span>
+    </div>
     <div class="grid">
         <div>
-            <h2>Customer Information</h2>
+            <div class="section-title">Customer</div>
             <table>
-                <tr><td>Customer</td><td><strong>{$safe($customerName)}</strong></td></tr>
+                <tr><td>Customer Name</td><td>{$safe($customerName)}</td></tr>
+                <tr><td>Contact</td><td>{$safe($person?->phone ?? 'N/A')}</td></tr>
                 <tr><td>Email</td><td>{$safe($person?->email ?? 'N/A')}</td></tr>
-                <tr><td>Phone</td><td>{$safe($person?->phone ?? 'N/A')}</td></tr>
             </table>
         </div>
         <div>
-            <h2>Event Information</h2>
+            <div class="section-title">Event</div>
             <table>
-                <tr><td>Booking #</td><td><strong>{$safe($bookingNo)}</strong></td></tr>
-                <tr><td>Event</td><td>{$safe($eventName)}</td></tr>
-                <tr><td>Date</td><td>{$safe(optional($event?->event_date)->format('Y-m-d'))}</td></tr>
-                <tr><td>Time</td><td>{$safe($event?->event_time)}</td></tr>
-                <tr><td>Venue</td><td>{$safe($event?->venue)}</td></tr>
-                <tr><td>Guests</td><td>{$safe($event?->guests_count ?? 0)} PAX</td></tr>
+                <tr><td>Booking #</td><td>{$safe($bookingNo)}</td></tr>
+                <tr><td>Event Type</td><td>{$safe($eventName)}</td></tr>
+                <tr><td>Event Date</td><td>{$safe(optional($event?->event_date)->format('M d, Y'))}</td></tr>
             </table>
         </div>
     </div>
 
-    <h2>Selected Menu Items</h2>
-    {$mealsHtml}
-
-    <h2>Additional Charges / Adjustments</h2>
-    <table><tbody>{$chargesHtml}</tbody></table>
-
-    <h2>Payment Summary</h2>
+    {$payerSectionHtml}
+    <div class="section-title">Payment Details</div>
     <table>
-        <tr><td>Payment Method</td><td><strong>{$safe(strtoupper($payment->payment_method ?? 'N/A'))}</strong></td></tr>
-        <tr><td>Payment Type</td><td>{$safe(strtoupper($payment->payment_type ?? 'partial'))}</td></tr>
+        <tr><td>Receipt #</td><td>{$safe($payment->payment_number)}</td></tr>
+        <tr><td>Payment Date</td><td>{$safe($paymentDate)}</td></tr>
+        <tr><td>Payment Time</td><td>{$safe($paymentTime)}</td></tr>
+        <tr><td>Payment Method</td><td>{$safe(strtoupper(str_replace('_', ' ', (string)$payment->payment_method)))}</td></tr>
+        <tr><td>Payment Type</td><td>{$safe(strtoupper(str_replace('_', ' ', (string)$payment->payment_type)))}</td></tr>
         <tr><td>Reference #</td><td>{$safe($payment->reference_number ?? 'N/A')}</td></tr>
-        <tr><td>Status</td><td>{$safe(strtoupper($payment->status ?? 'pending'))}</td></tr>
+        <tr><td>Status</td><td>{$safe(strtoupper($payment->status ?? 'COMPLETED'))}</td></tr>
         {$accountRows}
     </table>
-    <table>
-        <thead><tr><th>Payment #</th><th>Method</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead>
-        <tbody>{$paymentsHtml}</tbody>
-    </table>
 
-    <div class="summary">
-        <div class="summary-row"><span>Menu Subtotal</span><strong>{$money($subtotal)}</strong></div>
-        <div class="summary-row grand"><span>Grand Total</span><strong>{$money($grandTotal)}</strong></div>
-        <div class="summary-row"><span>Total Paid</span><strong>{$money($paidAmount)}</strong></div>
-        <div class="summary-row"><span>Balance</span><strong>{$money($balance)}</strong></div>
-        <div class="summary-row"><span>This Payment</span><strong>{$money($payment->amount ?? 0)}</strong></div>
+    <div class="section-title">Amount Summary</div>
+    <div class="summary-box">
+        <div class="summary-row">
+            <span>Grand Total (Event)</span>
+            <strong>{$money($grandTotal)}</strong>
+        </div>
+        
+        <!-- ⭐ ADDITIONAL CHARGES BREAKDOWN -->
+        {$chargesRowsHtml}
+        
+        <div class="summary-row grand">
+            <span>Amount Paid (This Payment)</span>
+            <strong>{$money($thisPayment)}</strong>
+        </div>
+        <div class="summary-row">
+            <span>Total Paid to Date</span>
+            <strong>{$money($paidAfterPayment)}</strong>
+        </div>
+        <div class="summary-row balance-row">
+            <span class="bal-label">{$safe($balanceLabel)}</span>
+            <strong>{$money($balanceAfterPayment)}</strong>
+        </div>
+        {$changeRowsHtml}
+    </div>
+
+    <div class="cashier-box">
+        <div>
+            <div class="cashier-label">Cashier / Recorded By</div>
+            <div class="cashier-name">{$safe($cashierName)}</div>
+        </div>
+        <div style="text-align:right;">
+            <div class="cashier-label">Payment Date & Time</div>
+            <div class="cashier-time">{$safe($paymentDateTime)}</div>
+        </div>
     </div>
 
     {$notes}
@@ -1511,7 +1794,6 @@ class PaymentController extends Controller
 </html>
 HTML;
     }
-
     /**
      * Calculate net completed amount
      */

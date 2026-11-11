@@ -15,6 +15,7 @@
 //   - Employee Overview only reloads on period change / explicit refresh.
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import '../styles/StaffAttendance.css';
 
@@ -46,6 +47,12 @@ import {
 } from 'react-icons/fi';
 import { FiXCircle as FiXIcon } from 'react-icons/fi';
 import { BsCameraFill } from 'react-icons/bs';
+
+/* ---------- Portal: renders children into document.body ---------- */
+const ModalPortal = ({ children }) => {
+  if (typeof document === 'undefined') return null;
+  return ReactDOM.createPortal(children, document.body);
+};
 
 // ==================== HELPERS ====================
 const formatDate = (dateString) => {
@@ -835,6 +842,9 @@ const Staff_Attendance = () => {
   const [cutoffPeriod, setCutoffPeriod] = useState('first');
 
   const [searchTerm, setSearchTerm] = useState('');
+  // Attendance Records date filter: cutoff, today, or an exact calendar date.
+  const [attendanceDateMode, setAttendanceDateMode] = useState('cutoff');
+  const [attendanceSelectedDate, setAttendanceSelectedDate] = useState(toDateInputValue(new Date()));
   const [statusFilter, setStatusFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [showFilters, setShowFilters] = useState(false);
@@ -1146,6 +1156,78 @@ const Staff_Attendance = () => {
       setSideStatus(attendanceId, 'in', 'pending');
       setSideStatus(attendanceId, 'out', 'pending');
       showNotificationMessage(getApiErrorMessage(error, 'Failed to approve'), 'error');
+    }
+  };
+
+  // Centralized attendance decision. This approves/rejects the attendance record only;
+  // overtime and undertime retain their own independent approval workflows.
+  const handleAttendanceDecision = async (record, decision) => {
+    const attendanceId = record?.attendance_id ?? record?.id;
+    if (!attendanceId) {
+      showNotificationMessage('This attendance entry has not been saved yet. Save/create the record before reviewing it.', 'error');
+      return false;
+    }
+    if (decision === 'approved' && (!record.time_in || !record.time_out) && record.status !== 'absent') {
+      showNotificationMessage('Missing Time In or Time Out must be corrected before approval.', 'error');
+      return false;
+    }
+    // Unscheduled records may be approved only after an administrator reviews them.
+    // Backend payroll eligibility must still exclude them from regular hours unless explicitly classified.
+    setEmployeeOverviewActionLoading(`attendance-${attendanceId}`);
+    try {
+      const response = await api.put(`/attendance/${attendanceId}/status`, {
+        approval_status: decision,
+        verification_notes: decision === 'approved' ? 'Attendance record approved by administrator' : 'Attendance record rejected by administrator',
+      });
+      if (response.data?.success || response.data?.data) {
+        setEmployeeOverviewSelectedRecords((prev) => prev.map((item) =>
+          String(item.attendance_id ?? item.id) === String(attendanceId)
+            ? { ...item, approval_status: decision, verification_status: decision, approved_at: new Date().toISOString() }
+            : item
+        ));
+        setSideStatus(attendanceId, 'in', decision === 'approved' ? 'verified' : 'rejected');
+        setSideStatus(attendanceId, 'out', decision === 'approved' ? 'verified' : 'rejected');
+        showNotificationMessage(`Attendance record ${decision}`, 'success');
+        queryClient.invalidateQueries({ queryKey: ['attendance'] });
+        await refetchMobile();
+        return true;
+      }
+      showNotificationMessage(response.data?.message || 'Unable to update attendance approval.', 'error');
+      return false;
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Unable to update attendance approval.'), 'error');
+      return false;
+    } finally {
+      setEmployeeOverviewActionLoading(null);
+    }
+  };
+
+  // For a scheduled workday with no attendance row, create a pending manual row,
+  // then apply the selected flag. The backend's unique employee/date check prevents duplicates.
+  const handleFlagMissingAttendance = async (employee, workDate, flag) => {
+    if (!employee?.employee_id || !workDate || !flag) return;
+    setFlagSubmitting(true);
+    try {
+      const created = await api.post('/attendance/create', {
+        employee_id: employee.employee_id,
+        date: workDate,
+        time_in: null,
+        time_out: null,
+        notes: `Attendance flagged as ${flag} by administrator`,
+      });
+      const row = created.data?.data ?? created.data;
+      const id = row?.attendance_id ?? row?.id;
+      if (!id) throw new Error('The attendance record was created but its ID was not returned.');
+      await api.post(`/attendance/${id}/flag`, { flag, notes: `Flagged as ${flag} by administrator` });
+      showNotificationMessage(`Attendance flagged as ${flag.replace('_', ' ').toUpperCase()}.`, 'success');
+      await refreshSelectedEmployeeRecords();
+      await refetchMobile();
+      return true;
+    } catch (error) {
+      showNotificationMessage(getApiErrorMessage(error, 'Unable to create attendance flag. Check whether a record already exists for this employee and date.'), 'error');
+      return false;
+    } finally {
+      setFlagSubmitting(false);
     }
   };
 
@@ -2113,18 +2195,28 @@ const Staff_Attendance = () => {
   }, [employeeOverviewEmployees]);
 
   const filteredMobileAttendance = useMemo(() => {
-    let filtered = [...getCurrentCutoffAttendance()];
+    let filtered = attendanceDateMode === 'cutoff' ? [...getCurrentCutoffAttendance()] : [...mobileAttendance];
+    if (attendanceDateMode === 'today') {
+      const today = toDateInputValue(new Date());
+      filtered = filtered.filter((r) => String(r.attendance_date || r.date || r.timestamp || '').slice(0, 10) === today);
+    } else if (attendanceDateMode === 'date' && attendanceSelectedDate) {
+      filtered = filtered.filter((r) => String(r.attendance_date || r.date || r.timestamp || '').slice(0, 10) === attendanceSelectedDate);
+    }
     if (typeFilter !== 'ALL') filtered = filtered.filter(r => r.type === typeFilter);
     if (statusFilter !== 'all') filtered = filtered.filter(r => r.verification_status === statusFilter);
     if (searchTerm) {
+      const term = searchTerm.toLowerCase();
       filtered = filtered.filter(r =>
-        (r.employee_name && r.employee_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (r.employee_code && r.employee_code.toLowerCase().includes(searchTerm.toLowerCase()))
+        (r.employee_name && r.employee_name.toLowerCase().includes(term)) ||
+        (r.employee_code && r.employee_code.toLowerCase().includes(term))
       );
     }
     return filtered;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mobileAttendance, selectedYear, selectedMonth, cutoffPeriod, typeFilter, statusFilter, searchTerm]);
+  }, [mobileAttendance, selectedYear, selectedMonth, cutoffPeriod, attendanceDateMode, attendanceSelectedDate, typeFilter, statusFilter, searchTerm]);
+
+  // Reset pagination whenever a filter changes so the user never lands on an empty page.
+  useEffect(() => { setCurrentPage(1); }, [attendanceDateMode, attendanceSelectedDate, typeFilter, statusFilter, searchTerm]);
 
   const paginatedMobileAttendance = filteredMobileAttendance.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
 
@@ -2450,33 +2542,42 @@ const Staff_Attendance = () => {
 
   return (
     <div className={`attendance-container ${pageAnimate ? 'att-animate-in' : ''} ${isDarkMode ? 'att-dark-mode' : ''}`}>
-      <style>{injectedStyles}</style>
-      {showNotification && (
-        <div className={`attendance-notification ${notificationType}`}>
-          <div className="notification-icon">
-            {notificationType === 'success' && <FiCheckCircle />}
-            {notificationType === 'error' && <FiXCircle />}
-            {notificationType === 'warning' && <FiAlertCircle />}
-            {notificationType === 'info' && <FiClock />}
-          </div>
-          <div className="notification-message">{notificationMessage}</div>
-          <button className="notification-close" onClick={() => setShowNotification(false)}><FiXIcon /></button>
-        </div>
-      )}
+        <style>{injectedStyles}</style>
 
-      {showSelfieModal && selectedSelfie && (
-        <div className="modal-overlay" onClick={() => setShowSelfieModal(false)}>
-          <div className="modal-content selfie-modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Attendance Selfie</h2>
-              <button className="close-modal" onClick={() => setShowSelfieModal(false)}><FiXIcon /></button>
+      {/* Notification — portaled so it's never clipped */}
+      <ModalPortal>
+        {showNotification && (
+          <div className={`attendance-notification ${notificationType}`}>
+            <div className="notification-icon">
+              {notificationType === 'success' && <FiCheckCircle />}
+              {notificationType === 'error' && <FiXCircle />}
+              {notificationType === 'warning' && <FiAlertCircle />}
+              {notificationType === 'info' && <FiClock />}
             </div>
-            <div className="modal-body selfie-body">
-              <img src={selectedSelfie} alt="Attendance Selfie" className="selfie-full" />
+            <div className="notification-message">{notificationMessage}</div>
+            <button className="notification-close" onClick={() => setShowNotification(false)}><FiXIcon /></button>
+          </div>
+        )}
+      </ModalPortal>
+
+        {/* ============================================================
+          PAGE CONTENT (NOT portaled — stays in the layout container)
+          ============================================================ */}
+      <ModalPortal>
+        {showSelfieModal && selectedSelfie && (
+          <div className="modal-overlay" onClick={() => setShowSelfieModal(false)}>
+            <div className="modal-content selfie-modal" onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Attendance Selfie</h2>
+                <button className="close-modal" onClick={() => setShowSelfieModal(false)}><FiXIcon /></button>
+              </div>
+              <div className="modal-body selfie-body">
+                <img src={selectedSelfie} alt="Attendance Selfie" className="selfie-full" />
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </ModalPortal>
 
       <div className="attendance-header">
         <div className="header-left">
@@ -2595,6 +2696,17 @@ const Staff_Attendance = () => {
             <div className="filters-panel">
               <div className="filters-content">
                 <div className="filter-group">
+                  <label>Date</label>
+                  <div className="filter-options">
+                    <button type="button" className={`filter-option ${attendanceDateMode === 'today' ? 'active' : ''}`} onClick={() => setAttendanceDateMode('today')}>Today</button>
+                    <button type="button" className={`filter-option ${attendanceDateMode === 'cutoff' ? 'active' : ''}`} onClick={() => setAttendanceDateMode('cutoff')}>Current Cutoff</button>
+                    <button type="button" className={`filter-option ${attendanceDateMode === 'date' ? 'active' : ''}`} onClick={() => setAttendanceDateMode('date')}>Choose Date</button>
+                  </div>
+                  {attendanceDateMode === 'date' && (
+                    <input type="date" value={attendanceSelectedDate} onChange={(e) => setAttendanceSelectedDate(e.target.value)} aria-label="Filter attendance by date" />
+                  )}
+                </div>
+                <div className="filter-group">
                   <label>Type</label>
                   <div className="filter-options">
                     {['ALL', 'IN', 'OUT'].map(t => <button key={t} className={`filter-option ${typeFilter === t ? 'active' : ''}`} onClick={() => setTypeFilter(t)}>{t}</button>)}
@@ -2650,103 +2762,13 @@ const Staff_Attendance = () => {
                               </td>
                               <td>
                                 <div className="action-buttons" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                  {sideStatus === 'pending' && (
-                                    <>
-                                      <button
-                                        type="button"
-                                        title={`Approve this ${record.type === 'IN' ? 'Time In' : 'Time Out'} only`}
-                                        onClick={() => handleVerifySide(record, side, 'verified')}
-                                        disabled={submitting}
-                                        style={{
-                                          display: 'inline-flex',
-                                          alignItems: 'center',
-                                          justifyContent: 'center',
-                                          padding: '6px 10px',
-                                          borderRadius: '6px',
-                                          border: '1px solid #6ee7b7',
-                                          background: '#d1fae5',
-                                          color: '#065f46',
-                                          cursor: submitting ? 'not-allowed' : 'pointer',
-                                          opacity: submitting ? 0.5 : 1,
-                                        }}
-                                      >
-                                        <FiCheckCircle size={14} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        title={`Reject this ${record.type === 'IN' ? 'Time In' : 'Time Out'} only`}
-                                        onClick={() => handleVerifySide(record, side, 'rejected')}
-                                        disabled={submitting}
-                                        style={{
-                                          display: 'inline-flex',
-                                          alignItems: 'center',
-                                          justifyContent: 'center',
-                                          padding: '6px 10px',
-                                          borderRadius: '6px',
-                                          border: '1px solid #fca5a5',
-                                          background: '#fee2e2',
-                                          color: '#991b1b',
-                                          cursor: submitting ? 'not-allowed' : 'pointer',
-                                          opacity: submitting ? 0.5 : 1,
-                                        }}
-                                      >
-                                        <FiXCircle size={14} />
-                                      </button>
-                                    </>
-                                  )}
-
-                                  {sideStatus === 'verified' && (
-                                    <button
-                                      type="button"
-                                      title="Undo this side back to pending"
-                                      onClick={() => handleVerifySide(record, side, 'pending')}
-                                      disabled={submitting}
-                                      style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        padding: '6px 10px',
-                                        borderRadius: '6px',
-                                        border: '1px solid #fcd34d',
-                                        background: '#fef3c7',
-                                        color: '#b45309',
-                                        cursor: submitting ? 'not-allowed' : 'pointer',
-                                        opacity: submitting ? 0.5 : 1,
-                                      }}
-                                    >
-                                      <FiRotateCcw size={14} />
-                                    </button>
-                                  )}
-
-                                  {sideStatus === 'rejected' && (
-                                    <button
-                                      type="button"
-                                      title="Un-reject this side back to pending"
-                                      onClick={() => handleVerifySide(record, side, 'pending')}
-                                      disabled={submitting}
-                                      style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        padding: '6px 10px',
-                                        borderRadius: '6px',
-                                        border: '1px solid #cbd5e1',
-                                        background: '#e2e8f0',
-                                        color: '#475569',
-                                        cursor: submitting ? 'not-allowed' : 'pointer',
-                                        opacity: submitting ? 0.5 : 1,
-                                      }}
-                                    >
-                                      <FiRotateCcw size={14} />
-                                    </button>
-                                  )}
-
                                   <button
                                     type="button"
-                                    className="action-icon-btn view"
-                                    onClick={() => { setSelectedAttendance(record); setShowAttendanceModal(true); }}
+                                    className="action-icon-btn"
+                                    title="Review all attendance records for this employee"
+                                    onClick={() => record.employee && loadEmployeeOverviewRecords(record.employee, true)}
                                   >
-                                    <FiEye />
+                                    <FiEye /> Review Attendance
                                   </button>
                                 </div>
                               </td>
@@ -2857,11 +2879,35 @@ const Staff_Attendance = () => {
                       const savedForThisCutoff = isCurrentPeriod && employee.saved_to_payroll;
                       return (
                         <tr key={employee.employee_id}>
-                          <td>
+                                               <td>
                             <div className="employee-info">
                               <div className="employee-avatar" style={{ background: 'linear-gradient(135deg, #3b82f6, #1e40af)' }}>{employee.employee_name?.charAt(0) || '?'}</div>
                               <div className="employee-details">
-                                <span className="employee-name">{employee.employee_name || 'N/A'}</span>
+                                <span className="employee-name">
+                                  {employee.employee_name || 'N/A'}
+                                  {employee.salary_base && (
+                                    <span
+                                      className="flag-badge"
+                                      style={{
+                                        marginLeft: 6,
+                                        background:
+                                          employee.salary_base === 'monthly' ? '#ede9fe'
+                                          : employee.salary_base === 'daily' ? '#cffafe'
+                                          : '#dbeafe',
+                                        color:
+                                          employee.salary_base === 'monthly' ? '#7c3aed'
+                                          : employee.salary_base === 'daily' ? '#0891b2'
+                                          : '#2563eb',
+                                        border: '1px solid transparent',
+                                      }}
+                                      title={`Salary Base: ${employee.salary_base}`}
+                                    >
+                                      {employee.salary_base === 'monthly' ? 'M'
+                                        : employee.salary_base === 'daily' ? 'D'
+                                        : 'H'}
+                                    </span>
+                                  )}
+                                </span>
                                 <span className="employee-dept">{employee.department || 'N/A'}</span>
                               </div>
                             </div>
@@ -2968,261 +3014,6 @@ const Staff_Attendance = () => {
               </div>
             )}
           </div>
-
-          {employeeOverviewSelectedEmployee && (
-            <div className="modal-overlay" onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}>
-              <div className="modal-content" style={{ maxWidth: '1400px', width: '96%' }} onClick={(e) => e.stopPropagation()}>
-                <div className="modal-header">
-                  <div>
-                    <h2>Attendance Records</h2>
-                    <p style={{ margin: 0, color: '#374151', fontWeight: 600 }}>{employeeOverviewSelectedEmployee.employee_name}</p>
-                    <p style={{ margin: 0, color: '#6b7280', fontSize: '12px' }}>{employeeOverviewCutoffLabel} — Unsaved records</p>
-                  </div>
-                  <button className="close-modal" onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}>×</button>
-                </div>
-                <div className="modal-body">
-                  <div className="attendance-table-wrapper">
-                    <table className="status-panel-table">
-                      <thead>
-                        <tr>
-                          <th>Date</th><th>Schedule</th>
-                          <th>Time In</th><th>In Status</th>
-                          <th>Time Out</th><th>Out Status</th>
-                          <th>Flag</th>
-                          <th>Reg Hrs</th><th>OT Hrs</th><th>OT Status</th>
-                          <th>UT Hrs</th><th>UT Status</th><th>Total</th>
-                          <th>Record</th><th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {employeeOverviewSelectedRecords.map((record, index) => {
-                          if (!record) return null;
-                          const status = getStatusForRecord(record);
-                          const otStatus = getOTStatus(record);
-                          const utStatus = getUndertimeStatus(record);
-                          const isInline = inlineEditRecord && (inlineEditRecord.attendance_id || inlineEditRecord.id) === (record.attendance_id || record.id);
-                          const missingTimeIn = !record.time_in || record.time_in === '';
-                          const missingTimeOut = !record.time_out || record.time_out === '';
-
-                          const inStatus = getSideStatus(record.attendance_id ?? record.id, 'in');
-                          const outStatus = getSideStatus(record.attendance_id ?? record.id, 'out');
-                          const flagStyle = getFlagStyle(record.attendance_flag);
-
-                          return (
-                            <tr key={record.attendance_id || index} className={isInline ? 'inline-edit-row' : ''}>
-                              <td><strong>{record.day || 'N/A'}</strong><br /><span style={{ fontSize: '11px', color: '#6b7280' }}>{formatEmployeeOverviewDate(record.date)}</span></td>
-                              <td>{record.assigned_schedule || 'Unscheduled'}</td>
-
-                                                     <td>
-                                {isInline ? (
-                                  <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeIn} onChange={(e) => setInlineEditTimeIn(e.target.value)} />
-                                ) : (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                    <span className={missingTimeIn ? 'time-missing' : ''}>
-                                      {record.formatted_time_in || 'No Time In'}
-                                    </span>
-                                    {getSelfieForSide(record, 'in') && (
-                                      <button
-                                        type="button"
-                                        className="selfie-view-btn"
-                                        style={{ padding: '2px 6px', fontSize: 10 }}
-                                        onClick={() => {
-                                          setSelectedSelfie(getSelfieForSide(record, 'in'));
-                                          setShowSelfieModal(true);
-                                        }}
-                                        title="View Time In selfie"
-                                      >
-                                        <BsCameraFill size={10} /> In
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                {missingTimeIn ? (
-                                  <span className="event-status-pill pending">N/A</span>
-                                ) : (
-                                  <div className="event-verify-row">
-                                    <span className={`event-status-pill ${inStatus}`}>
-                                      {inStatus === 'verified' ? 'VERIFIED' : inStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
-                                    </span>
-                                    {!isInline && inStatus === 'pending' && (
-                                      <>
-                                        <button className="event-verify-btn approve" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'verified')} title="Approve Time In"><FiCheck size={11} /></button>
-                                        <button className="event-verify-btn reject" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'rejected')} title="Reject Time In"><FiX size={11} /></button>
-                                      </>
-                                    )}
-                                    {!isInline && inStatus === 'verified' && (
-                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'pending')} title="Undo Time In"><FiRotateCcw size={11} /></button>
-                                    )}
-                                    {!isInline && inStatus === 'rejected' && (
-                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'in', 'pending')} title="Un-reject Time In"><FiRotateCcw size={11} /></button>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                {isInline ? (
-                                  <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeOut} onChange={(e) => setInlineEditTimeOut(e.target.value)} />
-                                ) : (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                    <span className={missingTimeOut ? 'time-missing' : ''}>
-                                      {record.formatted_time_out || 'No Time Out'}
-                                    </span>
-                                    {getSelfieForSide(record, 'out') && (
-                                      <button
-                                        type="button"
-                                        className="selfie-view-btn"
-                                        style={{ padding: '2px 6px', fontSize: 10 }}
-                                        onClick={() => {
-                                          setSelectedSelfie(getSelfieForSide(record, 'out'));
-                                          setShowSelfieModal(true);
-                                        }}
-                                        title="View Time Out selfie"
-                                      >
-                                        <BsCameraFill size={10} /> Out
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                              <td>
-                                {missingTimeOut ? (
-                                  <span className="event-status-pill pending">N/A</span>
-                                ) : (
-                                  <div className="event-verify-row">
-                                    <span className={`event-status-pill ${outStatus}`}>
-                                      {outStatus === 'verified' ? 'VERIFIED' : outStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
-                                    </span>
-                                    {!isInline && outStatus === 'pending' && (
-                                      <>
-                                        <button className="event-verify-btn approve" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'verified')} title="Approve Time Out"><FiCheck size={11} /></button>
-                                        <button className="event-verify-btn reject" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'rejected')} title="Reject Time Out"><FiX size={11} /></button>
-                                      </>
-                                    )}
-                                    {!isInline && outStatus === 'verified' && (
-                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'pending')} title="Undo Time Out"><FiRotateCcw size={11} /></button>
-                                    )}
-                                    {!isInline && outStatus === 'rejected' && (
-                                      <button className="event-verify-btn undo" onClick={() => handleVerifySide(record.attendance_id ?? record.id, 'out', 'pending')} title="Un-reject Time Out"><FiRotateCcw size={11} /></button>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-
-                              {/* ⭐ NEW #6 — Flag badge per row */}
-                              <td>
-                                {flagStyle ? (
-                                  <span
-                                    className="flag-badge"
-                                    style={{
-                                      background: flagStyle.bg,
-                                      color: flagStyle.color,
-                                      border: `1px solid ${flagStyle.border}`,
-                                    }}
-                                    title={record.flag_notes || flagStyle.label}
-                                  >
-                                    <FiFlag size={10} /> {flagStyle.label}
-                                  </span>
-                                ) : (
-                                  <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
-                                )}
-                              </td>
-
-                              <td>{formatDecimalHours(record.regular_hours)}</td>
-                              <td>{formatDecimalHours(record.overtime_hours)}</td>
-                              <td><span className={`status-badge ${otStatus.status.toLowerCase()}`}>{otStatus.label}</span></td>
-                              <td>{formatDecimalHours(record.undertime_hours)}</td>
-                              <td><span className={`status-badge ${utStatus.status.toLowerCase()}`}>{utStatus.label}</span></td>
-                              <td><strong>{formatDecimalHours(record.total_hours)}</strong></td>
-                              <td><span className={`status-badge ${status.status.toLowerCase().replace('_', '-')}`}>{status.label}</span></td>
-                              <td>
-                                {isInline ? (
-                                  <div style={{ display: 'flex', gap: '6px' }}>
-                                    <button className="action-icon-btn verify" onClick={saveInlineEdit} disabled={inlineEditSaving} title="Save">{inlineEditSaving ? <FiRefreshCw className="spinning" /> : <FiSave />}</button>
-                                    <button className="action-icon-btn reject" onClick={cancelInlineEdit} disabled={inlineEditSaving} title="Cancel"><FiX /></button>
-                                  </div>
-                                ) : (
-                                  <div className="action-buttons-row" style={{ flexWrap: 'wrap', gap: '4px' }}>
-                                    <button className="action-icon-btn" onClick={() => openInlineEdit(record)} title="Edit Times"><FiEdit2 /></button>
-
-                                    {/* ⭐ NEW #9 — Flag action */}
-                                    <button
-                                      className="action-icon-btn"
-                                      onClick={() => openFlagModal(record)}
-                                      title="Flag: AWOL / EA / Leave / Late In"
-                                      style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}
-                                    >
-                                      <FiFlag />
-                                    </button>
-
-                                    {inStatus === 'pending' && outStatus === 'pending' && !missingTimeIn && !missingTimeOut && (
-                                      <button className="event-verify-btn approve" onClick={() => handleApproveBoth(record)} title="Approve Both Time In & Time Out">
-                                        <FiCheckCircle size={11} /> Both
-                                      </button>
-                                    )}
-
-                                    {status.status === 'REJECTED' && (
-                                      <button className="action-icon-btn cancel-reject" onClick={() => handleCancelReject(record)} title="Un-reject"><FiRotateCcw /></button>
-                                    )}
-
-                                    {otStatus.status === 'PENDING' && (
-                                      <>
-                                        <button className="action-icon-btn verify" onClick={() => openOTApprovalModal(record)} title="Approve Overtime"><FiCheckCircle /> OT</button>
-                                        <button className="action-icon-btn reject" onClick={() => openOTRejectModal(record)} title="Reject Overtime"><FiXCircle /> OT</button>
-                                      </>
-                                    )}
-                                    {utStatus.status === 'PENDING' && (
-                                      <>
-                                        <button className="action-icon-btn verify" onClick={() => openUTApprovalModal(record)} title="Approve Undertime"><FiCheckCircle /> UT</button>
-                                        <button className="action-icon-btn reject" onClick={() => openUTRejectModal(record)} title="Reject Undertime"><FiXCircle /> UT</button>
-                                      </>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                    {employeeOverviewSelectedRecords.length === 0 && (
-                      <div className="empty-state">
-                        <FiCheckCircle className="empty-icon" />
-                        <p>All records have been saved to payroll.</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button
-                      className="blue-primary-btn"
-                      onClick={handlePrintAttendanceRecords}
-                      disabled={employeeOverviewSelectedRecords.length === 0}
-                    >
-                      <FiPrinter /> Print
-                    </button>
-                    <button
-                      className="blue-primary-btn"
-                      onClick={() => handleSaveFromModal()}
-                      disabled={submitting || employeeOverviewSelectedRecords.length === 0}
-                      title="Save all verified records for this employee to payroll"
-                    >
-                      {submitting ? <FiRefreshCw className="spinning" /> : <FiSave />} Save to Payroll
-                    </button>
-                  </div>
-                  <button
-                    className="modal-btn secondary"
-                    onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {showAddAttendanceModal && addAttendanceEmployee && (
             <div className="modal-overlay" onClick={() => setShowAddAttendanceModal(false)}>
               <div className="modal-content modal-blue-white" style={{ maxWidth: '560px' }} onClick={(e) => e.stopPropagation()}>
@@ -3411,8 +3202,249 @@ const Staff_Attendance = () => {
         </div>
       )}
 
-      {showRecordModal && selectedRecordEmployee && (
-        <div className="modal-overlay" onClick={() => { setShowRecordModal(false); setEmployeeSavedRecordsSummary(null); }}>
+      {/* ============================================================
+          ALL REMAINING MODALS — portaled to document.body
+          ============================================================ */}
+            {/* ---------- Remaining modals — portaled so they're never clipped ---------- */}
+      <ModalPortal>
+      {employeeOverviewSelectedEmployee && (
+        <div className="modal-overlay" onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}>
+                 <div className="modal-content modal-blue-white" style={{ maxWidth: '98vw', width: '1600px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2><FiFileText /> Attendance Records</h2>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '6px' }}>
+                  <span style={{ fontSize: '15px', fontWeight: '700', color: '#1e40af' }}>
+                    {employeeOverviewSelectedEmployee.employee_name}
+                  </span>
+                  <span className="status-badge pending" style={{ fontSize: '11px' }}>
+                    {employeeOverviewCutoffLabel} — Unsaved records
+                  </span>
+                </div>
+              </div>
+            </div>
+                     <div className="modal-body">
+              <div className="attendance-table-wrapper table-wrapper-scrollable">
+                          <table className="status-panel-table" style={{ minWidth: '1400px', color: '#334155' }}>
+                  <thead>
+                    <tr style={{ whiteSpace: 'nowrap' }}>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Date</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Schedule</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Time In</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>In Status</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Time Out</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Out Status</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Flag</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Reg Hrs</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>OT Hrs</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>OT Status</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>UT Hrs</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>UT Status</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Total</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Record</th>
+                      <th style={{ padding: '12px 8px', color: '#64748b', fontWeight: 600 }}>Actions</th>
+                    </tr>
+                  </thead>
+                                  <tbody>
+                    {employeeOverviewSelectedRecords.map((record, index) => {
+                      if (!record) return null;
+                      const status = getStatusForRecord(record);
+                      const otStatus = getOTStatus(record);
+                      const utStatus = getUndertimeStatus(record);
+                      const isInline = inlineEditRecord && (inlineEditRecord.attendance_id || inlineEditRecord.id) === (record.attendance_id || record.id);
+                      const missingTimeIn = !record.time_in || record.time_in === '';
+                      const missingTimeOut = !record.time_out || record.time_out === '';
+
+                      const inStatus = getSideStatus(record.attendance_id ?? record.id, 'in');
+                      const outStatus = getSideStatus(record.attendance_id ?? record.id, 'out');
+                      const flagStyle = getFlagStyle(record.attendance_flag);
+
+                      return (
+                        <tr key={record.attendance_id || index} className={isInline ? 'inline-edit-row' : ''}>
+                          <td><strong style={{ color: '#1e293b' }}>{record.day || 'N/A'}</strong><br /><span style={{ fontSize: '11px', color: '#64748b' }}>{formatEmployeeOverviewDate(record.date)}</span></td>
+                          <td style={{ color: '#334155' }}>{record.assigned_schedule || 'Unscheduled'}</td>
+
+                          <td>
+                            {isInline ? (
+                              <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeIn} onChange={(e) => setInlineEditTimeIn(e.target.value)} />
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span className={missingTimeIn ? 'time-missing' : ''} style={{ color: missingTimeIn ? '#dc2626' : '#334155' }}>
+                                  {record.formatted_time_in || 'No Time In'}
+                                </span>
+                                {getSelfieForSide(record, 'in') && (
+                                  <button
+                                    type="button"
+                                    className="selfie-view-btn"
+                                    style={{ padding: '2px 6px', fontSize: 10, background: '#f8fafc', color: '#3b82f6', border: '1px solid #e2e8f0' }}
+                                    onClick={() => {
+                                      setSelectedSelfie(getSelfieForSide(record, 'in'));
+                                      setShowSelfieModal(true);
+                                    }}
+                                    title="View Time In selfie"
+                                  >
+                                    <BsCameraFill size={10} /> In
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {missingTimeIn ? (
+                              <span className="event-status-pill pending">N/A</span>
+                            ) : (
+                              <div className="event-verify-row">
+                                <span className={`event-status-pill ${inStatus}`}>
+                                  {inStatus === 'verified' ? 'VERIFIED' : inStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {isInline ? (
+                              <input type="datetime-local" className="inline-edit-input" value={inlineEditTimeOut} onChange={(e) => setInlineEditTimeOut(e.target.value)} />
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span className={missingTimeOut ? 'time-missing' : ''} style={{ color: missingTimeOut ? '#dc2626' : '#334155' }}>
+                                  {record.formatted_time_out || 'No Time Out'}
+                                </span>
+                                {getSelfieForSide(record, 'out') && (
+                                  <button
+                                    type="button"
+                                    className="selfie-view-btn"
+                                    style={{ padding: '2px 6px', fontSize: 10, background: '#f8fafc', color: '#3b82f6', border: '1px solid #e2e8f0' }}
+                                    onClick={() => {
+                                      setSelectedSelfie(getSelfieForSide(record, 'out'));
+                                      setShowSelfieModal(true);
+                                    }}
+                                    title="View Time Out selfie"
+                                  >
+                                    <BsCameraFill size={10} /> Out
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {missingTimeOut ? (
+                              <span className="event-status-pill pending">N/A</span>
+                            ) : (
+                              <div className="event-verify-row">
+                                <span className={`event-status-pill ${outStatus}`}>
+                                  {outStatus === 'verified' ? 'VERIFIED' : outStatus === 'rejected' ? 'REJECTED' : 'PENDING'}
+                                </span>
+                              </div>
+                            )}
+                          </td>
+
+                          <td>
+                            {flagStyle ? (
+                              <span
+                                className="flag-badge"
+                                style={{
+                                  background: flagStyle.bg,
+                                  color: flagStyle.color,
+                                  border: `1px solid ${flagStyle.border}`,
+                                }}
+                                title={record.flag_notes || flagStyle.label}
+                              >
+                                <FiFlag size={10} /> {flagStyle.label}
+                              </span>
+                            ) : (
+                              <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
+                            )}
+                          </td>
+
+                          <td style={{ color: '#334155' }}>{formatDecimalHours(record.regular_hours)}</td>
+                          <td style={{ color: '#334155' }}>{formatDecimalHours(record.overtime_hours)}</td>
+                          <td><span className={`status-badge ${otStatus.status.toLowerCase()}`}>{otStatus.label}</span></td>
+                          <td style={{ color: '#334155' }}>{formatDecimalHours(record.undertime_hours)}</td>
+                          <td><span className={`status-badge ${utStatus.status.toLowerCase()}`}>{utStatus.label}</span></td>
+                          <td><strong style={{ color: '#1e293b' }}>{formatDecimalHours(record.total_hours)}</strong></td>
+                          <td><span className={`status-badge ${status.status.toLowerCase().replace('_', '-')}`}>{status.label}</span></td>
+                          <td>
+                            {isInline ? (
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button className="action-icon-btn verify" onClick={saveInlineEdit} disabled={inlineEditSaving} title="Save">{inlineEditSaving ? <FiRefreshCw className="spinning" /> : <FiSave />}</button>
+                                <button className="action-icon-btn reject" onClick={cancelInlineEdit} disabled={inlineEditSaving} title="Cancel"><FiX /></button>
+                              </div>
+                            ) : (
+                              <div className="action-buttons-row" style={{ flexWrap: 'wrap', gap: '4px' }}>
+                                <button className="action-icon-btn" onClick={() => openInlineEdit(record)} title="Edit Times"><FiEdit2 /> Edit</button>
+                                {record.attendance_id || record.id ? (
+                                  <button className="action-icon-btn" onClick={() => openFlagModal(record)} title="Flag attendance" style={{ background: '#fef3c7', color: '#b45309', border: '1px solid #fcd34d' }}><FiFlag /> Flag</button>
+                                ) : (
+                                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+                                    <span style={{ width: '100%', fontSize: 10, color: '#92400e' }}>No attendance row — create flag:</span>
+                                    {[
+                                      ['awol', 'AWOL'],
+                                      ['emergency_absent', 'EA'],
+                                      ['late_in', 'LATE IN'],
+                                      ['on_leave', 'ON LEAVE'],
+                                    ].map(([flag, label]) => (
+                                      <button key={flag} type="button" className="action-icon-btn" disabled={flagSubmitting} onClick={() => handleFlagMissingAttendance(employeeOverviewSelectedEmployee, record.date || record.attendance_date, flag)}>{label}</button>
+                                    ))}
+                                  </div>
+                                )}
+                                {record.approval_status !== 'approved' && record.approval_status !== 'rejected' && (
+                                  <>
+                                    <button className="action-icon-btn verify" disabled={Boolean(employeeOverviewActionLoading)} onClick={() => handleAttendanceDecision(record, 'approved')} title="Approve attendance record only"><FiCheckCircle /> Approve Attendance</button>
+                                    <button className="action-icon-btn reject" disabled={Boolean(employeeOverviewActionLoading)} onClick={() => handleAttendanceDecision(record, 'rejected')} title="Reject attendance record only"><FiXCircle /> Reject Attendance</button>
+                                  </>
+                                )}
+                                {record.approval_status === 'approved' && <span className="status-badge approved">Attendance Approved</span>}
+                                {record.approval_status === 'rejected' && <span className="status-badge rejected">Attendance Rejected</span>}
+                                {otStatus.status === 'PENDING' && <><button className="action-icon-btn verify" onClick={() => openOTApprovalModal(record)} title="Approve overtime only"><FiCheckCircle /> Approve OT</button><button className="action-icon-btn reject" onClick={() => openOTRejectModal(record)} title="Reject overtime only"><FiXCircle /> Reject OT</button></>}
+                                {utStatus.status === 'PENDING' && <><button className="action-icon-btn verify" onClick={() => openUTApprovalModal(record)} title="Approve undertime only"><FiCheckCircle /> Approve UT</button><button className="action-icon-btn reject" onClick={() => openUTRejectModal(record)} title="Reject undertime only"><FiXCircle /> Reject UT</button></>}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {employeeOverviewSelectedRecords.length === 0 && (
+                  <div className="empty-state">
+                    <FiCheckCircle className="empty-icon" />
+                    <p>All records have been saved to payroll.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+                      <div className="modal-footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button
+                  className="modal-btn secondary"
+                  onClick={handlePrintAttendanceRecords}
+                  disabled={employeeOverviewSelectedRecords.length === 0}
+                  style={{ padding: '8px 16px' }}
+                >
+                  <FiPrinter /> Print Records
+                </button>
+                <button
+                  className="modal-btn success"
+                  onClick={() => handleSaveFromModal()}
+                  disabled={submitting || employeeOverviewSelectedRecords.length === 0}
+                  title="Save all verified records for this employee to payroll"
+                  style={{ padding: '8px 16px' }}
+                >
+                  {submitting ? <FiRefreshCw className="spinning" /> : <FiSave />} Save to Payroll
+                </button>
+              </div>
+              <button
+                className="modal-btn secondary"
+                onClick={() => { setEmployeeOverviewSelectedEmployee(null); cancelInlineEdit(); }}
+                style={{ padding: '8px 24px' }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRecordModal && selectedRecordEmployee && (     <div className="modal-overlay" onClick={() => { setShowRecordModal(false); setEmployeeSavedRecordsSummary(null); }}>
           <div className="modal-content modal-blue-white" style={{ maxWidth: '1300px', width: '96%' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
@@ -4020,7 +4052,7 @@ const Staff_Attendance = () => {
         </div>
       )}
 
-      {showAttendanceModal && selectedAttendance && (
+            {showAttendanceModal && selectedAttendance && (
         <div className="modal-overlay" onClick={() => setShowAttendanceModal(false)}>
           <div className="modal-content attendance-details-modal modal-blue-white" onClick={e => e.stopPropagation()}>
             <div className="modal-header"><h2>Attendance Details</h2><button className="close-modal" onClick={() => setShowAttendanceModal(false)}><FiXIcon /></button></div>
@@ -4039,6 +4071,7 @@ const Staff_Attendance = () => {
           </div>
         </div>
       )}
+      </ModalPortal>
     </div>
   );
 };

@@ -4098,8 +4098,16 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+                color 0.2s ease;
+    will-change: transform;
 }
 
+/* Hover: nudge the name slightly to the right for tactile feedback */
+.mm-professional-table .ant-table-tbody > tr:hover .mm-menu-item-name {
+    transform: translateX(3px);
+    color: var(--primary);
+}
 .mm-menu-item-meta {
     display: flex;
     align-items: center;
@@ -5027,3 +5035,98 @@ body.mm-dark-mode .mm-menu-container {
 .mm-modal-dark-root .mm-icon-grid-category { color: #64748b !important; }
 .mm-modal-dark-root .mm-icon-modal-title { color: #f1f5f9 !important; }
 .mm-modal-dark-root .mm-icon-modal-footer { border-top-color: #1f2937 !important; }
+
+/* ============================================================
+   ✨ SLIDE-IN-FROM-LEFT TEXT ANIMATION
+   A staggered, easing-based reveal that plays once when a row
+   enters the viewport. Uses transform (GPU-friendly) + a short
+   opacity fade so it feels fast and premium — not bouncy.
+   ============================================================ */
+
+@keyframes mm-slide-in-from-left {
+    from {
+        opacity: 0;
+        transform: translateX(-14px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.mm-slide-in-text {
+    display: inline-block;
+    max-width: 100%;
+    animation: mm-slide-in-from-left 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Staggered delay for the secondary line (description) */
+.mm-slide-in-delay {
+    animation-delay: 0.08s;
+}
+
+/* Row-level stagger: each successive row starts 40ms later,
+   giving the whole table a "wave" reveal effect. */
+.mm-content-ready .mm-row-animate:nth-child(1)  .mm-slide-in-text { animation-delay: 0.00s; }
+.mm-content-ready .mm-row-animate:nth-child(2)  .mm-slide-in-text { animation-delay: 0.04s; }
+.mm-content-ready .mm-row-animate:nth-child(3)  .mm-slide-in-text { animation-delay: 0.08s; }
+.mm-content-ready .mm-row-animate:nth-child(4)  .mm-slide-in-text { animation-delay: 0.12s; }
+.mm-content-ready .mm-row-animate:nth-child(5)  .mm-slide-in-text { animation-delay: 0.16s; }
+.mm-content-ready .mm-row-animate:nth-child(6)  .mm-slide-in-text { animation-delay: 0.20s; }
+.mm-content-ready .mm-row-animate:nth-child(7)  .mm-slide-in-text { animation-delay: 0.24s; }
+.mm-content-ready .mm-row-animate:nth-child(8)  .mm-slide-in-text { animation-delay: 0.28s; }
+.mm-content-ready .mm-row-animate:nth-child(9)  .mm-slide-in-text { animation-delay: 0.32s; }
+.mm-content-ready .mm-row-animate:nth-child(10) .mm-slide-in-text { animation-delay: 0.36s; }
+
+/* The description line's own 80ms offset still applies on top */
+.mm-content-ready .mm-row-animate .mm-slide-in-delay {
+    animation-name: mm-slide-in-from-left;
+    animation-duration: 0.42s;
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+    animation-fill-mode: both;
+}
+
+/* Smooth out package / category / promo name cells too */
+.mm-package-name,
+.mm-category-name,
+.mm-promo-name {
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+                color 0.2s ease;
+    will-change: transform;
+}
+
+.mm-professional-table .ant-table-tbody > tr:hover .mm-package-name,
+.mm-professional-table .ant-table-tbody > tr:hover .mm-category-name,
+.mm-professional-table .ant-table-tbody > tr:hover .mm-promo-name {
+    transform: translateX(3px);
+    color: var(--primary);
+}
+
+/* ---------- Respect users who prefer reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+    .mm-slide-in-text,
+    .mm-menu-item-name,
+    .mm-menu-item-desc,
+    .mm-package-name,
+    .mm-category-name,
+    .mm-promo-name {
+        animation: none !important;
+        transform: none !important;
+        transition: none !important;
+    }
+    .mm-professional-table .ant-table-tbody > tr:hover .mm-menu-item-name,
+    .mm-professional-table .ant-table-tbody > tr:hover .mm-menu-item-desc,
+    .mm-professional-table .ant-table-tbody > tr:hover .mm-package-name,
+    .mm-professional-table .ant-table-tbody > tr:hover .mm-category-name,
+    .mm-professional-table .ant-table-tbody > tr:hover .mm-promo-name {
+        transform: none !important;
+    }
+}
+
+/* ---------- Dark mode tweaks ---------- */
+.mm-dark-mode .mm-professional-table .ant-table-tbody > tr:hover .mm-menu-item-name,
+.mm-dark-mode .mm-professional-table .ant-table-tbody > tr:hover .mm-package-name,
+.mm-dark-mode .mm-professional-table .ant-table-tbody > tr:hover .mm-category-name,
+.mm-dark-mode .mm-professional-table .ant-table-tbody > tr:hover .mm-promo-name {
+    color: #60a5fa !important;
+}

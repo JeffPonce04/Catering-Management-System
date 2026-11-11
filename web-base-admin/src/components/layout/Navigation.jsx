@@ -1,7 +1,8 @@
 // src/components/layout/Navigation.jsx - Fixed
 
-import React, { useState, useEffect, useMemo } from 'react';import { motion, AnimatePresence } from 'framer-motion';
-import './styles/Navigation.css';
+import React, { useState, useEffect, useMemo } from 'react';
+import ReactDOM from 'react-dom';
+import { motion, AnimatePresence } from 'framer-motion';import './styles/Navigation.css';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import api from '../../services/api';
@@ -45,6 +46,14 @@ import {
 } from '../../utils/roleRoutes';
 import { useUnreadCount } from '../../hooks/useNotificationQueries';
 import { useCurrentUser } from '../../hooks/useCurrentUser';
+
+/* Portals children into document.body so overlays escape the sidebar's
+   transform + stacking context (which traps position:fixed children). */
+const NavPortal = ({ children }) => {
+  if (typeof document === 'undefined') return null;
+  return ReactDOM.createPortal(children, document.body);
+};
+
 const Navigation = () => {
   // ==================== PERSISTED UI STATE ====================
    const [isCollapsed, setIsCollapsed] = useState(() => {
@@ -271,6 +280,7 @@ const Navigation = () => {
       path === '/staff/directory' ||
       path === '/staff/schedule' ||
       path === '/staff/attendance' ||
+      path === '/staff/face-enrollment' ||
       path === '/staff/payroll'
     ) {
       setOpenSubmenu('staff');
@@ -1041,6 +1051,14 @@ const Navigation = () => {
         description: 'Staff attendance tracking',
       },
       {
+        id: 'face-enrollment',
+        title: 'Face Enrollment',
+        icon: FiCamera,
+        secondaryIcon: FiUserCheck,
+        path: '/staff/face-enrollment',
+        description: 'Register employee face profiles with consent',
+      },
+      {
         id: 'payroll',
         title: 'Payroll',
         icon: FiDollarSign,
@@ -1053,19 +1071,27 @@ const Navigation = () => {
     return {
       dashboard: {
         id: 'dashboard',
-        title: 'Dashboard',
+        title: 'Dashboard', 
         icon: FiHome,
         secondaryIcon: FiPieChart,
         path: '/dashboard',
         description: 'Dashboard overview and insights',
       },
-      bookings: {
+       bookings: {
         id: 'booking',
-        title: 'Sales & Bookings',
+        title: 'Bookings & Quatation',
         icon: FiCalendar,
         expandedIcon: BsCalendarEvent,
         path: '/booking',
         description: 'Bookings and quotation management',
+      },
+      calendar: {
+        id: 'booking-calendar',
+        title: 'Event Calendar',
+        icon: FiClock,
+        secondaryIcon: BsCalendarEvent,
+        path: '/booking/calendar',
+        description: 'Availability calendar',
       },
       inventory: {
         id: 'inventory',
@@ -1109,6 +1135,16 @@ const Navigation = () => {
         path: '/billing',
         description: 'Financial transactions',
       },
+
+          customers: {
+        id: 'customer-feedback',
+        title: 'Customer Management',
+        icon: FiMessageSquare,
+        secondaryIcon: FiInfo,
+        path: '/customer-feedback',
+        description: 'Manage customers and feedback',
+      },
+
       staff: {
         id: 'staff',
         title: 'Staff Management',
@@ -1146,19 +1182,12 @@ const Navigation = () => {
         showBadge: notificationBadge,
         badgeColor: '#ff4d4f',
       },
-      customers: {
-        id: 'customer-feedback',
-        title: 'Customer Feedback',
-        icon: FiMessageSquare,
-        secondaryIcon: FiInfo,
-        path: '/customer-feedback',
-        description: 'Manage customers and feedback',
-      },
+  
       settings: {
         id: 'settings',
         title: 'Settings',
         icon: FiSettings,
-        secondaryIcon: FiLock,
+        secondaryIcon: FiLock,  
         path: '/settings',
         description: 'System configuration',
       },
@@ -1172,18 +1201,16 @@ const Navigation = () => {
     if (isSuperAdminUser || isAdminUser) {
       return [
         { title: 'MAIN', items: [c.dashboard] },
-        { title: 'SALES MANAGEMENT', items: [c.bookings] },
-        { title: 'OPERATIONS', items: [ c.ordersEvents, c.billing,c.menu, c.inventory] },
-        { title: 'STAFF MANAGEMENT', items: [c.staff] },
-        { title: 'SYSTEM', items: [c.reports, c.notifications, c.customers, c.settings] },
+        { title: 'SALES MANAGEMENT', items: [c.bookings, c.calendar] },        { title: 'OPERATIONS', items: [ c.ordersEvents, c.billing,c.menu, c.inventory] },
+        { title: 'PEOPLE MANAGEMENT', items: [c.staff,c.customers] },
+        { title: 'SYSTEM', items: [c.reports, c.notifications,  c.settings] },
       ];
     }
 
      if (isCashierUser) {
       return [
         { title: 'MAIN', items: [c.dashboard] },
-        { title: 'SALES MANAGEMENT', items: [c.bookings] },
-        // ⭐ Cashiers can now access Orders & Events (read-only view).
+        { title: 'SALES MANAGEMENT', items: [c.bookings, c.calendar] },        // ⭐ Cashiers can now access Orders & Events (read-only view).
         { title: 'OPERATIONS', items: [c.ordersEvents, c.billing] },
         { title: 'SYSTEM', items: [c.reports, c.notifications, c.customers] },
       ];
@@ -1593,6 +1620,7 @@ const Navigation = () => {
       </motion.div>
 
       {/* Logout Confirmation Modal */}
+      <NavPortal>
       <AnimatePresence mode="wait">
         {showLogoutModal && (
           <>
@@ -1675,8 +1703,10 @@ const Navigation = () => {
           </>
         )}
       </AnimatePresence>
+      </NavPortal>
 
       {/* Profile Modal */}
+      <NavPortal>
       <AnimatePresence mode="wait">
         {showProfileModal && (
           <>
@@ -1768,8 +1798,10 @@ const Navigation = () => {
           </>
         )}
       </AnimatePresence>
+      </NavPortal>
 
       {/* Edit Profile Modal */}
+      <NavPortal>
       <AnimatePresence mode="wait">
         {showEditProfileModal && (
           <>
@@ -2101,14 +2133,16 @@ const Navigation = () => {
                       </>
                     )}
                   </button>
-                </div>
+                   </div>
               </div>
             </div>
           </>
         )}
       </AnimatePresence>
+      </NavPortal>
 
       {/* Security Modal */}
+      <NavPortal>
       <AnimatePresence mode="wait">
         {showSecurityModal && (
           <>
@@ -2304,14 +2338,16 @@ const Navigation = () => {
                       </>
                     )}
                   </button>
-                </div>
+                     </div>
               </div>
             </div>
           </>
         )}
       </AnimatePresence>
+      </NavPortal>
 
       {/* Confirm Delete Avatar Modal */}
+      <NavPortal>
       <AnimatePresence mode="wait">
         {confirmDeleteAvatar && (
           <>
@@ -2343,12 +2379,13 @@ const Navigation = () => {
                   >
                     Yes, Remove
                   </button>
-                </div>
+                           </div>
               </div>
             </div>
           </>
         )}
       </AnimatePresence>
+      </NavPortal>
     </>
   );
 };

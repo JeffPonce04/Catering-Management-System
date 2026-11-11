@@ -10,6 +10,8 @@ const ATTENDANCE_ROLE = 'attendance_manager';
 const normalizeRole = (role = '') => String(role || '').trim().toLowerCase();
 const roleCanAccessAttendance = (role = '') =>
   ['admin', 'super-admin', 'administrator'].includes(normalizeRole(role));
+const roleCanAccessInventory = (role = '') =>
+  ['inventory-manager', 'inventory_manager'].includes(normalizeRole(role));
 
 export const useAuth = () => useContext(AuthContext);
 
@@ -108,14 +110,14 @@ export const AuthProvider = ({ children }) => {
   // ═══════════════════════════════════════════════════════════
   // LOGIN — with SPECIFIC error codes for the UI to map
   // ═══════════════════════════════════════════════════════════
-  const login = async (emailOrUsername, password, role = 'customer') => {
+  const login = async (emailOrUsername, password, role = null) => {
     try {
       console.log('🔐 Attempting login with:', { emailOrUsername, role });
 
       const response = await api.post('/v1/auth/login', {
         userId: emailOrUsername,
         password: password,
-        role: role,
+        ...(role ? { role } : {}),
       });
 
       console.log('📥 Login response:', response.data);
@@ -148,12 +150,16 @@ export const AuthProvider = ({ children }) => {
           phone_number: userData.phone_number || null,
           phone: userData.phone || null,
           role: serverRole === 'super-admin' ? 'admin' : serverRole,
+          roles: Array.isArray(userData.roles) ? userData.roles : [serverRole],
           attendance_role: hasAttendanceAccess ? ATTENDANCE_ROLE : null,
           canAccessAttendance: hasAttendanceAccess,
           profile_photo: userData.profile_photo || null,
           profile_photo_url: userData.profile_photo_url || userData.profile_photo || null,
           avatar: userData.profile_photo_url || userData.profile_photo || null,
           customer_id: userData.customer_id ? generateFourDigitId(userData.customer_id) : null,
+          employee_id: userData.employee_id || userData.employee?.employee_id || null,
+          employee_code: userData.employee_code || userData.employee?.employee_code || null,
+          employee: userData.employee || (userData.employee_id ? { employee_id: userData.employee_id, employee_code: userData.employee_code || null } : null),
           is_active: userData.is_active !== undefined ? userData.is_active : true,
           is_verified: userData.is_verified || false,
           created_at: userData.created_at,
@@ -378,12 +384,16 @@ export const AuthProvider = ({ children }) => {
           phone_number: userData.phone_number || null,
           phone: userData.phone || null,
           role: serverRole === 'super-admin' ? 'admin' : serverRole,
+          roles: Array.isArray(userData.roles) ? userData.roles : [serverRole],
           attendance_role: hasAttendanceAccess ? ATTENDANCE_ROLE : null,
           canAccessAttendance: hasAttendanceAccess,
           profile_photo: userData.profile_photo || null,
           profile_photo_url: userData.profile_photo_url || userData.profile_photo || null,
           avatar: userData.profile_photo_url || userData.profile_photo || null,
           customer_id: userData.customer_id ? generateFourDigitId(userData.customer_id) : null,
+          employee_id: userData.employee_id || userData.employee?.employee_id || null,
+          employee_code: userData.employee_code || userData.employee?.employee_code || null,
+          employee: userData.employee || (userData.employee_id ? { employee_id: userData.employee_id, employee_code: userData.employee_code || null } : null),
           is_active: userData.is_active !== undefined ? userData.is_active : true,
           is_verified: userData.is_verified || false,
           created_at: userData.created_at,
@@ -728,11 +738,14 @@ export const AuthProvider = ({ children }) => {
     user?.attendance_role === ATTENDANCE_ROLE ||
     roleCanAccessAttendance(userRole || user?.role);
 
+  const hasInventoryAccess = roleCanAccessInventory(userRole || user?.role) || (Array.isArray(user?.roles) && user.roles.some((r) => roleCanAccessInventory(r)));
+
   const value = {
     user,
     userRole,
     attendanceRole,
     hasAttendanceAccess,
+    hasInventoryAccess,
     isLoading,
     isGuest,
     isInitialized,

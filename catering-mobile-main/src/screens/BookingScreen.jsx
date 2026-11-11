@@ -1,4 +1,4 @@
-// src/screens/BookingScreen.jsx — COMPLETE
+// src/screens/BookingScreen.jsx — COMPLETE (final)
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Haptics from 'expo-haptics';
@@ -7,8 +7,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    Animated,
-    Dimensions,
     FlatList,
     Image,
     Keyboard,
@@ -21,7 +19,6 @@ import {
     Text,
     TextInput,
     TouchableOpacity,
-    TouchableWithoutFeedback,
     View,
     SafeAreaView,
 } from 'react-native';
@@ -32,8 +29,6 @@ import { menuService } from '../services/menuService';
 import { packageService } from '../services/packageService';
 import { promotionService } from '../services/promotionService';
 import { bookingService } from '../services/bookingService';
-
-const { width, height } = Dimensions.get('window');
 
 // ============================================================
 // CONSTANTS
@@ -56,8 +51,8 @@ const DEFAULT_MEAL_SERVICE = {
     id: null,
     meal_type: 'lunch',
     day_number: 1,
-    pax: 0,
-    price_per_head: 0,
+    pax: '',
+    price_per_head: '',
     serving_time: '12:00 PM',
     serving_time_date: new Date(2024, 0, 1, 12, 0, 0),
     menu_items: [],
@@ -77,9 +72,9 @@ const normalizeMenuForSelector = (item, index = 0) => {
     const pricingType = item.pricing_type || 'both';
     const perPaxPrice = parseFloat(item.price) || 0;
     const trayPrice = parseFloat(item.tray_price) || 0;
-    const trayServings = parseInt(item.tray_servings) || 25;
-    const trayMinPax = parseInt(item.tray_min_pax) || 20;
-    const trayMaxPax = parseInt(item.tray_max_pax) || trayServings;
+    const trayServings = parseInt(item.tray_servings, 10) || 25;
+    const trayMinPax = parseInt(item.tray_min_pax, 10) || 20;
+    const trayMaxPax = parseInt(item.tray_max_pax, 10) || trayServings;
 
     const hasPerPax =
         item.has_per_pax_pricing !== undefined
@@ -123,7 +118,6 @@ const normalizePackageForSelector = (item, index = 0) => ({
     category: 'Packages',
     has_tray_pricing: false,
     has_per_pax_pricing: true,
-    // ⭐ Ensure menu_items array survives normalization (used by the view-details modal)
     menu_items: Array.isArray(item.menu_items) ? item.menu_items : [],
 });
 
@@ -396,91 +390,28 @@ const stepStyles = StyleSheet.create({
 });
 
 // ============================================================
-// SCROLL INDICATOR
-// ============================================================
-const ScrollIndicator = ({ visible, animated }) => {
-    const bounceValue = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        if (visible && animated) {
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(bounceValue, { toValue: 1, duration: 600, useNativeDriver: true }),
-                    Animated.timing(bounceValue, { toValue: 0, duration: 600, useNativeDriver: true }),
-                ])
-            ).start();
-        } else {
-            bounceValue.setValue(0);
-        }
-    }, [visible, animated]);
-    if (!visible) return null;
-    const translateY = bounceValue.interpolate({
-        inputRange: [0, 0.5, 1],
-        outputRange: [0, -8, 0],
-    });
-    return (
-        <TouchableWithoutFeedback>
-            <Animated.View style={[scrollIndicatorStyles.container, { transform: [{ translateY }] }]}>
-                <View style={scrollIndicatorStyles.arrowContainer}>
-                    <Feather name="chevron-down" size={20} color="#FF6B9D" />
-                </View>
-                <Text style={scrollIndicatorStyles.text}>Scroll for more</Text>
-            </Animated.View>
-        </TouchableWithoutFeedback>
-    );
-};
-
-const scrollIndicatorStyles = StyleSheet.create({
-    container: { alignItems: 'center', paddingVertical: 12, marginBottom: 4 },
-    arrowContainer: {
-        width: 34, height: 34, borderRadius: 17,
-        backgroundColor: '#FFF5F8', justifyContent: 'center', alignItems: 'center',
-        borderWidth: 1.5, borderColor: '#FFE8EE',
-        shadowColor: '#FF6B9D', shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1, shadowRadius: 4, elevation: 2,
-    },
-    text: { fontSize: 10, color: '#B0B0B0', marginTop: 4, fontWeight: '500', letterSpacing: 0.3 },
-});
-
-// ============================================================
 // EVENT TYPE SCROLL INDICATOR
 // ============================================================
 const EventTypeScrollIndicator = ({ visible, canScrollLeft, canScrollRight, onScrollLeft, onScrollRight }) => {
-    const pulseValue = useRef(new Animated.Value(0)).current;
-    useEffect(() => {
-        if (visible && (canScrollLeft || canScrollRight)) {
-            Animated.loop(
-                Animated.sequence([
-                    Animated.timing(pulseValue, { toValue: 1, duration: 600, useNativeDriver: true }),
-                    Animated.timing(pulseValue, { toValue: 0, duration: 600, useNativeDriver: true }),
-                ])
-            ).start();
-        } else {
-            pulseValue.setValue(0);
-        }
-    }, [visible, canScrollLeft, canScrollRight]);
     if (!visible || (!canScrollLeft && !canScrollRight)) return null;
-    const opacity = pulseValue.interpolate({
-        inputRange: [0, 0.5, 1],
-        outputRange: [0.3, 1, 0.3],
-    });
     return (
         <View style={eventTypeScrollStyles.container}>
             {canScrollLeft && (
-                <Animated.View style={[eventTypeScrollStyles.arrowButton, { opacity }]}>
+                <View style={eventTypeScrollStyles.arrowButton}>
                     <TouchableOpacity onPress={onScrollLeft} activeOpacity={0.7} style={eventTypeScrollStyles.touchable}>
                         <Feather name="chevron-left" size={16} color="#FF6B9D" />
                     </TouchableOpacity>
-                </Animated.View>
+                </View>
             )}
             <View style={eventTypeScrollStyles.scrollHint}>
                 <Text style={eventTypeScrollStyles.scrollHintText}>Scroll to see more</Text>
             </View>
             {canScrollRight && (
-                <Animated.View style={[eventTypeScrollStyles.arrowButton, eventTypeScrollStyles.arrowRight, { opacity }]}>
+                <View style={[eventTypeScrollStyles.arrowButton, eventTypeScrollStyles.arrowRight]}>
                     <TouchableOpacity onPress={onScrollRight} activeOpacity={0.7} style={eventTypeScrollStyles.touchable}>
                         <Feather name="chevron-right" size={16} color="#FF6B9D" />
                     </TouchableOpacity>
-                </Animated.View>
+                </View>
             )}
         </View>
     );
@@ -507,15 +438,15 @@ const eventTypeScrollStyles = StyleSheet.create({
 });
 
 // ============================================================
-// ⭐ PACKAGE DETAILS MODAL — shows all menu items inside a package
+// PACKAGE DETAILS MODAL
 // ============================================================
 const PackageDetailsModal = ({ visible, packageData, onClose, onPickAll }) => {
     if (!visible || !packageData) return null;
 
     const menuItems = Array.isArray(packageData.menu_items) ? packageData.menu_items : [];
     const perPax = parseFloat(packageData.base_price_per_pax) || 0;
-    const minPax = parseInt(packageData.min_pax) || 0;
-    const maxPax = parseInt(packageData.max_pax) || 0;
+    const minPax = parseInt(packageData.min_pax, 10) || 0;
+    const maxPax = parseInt(packageData.max_pax, 10) || 0;
     const image = packageData.image || packageData.image_url;
 
     return (
@@ -530,7 +461,6 @@ const PackageDetailsModal = ({ visible, packageData, onClose, onPickAll }) => {
                 </View>
 
                 <ScrollView contentContainerStyle={pkgModalStyles.body}>
-                    {/* Hero image */}
                     <View style={pkgModalStyles.hero}>
                         {image ? (
                             <Image source={{ uri: image }} style={pkgModalStyles.heroImg} resizeMode="cover" />
@@ -578,7 +508,7 @@ const PackageDetailsModal = ({ visible, packageData, onClose, onPickAll }) => {
                         <View style={pkgModalStyles.list}>
                             {menuItems.map((item, idx) => {
                                 const itemImage = item.image || item.image_url;
-                                const qty = parseInt(item.quantity_per_pax || item.quantity || 1);
+                                const qty = parseInt(item.quantity_per_pax || item.quantity || 1, 10);
                                 const price = parseFloat(item.price) || 0;
                                 return (
                                     <View key={`${item.menu_item_id || idx}`} style={pkgModalStyles.itemRow}>
@@ -739,7 +669,6 @@ const pkgModalStyles = StyleSheet.create({
     },
     pickBtnText: { fontSize: 13, fontWeight: '800', color: '#FFF', letterSpacing: 0.3 },
 });
-
 
 // ============================================================
 // BOOKING SUCCESS MODAL
@@ -1303,7 +1232,7 @@ const rescheduleStyles = StyleSheet.create({
 // ============================================================
 const BookingScreen = ({ navigation, route }) => {
     const { user, isAuthenticated, isGuest } = useAuth();
-    const { cartItems, getTotalAmount, clearCart, reloadCart } = useCart();
+    const { cartItems, clearCart, reloadCart } = useCart();
 
     const routePackage = route?.params?.packageData || route?.params?.package || null;
     const routePackageId = route?.params?.packageId || route?.params?.id || null;
@@ -1329,10 +1258,8 @@ const BookingScreen = ({ navigation, route }) => {
     const [selectedCategory, setSelectedCategory] = useState('All');
     const [viewMode, setViewMode] = useState('grid');
     const [tempSelectedItems, setTempSelectedItems] = useState([]);
-    const [showScrollIndicator, setShowScrollIndicator] = useState(false);
     const [selectorPricingMode, setSelectorPricingMode] = useState('per_pax');
 
-    // ⭐ Package details modal state
     const [showPackageDetails, setShowPackageDetails] = useState(false);
     const [packageDetailsData, setPackageDetailsData] = useState(null);
 
@@ -1360,6 +1287,7 @@ const BookingScreen = ({ navigation, route }) => {
     const [isCheckingAvailability, setIsCheckingAvailability] = useState(false);
     const [depositCutoffWarning, setDepositCutoffWarning] = useState(null);
     const [showCutoffConfirm, setShowCutoffConfirm] = useState(false);
+    const [cutoffConfirmed, setCutoffConfirmed] = useState(false);
 
     const [showSuccessModal, setShowSuccessModal] = useState(false);
     const [successPayload, setSuccessPayload] = useState(null);
@@ -1370,19 +1298,12 @@ const BookingScreen = ({ navigation, route }) => {
     });
     const [rescheduleBusy, setRescheduleBusy] = useState(false);
 
-    const fadeAnim = useRef(new Animated.Value(1)).current;
+    const handleSubmitRef = useRef(null);
     const inputRefs = useRef({});
     const scrollViewRef = useRef(null);
     const mealIdCounter = useRef(1);
     const isMounted = useRef(true);
     const scrollPosition = useRef(0);
-    const focusedFieldRef = useRef(null);
-    const scrollViewHeightRef = useRef(0);
-    const contentHeightRef = useRef(0);
-    const scrollTimerRef = useRef(null);
-    const contentMeasured = useRef(false);
-    const keyboardShowListener = useRef(null);
-    const keyboardHideListener = useRef(null);
     const availabilityDebounce = useRef(null);
     const hasInitialized = useRef(false);
 
@@ -1411,7 +1332,7 @@ const BookingScreen = ({ navigation, route }) => {
         delivery_address: '',
         delivery_contact_person: '',
         delivery_contact_phone: '',
-        delivery_fee: 0,
+        delivery_fee: '',
         has_waiters: false,
         special_requests: '',
         menu_selection_type: 'custom',
@@ -1454,7 +1375,7 @@ const BookingScreen = ({ navigation, route }) => {
             delivery_address: '',
             delivery_contact_person: '',
             delivery_contact_phone: '',
-            delivery_fee: 0,
+            delivery_fee: '',
             has_waiters: false,
             special_requests: '',
             menu_selection_type: 'custom',
@@ -1475,6 +1396,7 @@ const BookingScreen = ({ navigation, route }) => {
         setDateValidation(null);
         setAvailabilityCheck(null);
         setDepositCutoffWarning(null);
+        setCutoffConfirmed(false);
         setSuccessPayload(null);
     }, [user]);
 
@@ -1496,7 +1418,7 @@ const BookingScreen = ({ navigation, route }) => {
                 meal_type: 'lunch',
                 serving_time: '12:00 PM',
                 serving_time_date: new Date(2024, 0, 1, 12, 0, 0),
-                pax: 0,
+                pax: '',
                 menu_items: [],
             }],
         }));
@@ -1509,48 +1431,22 @@ const BookingScreen = ({ navigation, route }) => {
     const dismissKeyboard = useCallback(() => {
         Keyboard.dismiss();
         setFocusedInput(null);
-        focusedFieldRef.current = null;
     }, []);
 
     const handleFocus = useCallback((fieldName) => {
         setFocusedInput(fieldName);
-        focusedFieldRef.current = fieldName;
-        setTimeout(() => {
-            if (scrollViewRef.current && inputRefs.current[fieldName]) {
-                scrollViewRef.current?.scrollTo({
-                    y: scrollPosition.current + 120, animated: true,
-                });
-            }
-        }, 400);
     }, []);
 
     const handleBlur = useCallback(() => {
         setFocusedInput(null);
-        focusedFieldRef.current = null;
     }, []);
 
     const handleNextInput = useCallback((currentField, nextField) => {
         if (nextField && inputRefs.current[nextField]) {
             setTimeout(() => {
                 inputRefs.current[nextField]?.focus();
-                handleFocus(nextField);
             }, 150);
         }
-    }, [handleFocus]);
-
-    useEffect(() => {
-        keyboardShowListener.current = Keyboard.addListener(
-            Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
-            () => {}
-        );
-        keyboardHideListener.current = Keyboard.addListener(
-            Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
-            () => {}
-        );
-        return () => {
-            keyboardShowListener.current?.remove();
-            keyboardHideListener.current?.remove();
-        };
     }, []);
 
     // ============================================================
@@ -1586,11 +1482,15 @@ const BookingScreen = ({ navigation, route }) => {
         setFormData((prev) => {
             const next = { ...prev, [field]: value };
             if (field === 'guests_count') {
-                const guestCount = parseInt(value, 10) || 0;
-                next.meal_services = (prev.meal_services || []).map((meal) => ({
-                    ...meal,
-                    pax: !meal.pax || Number(meal.pax) <= 0 ? guestCount : meal.pax,
-                }));
+                next.meal_services = (prev.meal_services || []).map((meal) => {
+                    const isEmpty =
+                        meal.pax === 0 ||
+                        meal.pax === undefined ||
+                        meal.pax === null ||
+                        meal.pax === '' ||
+                        meal.pax === '0';
+                    return isEmpty ? { ...meal, pax: value } : meal;
+                });
             }
             if (field === 'event_scope') {
                 if (value === 'regular') {
@@ -1613,20 +1513,12 @@ const BookingScreen = ({ navigation, route }) => {
         });
     }, []);
 
-    // Rebuild meal services when scope/day count changes
-    useEffect(() => {
-        if (formData.event_scope === 'multi' && formData.meal_services.length === 0) {
-            initializeMealServices();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [formData.event_scope, formData.total_days]);
-
     // ============================================================
     // MEAL SERVICES
     // ============================================================
-    const initializeMealServices = useCallback(() => {
+    const initializeMealServices = useCallback((guestsOverride) => {
         const totalDays = formData.total_days || 1;
-        const guestCount = parseInt(formData.guests_count) || 0;
+        const guestCount = guestsOverride !== undefined ? guestsOverride : (formData.guests_count ?? '');
         const meals = [];
         for (let day = 1; day <= totalDays; day++) {
             meals.push({
@@ -1645,7 +1537,7 @@ const BookingScreen = ({ navigation, route }) => {
 
     const addMealService = useCallback(() => {
         const totalDays = formData.total_days || 1;
-        const guestCount = parseInt(formData.guests_count) || 0;
+        const guestCount = formData.guests_count ?? '';
 
         if (formData.meal_services.length === 0) {
             initializeMealServices();
@@ -1726,10 +1618,7 @@ const BookingScreen = ({ navigation, route }) => {
                 const dup = prev.meal_services.some((m, i) =>
                     i !== mealIndex && m.day_number === dayNumber && m.meal_type === updates.meal_type
                 );
-                if (dup) {
-                    Alert.alert('Duplicate Meal', `This meal type is already added for Day ${dayNumber}.`);
-                    return prev;
-                }
+                if (dup) return prev;
             }
 
             if (updates.day_number && updates.day_number !== meal.day_number) {
@@ -1737,10 +1626,7 @@ const BookingScreen = ({ navigation, route }) => {
                 const dup = prev.meal_services.some((m, i) =>
                     i !== mealIndex && m.day_number === updates.day_number && m.meal_type === mealType
                 );
-                if (dup) {
-                    Alert.alert('Duplicate Meal', `This meal type is already added for Day ${updates.day_number}.`);
-                    return prev;
-                }
+                if (dup) return prev;
             }
 
             const newMeals = [...prev.meal_services];
@@ -1798,7 +1684,6 @@ const BookingScreen = ({ navigation, route }) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }, [selectorPricingMode]);
 
-    // ⭐ NEW: Open package details modal
     const openPackageDetails = useCallback((pkg) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         setPackageDetailsData(pkg);
@@ -1810,7 +1695,6 @@ const BookingScreen = ({ navigation, route }) => {
         setPackageDetailsData(null);
     }, []);
 
-    // ⭐ NEW: Bulk-add all menu items from a package
     const handlePickAllFromPackage = useCallback((pkg) => {
         const items = Array.isArray(pkg.menu_items) ? pkg.menu_items : [];
         if (items.length === 0) {
@@ -1891,9 +1775,11 @@ const BookingScreen = ({ navigation, route }) => {
     // ============================================================
     const getMealTotal = useCallback((meal) => {
         const menuTotal = (meal.menu_items || []).reduce(
-            (sum, item) => sum + ((item.price || 0) * (item.quantity || 1)), 0
+            (sum, item) => sum + ((parseFloat(item.price) || 0) * (parseInt(item.quantity, 10) || 1)), 0
         );
-        const paxTotal = (meal.pax || 0) * (meal.price_per_head || 0);
+        const paxNum = parseFloat(meal.pax) || 0;
+        const priceNum = parseFloat(meal.price_per_head) || 0;
+        const paxTotal = paxNum * priceNum;
         return menuTotal + paxTotal;
     }, []);
 
@@ -1903,16 +1789,16 @@ const BookingScreen = ({ navigation, route }) => {
 
     const calculateAdditionalCharges = useCallback(() => {
         let total = 0;
-        total += parseFloat(formData.transportation_fee || 0);
-        total += parseFloat(formData.setup_fee || 0);
-        total += parseFloat(formData.service_crew_fee || 0);
-        total += parseFloat(formData.equipment_rental || 0);
-        total += parseFloat(formData.extra_food_fee || 0);
-        total += parseFloat(formData.delivery_fee || 0);
+        total += parseFloat(formData.transportation_fee) || 0;
+        total += parseFloat(formData.setup_fee) || 0;
+        total += parseFloat(formData.service_crew_fee) || 0;
+        total += parseFloat(formData.equipment_rental) || 0;
+        total += parseFloat(formData.extra_food_fee) || 0;
+        total += parseFloat(formData.delivery_fee) || 0;
         return total;
     }, [formData]);
 
-    const calculateDiscount = useCallback(() => parseFloat(formData.discount || 0), [formData]);
+    const calculateDiscount = useCallback(() => parseFloat(formData.discount) || 0, [formData]);
 
     const calculateTotal = useCallback(() => {
         let total = getTotalMealServices() + calculateAdditionalCharges();
@@ -2120,34 +2006,28 @@ const BookingScreen = ({ navigation, route }) => {
     // ============================================================
     // VALIDATION GATES
     // ============================================================
+    // Loose validation — allows proceeding even with empty optional fields
     const validateStep1 = useCallback(() => {
-        if (!formData.customer_name?.trim()) { Alert.alert('Required', 'Please enter your full name'); return false; }
-        if (!formData.customer_email?.includes('@')) { Alert.alert('Required', 'Please enter a valid email'); return false; }
-        if (!formData.customer_phone?.trim()) { Alert.alert('Required', 'Please enter your phone number'); return false; }
-        if (!formData.event_type_id) { Alert.alert('Required', 'Please select an event type'); return false; }
-        if (!formData.event_date) { Alert.alert('Required', 'Please select an event date'); return false; }
-        if (dateValidation?.type === 'error') { Alert.alert(dateValidation.title, dateValidation.message); return false; }
-        if (availabilityCheck?.type === 'error') { Alert.alert(availabilityCheck.title, availabilityCheck.message); return false; }
-        if (formData.event_scope === 'multi' && !formData.event_end_date) {
-            Alert.alert('Required', 'Please select an end date for multi-day event'); return false;
+        // Only strict requirement: event date must be valid (not in past / same day)
+        if (dateValidation?.type === 'error') {
+            Alert.alert(dateValidation.title, dateValidation.message);
+            return false;
         }
-        if (formData.event_scope === 'multi' && formData.event_end_date <= formData.event_date) {
-            Alert.alert('Invalid Date', 'End date must be after start date'); return false;
+        if (availabilityCheck?.type === 'error') {
+            Alert.alert(availabilityCheck.title, availabilityCheck.message);
+            return false;
         }
-        if (!formData.venue?.trim()) { Alert.alert('Required', 'Please enter event location'); return false; }
-        const guestCount = parseInt(formData.guests_count);
-        if (!guestCount || guestCount < 10) { Alert.alert('Required', 'Minimum of 10 guests required'); return false; }
-        if (depositCutoffWarning) { setShowCutoffConfirm(true); return false; }
+        if (depositCutoffWarning && !cutoffConfirmed) {
+            setShowCutoffConfirm(true);
+            return false;
+        }
         return true;
-    }, [formData, dateValidation, availabilityCheck, depositCutoffWarning]);
+    }, [dateValidation, availabilityCheck, depositCutoffWarning, cutoffConfirmed]);
 
     const validateStep2 = useCallback(() => {
-        const hasMeals = (formData.meal_services || []).some(
-            (m) => (m.menu_items || []).length > 0 || (m.pax > 0 && m.price_per_head > 0)
-        );
-        if (!hasMeals) { Alert.alert('Required', 'Please configure at least one meal service'); return false; }
+        // Loose — user can continue even without meals
         return true;
-    }, [formData.meal_services]);
+    }, []);
 
     // ============================================================
     // NAVIGATION
@@ -2165,21 +2045,27 @@ const BookingScreen = ({ navigation, route }) => {
         }
         if (currentStep === 1 && validateStep1()) {
             setCurrentStep(2);
-            setTimeout(() => { scrollViewRef.current?.scrollTo({ y: 0, animated: true }); setShowScrollIndicator(false); }, 100);
+            setTimeout(() => {
+                scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+            }, 100);
         } else if (currentStep === 2 && validateStep2()) {
             setCurrentStep(3);
-            setTimeout(() => { scrollViewRef.current?.scrollTo({ y: 0, animated: true }); setShowScrollIndicator(false); }, 100);
+            setTimeout(() => {
+                scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+            }, 100);
         } else if (currentStep === 3) {
-            handleSubmit();
+            handleSubmitRef.current?.();
         }
-    }, [currentStep, validateStep1, validateStep2, dismissKeyboard, isSubmitted, handleSubmit]);
+    }, [currentStep, validateStep1, validateStep2, dismissKeyboard, isSubmitted]);
 
     const handlePreviousStep = useCallback(() => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         dismissKeyboard();
         if (currentStep > 1) {
             setCurrentStep(currentStep - 1);
-            setTimeout(() => { scrollViewRef.current?.scrollTo({ y: 0, animated: true }); setShowScrollIndicator(false); }, 100);
+            setTimeout(() => {
+                scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+            }, 100);
         }
     }, [currentStep, dismissKeyboard]);
 
@@ -2198,30 +2084,31 @@ const BookingScreen = ({ navigation, route }) => {
             ]);
             return;
         }
-        if (dateValidation?.type === 'error') { Alert.alert(dateValidation.title, dateValidation.message); return; }
-        if (availabilityCheck?.type === 'error') { Alert.alert(availabilityCheck.title, availabilityCheck.message); return; }
+        if (dateValidation?.type === 'error') {
+            Alert.alert(dateValidation.title, dateValidation.message);
+            return;
+        }
+        if (availabilityCheck?.type === 'error') {
+            Alert.alert(availabilityCheck.title, availabilityCheck.message);
+            return;
+        }
 
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         setSubmitting(true);
 
         try {
-            const guestCount = parseInt(formData.guests_count) || 0;
+            const guestCount = parseInt(formData.guests_count, 10) || 0;
             const totalAmount = calculateTotal();
 
             const selectedMeals = (formData.meal_services || []).filter((m) => {
                 const hasMenuItems = Array.isArray(m.menu_items) && m.menu_items.length > 0;
-                const hasManualMealCharge = Number(m.price_per_head || 0) > 0;
+                const hasManualMealCharge = parseFloat(m.price_per_head) > 0;
                 return hasMenuItems || hasManualMealCharge;
             });
 
-            if (selectedMeals.length === 0) {
-                Alert.alert('Required', 'Please select at least one menu item.');
-                setSubmitting(false);
-                return;
-            }
-
             const mealServices = selectedMeals.map((m) => {
                 const normalizedPax = Math.max(1, parseInt(m.pax, 10) || guestCount || 1);
+                const normalizedPricePerHead = parseFloat(m.price_per_head) || 0;
                 const normalizedItems = Array.isArray(m.menu_items) ? m.menu_items : [];
                 const customItems = normalizedItems.map((item) => ({
                     menu_item_id: item.menu_item_id || null,
@@ -2240,7 +2127,7 @@ const BookingScreen = ({ navigation, route }) => {
                     meal_type: m.meal_type || 'lunch',
                     serving_time: m.serving_time || '12:00 PM',
                     pax: normalizedPax,
-                    price_per_head: parseFloat(m.price_per_head) || 0,
+                    price_per_head: normalizedPricePerHead,
                     menu_source: 'custom',
                     menu_mode: 'custom',
                     package_id: null,
@@ -2264,14 +2151,14 @@ const BookingScreen = ({ navigation, route }) => {
             });
 
             const bookingData = {
-                customer_name: formData.customer_name.trim(),
-                customer_email: formData.customer_email.trim(),
-                customer_phone: formData.customer_phone.trim(),
+                customer_name: (formData.customer_name || '').trim(),
+                customer_email: (formData.customer_email || '').trim(),
+                customer_phone: (formData.customer_phone || '').trim(),
                 event_type_id: formData.event_type_id,
                 event_date: formData.event_date.toISOString().split('T')[0],
                 event_end_date: formData.event_end_date ? formData.event_end_date.toISOString().split('T')[0] : null,
                 event_time: formData.event_time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-                venue: formData.venue.trim(),
+                venue: (formData.venue || '').trim(),
                 guests_count: guestCount,
                 service_type: formData.service_type,
                 booking_scope: formData.event_scope,
@@ -2338,6 +2225,10 @@ const BookingScreen = ({ navigation, route }) => {
         isPackageBooking, selectedPackage, isPromoBooking, selectedPromotion,
         dateValidation, availabilityCheck, isSubmitted, reloadCart,
     ]);
+
+    useEffect(() => {
+        handleSubmitRef.current = handleSubmit;
+    }, [handleSubmit]);
 
     // ============================================================
     // RESCHEDULE ACTIONS
@@ -2571,37 +2462,12 @@ const BookingScreen = ({ navigation, route }) => {
     };
 
     const handleScroll = useCallback((event) => {
-        const offsetY = event.nativeEvent.contentOffset.y;
-        const contentHeight = event.nativeEvent.contentSize.height;
-        const scrollViewHeight = event.nativeEvent.layoutMeasurement.height;
-        contentHeightRef.current = contentHeight;
-        scrollViewHeightRef.current = scrollViewHeight;
-        const hasMore = contentHeight > scrollViewHeight + 30;
-        const isAtBottom = offsetY + scrollViewHeight >= contentHeight - 20;
-        setShowScrollIndicator(hasMore && !isAtBottom);
-        scrollPosition.current = offsetY;
-        if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
-        scrollTimerRef.current = setTimeout(() => {
-            const co = scrollPosition.current;
-            const ch = contentHeightRef.current;
-            const vh = scrollViewHeightRef.current;
-            setShowScrollIndicator(ch > vh + 30 && co + vh < ch - 20);
-        }, 300);
+        scrollPosition.current = event.nativeEvent.contentOffset.y;
     }, []);
 
-    const handleContentSizeChange = useCallback((contentWidth, contentHeight) => {
-        contentHeightRef.current = contentHeight;
-        setShowScrollIndicator(contentHeight > scrollViewHeightRef.current + 30);
-        contentMeasured.current = true;
-    }, []);
+    const handleContentSizeChange = useCallback(() => {}, []);
 
-    const handleLayout = useCallback((event) => {
-        const { height } = event.nativeEvent.layout;
-        scrollViewHeightRef.current = height;
-        if (contentHeightRef.current > 0) {
-            setShowScrollIndicator(contentHeightRef.current > height + 30);
-        }
-    }, []);
+    const handleLayout = useCallback(() => {}, []);
 
     // ============================================================
     // RENDER EVENT SCOPE
@@ -2677,7 +2543,7 @@ const BookingScreen = ({ navigation, route }) => {
                 {isDelivery && (
                     <View style={styles.deliveryFields}>
                         <View style={styles.inputGroup}>
-                            <Text style={styles.label}>Delivery Address <Text style={styles.required}>*</Text></Text>
+                            <Text style={styles.label}>Delivery Address</Text>
                             <View style={[styles.inputContainer, focusedInput === 'delivery_address' && styles.inputContainerFocused]}>
                                 <Feather name="map-pin" size={16} color="#FF6B9D" style={styles.inputIcon} />
                                 <TextInput
@@ -2742,15 +2608,16 @@ const BookingScreen = ({ navigation, route }) => {
                                 <TextInput
                                     ref={(ref) => (inputRefs.current.delivery_fee = ref)}
                                     style={styles.input}
-                                    value={String(formData.delivery_fee || '')}
-                                    onChangeText={(t) => updateFormField('delivery_fee', parseFloat(t) || 0)}
+                                    value={formData.delivery_fee ?? ''}
+                                    onChangeText={(t) => updateFormField('delivery_fee', t)}
                                     onFocus={() => handleFocus('delivery_fee')}
                                     onBlur={handleBlur}
                                     placeholder="0.00"
                                     placeholderTextColor="#c0c0c0"
-                                    keyboardType="numeric"
+                                    keyboardType="decimal-pad"
                                     returnKeyType="done"
                                     onSubmitEditing={dismissKeyboard}
+                                    autoCorrect={false}
                                 />
                             </View>
                         </View>
@@ -2775,7 +2642,7 @@ const BookingScreen = ({ navigation, route }) => {
         if (depositCutoffWarning) activeBanners.push(depositCutoffWarning);
 
         return (
-            <Animated.View style={{ opacity: fadeAnim }}>
+            <View>
                 {activeBanners.map((banner, idx) => (
                     <ValidationBanner
                         key={`${banner.code}-${idx}`}
@@ -2801,7 +2668,7 @@ const BookingScreen = ({ navigation, route }) => {
                         <Text style={styles.sectionTitle}>Customer Information</Text>
                     </View>
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Full Name <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Full Name</Text>
                         <View style={[styles.inputContainer, focusedInput === 'customer_name' && styles.inputContainerFocused]}>
                             <Feather name="user" size={16} color="#FF6B9D" style={styles.inputIcon} />
                             <TextInput
@@ -2820,7 +2687,7 @@ const BookingScreen = ({ navigation, route }) => {
                         </View>
                     </View>
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Email Address <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Email Address</Text>
                         <View style={[styles.inputContainer, focusedInput === 'customer_email' && styles.inputContainerFocused]}>
                             <Feather name="mail" size={16} color="#FF6B9D" style={styles.inputIcon} />
                             <TextInput
@@ -2841,7 +2708,7 @@ const BookingScreen = ({ navigation, route }) => {
                         </View>
                     </View>
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Phone Number <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Phone Number</Text>
                         <View style={[styles.inputContainer, focusedInput === 'customer_phone' && styles.inputContainerFocused]}>
                             <Feather name="phone" size={16} color="#FF6B9D" style={styles.inputIcon} />
                             <TextInput
@@ -2881,7 +2748,7 @@ const BookingScreen = ({ navigation, route }) => {
                     </View>
 
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Event Type <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Event Type</Text>
                         <View style={styles.eventTypesWrapper}>
                             <ScrollView
                                 ref={eventTypeScrollRef}
@@ -2939,8 +2806,7 @@ const BookingScreen = ({ navigation, route }) => {
 
                     <View style={styles.inputGroup}>
                         <Text style={styles.label}>
-                            {isMultiDay ? 'Event Date Range' : 'Event Date'}{' '}
-                            <Text style={styles.required}>*</Text>
+                            {isMultiDay ? 'Event Date Range' : 'Event Date'}
                         </Text>
                         {isMultiDay ? (
                             <View>
@@ -2985,7 +2851,7 @@ const BookingScreen = ({ navigation, route }) => {
                     </View>
 
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Event Time <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Event Time</Text>
                         <TouchableOpacity
                             style={[styles.dateTimeSelector, focusedInput === 'event_time' && styles.inputContainerFocused]}
                             onPress={() => { dismissKeyboard(); setFocusedInput('event_time'); setShowTimePicker(true); }}
@@ -2997,7 +2863,7 @@ const BookingScreen = ({ navigation, route }) => {
                     </View>
 
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Event Location <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Event Location</Text>
                         <View style={[styles.inputContainer, focusedInput === 'venue' && styles.inputContainerFocused]}>
                             <Feather name="map-pin" size={16} color="#FF6B9D" style={styles.inputIcon} />
                             <TextInput
@@ -3017,7 +2883,7 @@ const BookingScreen = ({ navigation, route }) => {
                     </View>
 
                     <View style={styles.inputGroup}>
-                        <Text style={styles.label}>Number of Guests <Text style={styles.required}>*</Text></Text>
+                        <Text style={styles.label}>Number of Guests</Text>
                         {isPackageBooking && selectedPackage && (
                             <View style={styles.packageHintContainer}>
                                 <Feather name="info" size={12} color="#FF6B9D" />
@@ -3031,7 +2897,7 @@ const BookingScreen = ({ navigation, route }) => {
                                 style={styles.stepperButton}
                                 onPress={() => {
                                     dismissKeyboard();
-                                    const current = parseInt(formData.guests_count) || 10;
+                                    const current = parseInt(formData.guests_count, 10) || 0;
                                     const min = isPackageBooking ? selectedPackage?.min_pax || 10 : 10;
                                     updateFormField('guests_count', Math.max(min, current - 10).toString());
                                 }}
@@ -3043,8 +2909,8 @@ const BookingScreen = ({ navigation, route }) => {
                                 <TextInput
                                     ref={(ref) => (inputRefs.current.guests = ref)}
                                     style={styles.guestInput}
-                                    keyboardType="numeric"
-                                    value={String(formData.guests_count)}
+                                    keyboardType="number-pad"
+                                    value={formData.guests_count ?? ''}
                                     onChangeText={(t) => updateFormField('guests_count', t)}
                                     onFocus={() => handleFocus('guests')}
                                     onBlur={handleBlur}
@@ -3053,13 +2919,14 @@ const BookingScreen = ({ navigation, route }) => {
                                     textAlign="center"
                                     returnKeyType="done"
                                     onSubmitEditing={dismissKeyboard}
+                                    autoCorrect={false}
                                 />
                             </View>
                             <TouchableOpacity
                                 style={styles.stepperButton}
                                 onPress={() => {
                                     dismissKeyboard();
-                                    const current = parseInt(formData.guests_count) || 0;
+                                    const current = parseInt(formData.guests_count, 10) || 0;
                                     const max = isPackageBooking ? selectedPackage?.max_pax || 999 : 999;
                                     updateFormField('guests_count', Math.min(max, current + 10).toString());
                                 }}
@@ -3164,23 +3031,22 @@ const BookingScreen = ({ navigation, route }) => {
                         }}
                     />
                 )}
-            </Animated.View>
+            </View>
         );
     }, [
         formData, focusedInput, eventTypes, showDatePicker, showEndDatePicker, showTimePicker,
         isPackageBooking, selectedPackage, showEventTypeScrollHint, canScrollLeft, canScrollRight,
         renderEventScope, updateFormField, handleFocus, handleBlur, handleNextInput,
-        dismissKeyboard, formatDateDisplay, formatDateRangeDisplay, formatTimeDisplay,
+        dismissKeyboard, formatDateDisplay, formatTimeDisplay,
         dateValidation, availabilityCheck, depositCutoffWarning, isCheckingAvailability,
-        fadeAnim, handleEventTypeScroll, handleEventTypeLayout, scrollEventTypeLeft, scrollEventTypeRight,
+        handleEventTypeScroll, handleEventTypeLayout, scrollEventTypeLeft, scrollEventTypeRight,
     ]);
 
-    
     // ============================================================
     // RENDER STEP 2
     // ============================================================
     const renderStep2 = useCallback(() => (
-        <Animated.View style={{ opacity: fadeAnim }}>
+        <View>
             <View style={styles.section}>
                 <View style={styles.sectionHeader}>
                     <View style={[styles.sectionIcon, { backgroundColor: '#9C27B0' }]}>
@@ -3240,12 +3106,16 @@ const BookingScreen = ({ navigation, route }) => {
                                                                 onPress={() => {
                                                                     dismissKeyboard();
                                                                     const mealType = meal.meal_type;
+                                                                    const mealLabel = MEAL_TYPES.find((mt) => mt.id === mealType)?.label || mealType;
                                                                     const dup = formData.meal_services.some((m, idx) =>
                                                                         idx !== formData.meal_services.indexOf(meal) &&
                                                                         m.day_number === day &&
                                                                         m.meal_type === mealType
                                                                     );
-                                                                    if (dup) { Alert.alert('Duplicate Meal', `${mealType} is already added for Day ${day}.`); return; }
+                                                                    if (dup) {
+                                                                        Alert.alert('Duplicate Meal', `${mealLabel} is already added for Day ${day}.`);
+                                                                        return;
+                                                                    }
                                                                     updateMealService(meal.id, { day_number: day });
                                                                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                                                                 }}
@@ -3309,13 +3179,14 @@ const BookingScreen = ({ navigation, route }) => {
                                                 <TextInput
                                                     ref={(ref) => (inputRefs.current[`pax_${meal.id}`] = ref)}
                                                     style={styles.mealInput}
-                                                    keyboardType="numeric"
-                                                    value={String(meal.pax || '')}
-                                                    onChangeText={(t) => updateMealService(meal.id, { pax: parseInt(t) || 0 })}
+                                                    keyboardType="number-pad"
+                                                    value={meal.pax ?? ''}
+                                                    onChangeText={(t) => updateMealService(meal.id, { pax: t })}
                                                     onFocus={() => handleFocus(`pax_${meal.id}`)}
                                                     onBlur={handleBlur}
                                                     placeholder="0"
                                                     placeholderTextColor="#c0c0c0"
+                                                    autoCorrect={false}
                                                 />
                                             </View>
                                         </View>
@@ -3326,13 +3197,14 @@ const BookingScreen = ({ navigation, route }) => {
                                                 <TextInput
                                                     ref={(ref) => (inputRefs.current[`price_${meal.id}`] = ref)}
                                                     style={styles.mealInput}
-                                                    keyboardType="numeric"
-                                                    value={String(meal.price_per_head || '')}
-                                                    onChangeText={(t) => updateMealService(meal.id, { price_per_head: parseFloat(t) || 0 })}
+                                                    keyboardType="decimal-pad"
+                                                    value={meal.price_per_head ?? ''}
+                                                    onChangeText={(t) => updateMealService(meal.id, { price_per_head: t })}
                                                     onFocus={() => handleFocus(`price_${meal.id}`)}
                                                     onBlur={handleBlur}
                                                     placeholder="0.00"
                                                     placeholderTextColor="#c0c0c0"
+                                                    autoCorrect={false}
                                                 />
                                             </View>
                                             <View style={[styles.mealField, { flex: 1 }]}>
@@ -3456,9 +3328,7 @@ const BookingScreen = ({ navigation, route }) => {
                 </View>
             </View>
 
-            <ScrollIndicator visible={showScrollIndicator} animated={true} />
-
-            {/* ========================= MENU SELECTOR MODAL ========================= */}
+            {/* MENU SELECTOR MODAL */}
             <Modal visible={showMenuSelector} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowMenuSelector(false)}>
                 <SafeAreaView style={styles.modalContainer}>
                     <View style={styles.modalHeader}>
@@ -3615,7 +3485,6 @@ const BookingScreen = ({ navigation, route }) => {
                                                 </Text>
                                             )}
 
-                                            {/* ⭐ View button for packages (grid) */}
                                             {isPackage && (
                                                 <TouchableOpacity
                                                     style={styles.pkgViewBtnGrid}
@@ -3658,7 +3527,6 @@ const BookingScreen = ({ navigation, route }) => {
                                                     <Text style={styles.menuItemListPackage}>in {item.package_name}</Text>
                                                 )}
 
-                                                {/* ⭐ View button for packages (list) */}
                                                 {isPackage && (
                                                     <TouchableOpacity
                                                         style={styles.pkgViewBtnList}
@@ -3706,7 +3574,6 @@ const BookingScreen = ({ navigation, route }) => {
                 </SafeAreaView>
             </Modal>
 
-            {/* ========================= PACKAGE DETAILS MODAL ========================= */}
             <PackageDetailsModal
                 visible={showPackageDetails}
                 packageData={packageDetailsData}
@@ -3714,7 +3581,7 @@ const BookingScreen = ({ navigation, route }) => {
                 onPickAll={handlePickAllFromPackage}
             />
 
-            {/* ========================= SERVING TIME PICKER MODAL ========================= */}
+            {/* SERVING TIME PICKER MODAL */}
             <Modal visible={showServingTimePicker} transparent animationType="fade" onRequestClose={() => setShowServingTimePicker(false)}>
                 <View style={styles.timePickerOverlay}>
                     <View style={styles.timePickerCard}>
@@ -3749,15 +3616,15 @@ const BookingScreen = ({ navigation, route }) => {
                     </View>
                 </View>
             </Modal>
-        </Animated.View>
+        </View>
     ), [
         formData, focusedInput, showMenuSelector, tempSelectedItems, searchQuery, selectedCategory,
-        viewMode, categories, showScrollIndicator, getFilteredMenuItems, getMealTotal,
+        viewMode, categories, getFilteredMenuItems, getMealTotal,
         getTotalMealServices, addMealService, removeMealService, updateMealService,
         updateMenuItemQuantity, openMenuSelector, toggleMenuItem, confirmMenuSelection,
         renderDeliveryMethod, handleFocus, handleBlur, updateFormField, dismissKeyboard,
         selectorPricingMode, showServingTimePicker, servingTimeDraft, openServingTimePicker, applyServingTime,
-        fadeAnim, getMealTypeColor,
+        getMealTypeColor,
         showPackageDetails, packageDetailsData, openPackageDetails, closePackageDetails, handlePickAllFromPackage,
     ]);
 
@@ -3769,9 +3636,10 @@ const BookingScreen = ({ navigation, route }) => {
         const mealTotal = getTotalMealServices();
         const additionalCharges = calculateAdditionalCharges();
         const discount = calculateDiscount();
+        const deliveryFeeNum = parseFloat(formData.delivery_fee) || 0;
 
         return (
-            <Animated.View style={{ opacity: fadeAnim }}>
+            <View>
                 {depositCutoffWarning && (
                     <ValidationBanner
                         type="warning"
@@ -3789,15 +3657,15 @@ const BookingScreen = ({ navigation, route }) => {
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Name:</Text>
-                            <Text style={styles.summaryValue}>{formData.customer_name}</Text>
+                            <Text style={styles.summaryValue}>{formData.customer_name || '—'}</Text>
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Email:</Text>
-                            <Text style={styles.summaryValue}>{formData.customer_email}</Text>
+                            <Text style={styles.summaryValue}>{formData.customer_email || '—'}</Text>
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Phone:</Text>
-                            <Text style={styles.summaryValue}>{formData.customer_phone}</Text>
+                            <Text style={styles.summaryValue}>{formData.customer_phone || '—'}</Text>
                         </View>
                     </View>
 
@@ -3815,7 +3683,7 @@ const BookingScreen = ({ navigation, route }) => {
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Type:</Text>
                             <Text style={styles.summaryValue}>
-                                {eventTypes.find((t) => (t.event_type_id || t.id) === formData.event_type_id)?.name || 'General'}
+                                {eventTypes.find((t) => (t.event_type_id || t.id) === formData.event_type_id)?.name || '—'}
                             </Text>
                         </View>
                         <View style={styles.summaryItem}>
@@ -3832,11 +3700,11 @@ const BookingScreen = ({ navigation, route }) => {
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Venue:</Text>
-                            <Text style={styles.summaryValue}>{formData.venue}</Text>
+                            <Text style={styles.summaryValue}>{formData.venue || '—'}</Text>
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Guests:</Text>
-                            <Text style={styles.summaryValue}>{formData.guests_count} persons</Text>
+                            <Text style={styles.summaryValue}>{formData.guests_count || 0} persons</Text>
                         </View>
                         <View style={styles.summaryItem}>
                             <Text style={styles.summaryLabel}>Service:</Text>
@@ -3851,28 +3719,32 @@ const BookingScreen = ({ navigation, route }) => {
                             <MaterialCommunityIcons name="food" size={14} color="#FF6B9D" />
                             <Text style={styles.summarySectionTitle}>Meal Services</Text>
                         </View>
-                        {(formData.meal_services || []).map((meal) => (
-                            <View key={meal.id} style={styles.summaryMealItem}>
-                                <View style={styles.summaryMealHeader}>
-                                    <Text style={styles.summaryMealTitle}>
-                                        {formData.event_scope === 'multi' ? `Day ${meal.day_number} - ` : ''}
-                                        {MEAL_TYPES.find((m) => m.id === meal.meal_type)?.label || meal.meal_type}
-                                    </Text>
-                                    <Text style={styles.summaryMealAmount}>₱{getMealTotal(meal).toLocaleString()}</Text>
-                                </View>
-                                {(meal.menu_items || []).map((item) => (
-                                    <View key={item.id} style={styles.summaryMenuItem}>
-                                        <Text style={styles.summaryMenuItemName}>
-                                            • {item.name} x{item.quantity || 1}
-                                            {item.pricing_type === 'per_tray' ? ' (tray)' : ''}
+                        {(formData.meal_services || []).length === 0 ? (
+                            <Text style={styles.specialRequestsText}>No meal services added.</Text>
+                        ) : (
+                            (formData.meal_services || []).map((meal) => (
+                                <View key={meal.id} style={styles.summaryMealItem}>
+                                    <View style={styles.summaryMealHeader}>
+                                        <Text style={styles.summaryMealTitle}>
+                                            {formData.event_scope === 'multi' ? `Day ${meal.day_number} - ` : ''}
+                                            {MEAL_TYPES.find((m) => m.id === meal.meal_type)?.label || meal.meal_type}
                                         </Text>
-                                        <Text style={styles.summaryMenuItemPrice}>
-                                            ₱{(item.price * (item.quantity || 1)).toLocaleString()}
-                                        </Text>
+                                        <Text style={styles.summaryMealAmount}>₱{getMealTotal(meal).toLocaleString()}</Text>
                                     </View>
-                                ))}
-                            </View>
-                        ))}
+                                    {(meal.menu_items || []).map((item) => (
+                                        <View key={item.id} style={styles.summaryMenuItem}>
+                                            <Text style={styles.summaryMenuItemName}>
+                                                • {item.name} x{item.quantity || 1}
+                                                {item.pricing_type === 'per_tray' ? ' (tray)' : ''}
+                                            </Text>
+                                            <Text style={styles.summaryMenuItemPrice}>
+                                                ₱{((parseFloat(item.price) || 0) * (parseInt(item.quantity, 10) || 1)).toLocaleString()}
+                                            </Text>
+                                        </View>
+                                    ))}
+                                </View>
+                            ))
+                        )}
                     </View>
 
                     <View style={styles.summarySection}>
@@ -3923,10 +3795,10 @@ const BookingScreen = ({ navigation, route }) => {
                                     <Text style={styles.summaryValue}>{formData.delivery_contact_person}</Text>
                                 </View>
                             )}
-                            {formData.delivery_fee > 0 && (
+                            {deliveryFeeNum > 0 && (
                                 <View style={styles.summaryItem}>
                                     <Text style={styles.summaryLabel}>Delivery Fee:</Text>
-                                    <Text style={styles.summaryValue}>₱{formData.delivery_fee.toLocaleString()}</Text>
+                                    <Text style={styles.summaryValue}>₱{deliveryFeeNum.toLocaleString()}</Text>
                                 </View>
                             )}
                         </View>
@@ -3949,21 +3821,19 @@ const BookingScreen = ({ navigation, route }) => {
                         30% downpayment required to confirm. Final pricing may vary.
                     </Text>
                 </View>
-            </Animated.View>
+            </View>
         );
     }, [
         formData, eventTypes, getMealTotal, getTotalMealServices, calculateTotal,
         calculateAdditionalCharges, calculateDiscount, formatDateDisplay,
-        formatDateRangeDisplay, formatTimeDisplay, depositCutoffWarning, fadeAnim,
+        formatDateRangeDisplay, formatTimeDisplay, depositCutoffWarning,
     ]);
 
     // ============================================================
     // INIT
     // ============================================================
     useEffect(() => {
-        if (hasInitialized.current) {
-            return;
-        }
+        if (hasInitialized.current) return;
         hasInitialized.current = true;
 
         isMounted.current = true;
@@ -3985,12 +3855,22 @@ const BookingScreen = ({ navigation, route }) => {
                 if (packageData) {
                     setSelectedPackage(packageData);
                     setIsPackageBooking(true);
+                    const guestsStr = String(packageData.min_pax || 50);
                     setFormData((prev) => ({
                         ...prev,
-                        guests_count: String(packageData.min_pax || 50),
+                        guests_count: guestsStr,
                         event_type_id: packageData.event_type_id || prev.event_type_id,
                         package_id: packageData.package_id || packageData.id,
                         menu_selection_type: 'package',
+                        meal_services: (prev.meal_services || []).map((meal) => {
+                            const isEmpty =
+                                meal.pax === 0 ||
+                                meal.pax === undefined ||
+                                meal.pax === null ||
+                                meal.pax === '' ||
+                                meal.pax === '0';
+                            return isEmpty ? { ...meal, pax: guestsStr } : meal;
+                        }),
                     }));
                 }
             };
@@ -4007,11 +3887,21 @@ const BookingScreen = ({ navigation, route }) => {
                 if (promotionData) {
                     setSelectedPromotion(promotionData);
                     setIsPromoBooking(true);
+                    const guestsStr = '50';
                     setFormData((prev) => ({
                         ...prev,
-                        guests_count: '50',
+                        guests_count: guestsStr,
                         event_type_id: promotionData.event_type_id || prev.event_type_id,
                         promotion_id: promotionData.promotion_id || promotionData.id,
+                        meal_services: (prev.meal_services || []).map((meal) => {
+                            const isEmpty =
+                                meal.pax === 0 ||
+                                meal.pax === undefined ||
+                                meal.pax === null ||
+                                meal.pax === '' ||
+                                meal.pax === '0';
+                            return isEmpty ? { ...meal, pax: guestsStr } : meal;
+                        }),
                     }));
                 }
             };
@@ -4039,7 +3929,6 @@ const BookingScreen = ({ navigation, route }) => {
 
         return () => {
             isMounted.current = false;
-            if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
             if (availabilityDebounce.current) clearTimeout(availabilityDebounce.current);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -4095,7 +3984,6 @@ const BookingScreen = ({ navigation, route }) => {
                             {currentStep === 3 && renderStep3()}
                         </View>
 
-                        <ScrollIndicator visible={showScrollIndicator} animated={true} />
                         <View style={{ height: 100 }} />
                     </ScrollView>
                 </KeyboardAvoidingView>
@@ -4172,6 +4060,7 @@ const BookingScreen = ({ navigation, route }) => {
                                 style={[styles.confirmBtn, styles.confirmBtnConfirm]}
                                 onPress={() => {
                                     setShowCutoffConfirm(false);
+                                    setCutoffConfirmed(true);
                                     setCurrentStep(2);
                                     setTimeout(() => scrollViewRef.current?.scrollTo({ y: 0, animated: true }), 100);
                                 }}
@@ -4183,7 +4072,6 @@ const BookingScreen = ({ navigation, route }) => {
                 </View>
             </Modal>
 
-            {/* Booking success modal */}
             <BookingSuccessModal
                 visible={showSuccessModal}
                 booking={successPayload || {}}
@@ -4204,7 +4092,6 @@ const BookingScreen = ({ navigation, route }) => {
                 }}
             />
 
-            {/* Reschedule workflow modal */}
             <RescheduleModal
                 visible={rescheduleModal.visible}
                 mode={rescheduleModal.mode}
@@ -4587,7 +4474,6 @@ const styles = StyleSheet.create({
         backgroundColor: '#4CAF50', justifyContent: 'center', alignItems: 'center',
     },
 
-    // ⭐ View-details button on packages (grid)
     pkgViewBtnGrid: {
         flexDirection: 'row', alignItems: 'center', gap: 3,
         marginTop: 6,
@@ -4633,7 +4519,6 @@ const styles = StyleSheet.create({
     menuItemListCategory: { fontSize: 10, color: '#8A8A8E' },
     menuItemListPackage: { fontSize: 9, color: '#FF6B9D', fontWeight: '600', marginTop: 1 },
 
-    // ⭐ View-details button on packages (list)
     pkgViewBtnList: {
         flexDirection: 'row', alignItems: 'center', gap: 4,
         marginTop: 6, alignSelf: 'flex-start',

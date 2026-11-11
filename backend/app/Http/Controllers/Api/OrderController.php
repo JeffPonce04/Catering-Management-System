@@ -40,6 +40,17 @@ class OrderController extends Controller
 
     public function index(Request $request)
     {
+        // ⚡ Defensive: allow large payloads for admin tools that show
+        //    the full confirmed-bookings → orders mirror. Cap at 500 so a
+        //    malicious/buggy caller can't ask for 100,000 rows.
+        if ($request->filled('per_page')) {
+            $requested = (int) $request->input('per_page');
+            $capped = max(1, min(500, $requested));
+            if ($capped !== $requested) {
+                $request->merge(['per_page' => $capped]);
+            }
+        }
+
         $query = $this->query();
         if ($request->filled('status')) {
             $query->where('status', $request->input('status'));
@@ -48,7 +59,7 @@ class OrderController extends Controller
             $query->where('booking_id', $request->input('booking_id'));
         }
         if ($request->filled('event_date')) {
-            $query->whereHas('booking.serviceEvent', fn ($event) => $event
+            $query->whereHas('booking.serviceEvent', fn($event) => $event
                 ->whereDate('event_date', '<=', $request->input('event_date'))
                 ->whereRaw('COALESCE(event_end_date, event_date) >= ?', [$request->input('event_date')]));
         }
@@ -56,14 +67,14 @@ class OrderController extends Controller
             $search = trim((string) $request->input('search'));
             $query->where(function ($builder) use ($search) {
                 $builder->where('order_number', 'like', "%{$search}%")
-                    ->orWhereHas('booking', fn ($booking) => $booking->where('booking_no', 'like', "%{$search}%"))
-                    ->orWhereHas('booking.serviceEvent.customer.person', fn ($person) => $person
+                    ->orWhereHas('booking', fn($booking) => $booking->where('booking_no', 'like', "%{$search}%"))
+                    ->orWhereHas('booking.serviceEvent.customer.person', fn($person) => $person
                         ->where('first_name', 'like', "%{$search}%")
                         ->orWhere('last_name', 'like', "%{$search}%"));
             });
         }
         $rows = $query->latest('order_id')->paginate($request->integer('per_page', 20));
-        $rows->getCollection()->transform(fn (Order $order) => $this->formatOrder($order));
+        $rows->getCollection()->transform(fn(Order $order) => $this->formatOrder($order));
         return $this->ok($rows);
     }
 
@@ -242,6 +253,14 @@ class OrderController extends Controller
                 }
 
                 if ($booking) {
+                    // ⭐ FIX: Ensure we properly create the reservation. 
+                    // If the booking has no event_end_date, we fallback to event_date.
+                    $event = $booking->serviceEvent;
+                    $startDate = $event?->event_date ? $event->event_date->toDateString() : now()->toDateString();
+                    $endDate = $event?->event_end_date
+                        ? $event->event_end_date->toDateString()
+                        : $startDate;
+
                     BookingEquipment::updateOrCreate(
                         ['booking_id' => $booking->booking_id, 'equipment_id' => $equipment->equipment_id],
                         [
@@ -310,7 +329,7 @@ class OrderController extends Controller
         return $this->ok([
             'total' => $total,
             'total_orders' => $total,
-            'total_revenue' => (float) Order::with('booking.invoice')->get()->sum(fn ($order) => (float) ($order->booking?->invoice?->total_amount ?? 0)),
+            'total_revenue' => (float) Order::with('booking.invoice')->get()->sum(fn($order) => (float) ($order->booking?->invoice?->total_amount ?? 0)),
             'pending' => Order::where('status', 'pending')->count(),
             'pending_orders' => Order::where('status', 'pending')->count(),
             'preparing' => Order::where('status', 'preparing')->count(),
@@ -331,19 +350,19 @@ class OrderController extends Controller
 
     public function kitchenOrders()
     {
-        return $this->ok($this->activePreparationQuery()->latest('order_id')->get()->map(fn (Order $order) => $this->formatOrder($order))->values());
+        return $this->ok($this->activePreparationQuery()->latest('order_id')->get()->map(fn(Order $order) => $this->formatOrder($order))->values());
     }
 
     public function deliveryOrders()
     {
-        return $this->ok($this->activePreparationQuery()->latest('order_id')->get()->map(fn (Order $order) => $this->formatOrder($order))->values());
+        return $this->ok($this->activePreparationQuery()->latest('order_id')->get()->map(fn(Order $order) => $this->formatOrder($order))->values());
     }
 
     private function activePreparationQuery()
     {
         return $this->query()
             ->whereNotIn('status', ['completed', 'cancelled'])
-            ->whereHas('booking', fn ($booking) => $booking->whereNotIn('booking_status', ['completed', 'cancelled', 'rejected']));
+            ->whereHas('booking', fn($booking) => $booking->whereNotIn('booking_status', ['completed', 'cancelled', 'rejected']));
     }
 
     private function formatOrder(Order $order): array
@@ -408,16 +427,16 @@ class OrderController extends Controller
             'menu_items' => $order->items->map(function ($item) {
                 $meal = $item->relationLoaded('mealService') ? $item->mealService : null;
                 return [
-                'id' => $item->order_item_id,
-                'meal_service_id' => $item->meal_service_id ?? null,
-                'meal_type' => $meal?->meal_type,
-                'service_date' => $meal?->service_date?->toDateString(),
-                'serving_time' => $meal?->serving_time,
-                'menu_item_id' => $item->menu_item_id,
-                'name' => $item->item_name,
-                'quantity' => (int) $item->quantity,
-                'price' => (float) $item->unit_price_snapshot,
-                'total' => (float) $item->unit_price_snapshot * (int) $item->quantity,
+                    'id' => $item->order_item_id,
+                    'meal_service_id' => $item->meal_service_id ?? null,
+                    'meal_type' => $meal?->meal_type,
+                    'service_date' => $meal?->service_date?->toDateString(),
+                    'serving_time' => $meal?->serving_time,
+                    'menu_item_id' => $item->menu_item_id,
+                    'name' => $item->item_name,
+                    'quantity' => (int) $item->quantity,
+                    'price' => (float) $item->unit_price_snapshot,
+                    'total' => (float) $item->unit_price_snapshot * (int) $item->quantity,
                 ];
             })->values(),
             'ingredients_computed_flag' => (bool) ($metadata['ingredients_computed_flag'] ?? false),
@@ -489,7 +508,7 @@ class OrderController extends Controller
                 'quantity' => (int) ($task['quantity'] ?? 1),
                 'servings' => (int) ($task['servings'] ?? $task['pax'] ?? $task['quantity'] ?? 1),
                 'start_time' => $task['start_time'] ?? $task['prepare_time'] ?? '-',
-                'out_for_delivery' => $task['out_for_delivery'] ?? $task['delivery_time'] ?? $task['end_time'] ?? '-',
+                'out_for_delivery' => $task['out_for_delivery'] ?? $task['delivery_time'] ?? '-',
                 'assigned_to' => $task['assigned_to'] ?? 'Kitchen Team',
                 'status' => $status,
                 'is_done' => ($task['is_done'] ?? false) || $status === 'completed',
@@ -514,6 +533,7 @@ class OrderController extends Controller
 
     private function storeKitchenTasks(Order $order, array $tasks): void
     {
+        $tasks = $this->lockDeductedTasks($order, $tasks);
         $this->updateMetadata($order, ['kitchen_preparation' => array_values($tasks)]);
         Setting::updateOrCreate(
             ['group' => 'kitchen_tasks', 'key' => 'order_' . $order->order_id],
@@ -530,6 +550,32 @@ class OrderController extends Controller
         );
     }
 
+    private function deductedTaskIds(Order $order): array
+    {
+        $bookingId = (string) $order->booking_id;
+        $prefixLen = strlen($bookingId) + 1;
+
+        return Setting::where('group', 'kitchen_task_deductions')
+            ->where('key', 'like', $bookingId . ':%')
+            ->pluck('key')
+            ->map(fn($key) => substr((string) $key, $prefixLen))
+            ->all();
+    }
+
+    private function lockDeductedTasks(Order $order, array $tasks): array
+    {
+        $done = array_flip($this->deductedTaskIds($order));
+
+        return array_map(function ($task) use ($done) {
+            $taskId = (string) ($task['id'] ?? '');
+            if ($taskId !== '' && isset($done[$taskId])) {
+                $task['is_done'] = true;
+                $task['status']  = 'completed';
+            }
+            return $task;
+        }, $tasks);
+    }
+
     private function findItemIndex(array $items, $id = null, $index = null): ?int
     {
         if ($index !== null && isset($items[(int) $index])) {
@@ -537,12 +583,12 @@ class OrderController extends Controller
         }
         if ($id !== null) {
             foreach ($items as $i => $item) {
-                if (($item['id'] ?? null) === $id) {
+                if ((string) ($item['id'] ?? '') === (string) $id) {
                     return $i;
                 }
             }
         }
-        return isset($items[0]) ? 0 : null;
+        return $id !== null ? null : (isset($items[0]) ? 0 : null);
     }
 
     private function legacySetting(string $group, Order $order): ?array
@@ -614,6 +660,6 @@ class OrderController extends Controller
         }
         $setting = Setting::where('group', 'ingredients_summary')->where('key', 'booking_' . $booking->booking_id)->first();
         $ingredients = $setting ? $this->decodeSettingValue($setting->value) : [];
-        return collect($ingredients)->contains(fn ($ingredient) => ($ingredient['need_to_buy'] ?? false) && !($ingredient['purchased'] ?? false));
+        return collect($ingredients)->contains(fn($ingredient) => ($ingredient['need_to_buy'] ?? false) && !($ingredient['purchased'] ?? false));
     }
 }
