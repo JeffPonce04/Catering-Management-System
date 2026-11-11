@@ -88,9 +88,27 @@ class EventController extends Controller
 
     public function index(Request $request)
     {
+        // ⭐ Meal Preparation / Orders & Events list — ONLY rows that are
+        //    genuinely approved in the DB and whose events are still live.
+        //    Excluded at the SQL level so nothing can leak through from
+        //    stale client caches:
+        //      • pending / pending_approval / draft / rejected / cancelled
+        //      • completed / HIST-* archived rows
+        //      • events already finished or cancelled
         $query = $this->query()
-            ->whereIn('booking_status', ['confirmed', 'ongoing', 'missed_delivery', 'missed_pickup'])
-            ->whereHas('serviceEvent', fn($q) => $q->whereNotIn('status', ['completed', 'cancelled']));
+            ->whereNotNull('service_event_id')
+            ->where('booking_no', 'not like', 'HIST-%')
+            ->whereIn('booking_status', [
+                'confirmed',
+                'approved',
+                'ongoing',
+                'rescheduled',
+                'missed_delivery',
+                'missed_pickup',
+            ])
+            ->whereHas('serviceEvent', fn($q) => $q
+                ->whereNotIn('status', ['completed', 'cancelled'])
+                ->whereNotNull('event_date'));
 
         $requestedStatus = strtolower((string) $request->input('status', ''));
         if ($requestedStatus !== '' && $requestedStatus !== 'all') {
@@ -120,7 +138,13 @@ class EventController extends Controller
             });
         }
 
-        $events = $query->latest('booking_id')->paginate($request->integer('per_page', 15));
+        // ⭐ Honor the caller's per_page (mobile sends 100) but cap at 200
+        //    so the mobile Meal Preparation tab always receives every
+        //    approved booking in one request.
+        $perPage = (int) $request->integer('per_page', 100);
+        $perPage = max(1, min(200, $perPage));
+
+        $events = $query->latest('booking_id')->paginate($perPage);
         $events->getCollection()->transform(fn($booking) => $this->formatEvent($booking));
 
         return $this->ok($events);
@@ -2744,7 +2768,8 @@ class EventController extends Controller
         $paymentRows = $booking->relationLoaded('payments') ? $booking->payments : collect();
         // ⭐ Kitchen tasks live in the settings store (same one OrderController writes to).
         $kitchenStoreTasks = $this->readKitchenTasks($booking);
-        // ⭐ Fetch the saved kitchen tasks from the Order model        $orderTasks = [];
+        // ⭐ Fetch the saved kitchen tasks from the Order model.
+        $orderTasks = [];
         if ($booking->order && $booking->order->kitchen_tasks) {
             $orderTasks = is_array($booking->order->kitchen_tasks)
                 ? $booking->order->kitchen_tasks
@@ -2886,14 +2911,12 @@ class EventController extends Controller
             'time' => $event?->event_time,
             'location' => $event?->venue,
             'venue' => $event?->venue,
+            // ⭐ Single source of truth — the DB `bookings.booking_status`.
             'status' => $booking->booking_status,
-            // ⭐ Keep Orders & Events consistent with Bookings.
+            'booking_status' => $booking->booking_status,
             'booking_source' => $booking->booking_source ?? 'walk_in',
             'order_status' => $booking->order?->status,
             'guests_count' => $event?->guests_count ?? 0,
-            'status' => $booking->booking_status,
-            // ⭐ Keep Orders & Events consistent with Bookings.
-            'booking_source' => $booking->booking_source ?? 'walk_in',
             // ⭐ SERVICE TYPE — surfaced so the frontend can render the
             //    correct Operations Hub layout and completion action.
             'service_type' => $event?->service_type,

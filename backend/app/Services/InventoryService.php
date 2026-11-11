@@ -55,9 +55,13 @@ class InventoryService
             return $prefix . now()->format('YmdHis') . '-' . random_int(100, 999);
         }
     }
-    public function move(int $ingredientId, float $quantityChange, string $movementType, string $reason = ''): InventoryMovement
+    public function move(int $ingredientId, float $quantityChange, string $movementType, string $reason = '', array $tracking = []): InventoryMovement
     {
-        return DB::transaction(function () use ($ingredientId, $quantityChange, $movementType, $reason) {
+        // ⭐ CRITICAL: $tracking MUST be in the `use (...)` list. Without it,
+        //    every `$tracking['…'] ?? null` below resolves to null and the
+        //    Purchased By / Delivered By / Received By / Supplier / Reference #
+        //    columns are silently dropped on every mobile ADD call.
+        return DB::transaction(function () use ($ingredientId, $quantityChange, $movementType, $reason, $tracking) {
             $stock = InventoryStock::where('ingredient_id', $ingredientId)
                 ->lockForUpdate()
                 ->first();
@@ -92,8 +96,12 @@ class InventoryService
                 'quantity_after' => $quantityAfter,
                 'unit_cost_at_time' => (float) ($ingredient->unit_cost ?? 0),
                 'reason' => $reason,
+                'purchased_by_name' => $tracking['purchased_by_name'] ?? null,
+                'delivered_by' => $tracking['delivered_by'] ?? null,
+                'received_by' => $tracking['received_by'] ?? null,
+                'supplier_name' => $tracking['supplier_name'] ?? null,
+                'reference_number' => $tracking['reference_number'] ?? null,
             ]);
-
             $stockUpdate = ['current_quantity' => $quantityAfter];
             if ($quantityChange > 0) {
                 $stockUpdate['last_restocked_at'] = now();

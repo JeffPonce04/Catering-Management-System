@@ -1050,14 +1050,14 @@ const Navigation = () => {
         path: '/staff/attendance',
         description: 'Staff attendance tracking',
       },
-      {
-        id: 'face-enrollment',
-        title: 'Face Enrollment',
-        icon: FiCamera,
-        secondaryIcon: FiUserCheck,
-        path: '/staff/face-enrollment',
-        description: 'Register employee face profiles with consent',
-      },
+      // {
+      //   id: 'face-enrollment',
+      //   title: 'Face Enrollment',
+      //   icon: FiCamera,
+      //   secondaryIcon: FiUserCheck,
+      //   path: '/staff/face-enrollment',
+      //   description: 'Register employee face profiles with consent',
+      // },
       {
         id: 'payroll',
         title: 'Payroll',

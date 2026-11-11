@@ -13,6 +13,7 @@ class PurchaseRequest extends Model
     protected $casts = [
         'quantity' => 'float',
         'expected_delivery' => 'date',
+        'received_at' => 'datetime',
     ];
 
     public function ingredient()

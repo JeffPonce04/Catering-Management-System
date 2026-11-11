@@ -72,7 +72,6 @@ const generateSKU = (productName, category) => {
   const random = Math.floor(1000 + Math.random() * 9000);
   return `${prefix}-${random}`;
 };
-
 const toPayload = (values) => ({
   name: values.product_name?.trim(),
   sku: values.sku?.trim() || null,
@@ -90,6 +89,24 @@ const toPayload = (values) => ({
   notes: values.notes?.trim() || null,
 });
 
+// ⭐ NEW: Movement payload now carries purchasing / receiving tracking
+const toMovementPayload = (values, ingredientId) => {
+  const quantity = Number(values.quantity);
+  const isAdjustment = values.movement_type.startsWith('adjustment_');
+  const movementType = isAdjustment ? 'adjustment' : values.movement_type;
+  const isPositive = ['purchase', 'return', 'adjustment_in'].includes(values.movement_type);
+  return {
+    ingredient_id: ingredientId,
+    movement_type: movementType,
+    quantity_change: isPositive ? quantity : -quantity,
+    reason: values.notes?.trim() || null,
+    purchased_by_name: values.purchased_by_name?.trim() || null,
+    delivered_by: values.delivered_by?.trim() || null,
+    received_by: values.received_by?.trim() || null,
+    supplier_name: values.supplier_name?.trim() || null,
+    reference_number: values.reference_number?.trim() || null,
+  };
+};
 // ============================================================
 // MAIN COMPONENT
 // ============================================================
@@ -182,7 +199,16 @@ const IngredientsManagement = () => {
 
   const openMovement = (row) => {
     setSelected(row);
-    movementForm.setFieldsValue({ movement_type: 'purchase', quantity: 0, notes: '' });
+    movementForm.setFieldsValue({
+      movement_type: 'purchase',
+      quantity: 0,
+      notes: '',
+      purchased_by_name: '',
+      delivered_by: '',
+      received_by: '',
+      supplier_name: '',
+      reference_number: '',
+    });
     setMovementOpen(true);
   };
 
@@ -211,18 +237,8 @@ const IngredientsManagement = () => {
   };
 
   const submitMovement = async (values) => {
-    const quantity = Number(values.quantity);
-    const isAdjustment = values.movement_type.startsWith('adjustment_');
-    const movementType = isAdjustment ? 'adjustment' : values.movement_type;
-    const isPositive = ['purchase', 'return', 'adjustment_in'].includes(values.movement_type);
-
     try {
-      await recordMovement.mutateAsync({
-        ingredient_id: selected.id,
-        movement_type: movementType,
-        quantity_change: isPositive ? quantity : -quantity,
-        reason: values.notes?.trim() || null,
-      });
+      await recordMovement.mutateAsync(toMovementPayload(values, selected.id));
       movementForm.resetFields();
       setMovementOpen(false);
       await productsQuery.refetch();
@@ -1061,9 +1077,37 @@ const IngredientsManagement = () => {
                   }}
                 />
               </Form.Item>
-
               <Form.Item name="notes" label="Reason / Notes">
                 <TextArea rows={3} placeholder="Enter reason for this movement..." />
+              </Form.Item>
+
+              {/* ⭐ Purchasing / Receiving tracking */}
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="purchased_by_name" label="Purchased By">
+                    <Input placeholder="Employee who purchased" size="large" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="supplier_name" label="Supplier">
+                    <Input placeholder="Supplier name (optional)" size="large" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="delivered_by" label="Delivered By">
+                    <Input placeholder="Person who delivered" size="large" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="received_by" label="Received By">
+                    <Input placeholder="Person who received" size="large" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item name="reference_number" label="Reference Number">
+                <Input placeholder="DR / Invoice / OR number (optional)" size="large" />
               </Form.Item>
 
               <div className="ingredient-modal-footer-enhanced">

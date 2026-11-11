@@ -24,35 +24,35 @@ class EquipmentController extends Controller
     /**
      * Generic sequential number generator
      */
-  private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
-{
-    try {
-        if (!class_exists($modelClass)) {
-            throw new \Exception("Model class {$modelClass} not found");
-        }
+    private function generateSequentialNumber(string $prefix, string $modelClass, string $column, int $padding = 4): string
+    {
+        try {
+            if (!class_exists($modelClass)) {
+                throw new \Exception("Model class {$modelClass} not found");
+            }
 
-        // Create a new instance to get the key name
-        $instance = new $modelClass();
-        $keyName = $instance->getKeyName();
+            // Create a new instance to get the key name
+            $instance = new $modelClass();
+            $keyName = $instance->getKeyName();
 
-        $lastRecord = $modelClass::withTrashed()
-            ->where($column, 'LIKE', $prefix . '%')
-            ->orderBy($keyName, 'desc')
-            ->first();
-        
-        if ($lastRecord && isset($lastRecord->$column)) {
-            $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
-            $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
-        } else {
-            $newNumber = str_repeat('0', $padding - 1) . '1';
+            $lastRecord = $modelClass::withTrashed()
+                ->where($column, 'LIKE', $prefix . '%')
+                ->orderBy($keyName, 'desc')
+                ->first();
+
+            if ($lastRecord && isset($lastRecord->$column)) {
+                $lastNumber = intval(substr($lastRecord->$column, strlen($prefix)));
+                $newNumber = str_pad($lastNumber + 1, $padding, '0', STR_PAD_LEFT);
+            } else {
+                $newNumber = str_repeat('0', $padding - 1) . '1';
+            }
+
+            return $prefix . $newNumber;
+        } catch (\Exception $e) {
+            Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
+            return $prefix . now()->format('YmdHis') . '-' . strtoupper(substr(uniqid(), -4));
         }
-        
-        return $prefix . $newNumber;
-    } catch (\Exception $e) {
-        Log::warning("Failed to generate sequential number for {$prefix}: " . $e->getMessage());
-        return $prefix . now()->format('YmdHis') . '-' . strtoupper(substr(uniqid(), -4));
     }
-}
     public function index(Request $request)
     {
         try {
@@ -62,8 +62,8 @@ class EquipmentController extends Controller
                 $search = trim((string) $request->input('search'));
                 $query->where(function ($q) use ($search) {
                     $q->where('name', 'like', "%{$search}%")
-                      ->orWhere('code', 'like', "%{$search}%")
-                      ->orWhere('category', 'like', "%{$search}%");
+                        ->orWhere('code', 'like', "%{$search}%")
+                        ->orWhere('category', 'like', "%{$search}%");
                 });
             }
 
@@ -82,7 +82,6 @@ class EquipmentController extends Controller
             });
 
             return $this->ok($rows);
-            
         } catch (\Exception $e) {
             \Log::error('Equipment API Error: ' . $e->getMessage());
             \Log::error($e->getTraceAsString());
@@ -118,7 +117,52 @@ class EquipmentController extends Controller
     {
         try {
             $data = $this->validatePayload($request, $equipment);
-            $equipment->update($this->fields($data));
+            $fields = $this->fields($data);
+
+            // ⭐ Persist ONLY the real equipment columns; keep tracking
+            //    fields out of the equipment update if they are not columns.
+            $equipmentColumns = [
+                'name',
+                'code',
+                'category',
+                'description',
+                'total_quantity',
+                'location',
+                'supplier_id',
+                'model',
+                'serial_number',
+                'condition',
+                'last_maintenance'
+            ];
+            $equipmentUpdate = array_intersect_key($fields, array_flip($equipmentColumns));
+            if (! empty($equipmentUpdate)) {
+                $equipment->update($equipmentUpdate);
+            }
+
+            // ⭐ Write a movement row when tracking fields are present,
+            //    so web/mobile history shows Purchased / Delivered / Received.
+            $tracking = array_intersect_key($fields, array_flip([
+                'purchased_by_name',
+                'delivered_by',
+                'received_by',
+                'supplier_name',
+                'reference_number',
+            ]));
+            if (! empty(array_filter($tracking))) {
+                \App\Models\AuditLog::log(
+                    'equipment_movement',
+                    'inventory',
+                    $equipment->equipment_id,
+                    null,
+                    array_merge($tracking, [
+                        'equipment_id' => $equipment->equipment_id,
+                        'total_quantity' => $equipment->total_quantity,
+                        'reason' => $request->input('notes'),
+                        'recorded_at' => now()->toDateTimeString(),
+                    ])
+                );
+            }
+
             return $this->show($equipment->fresh());
         } catch (\Exception $e) {
             \Log::error('Equipment Update Error: ' . $e->getMessage());
@@ -158,7 +202,7 @@ class EquipmentController extends Controller
                 ->whereDate('rental_end_date', '>=', $today)
                 ->sum('quantity_reserved');
             $total = (int) Equipment::where('is_active', true)->sum('total_quantity');
-            
+
             return $this->ok([
                 'total' => Equipment::where('is_active', true)->count(),
                 'total_quantity' => $total,
@@ -197,10 +241,10 @@ class EquipmentController extends Controller
         $request->merge(array_filter([
             'name' => $request->input('name', $request->input('equipment_name')),
             'total_quantity' => $request->input('total_quantity', $request->input('total')),
-        ], static fn ($value) => $value !== null));
+        ], static fn($value) => $value !== null));
 
         $required = $equipment ? 'sometimes' : 'required';
-        
+
         return $request->validate([
             'name' => [$required, 'string', 'max:100'],
             'equipment_name' => ['nullable', 'string', 'max:100'],
@@ -220,24 +264,46 @@ class EquipmentController extends Controller
             'active' => ['nullable', 'boolean'],
             'sub_category' => ['nullable', 'string', 'max:100'],
             'supplier' => ['nullable', 'string', 'max:255'],
+            // ⭐ NEW: purchasing / receiving tracking
+            'purchased_by_name' => ['nullable', 'string', 'max:255'],
+            'delivered_by' => ['nullable', 'string', 'max:255'],
+            'received_by' => ['nullable', 'string', 'max:255'],
+            'supplier_name' => ['nullable', 'string', 'max:255'],
+            'reference_number' => ['nullable', 'string', 'max:100'],
         ]);
     }
+
 
     private function fields(array $data): array
     {
         $fields = collect($data)->only([
-            'name', 'code', 'category', 'description', 'total_quantity', 
-            'location', 'supplier_id', 'model', 'serial_number', 'condition', 'last_maintenance'
+            'name',
+            'code',
+            'category',
+            'description',
+            'total_quantity',
+            'location',
+            'supplier_id',
+            'model',
+            'serial_number',
+            'condition',
+            'last_maintenance',
+            // ⭐ NEW: purchasing / receiving tracking (also written to booking_equipment history)
+            'purchased_by_name',
+            'delivered_by',
+            'received_by',
+            'supplier_name',
+            'reference_number',
         ])->all();
-        
+
         if (!array_key_exists('description', $fields) && array_key_exists('notes', $data)) {
             $fields['description'] = $data['notes'];
         }
-        
+
         if (array_key_exists('is_active', $data) || array_key_exists('active', $data)) {
             $fields['is_active'] = $data['is_active'] ?? $data['active'];
         }
-        
+
         return $fields;
     }
 
@@ -256,19 +322,19 @@ class EquipmentController extends Controller
         }
 
         $reserved = (int) $reservationQuery->sum('quantity_reserved');
-            
+
         $inUse = (int) BookingEquipment::where('equipment_id', $equipment->equipment_id)
             ->where('status', 'checked_out')
             ->sum('quantity_reserved');
-            
+
         $damaged = (int) BookingEquipment::where('equipment_id', $equipment->equipment_id)
             ->sum('quantity_damaged');
-            
+
         $missing = (int) BookingEquipment::where('equipment_id', $equipment->equipment_id)
             ->sum('quantity_missing');
-        
+
         $totalQty = (int) $equipment->total_quantity;
-        
+
         $formatted = [
             'id' => $equipment->equipment_id,
             'equipment_id' => $equipment->equipment_id,
@@ -305,11 +371,11 @@ class EquipmentController extends Controller
             'created_at' => $equipment->created_at,
             'updated_at' => $equipment->updated_at,
         ];
-        
+
         if ($withReservations) {
             $formatted['reservations'] = $equipment->reservations ?? collect();
         }
-        
+
         return $formatted;
     }
 }

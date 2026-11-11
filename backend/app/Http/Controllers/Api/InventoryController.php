@@ -133,6 +133,11 @@ class InventoryController extends Controller
             'quantity_change' => ['required', 'numeric', 'not_in:0'],
             'movement_type' => ['required', Rule::in(['purchase', 'usage', 'return', 'waste', 'adjustment'])],
             'reason' => ['nullable', 'string'],
+            'purchased_by_name' => ['nullable', 'string', 'max:255'],
+            'delivered_by' => ['nullable', 'string', 'max:255'],
+            'received_by' => ['nullable', 'string', 'max:255'],
+            'supplier_name' => ['nullable', 'string', 'max:255'],
+            'reference_number' => ['nullable', 'string', 'max:100'],
         ]);
 
         $quantity = (float) $data['quantity_change'];
@@ -142,8 +147,29 @@ class InventoryController extends Controller
             $quantity = -abs($quantity);
         }
 
-        $movement = $service->move((int) $data['ingredient_id'], $quantity, $data['movement_type'], $data['reason'] ?? '');
+        // ⭐ Persist every tracking field that was actually sent.
+        //    Empty strings become null so the Inventory UI shows "—".
+        $tracking = [
+            'purchased_by_name' => $this->normalizeTrackingValue($data['purchased_by_name'] ?? null),
+            'delivered_by'      => $this->normalizeTrackingValue($data['delivered_by'] ?? null),
+            'received_by'       => $this->normalizeTrackingValue($data['received_by'] ?? null),
+            'supplier_name'     => $this->normalizeTrackingValue($data['supplier_name'] ?? null),
+            'reference_number'  => $this->normalizeTrackingValue($data['reference_number'] ?? null),
+        ];
+
+        $movement = $service->move((int) $data['ingredient_id'], $quantity, $data['movement_type'], $data['reason'] ?? '', $tracking);
         return $this->ok($movement->load('ingredient'), 'Inventory updated.');
+    }
+
+    /**
+     * ⭐ Convert empty strings to null so the UI shows "—" instead of an
+     *    empty cell, and so the mobile payload (which sends null) and the
+     *    web payload (which sends "") land in the DB identically.
+     */
+    private function normalizeTrackingValue($value): ?string
+    {
+        $trimmed = trim((string) ($value ?? ''));
+        return $trimmed === '' ? null : $trimmed;
     }
 
     public function waste(Request $request, InventoryService $service)
@@ -292,7 +318,14 @@ class InventoryController extends Controller
             'expected_delivery' => ['nullable', 'date'],
             'notes' => ['nullable', 'string'],
             'status' => ['nullable', Rule::in(['pending', 'approved', 'ordered', 'received', 'cancelled'])],
+            'delivered_by' => ['nullable', 'string', 'max:255'],
+            'received_by' => ['nullable', 'string', 'max:255'],
+            'reference_number' => ['nullable', 'string', 'max:100'],
         ]);
+
+        if (($data['status'] ?? null) === 'received' && ! $purchaseRequest->received_at) {
+            $data['received_at'] = now();
+        }
 
         if (($data['status'] ?? null) === 'approved') {
             $user = auth()->user();
@@ -937,6 +970,15 @@ class InventoryController extends Controller
             'booking_no' => $bookingNo,
             'updated_by' => $user?->person?->full_name ?? $user?->email ?? 'System',
             'performed_by' => $movement->performed_by,
+            // ⭐ Purchasing / Receiving tracking — always present in the JSON
+            //    so the web Stock Movement table can render all three
+            //    columns (Purchased By / Delivered By / Received By)
+            //    regardless of whether the row came from mobile or web.
+            'purchased_by_name' => $movement->purchased_by_name,
+            'delivered_by'      => $movement->delivered_by,
+            'received_by'       => $movement->received_by,
+            'supplier_name'     => $movement->supplier_name,
+            'reference_number'  => $movement->reference_number,
             'movement_at' => optional($movement->created_at)->toISOString(),
             'created_at' => $movement->created_at,
         ];
@@ -974,9 +1016,26 @@ class InventoryController extends Controller
         if ($type === 'waste' || str_contains($reason, 'waste')) {
             return ['Waste Management', $refType ? "{$refType} #{$movement->reference_id}" : 'Waste Record'];
         }
+        // ⭐ Manual stock movement from mobile / web ADD form — no reference
+        //    type, no booking linkage. Must be labelled "Manual" so it is
+        //    distinguishable from an event deduction.
+        if (
+            empty($refType) && in_array($type, ['usage', 'adjustment'], true)
+            && ! str_contains($reason, 'booking')
+            && ! str_contains($reason, 'kitchen')
+        ) {
+            return ['Manual Adjustment', '—'];
+        }
 
         if ($type === 'usage' && ($refType === 'Booking' || str_contains($reason, 'booking'))) {
             return ['Order', $refType ? "{$refType} #{$movement->reference_id}" : '—'];
+        }
+
+        if ($type === 'purchase' && empty($refType) && ! empty($movement->purchased_by_name)) {
+            // ⭐ A Stock In with no reference_type but with a purchased_by
+            //    name was recorded from the mobile ADD form or the web
+            //    Record Movement modal — it belongs under "Manual Purchase".
+            return ['Manual Purchase', '—'];
         }
 
         if ($type === 'purchase' && ($refType === 'PurchaseRequest' || str_contains($reason, 'purchase'))) {
@@ -1018,7 +1077,14 @@ class InventoryController extends Controller
             'reference_type' => 'BookingEquipment',
             'reference_id' => $tracking->booking_id,
             'reference' => $tracking->booking?->booking_no,
-            'updated_by' => 'System',
+            'updated_by' => $tracking->checked_out_by
+                ?? $tracking->returned_by
+                ?? 'System',
+            'purchased_by_name' => null,
+            'delivered_by' => $tracking->checked_out_by ?? null,
+            'received_by' => $tracking->returned_by ?? null,
+            'supplier_name' => null,
+            'reference_number' => $tracking->booking?->booking_no,
             'movement_at' => optional($tracking->updated_at ?? $tracking->created_at)->toISOString(),
             'created_at' => $tracking->created_at,
         ];
@@ -1074,6 +1140,10 @@ class InventoryController extends Controller
             'expected_delivery' => optional($purchaseRequest->expected_delivery)->toDateString(),
             'notes' => $purchaseRequest->notes,
             'requested_by' => $purchaseRequest->requester?->person?->full_name ?? $purchaseRequest->requester?->email ?? 'System',
+            'delivered_by' => $purchaseRequest->delivered_by,
+            'received_by' => $purchaseRequest->received_by,
+            'received_at' => optional($purchaseRequest->received_at)->toIso8601String(),
+            'reference_number' => $purchaseRequest->reference_number,
             'created_at' => $purchaseRequest->created_at,
             'updated_at' => $purchaseRequest->updated_at,
         ];

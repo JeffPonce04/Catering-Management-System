@@ -54,6 +54,22 @@ const toPayload = (values) => ({
   notes: values.notes?.trim() || null,
 });
 
+// ⭐ NEW: Adjustment payload now carries purchasing / receiving tracking
+const toAdjustmentPayload = (values, row) => {
+  const amount = Number(values.quantity);
+  const total = values.adjustment_type === 'increase'
+    ? row.total + amount
+    : Math.max(0, row.total - amount);
+  return {
+    total_quantity: total,
+    notes: values.notes || row.notes,
+    purchased_by_name: values.purchased_by_name?.trim() || null,
+    delivered_by: values.delivered_by?.trim() || null,
+    received_by: values.received_by?.trim() || null,
+    supplier_name: values.supplier_name?.trim() || null,
+    reference_number: values.reference_number?.trim() || null,
+  };
+};
 // ============================================================
 // PAGINATION HELPERS
 // ============================================================
@@ -170,14 +186,12 @@ const EquipmentManagement = () => {
       message.error(error?.response?.data?.message || 'Failed to update equipment');
     }
   };
-
-  const submitAdjustment = async ({ adjustment_type, quantity, notes }) => {
-    const amount = Number(quantity);
-    const total = adjustment_type === 'increase'
-      ? selected.total + amount
-      : Math.max(0, selected.total - amount);
+  const submitAdjustment = async (values) => {
     try {
-      await updateEquipment.mutateAsync({ id: selected.id, data: { total_quantity: total, notes: notes || selected.notes } });
+      await updateEquipment.mutateAsync({
+        id: selected.id,
+        data: toAdjustmentPayload(values, selected),
+      });
       adjustForm.resetFields();
       setAdjustOpen(false);
       await equipmentQuery.refetch();
@@ -186,7 +200,6 @@ const EquipmentManagement = () => {
       message.error(error?.response?.data?.message || 'Failed to adjust quantity');
     }
   };
-
   const toggleActive = (row) => {
     const next = !row.is_active;
     Modal.confirm({
@@ -321,7 +334,15 @@ const EquipmentManagement = () => {
             </button>
           </Tooltip>
           <Tooltip title="Adjust Quantity">
-            <button className="equipment-action-icon adjust" onClick={() => { setSelected(row); adjustForm.setFieldsValue({ adjustment_type: 'increase', quantity: 0 }); setAdjustOpen(true); }}>
+                       <button className="equipment-action-icon adjust" onClick={() => { setSelected(row); adjustForm.setFieldsValue({
+              adjustment_type: 'increase',
+              quantity: 0,
+              purchased_by_name: '',
+              delivered_by: '',
+              received_by: '',
+              supplier_name: '',
+              reference_number: '',
+            }); setAdjustOpen(true); }}>
               <SwapOutlined />
             </button>
           </Tooltip>
@@ -919,8 +940,37 @@ const EquipmentManagement = () => {
                 />
               </Form.Item>
 
-              <Form.Item name="notes" label="Reason / Notes">
+                    <Form.Item name="notes" label="Reason / Notes">
                 <TextArea rows={3} placeholder="Enter reason for this adjustment..." />
+              </Form.Item>
+
+              {/* ⭐ Purchasing / Receiving tracking */}
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="purchased_by_name" label="Purchased By">
+                    <Input placeholder="Employee who purchased" size="large" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="supplier_name" label="Supplier">
+                    <Input placeholder="Supplier name (optional)" size="large" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item name="delivered_by" label="Delivered By">
+                    <Input placeholder="Person who delivered" size="large" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item name="received_by" label="Received By">
+                    <Input placeholder="Person who received" size="large" />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Form.Item name="reference_number" label="Reference Number">
+                <Input placeholder="DR / Invoice / OR number (optional)" size="large" />
               </Form.Item>
 
               <div className="equipment-modal-footer-enhanced">

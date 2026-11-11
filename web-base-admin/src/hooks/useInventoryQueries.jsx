@@ -186,6 +186,24 @@ export const useUpdateEquipment = () => {
   });
 };
 
+// ⭐ NEW: Record an equipment stock-in / stock-out with tracking fields.
+//    Reuses the existing PUT /equipment/{id} endpoint so no new route is needed.
+export const useRecordEquipmentMovement = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }) => inventoryAPI.updateEquipment(id, data),
+    onSuccess: () => {
+      message.success('Equipment movement recorded successfully');
+      invalidateInventory(queryClient, [
+        inventoryKeys.equipment,
+        inventoryKeys.movements,
+        inventoryKeys.dashboard,
+      ]);
+    },
+    onError: (error) => message.error(apiError(error, 'Failed to record equipment movement')),
+  });
+};
+
 export const useSetEquipmentActive = () => {
   const queryClient = useQueryClient();
   return useMutation({
@@ -211,7 +229,12 @@ export const useRecordMovement = () => {
     mutationFn: inventoryAPI.recordMovement,
     onSuccess: () => {
       message.success('Stock movement recorded successfully');
-      invalidateInventory(queryClient, [inventoryKeys.movements, inventoryKeys.products, inventoryKeys.dashboard, inventoryKeys.lowStock]);
+      invalidateInventory(queryClient, [
+        inventoryKeys.movements,
+        inventoryKeys.products,
+        inventoryKeys.dashboard,
+        inventoryKeys.lowStock,
+      ]);
     },
     onError: (error) => message.error(apiError(error, 'Failed to record stock movement')),
   });
